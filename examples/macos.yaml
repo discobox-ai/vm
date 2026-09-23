@@ -7,7 +7,7 @@
 # media: latest asks the framework for the newest restore image this Mac
 # supports (~20 GB, cached); a path to a local .ipsw pins one.
 name: discobox/macos
-tag: "26"
+tag: "27"
 args:
   USER: admin
 from:

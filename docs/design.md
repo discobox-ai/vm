@@ -53,7 +53,7 @@ is a `Capabilities` field, never a faked method:
 | clone modes | cold, **fork** (live template, many clones, about 1s) | cold, **resume** (saved state, once per identity) | cold, resume (pre-copied roots) |
 | max running | none | **2 macOS guests** (framework limit) | none |
 | shared dirs | (Plan9, later) | virtiofs | no |
-| display | video console in mstsc (guestfb over hvsocket, later) | framework view | no |
+| display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no |
 
 The engine enforces `MaxRunning`. `--mode fork|resume` is refused where it is
 unsupported. A fast mode also needs a warm image (decision 7), so it is a
@@ -68,6 +68,24 @@ is the vsock template GUID with the port in its first field
 ServiceTable. 7301 is reserved for the display stream. Because callers only
 ever say "port", the shim, the engine, and a discobox provider never need to
 know which hypervisor they are talking to.
+
+### 3a. A window is per boot, and lives with the VM
+
+`run --gui`, `start --gui`, and `build --gui` ask for a window on the guest's
+display. It is a property of one boot, not of the instance: the engine passes
+`BootOptions.GUI` (and `InstallSpec.GUI` for an install's boots), and the
+driver opens the window in the process that called `Boot`, which is the one
+that owns the VM. For `run` and `start` that is the shim (`shim --gui`); for a
+build it is the CLI. The window closes when the VM stops, and closing it leaves
+the VM running. A driver without `Capabilities.Display` refuses GUI with
+`ErrUnsupported` rather than ignoring it.
+
+A native window on macOS must run on the process's main thread, which only
+`main` can give away. So `main` locks its goroutine to the main thread and runs
+the program through `machine.Main`. A driver that shows windows installs a
+`machine.MainLoop` there; vz brings AppKit up on the main thread only when the
+first window is asked for, so no other command (and not the guest agent) ever
+touches it.
 
 ### 4. HTTP between host and guest
 
@@ -124,7 +142,9 @@ copied file. An existing layer is never rebuilt, and `--no-cache` salts the
 keys instead of overwriting. Tags (`tags.json`) name layers. `rmi` untags, then
 deletes layers that nothing else tags, parents, or runs, as `docker rmi` does.
 A layer is written under a temporary name and renamed into place, so a crash
-never leaves a half-layer under a real ID.
+never leaves a half-layer under a real ID. Installation media a driver
+downloads itself (`media: latest`) is not a layer; it is kept in
+`cache/<driver>/` (`InstallSpec.CacheDir`), so it is fetched once per host.
 
 ### 7. Fast clones come from warm images, and auto falls back to cold
 
@@ -190,12 +210,14 @@ forced off fails the build rather than caching a disk with unflushed writes.
 
 | | fake (all OSes, CI) | hcs | vz |
 |---|---|---|---|
-| machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ⬜ |
-| e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ⬜ |
-| agent: exec, files, shutdown, info | ✅ | ✅ in-guest | ⬜ in-guest |
-| agent: TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ unix |
-| agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ unix |
-| warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ⬜ resume |
+| machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ✅ macOS 27 guest |
+| e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ✅ `DISCO_VM_DRIVER=vz` |
+| agent: exec, files, shutdown, info | ✅ | ✅ in-guest | ✅ in-guest (vsock, launchd daemon) |
+| agent: TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ in-guest (`exec -t`) |
+| agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew |
+| unattended install from media (`examples/<os>.yaml`) | n/a | ✅ `examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap |
+| warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume (agent answers 3.5 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) |
+| `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window |
 
 A platform driver is done when `machinetest.Run` passes against it on real
 hardware and `internal/e2e` passes with `DISCO_VM_DRIVER` set to it. See

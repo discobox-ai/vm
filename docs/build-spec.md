@@ -14,7 +14,7 @@ from:                          # exactly one of image or install
     media: Win11.iso           #     ISO, IPSW, or "latest" (context-relative or absolute)
     edition: Windows 11 Pro    #     image inside multi-image media
     disk: 128GiB
-    options: {key: value}      #     passed to the driver untouched
+    options: {key: value}      #     args substituted, then passed to the driver
 
 args:                          # ${NAME} substitution; --build-arg overrides
   NODE_VERSION: "22.20.0"

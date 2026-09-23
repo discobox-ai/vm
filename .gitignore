@@ -1,3 +1,4 @@
 /disco-vm
 /disco-vm.exe
 *.test
+/bin/

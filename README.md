@@ -13,9 +13,10 @@ disco-vm works on its own, and it is also meant to become a
 > **Status: the shell.** Everything above the hypervisor is built and tested on
 > every OS through a `fake` driver. That covers the CLI, the YAML image
 > builder and its layer cache, the image store, instance lifecycle with a shim
-> per VM, and the guest agent and its protocol. The `hcs` and `vz` drivers are
-> stubs; their briefs are [docs/drivers/hcs.md](docs/drivers/hcs.md) and
-> [docs/drivers/vz.md](docs/drivers/vz.md).
+> per VM, and the guest agent and its protocol. The `vz` driver runs macOS 27
+> guests on Apple silicon, including resume clones and a native window
+> (`--gui`) ([docs/drivers/vz.md](docs/drivers/vz.md)). The `hcs` driver's
+> brief is [docs/drivers/hcs.md](docs/drivers/hcs.md).
 
 ```sh
 disco-vm build -f examples/windows.yaml --build-arg ISO=D:\iso\Win11.iso   # OS image
@@ -49,6 +50,19 @@ layers:
 ```
 
 The reference is [docs/build-spec.md](docs/build-spec.md).
+
+## Run macOS guests
+
+On an Apple silicon Mac, build through `make`, which signs the binary with the
+virtualization entitlement a VM needs:
+
+```sh
+make build
+bin/disco-vm build -f examples/macos.yaml     # downloads the restore image once, ~5 min after that
+bin/disco-vm run --name mac discobox/macos:27
+bin/disco-vm exec mac sw_vers
+bin/disco-vm run --gui --name desk discobox/macos:27   # the guest's screen in a window
+```
 
 ## Try it without a hypervisor
 

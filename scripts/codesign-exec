@@ -1,0 +1,6 @@
+#!/bin/sh
+# A `go test -exec` program: sign the test binary with the virtualization
+# entitlement, then run it. A test that creates a VM needs it (make test-vz).
+set -eu
+codesign --force --sign - --entitlements "$(dirname "$0")/../cmd/disco-vm/disco-vm.entitlements" "$1"
+exec "$@"
