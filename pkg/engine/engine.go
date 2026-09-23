@@ -222,9 +222,15 @@ func (e *Engine) Get(ref string) (*Instance, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A name is exact, so it wins over an ID that merely starts the same way.
+	for _, candidate := range all {
+		if candidate.Name == ref {
+			return candidate, nil
+		}
+	}
 	var match []*Instance
 	for _, candidate := range all {
-		if candidate.Name == ref || strings.HasPrefix(candidate.ID, ref) {
+		if strings.HasPrefix(candidate.ID, ref) {
 			match = append(match, candidate)
 		}
 	}
@@ -388,7 +394,9 @@ func (e *Engine) Remove(ctx context.Context, inst *Instance, force bool) error {
 		if !force {
 			return fmt.Errorf("instance %s is running; stop it or remove it with --force", inst.Name)
 		}
-		if err := e.Stop(ctx, inst, 30*time.Second); err != nil {
+		// A guest forced off after the timeout is still off, and removing it
+		// is what was asked for.
+		if err := e.Stop(ctx, inst, 30*time.Second); err != nil && e.State(ctx, inst) == Running {
 			return err
 		}
 	}
