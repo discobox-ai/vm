@@ -67,9 +67,9 @@ func createCommand(g *globals) *cobra.Command {
 
 func runCommand(g *globals) *cobra.Command {
 	var (
-		flags       createFlags
-		remove, tty bool
-		timeout     time.Duration
+		flags            createFlags
+		remove, tty, gui bool
+		timeout          time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "run [flags] IMAGE [-- COMMAND...]",
@@ -85,7 +85,7 @@ func runCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := e.Start(ctx, inst, engine.StartOptions{Timeout: timeout}); err != nil {
+			if err := e.Start(ctx, inst, engine.StartOptions{Timeout: timeout, GUI: gui}); err != nil {
 				if remove {
 					_ = e.Remove(context.Background(), inst, true)
 				}
@@ -107,23 +107,26 @@ func runCommand(g *globals) *cobra.Command {
 	flags.register(cmd)
 	cmd.Flags().BoolVar(&remove, "rm", false, "remove the instance when the command exits")
 	cmd.Flags().BoolVarP(&tty, "tty", "t", false, "run the command in a terminal")
+	cmd.Flags().BoolVar(&gui, "gui", false, "show the guest's display in a native window")
 	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "how long to wait for the guest agent")
 	return cmd
 }
 
 func startCommand(g *globals) *cobra.Command {
 	var timeout time.Duration
+	var gui bool
 	cmd := &cobra.Command{
 		Use:   "start INSTANCE...",
 		Short: "Start instances",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return eachInstance(g, args, func(e *engine.Engine, inst *engine.Instance) error {
-				return e.Start(cmd.Context(), inst, engine.StartOptions{Timeout: timeout})
+				return e.Start(cmd.Context(), inst, engine.StartOptions{Timeout: timeout, GUI: gui})
 			})
 		},
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "how long to wait for the guest agent")
+	cmd.Flags().BoolVar(&gui, "gui", false, "show the guest's display in a native window")
 	return cmd
 }
 

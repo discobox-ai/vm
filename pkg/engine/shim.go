@@ -33,12 +33,12 @@ type shimState struct {
 // RunShim is the body of `disco-vm shim <id>`: boot the instance, serve its
 // control API, and return when the machine stops. Canceling ctx (a signal)
 // shuts the guest down in order first.
-func (e *Engine) RunShim(ctx context.Context, id string) error {
+func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 	inst, err := e.Get(id)
 	if err != nil {
 		return err
 	}
-	booted, err := e.Boot(ctx, inst, os.Stderr)
+	booted, err := e.Boot(ctx, inst, BootOptions{Console: os.Stderr, GUI: gui})
 	if err != nil {
 		return err
 	}

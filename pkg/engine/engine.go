@@ -305,6 +305,16 @@ func (e *Engine) LayerInUse(id string) bool {
 type StartOptions struct {
 	// Timeout covers boot and the agent answering.
 	Timeout time.Duration
+	// GUI has the shim open a window on the guest's display for this boot.
+	GUI bool
+}
+
+// CheckGUI refuses a window from a driver that has no display to show.
+func (e *Engine) CheckGUI(gui bool) error {
+	if gui && !e.Driver.Capabilities().Display {
+		return fmt.Errorf("driver %s has no display to show: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
+	return nil
 }
 
 // Start boots an instance under a new shim and waits for its agent.
@@ -313,6 +323,9 @@ func (e *Engine) Start(ctx context.Context, inst *Instance, opts StartOptions) e
 		return fmt.Errorf("instance %s is already running", inst.Name)
 	}
 	if err := e.checkCapacity(ctx, inst); err != nil {
+		return err
+	}
+	if err := e.CheckGUI(opts.GUI); err != nil {
 		return err
 	}
 	if opts.Timeout == 0 {
@@ -325,7 +338,11 @@ func (e *Engine) Start(ctx context.Context, inst *Instance, opts StartOptions) e
 		return err
 	}
 	defer logFile.Close()
-	exited, err := spawnShim(e.Exe, e.Root, e.Driver.Name(), []string{inst.ID}, logFile)
+	args := []string{inst.ID}
+	if opts.GUI {
+		args = []string{"--gui", inst.ID}
+	}
+	exited, err := spawnShim(e.Exe, e.Root, e.Driver.Name(), args, logFile)
 	if err != nil {
 		return err
 	}
@@ -436,13 +453,33 @@ type Booted struct {
 	Guest   *guest.Client
 }
 
+// BootOptions is one boot in this process.
+type BootOptions struct {
+	// Console receives the driver's log of the boot.
+	Console io.Writer
+	// GUI opens a window on the guest's display, in this process.
+	GUI bool
+	// Title names the window; it defaults to the instance's name.
+	Title string
+}
+
 // Boot starts an instance in this process and waits for its agent.
-func (e *Engine) Boot(ctx context.Context, inst *Instance, console io.Writer) (*Booted, error) {
+func (e *Engine) Boot(ctx context.Context, inst *Instance, opts BootOptions) (*Booted, error) {
 	spec, err := e.machineSpec(inst)
 	if err != nil {
 		return nil, err
 	}
-	m, err := e.Driver.Boot(ctx, spec, machine.BootOptions{CPUs: inst.CPUs, Memory: inst.Memory, Console: console})
+	if err := e.CheckGUI(opts.GUI); err != nil {
+		return nil, err
+	}
+	title := opts.Title
+	if title == "" {
+		title = "disco-vm: " + inst.Name
+	}
+	m, err := e.Driver.Boot(ctx, spec, machine.BootOptions{
+		CPUs: inst.CPUs, Memory: inst.Memory, Console: opts.Console,
+		GUI: opts.GUI, Title: title,
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -292,3 +292,15 @@ func installKey(driver string, install Install, mediaPath string, salt string) (
 		Salt    string     `json:"salt,omitempty"`
 	}{keyVersion, driver, install.OS, media, install.Edition, install.Disk, options, salt}), nil
 }
+
+// expandMap substitutes args into a map's values, such as install options.
+func expandMap(in map[string]string, args map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = expand(v, args)
+	}
+	return out
+}

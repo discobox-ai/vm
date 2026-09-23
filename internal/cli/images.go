@@ -16,7 +16,7 @@ func buildCommand(g *globals) *cobra.Command {
 	var (
 		file, contextDir, agent string
 		buildArgs, tags         []string
-		noCache                 bool
+		noCache, gui            bool
 	)
 	cmd := &cobra.Command{
 		Use:   "build [-f spec.yaml] [context]",
@@ -36,7 +36,7 @@ func buildCommand(g *globals) *cobra.Command {
 			}
 			builder := &build.Builder{Engine: e, Out: os.Stdout}
 			result, err := builder.Build(cmd.Context(), build.Options{
-				File: file, Context: contextDir, Args: parsed, Tags: tags, NoCache: noCache, Agent: agent,
+				File: file, Context: contextDir, Args: parsed, Tags: tags, NoCache: noCache, Agent: agent, GUI: gui,
 			})
 			if err != nil {
 				return err
@@ -49,6 +49,7 @@ func buildCommand(g *globals) *cobra.Command {
 	cmd.Flags().StringArrayVar(&buildArgs, "build-arg", nil, "override a spec arg (KEY=VALUE)")
 	cmd.Flags().StringArrayVarP(&tags, "tag", "t", nil, "extra name:tag for the result")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "rebuild every layer")
+	cmd.Flags().BoolVar(&gui, "gui", false, "show each build VM's display in a native window")
 	cmd.Flags().StringVar(&agent, "agent", "", "disco-vm binary for the guest OS (default: this one)")
 	return cmd
 }

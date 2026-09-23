@@ -121,6 +121,13 @@ type InstallSpec struct {
 	// Options carries driver-specific settings the spec passes through
 	// untouched, such as a product key or a locale.
 	Options map[string]string
+	// CacheDir is the driver's to keep media it downloads (Media "latest")
+	// across installs, so a 20 GB restore image is fetched once. It may not
+	// exist yet.
+	CacheDir string
+	// GUI opens a window on the guest's display for every boot the install
+	// makes. Drivers without Display ignore it.
+	GUI bool
 	// Log receives human-readable install progress.
 	Log io.Writer
 }
@@ -155,8 +162,11 @@ type BootOptions struct {
 	CPUs   int
 	Memory uint64
 	Shares []Share
-	// GUI asks for the guest's display. Drivers without Display ignore it.
+	// GUI opens a native window on the guest's display for this boot, in the
+	// calling process. Drivers without Display ignore it.
 	GUI bool
+	// Title names the window.
+	Title string
 	// Console receives the driver's own log of the boot, not guest output.
 	Console io.Writer
 }

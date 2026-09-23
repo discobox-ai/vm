@@ -8,10 +8,16 @@ package main
 
 import (
 	"os"
+	"runtime"
 
 	"github.com/discobox-ai/vm/internal/cli"
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
+// The main goroutine keeps the main thread, which a driver's native window
+// needs (machine.Main).
+func init() { runtime.LockOSThread() }
+
 func main() {
-	os.Exit(cli.Main(os.Args[1:]))
+	os.Exit(machine.Main(func() int { return cli.Main(os.Args[1:]) }))
 }

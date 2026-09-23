@@ -35,6 +35,8 @@ type Options struct {
 	// Agent is the disco-vm binary for the guest, baked in at install. It
 	// defaults to this binary, which is right when guest and host OS match.
 	Agent string
+	// GUI shows every build VM's display in a window, in this process.
+	GUI bool
 }
 
 // Result is a finished build.
@@ -48,6 +50,8 @@ type Builder struct {
 	Engine *engine.Engine
 	// Out receives the build log and every step's output.
 	Out io.Writer
+
+	gui bool
 }
 
 func (b *Builder) logf(format string, args ...any) {
@@ -56,6 +60,10 @@ func (b *Builder) logf(format string, args ...any) {
 
 // Build runs a spec to completion and tags the result.
 func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
+	if err := b.Engine.CheckGUI(opts.GUI); err != nil {
+		return nil, err
+	}
+	b.gui = opts.GUI
 	spec, err := Load(opts.File)
 	if err != nil {
 		return nil, err
@@ -102,6 +110,7 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 	var install *Install
 	if spec.From.Install != nil {
 		in := *spec.From.Install
+		in.Options = expandMap(in.Options, args)
 		in.Media, in.Edition, in.Disk = expand(in.Media, args), expand(in.Edition, args), expand(in.Disk, args)
 		install = &in
 		guestOS = in.OS
@@ -214,6 +223,8 @@ func (b *Builder) install(ctx context.Context, p *Plan, in Install, contextDir, 
 		Memory:    p.Memory,
 		Agent:     agent,
 		Options:   in.Options,
+		CacheDir:  filepath.Join(b.Engine.Root, "cache", driver.Name()),
+		GUI:       b.gui,
 		Log:       b.Out,
 	}, pending.MachineLayer())
 	if err != nil {
@@ -236,7 +247,8 @@ func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, parent, key str
 	if err != nil {
 		return err
 	}
-	booted, err := e.Boot(ctx, inst, io.Discard)
+	boot := engine.BootOptions{Console: io.Discard, GUI: b.gui, Title: "disco-vm build: " + name + ": " + layer.Name}
+	booted, err := e.Boot(ctx, inst, boot)
 	if err != nil {
 		e.Discard(context.Background(), inst)
 		return fmt.Errorf("boot: %w", err)
@@ -264,7 +276,7 @@ func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, parent, key str
 			err = copyIn(stepCtx, booted.Guest, step.CopySrc, step.CopyDst)
 		case "reboot":
 			if err = booted.Shutdown(stepCtx, 10*time.Minute); err == nil {
-				booted, err = e.Boot(stepCtx, inst, io.Discard)
+				booted, err = e.Boot(stepCtx, inst, boot)
 			} else {
 				booted = nil
 			}
