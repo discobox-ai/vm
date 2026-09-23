@@ -1,0 +1,27 @@
+# A spec for the fake driver, to try the whole CLI with no hypervisor. The
+# fake driver's guest OS is always the host's, so this installs linux: run it
+# on Linux, where fake is the default driver, or change os to match your host.
+#
+#   disco-vm build -f examples/fake.yaml -t demo/app:v1
+#   disco-vm run --name dev demo/app:v1
+#   disco-vm exec dev cat greeting.txt
+#   disco-vm exec -it dev sh
+#   disco-vm warm --count 2 demo/app:v1   # the next two runs resume, then cold
+#   disco-vm warm --rm demo/app:v1
+#
+# The fake driver records the media and never reads it, so "latest" is enough;
+# the copy step copies this file, so the example needs nothing beside it.
+name: demo/app
+args:
+  MSG: hello
+from:
+  install:
+    os: linux
+    media: latest
+    disk: 1GiB
+shell: ["/bin/sh", "-c"]
+layers:
+  - name: files
+    steps:
+      - copy: {src: fake.yaml, dst: /opt/app}
+      - run: echo ${MSG} > greeting.txt
