@@ -10,6 +10,80 @@ design finding: raise it rather than work around it.
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=hcs` and a real image.
 3. `examples/windows.yaml` builds.
 
+## Status
+
+Implemented. On a Windows 11 Pro host (elevated, Virtual Machine Platform, no
+Hyper-V role needed) with a Windows 11 Pro 25H2 guest:
+
+- (1) passes: `DISCO_VM_HCS_BASE=<layer>\payload go test ./pkg/machine/hcs`
+  runs the whole suite, fork included, in about 45 s.
+- (2) passes: `DISCO_VM_DRIVER=hcs DISCO_VM_E2E_ROOT=<root>
+  DISCO_VM_E2E_ISO=<iso> go test ./internal/e2e` from an elevated shell. The
+  first run installs and tags `e2e/base` (about 15 min in all); later runs
+  reuse it. TestWarm takes its fork branch: a template never runs out.
+- (3) passes: `examples/windows.yaml` builds from the retail ISO (the 128 GiB
+  fixed disk alone takes over ten minutes to allocate), its OpenSSH step
+  downloads from Windows Update through the guest's NIC, and a second build
+  is fully cached.
+
+What building it found, beyond the recipes below:
+
+- **Clones are forked by the warm shim, not the instance's shim.** A template
+  can only be forked through the handle of the process that created it
+  (0xC0370400 otherwise, as sandboxi found). So the warm shim serves a named
+  pipe (admins and SYSTEM only); an instance shim's fork Boot sends the
+  clone's files and NIC, the warm shim creates, starts, and hot-adds the NIC on
+  its own handle, the instance shim opens the clone by ID, and the warm shim
+  lets go. The clone then belongs to the instance shim like any other VM.
+- **A clone differences over the template's disk**, whose memory it forks. The
+  template's disk is frozen with it, and each clone hard-links it into its own
+  directory, so a stopped clone still boots (cold) after the image is cooled.
+- **Cooling a template did not end its running clones** here, contrary to
+  sandboxi's note. They kept running and shut down in order afterwards.
+- **`ShouldTerminateOnLastHandleClosed: true`.** Each VM lives exactly as long
+  as the shim holding its handle, so a crashed shim cannot orphan a system and
+  no orphan sweep is needed.
+- **Every VM gets a NIC** on an HNS network of the driver's own (`disco-vm`,
+  ICS, Flags 35, as sandboxi measured), since the example builds download.
+  An instance asks for the same MAC on every boot.
+- **Commit moves the disk, then rewrites its parent locator**
+  (`SetVirtualDiskInformation`, parent path with depth), so a move across
+  directories cannot break the chain. A fork clone cannot be committed; the
+  builder always clones cold.
+- **Install waits for Setup through the agent**, which starts during Setup:
+  `ImageState` reaching `IMAGE_STATE_COMPLETE`, then `explorer.exe` for the
+  automatic logon, then OOBE's completion (the `OOBECompleteTimestamp` value
+  under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE\OOBECompleteTimestamp`),
+  then a minute to settle. The desktop is not the end of OOBE: at the first
+  networked logon it installs a Zero Day Patch and reboots
+  (`CloudExperienceHostBroker`, event 1074). A base cut before that made every
+  instance reboot itself a minute or ten after starting, which killed the
+  `examples/windows.yaml` build mid-step. Windows Update policy does not stop
+  it; waiting for it does.
+- **Run as user is LogonUser**, with the blank password Install's unattend
+  gives the account (`LimitBlankPasswordUse` is turned off in the offline
+  hive), the linked elevated token, the profile loaded, and the account
+  granted the agent's window station and desktop (without which anything that
+  loads user32 fails with 0xC0000142).
+- **Display is the VM's basic video console**, as sandboxi proved: every
+  document has `VideoMonitor` (with `ConnectionOptions` naming a pipe per VM
+  and the current user's SID), `Keyboard` and `Mouse`, so a template and its
+  clones agree on devices. A fork clone restores fine with its own console
+  pipe. With `BootOptions.GUI` the driver relays a loopback port to the pipe
+  and opens `mstsc` on it, titled `BootOptions.Title` (standard RDP security
+  only, so CredSSP is off in the `.rdp` file); the window closes when the VM
+  stops, and closing it leaves the VM running. `InstallSpec.GUI` shows the
+  install's first boot, Windows Setup included. Checked through the CLI:
+  `run --gui` and `start --gui` (window in the shim; a plain `start` opens
+  none), a fork clone with `--gui`, and `build --gui` with a reboot step (one
+  window per boot, never two at once, none left after). `TestConsole` checks the console answers RDP on a cold VM and
+  a fork clone. Not checked by a machine: the pixels after clicking through
+  mstsc's warning about the unsigned `.rdp` file, which sandboxi did by hand.
+- **A TTY session ignores end of input.** The client closes stdin when it has
+  none, and for a terminal that closed the whole pseudo console before the
+  process started (0xC0000142 again). This was a neutral server bug; on Unix it
+  hung up the pty.
+
 Add `pkg/machine/hcs/hcs_test.go`, gated on an env var naming a base layer (so
 CI skips it), that calls `machinetest.Run` with `Config.Base`. That way an OS
 install isn't redone on every run.
@@ -153,6 +227,6 @@ HCS cold-booted instead. Don't promise `resume` on hcs.
 
 | | time |
 |---|---|
-| first boot, full Setup | 4.6 min |
-| boot from a captured disk | about 37 s to desktop |
-| fork a clone | about 1 s (0.44–0.86 s raw) |
+| first boot, full Setup | 4.6 min (sandboxi); 3.9–5.5 min to a settled desktop (disco-vm) |
+| boot from a captured disk | about 37 s to desktop; `run` to the agent answering in 5.8 s |
+| fork a clone | about 1 s (0.44–0.86 s raw); `run` to the agent in 3.5–9 s with six VMs up |

@@ -53,7 +53,7 @@ is a `Capabilities` field, never a faked method:
 | clone modes | cold, **fork** (live template, many clones, about 1s) | cold, **resume** (saved state, once per identity) | cold, resume (pre-copied roots) |
 | max running | none | **2 macOS guests** (framework limit) | none |
 | shared dirs | (Plan9, later) | virtiofs | no |
-| display | guestfb over hvsocket | framework view | no |
+| display | video console in mstsc (guestfb over hvsocket, later) | framework view | no |
 
 The engine enforces `MaxRunning`. `--mode fork|resume` is refused where it is
 unsupported. A fast mode also needs a warm image (decision 7), so it is a
@@ -190,12 +190,12 @@ forced off fails the build rather than caching a disk with unflushed writes.
 
 | | fake (all OSes, CI) | hcs | vz |
 |---|---|---|---|
-| machine conformance suite (`pkg/machine/machinetest`) | ✅ | ⬜ | ⬜ |
-| e2e CLI lifecycle (`internal/e2e`) | ✅ | ⬜ | ⬜ |
-| agent: exec, files, shutdown, info | ✅ | ⬜ in-guest | ⬜ in-guest |
-| agent: TTY | ✅ unix | ⬜ ConPTY | ✅ unix |
-| agent: run as user | ✅ unix | ⬜ | ✅ unix |
-| warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ⬜ fork | ⬜ resume |
+| machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ⬜ |
+| e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ⬜ |
+| agent: exec, files, shutdown, info | ✅ | ✅ in-guest | ⬜ in-guest |
+| agent: TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ unix |
+| agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ unix |
+| warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ⬜ resume |
 
 A platform driver is done when `machinetest.Run` passes against it on real
 hardware and `internal/e2e` passes with `DISCO_VM_DRIVER` set to it. See
