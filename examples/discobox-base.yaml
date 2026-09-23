@@ -1,0 +1,87 @@
+# The discobox base image: the toolchains a coding agent expects, installed on
+# both guest OSes, so bringing your own agent (npm i -g, a Go binary, a Python
+# tool) never needs an OS image rebuild.
+#
+# One spec builds both. The base decides the guest OS, and `when` picks the
+# steps that apply:
+#
+#   disco-vm build -f examples/discobox-base.yaml --build-arg OS_IMAGE=discobox/windows:11
+#   disco-vm build -f examples/discobox-base.yaml --build-arg OS_IMAGE=discobox/macos:26
+#
+# Layers are ordered from least to most frequently changed, because a layer
+# boundary is a full guest shutdown and commit: bumping NODE_VERSION rebuilds
+# the toolchains layer and everything after it, never the package managers.
+#
+# UNVALIDATED: the steps below are the intended recipe, not yet run in a guest.
+name: discobox/base
+tag: ${VERSION}
+args:
+  VERSION: "2026.09"
+  OS_IMAGE: discobox/windows:11
+  MAC_USER: admin
+  NODE_VERSION: "22.20.0"
+  GO_VERSION: "1.26.1"
+  PYTHON_VERSION: "3.13.7"
+  GIT_VERSION: "2.51.0"
+from:
+  image: ${OS_IMAGE}
+layers:
+  - name: package-managers
+    steps:
+      # Homebrew refuses to run as root, and its installer wants sudo. The
+      # build user gets passwordless sudo for this layer only.
+      - name: build-time sudo
+        when: {os: darwin}
+        run: |
+          echo '${MAC_USER} ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/disco-vm-build
+          chmod 0440 /etc/sudoers.d/disco-vm-build
+      - name: Xcode command line tools
+        when: {os: darwin}
+        run: |
+          touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
+          product=$(softwareupdate -l | sed -n 's/^\* Label: \(Command Line Tools.*\)$/\1/p' | tail -1)
+          softwareupdate -i "$product" --verbose
+      - name: Homebrew
+        when: {os: darwin}
+        user: ${MAC_USER}
+        run: |
+          NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+      - name: Nix
+        when: {os: darwin}
+        run: curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm
+      - name: drop build-time sudo
+        when: {os: darwin}
+        run: rm -f /etc/sudoers.d/disco-vm-build
+
+  - name: toolchains
+    steps:
+      - name: git, node, go, python (brew)
+        when: {os: darwin}
+        user: ${MAC_USER}
+        run: brew install git gh node@22 go python@3.13 uv ripgrep jq fd
+      # winget does not work as SYSTEM, so Windows installs from the vendors'
+      # own installers. Every installer's exit code is checked.
+      - name: git, node, go, python (installers)
+        when: {os: windows}
+        run: |
+          $dl = New-Item -ItemType Directory -Force C:\disco-vm\downloads
+          function Install($url, $file, $argv) {
+            Invoke-WebRequest $url -OutFile "$dl\$file"
+            $p = Start-Process -Wait -PassThru -FilePath $argv[0] -ArgumentList ($argv[1..($argv.Length-1)] -replace '%f', "$dl\$file")
+            if ($p.ExitCode -ne 0) { throw "$file exited $($p.ExitCode)" }
+          }
+          Install "https://github.com/git-for-windows/git/releases/download/v${GIT_VERSION}.windows.1/Git-${GIT_VERSION}-64-bit.exe" git.exe @("$dl\git.exe", "/VERYSILENT", "/NORESTART")
+          Install "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-x64.msi" node.msi @("msiexec.exe", "/i", "%f", "/qn", "/norestart")
+          Install "https://go.dev/dl/go${GO_VERSION}.windows-amd64.msi" go.msi @("msiexec.exe", "/i", "%f", "/qn", "/norestart")
+          Install "https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-amd64.exe" python.exe @("$dl\python.exe", "/quiet", "InstallAllUsers=1", "PrependPath=1")
+          Remove-Item -Recurse -Force $dl
+      # A new step is a new process, and the agent builds its environment
+      # from the registry each time, so PATH already has what was installed.
+      - name: check
+        when: {os: windows}
+        run: git --version; node --version; go version; python --version
+      - name: check
+        when: {os: darwin}
+        user: ${MAC_USER}
+        run: git --version && node --version && go version && python3 --version && nix --version

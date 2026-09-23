@@ -1,0 +1,33 @@
+# The macOS OS image: Apple's restore image (IPSW), installed by
+# Virtualization.framework, with the disco-vm agent baked in by the vz driver
+# as a root launchd daemon.
+#
+#   disco-vm build -f examples/macos.yaml
+#
+# media: latest asks the framework for the newest restore image this Mac
+# supports (~20 GB, cached); a path to a local .ipsw pins one.
+name: discobox/macos
+tag: "26"
+args:
+  USER: admin
+from:
+  install:
+    os: darwin
+    media: latest
+    disk: 128GiB
+    options:
+      # The account macOS 27+ guest provisioning creates on first boot, in place
+      # of Setup Assistant. The vz driver owns how this is passed and how the
+      # agent gets onto the disk; see docs/drivers/vz.md.
+      username: ${USER}
+      autologin: "true"
+resources:
+  cpus: 4
+  memory: 8GiB
+layers:
+  - name: system
+    steps:
+      - name: never sleep, allow ssh
+        run: |
+          pmset -a sleep 0 displaysleep 0 disksleep 0
+          systemsetup -setremotelogin on
