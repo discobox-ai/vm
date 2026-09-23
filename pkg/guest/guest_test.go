@@ -169,3 +169,19 @@ func TestInfo(t *testing.T) {
 		t.Fatalf("info = %+v", info)
 	}
 }
+
+// A TTY session sees a terminal (a pty on Unix, ConPTY on Windows), carries
+// the process's output, ends when the process does, and reports its exit.
+func TestExecTTY(t *testing.T) {
+	client, _ := startAgent(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	code, err := client.Run(ctx, ExecRequest{Argv: shell("echo tty-hello&& exit 5"), TTY: true, Rows: 30, Cols: 100}, nil, &out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 5 || !strings.Contains(out.String(), "tty-hello") {
+		t.Fatalf("code=%d output=%q", code, out.String())
+	}
+}

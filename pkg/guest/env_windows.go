@@ -19,6 +19,15 @@ func processEnv() []string {
 		return os.Environ()
 	}
 	defer windows.DestroyEnvironmentBlock(block)
+	env := parseEnvironmentBlock(block)
+	if len(env) == 0 {
+		return os.Environ()
+	}
+	return env
+}
+
+// parseEnvironmentBlock reads a block CreateEnvironmentBlock made.
+func parseEnvironmentBlock(block *uint16) []string {
 	var env []string
 	for p := unsafe.Pointer(block); ; {
 		entry := windows.UTF16PtrToString((*uint16)(p))
@@ -27,9 +36,6 @@ func processEnv() []string {
 		}
 		env = append(env, entry)
 		p = unsafe.Add(p, (len(windows.StringToUTF16(entry)))*2)
-	}
-	if len(env) == 0 {
-		return os.Environ()
 	}
 	return env
 }

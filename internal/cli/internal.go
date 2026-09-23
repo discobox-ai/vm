@@ -38,7 +38,7 @@ func guestCommand() *cobra.Command {
 				}
 			}
 			server := &guest.Server{Version: Version, Root: root, Fake: fake}
-			return server.Serve(listener)
+			return guest.RunAgent(func() error { return server.Serve(listener) }, func() { _ = listener.Close() })
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", fmt.Sprintf("vsock:%d", guest.AgentPort), "listen address (vsock:PORT or tcp:ADDR)")

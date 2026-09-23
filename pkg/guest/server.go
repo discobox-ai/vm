@@ -192,11 +192,13 @@ func (s *Server) runSession(conn net.Conn, in *bufio.Reader, req ExecRequest) {
 	cmd.Dir = s.resolve(req.Dir)
 	var login []string
 	if req.User != "" {
+		var release func()
 		var err error
-		if login, err = runAs(cmd, req.User); err != nil {
+		if login, release, err = runAs(cmd, req.User); err != nil {
 			_ = out.send(FrameError, []byte(err.Error()))
 			return
 		}
+		defer release()
 	}
 	// The request's env comes last, so it can override the login's.
 	base := os.Environ()
@@ -270,7 +272,11 @@ func (s *Server) runSession(conn net.Conn, in *bufio.Reader, req ExecRequest) {
 			case FrameStdin:
 				_, _ = stdin.Write(payload)
 			case FrameStdinEOF:
-				_ = stdin.Close()
+				// A terminal has no end of input, and closing it would end
+				// the session: a TTY session ends when its process does.
+				if !req.TTY {
+					_ = stdin.Close()
+				}
 			case FrameResize:
 				if resize != nil && len(payload) == 4 {
 					_ = resize(uint16(payload[0])<<8|uint16(payload[1]), uint16(payload[2])<<8|uint16(payload[3]))
