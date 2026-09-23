@@ -96,7 +96,7 @@ merge/copy it.
 system, terminate it by ID first. A crashed shim can orphan a registered
 system, so do an orphan sweep in Check or at shim start.
 
-## Fork (CloneMode "fork")
+## Fork (CloneMode "fork"), through machine.Warmer
 
 This is the live-template model. Boot a template from the image, wait for the
 agent, then call `HcsSaveComputeSystem` with `{"SaveType":"AsTemplate"}`
@@ -104,13 +104,31 @@ agent, then call `HcsSaveComputeSystem` with `{"SaveType":"AsTemplate"}`
 are then created with `RestoreState.TemplateSystemId`. That measured 0.44–0.86 s
 create+start, about 1 s per clone end to end.
 
-- The template must stay resident in the process that created it. In disco-vm
-  that is a **template shim**: an instance whose shim holds the frozen template
-  and forks clones on request.
-- Suggested shape: `disco-vm run --mode fork IMAGE` finds or starts the
-  image's template shim and asks it over its control API.
-- Keep the design question open. If it needs an engine change, propose one.
+It fits the seam as `machine.Warmer` (design decision 7):
+
+- **Warm(spec):** boot the template from `spec.Chain` at `spec.CPUs` and
+  `spec.Memory`, wait for the agent, and freeze it. Return a `machine.Stage`
+  that owns it. The template must stay resident in the process that created
+  it, and the engine already runs Warm in a **warm shim** (`disco-vm shim
+  --warm <layer>`) that holds the Stage until `warm --rm`. Write whatever a
+  clone needs to find the template (its system ID) into `spec.Dir`. Ignore
+  `spec.Count`: one template serves any number of clones.
+- **Warmth(spec):** `{Fork, -1}` while the template system exists and is
+  frozen, and zero otherwise, such as after the warm shim crashed.
+- **Prepare(inst) with Mode fork:** create the clone's disk the way a cold
+  Prepare does, and read the template's ID from `inst.WarmDir`. Return
+  `machine.ErrNotWarm` if the template is gone. The engine then clones cold
+  when the mode was auto.
+- **Boot(inst) with Mode fork:** create the compute system with
+  `RestoreState.TemplateSystemId`. It belongs to vmcompute, not the warm shim,
+  so the instance's shim can own it like any other VM. Only the first boot
+  after Prepare forks. A later start of the same instance is cold.
+- **Stage.Close / Cool(spec):** terminate the template system, then remove
+  what Warm wrote.
 - `AsTemplate` needs commit headroom and fails with 0x800705AA otherwise.
+  Surface that from Warm with the fix in the message.
+- Proof: the `warm` subtest of `machinetest.Run` forks a clone of a warmed
+  committed layer and checks it sees the layer's writes.
 
 Suspend-to-disk (save a `.vmrs`, then restore) did **not** work on image VMs:
 HCS cold-booted instead. Don't promise `resume` on hcs.

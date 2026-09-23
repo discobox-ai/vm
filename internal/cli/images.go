@@ -58,7 +58,7 @@ func imagesCommand(g *globals) *cobra.Command {
 		Use:   "images",
 		Short: "List images",
 		Args:  cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			e, err := g.engine()
 			if err != nil {
 				return err
@@ -68,9 +68,13 @@ func imagesCommand(g *globals) *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "IMAGE\tLAYER\tOS\tDRIVER\tCREATED")
+			fmt.Fprintln(w, "IMAGE\tLAYER\tOS\tDRIVER\tWARM\tCREATED")
 			for _, img := range images {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", img.Ref, image.Short(img.Layer.ID), img.Layer.GuestOS, img.Layer.Driver, ago(img.Layer.Created))
+				warm := "-"
+				if e.IsWarm(img.Layer.ID) {
+					warm = describeWarmth(e.Warmth(cmd.Context(), img.Layer.ID))
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", img.Ref, image.Short(img.Layer.ID), img.Layer.GuestOS, img.Layer.Driver, warm, ago(img.Layer.Created))
 			}
 			return w.Flush()
 		},
@@ -88,6 +92,11 @@ func rmiCommand(g *globals) *cobra.Command {
 				return err
 			}
 			for _, ref := range args {
+				// A stage holds memory or disk the user asked for; dropping
+				// it is its own decision.
+				if id, err := e.Images.Resolve(ref); err == nil && e.IsWarm(id) {
+					return fmt.Errorf("image %s is warm; `disco-vm warm --rm %s` first", ref, ref)
+				}
 				removed, err := e.Images.Remove(cmd.Context(), ref, e.Driver, e.LayerInUse)
 				if err != nil {
 					return err

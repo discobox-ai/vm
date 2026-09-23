@@ -51,11 +51,13 @@ func guestCommand() *cobra.Command {
 	return cmd
 }
 
-// shimCommand is one instance's supervisor, started by `start` and `run`.
+// shimCommand is one instance's supervisor, started by `start` and `run`, or
+// with --warm one image's stage, started by `warm`.
 func shimCommand(g *globals) *cobra.Command {
-	return &cobra.Command{
-		Use:    "shim INSTANCE",
-		Short:  "Own one running instance (started by disco-vm itself)",
+	var warm bool
+	cmd := &cobra.Command{
+		Use:    "shim INSTANCE | shim --warm LAYER",
+		Short:  "Own one running instance or warm stage (started by disco-vm itself)",
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -63,7 +65,12 @@ func shimCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if warm {
+				return e.RunWarmShim(cmd.Context(), args[0])
+			}
 			return e.RunShim(cmd.Context(), args[0])
 		},
 	}
+	cmd.Flags().BoolVar(&warm, "warm", false, "stage LAYER and hold the stage")
+	return cmd
 }

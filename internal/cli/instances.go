@@ -29,7 +29,7 @@ func (f *createFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.name, "name", "", "instance name (default: its ID)")
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "vCPUs (default: the driver's)")
 	cmd.Flags().StringVar(&f.memory, "memory", "", "memory, e.g. 8GiB (default: the driver's)")
-	cmd.Flags().StringVar(&f.mode, "mode", "cold", "clone mode: cold, resume (vz), or fork (hcs)")
+	cmd.Flags().StringVar(&f.mode, "mode", string(machine.Auto), "clone mode: auto (what the image is warm for, else cold), cold, resume (vz), or fork (hcs)")
 }
 
 func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) (*engine.Instance, error) {
@@ -195,13 +195,13 @@ func psCommand(g *globals) *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tNAME\tIMAGE\tOS\tSTATE\tCREATED")
+			fmt.Fprintln(w, "ID\tNAME\tIMAGE\tOS\tMODE\tSTATE\tCREATED")
 			for _, inst := range instances {
 				state := e.State(cmd.Context(), inst)
 				if state != engine.Running && !all {
 					continue
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", inst.ID, inst.Name, inst.Image, inst.GuestOS, state, ago(inst.Created))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", inst.ID, inst.Name, inst.Image, inst.GuestOS, inst.Mode, state, ago(inst.Created))
 			}
 			return w.Flush()
 		},

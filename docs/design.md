@@ -50,13 +50,14 @@ is a `Capabilities` field, never a faked method:
 | capability | hcs | vz | fake |
 |---|---|---|---|
 | guest OS | windows | darwin | host's |
-| clone modes | cold, **fork** (live template, many clones, about 1s) | cold, **resume** (saved state, once per identity) | cold |
+| clone modes | cold, **fork** (live template, many clones, about 1s) | cold, **resume** (saved state, once per identity) | cold, resume (pre-copied roots) |
 | max running | none | **2 macOS guests** (framework limit) | none |
 | shared dirs | (Plan9, later) | virtiofs | no |
 | display | guestfb over hvsocket | framework view | no |
 
 The engine enforces `MaxRunning`. `--mode fork|resume` is refused where it is
-unsupported.
+unsupported. A fast mode also needs a warm image (decision 7), so it is a
+property of an image on this host, not only of the driver.
 
 ### 3. Ports, not GUIDs
 
@@ -106,7 +107,8 @@ VM belongs to vmcompute. A **shim per VM** makes both look the same:
   through the shim. A crash is contained to one VM.
 
 HCS's live-template fork needs something to hold the template. That is a shim
-too (a template instance), not a special daemon.
+too, a **warm shim** (`disco-vm shim --warm <layer>`), not a special daemon. See
+decision 7.
 
 ### 6. The image store is the build cache
 
@@ -123,6 +125,50 @@ keys instead of overwriting. Tags (`tags.json`) name layers. `rmi` untags, then
 deletes layers that nothing else tags, parents, or runs, as `docker rmi` does.
 A layer is written under a temporary name and renamed into place, so a crash
 never leaves a half-layer under a real ID.
+
+### 7. Fast clones come from warm images, and auto falls back to cold
+
+Neither fast mode works from a committed layer alone. A resume needs saved
+machine states, and a fork needs a live template frozen in memory. So staging
+is its own step, and each image on each host is either warm or cold:
+
+```
+disco-vm warm IMAGE [--count N] [--cpus N] [--memory SIZE]
+disco-vm warm --rm IMAGE
+```
+
+- **The driver picks how to stage** (`machine.Warmer`). hcs freezes one
+  template that forks any number of clones (`Warmth.Clones` is -1). vz saves
+  `--count` states that are each resumed once, because a saved state carries
+  its machine identity. `warm` on a warm image tops a used stage back up to
+  `--count`.
+- **`--mode auto` is the default** for `run` and `create`. It picks the mode
+  the image is warm for, and cold when the stage is used up, missing, stale, or
+  sized differently from the request (a clone runs at its stage's CPUs and
+  memory). A stage that disappears between choosing and taking (`ErrNotWarm`
+  from Prepare) also falls back to cold. The instance records the mode it
+  actually got, and `ps` shows it. An explicit `--mode fork|resume` is strict:
+  it fails, and says to run `warm`.
+- **Staging is explicit, never a side effect of `run`.** Making a stage costs
+  a full cold boot, so the run that triggered it would gain nothing. A stage
+  also holds real resources: a template holds its VM's memory for as long as
+  it lives, and a saved state is memory-sized on disk. `images` shows what each
+  image has staged, and `rmi` refuses a warm image until it is cooled.
+- **A stage is not a layer.** A layer is immutable and its ID is a content
+  hash. A stage is tied to this host, can go stale (a host OS update
+  invalidates vz states), and is used up by clones. It lives in
+  `warm/<layer>/` (`warm.json` plus the driver's `machine/`), and drivers see
+  it as `WarmSpec.Dir` and `InstanceSpec.WarmDir`.
+- **Warming runs in a warm shim.** A resident stage must stay in the process
+  that made it, so `warm` spawns `disco-vm shim --warm <layer>`. A stage on
+  disk (vz, fake) lets the shim exit once it is written. A resident one (hcs)
+  keeps the shim serving `/status` and `/stop` until `warm --rm`.
+- **The builder always clones cold.** A build starts from exactly the
+  committed disk, and it must not spend stages meant for instances.
+
+Later, and not built yet: refilling a resume pool as clones use it, `run
+--warm` (boot cold now, stage in the background), `build --warm`, and an idle
+TTL for templates.
 
 ## The build spec
 
@@ -149,6 +195,7 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | agent: exec, files, shutdown, info | ✅ | ⬜ in-guest | ⬜ in-guest |
 | agent: TTY | ✅ unix | ⬜ ConPTY | ✅ unix |
 | agent: run as user | ✅ unix | ⬜ | ✅ unix |
+| warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ⬜ fork | ⬜ resume |
 
 A platform driver is done when `machinetest.Run` passes against it on real
 hardware and `internal/e2e` passes with `DISCO_VM_DRIVER` set to it. See

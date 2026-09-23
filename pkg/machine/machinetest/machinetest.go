@@ -6,17 +6,21 @@
 // contract the engine relies on: a layer can be installed, cloned, booted, and
 // reached; the guest agent answers on AgentPort; an orderly shutdown through
 // the agent stops the machine; a committed layer carries its writes to clones
-// of it and to no one else; clones run side by side; Kill always works.
+// of it and to no one else; clones run side by side; a warm image serves the
+// fast clone modes the driver lists; Kill always works.
 package machinetest
 
 import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +175,87 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		if _, err := siblingC.CopyFrom(ctx, marker+"/proof.txt"); err == nil {
 			t.Fatal("a clone of the base saw a write committed to another layer")
+		}
+	})
+
+	// A driver that clones in a faster mode than cold stages an image for it,
+	// and its clones carry the image's writes.
+	t.Run("warm", func(t *testing.T) {
+		fast := slices.DeleteFunc(slices.Clone(caps.CloneModes), func(m machine.CloneMode) bool { return m == machine.Cold })
+		if len(fast) == 0 {
+			t.Skip("the driver clones cold only")
+		}
+		warmer, ok := driver.(machine.Warmer)
+		if !ok {
+			t.Fatalf("the driver offers %v clones but does not implement machine.Warmer", fast)
+		}
+		spec := machine.WarmSpec{
+			GuestOS: guestOS, Chain: []machine.Layer{*base, committed}, Dir: filepath.Join(work, "warm"),
+			Count: 2, CPUs: cfg.Boot.CPUs, Memory: cfg.Boot.Memory,
+		}
+		if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if w, err := warmer.Warmth(ctx, spec); err != nil || w.Clones != 0 {
+			t.Fatalf("an image never warmed reports %+v, %v", w, err)
+		}
+		warmCtx, cancel := context.WithTimeout(ctx, time.Duration(spec.Count+1)*cfg.Timeout)
+		stage, err := warmer.Warm(warmCtx, spec)
+		cancel()
+		if err != nil {
+			t.Fatalf("warm: %v", err)
+		}
+		if stage != nil {
+			t.Cleanup(func() { _ = stage.Close(context.Background()) })
+		}
+		w, err := warmer.Warmth(ctx, spec)
+		if err != nil || !slices.Contains(fast, w.Mode) || w.Clones == 0 {
+			t.Fatalf("a warmed image reports %+v, %v; want one of %v", w, err, fast)
+		}
+
+		inst := instance("warm-1", *base, committed)
+		inst.Mode, inst.WarmDir = w.Mode, spec.Dir
+		if err := driver.Prepare(ctx, inst); err != nil {
+			t.Fatalf("prepare %s: %v", w.Mode, err)
+		}
+		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+		m, client := boot(t, inst)
+		if got := readMarker(t, client, marker+"/proof.txt"); got != "committed" {
+			t.Fatalf("a %s clone of the committed layer reads %q", w.Mode, got)
+		}
+		_ = m.Kill(ctx)
+
+		// A stage used once per clone runs out, and says so.
+		if w.Clones > 0 {
+			for i := 2; i <= w.Clones; i++ {
+				used := instance(fmt.Sprintf("warm-%d", i), *base, committed)
+				used.Mode, used.WarmDir = w.Mode, spec.Dir
+				if err := driver.Prepare(ctx, used); err != nil {
+					t.Fatalf("prepare %s clone %d of %d: %v", w.Mode, i, w.Clones, err)
+				}
+				t.Cleanup(func() { _ = driver.Destroy(context.Background(), used) })
+			}
+			if left, err := warmer.Warmth(ctx, spec); err != nil || left.Clones != 0 {
+				t.Fatalf("after %d clones the stage reports %+v, %v", w.Clones, left, err)
+			}
+			extra := instance("warm-extra", *base, committed)
+			extra.Mode, extra.WarmDir = w.Mode, spec.Dir
+			if err := driver.Prepare(ctx, extra); !errors.Is(err, machine.ErrNotWarm) {
+				t.Fatalf("prepare from a used-up stage: %v, want ErrNotWarm", err)
+			}
+			_ = driver.Destroy(ctx, extra)
+		}
+
+		if stage != nil {
+			if err := stage.Close(ctx); err != nil {
+				t.Fatalf("close stage: %v", err)
+			}
+		}
+		if err := warmer.Cool(ctx, spec); err != nil {
+			t.Fatalf("cool: %v", err)
+		}
+		if left, err := warmer.Warmth(ctx, spec); err != nil || left.Clones != 0 {
+			t.Fatalf("a cooled image reports %+v, %v", left, err)
 		}
 	})
 

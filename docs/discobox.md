@@ -24,7 +24,7 @@ disco-vm is one implementation of that interface, with one VM per sandbox.
 
 | 0126 backend operation | disco-vm |
 |---|---|
-| create | `engine.Create(image, {Name: sandboxID, Mode})`, then `Start` |
+| create | `engine.Create(image, {Name: sandboxID})`, then `Start`; an empty Mode is auto, so a pool warmed with `engine.Warm` makes creates fast and falls back to cold when it is used up |
 | inspect / list | `engine.Get` / `List` and `State`; instance names carry the sandbox ID, so a lost create response is recovered by name, never duplicated |
 | start / stop | `engine.Start` / `Stop` (orderly, through the guest agent) |
 | delete | `engine.Remove(force)` |

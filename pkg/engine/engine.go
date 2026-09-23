@@ -130,18 +130,25 @@ func (e *Engine) machineSpec(inst *Instance) (machine.InstanceSpec, error) {
 	if err != nil {
 		return machine.InstanceSpec{}, err
 	}
-	return machine.InstanceSpec{
+	spec := machine.InstanceSpec{
 		ID:      inst.ID,
 		Dir:     filepath.Join(e.instanceDir(inst.ID), "machine"),
 		GuestOS: inst.GuestOS,
 		Chain:   chain,
 		Mode:    inst.Mode,
-	}, nil
+	}
+	if inst.Mode != machine.Cold {
+		spec.WarmDir = e.warmMachineDir(inst.Layer)
+	}
+	return spec, nil
 }
 
 // CreateOptions describes a new instance.
 type CreateOptions struct {
-	Name      string
+	Name string
+	// Mode is how to clone the image. Empty means machine.Auto: the fastest
+	// mode the image is warm for, else cold. A fast mode named explicitly
+	// fails when the image is not warm for it.
 	Mode      machine.CloneMode
 	CPUs      int
 	Memory    uint64
@@ -161,12 +168,9 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 	if layer.Driver != e.Driver.Name() {
 		return nil, fmt.Errorf("image %s was built for driver %s, not %s", ref, layer.Driver, e.Driver.Name())
 	}
-	caps := e.Driver.Capabilities()
-	if opts.Mode == "" {
-		opts.Mode = machine.Cold
-	}
-	if !caps.SupportsMode(opts.Mode) {
-		return nil, fmt.Errorf("driver %s cannot clone in %s mode: %w", e.Driver.Name(), opts.Mode, machine.ErrUnsupported)
+	mode, err := e.cloneMode(ctx, ref, layerID, opts)
+	if err != nil {
+		return nil, err
 	}
 	id := fsutil.RandomHex(6)
 	name := opts.Name
@@ -177,7 +181,7 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 	}
 	inst := &Instance{
 		ID: id, Name: name, Image: ref, Layer: layerID,
-		Driver: e.Driver.Name(), GuestOS: layer.GuestOS, Mode: opts.Mode,
+		Driver: e.Driver.Name(), GuestOS: layer.GuestOS, Mode: mode,
 		CPUs: opts.CPUs, Memory: opts.Memory,
 		Created: time.Now().UTC(), Temporary: opts.Temporary,
 	}
@@ -186,6 +190,13 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 	}
 	spec, err := e.machineSpec(inst)
 	if err == nil {
+		err = e.Driver.Prepare(ctx, spec)
+	}
+	if errors.Is(err, machine.ErrNotWarm) && (opts.Mode == "" || opts.Mode == machine.Auto) {
+		// The stage went between asking and taking (another clone took the
+		// last one, or it was stale), and auto means whatever is fastest now.
+		_ = e.Driver.Destroy(ctx, spec)
+		inst.Mode, spec.Mode, spec.WarmDir = machine.Cold, machine.Cold, ""
 		err = e.Driver.Prepare(ctx, spec)
 	}
 	if err == nil {
@@ -308,7 +319,7 @@ func (e *Engine) Start(ctx context.Context, inst *Instance, opts StartOptions) e
 		return err
 	}
 	defer logFile.Close()
-	exited, err := spawnShim(e.Exe, e.Root, e.Driver.Name(), inst.ID, logFile)
+	exited, err := spawnShim(e.Exe, e.Root, e.Driver.Name(), []string{inst.ID}, logFile)
 	if err != nil {
 		return err
 	}

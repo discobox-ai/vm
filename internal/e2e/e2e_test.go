@@ -207,3 +207,87 @@ func TestInfo(t *testing.T) {
 	e := env{t: t, root: t.TempDir()}
 	mustContain(t, e.ok("info"), "driver:   fake", "check:    ok", "fake")
 }
+
+// A warm image serves clones from its stage until it is used up, then auto
+// falls back to cold and an explicit fast mode says to warm again.
+func TestWarm(t *testing.T) {
+	e := env{t: t, root: t.TempDir()}
+	contextDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(contextDir, "greeting.txt"), []byte("warm hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := fmt.Sprintf(`
+name: test/warm
+from:
+  install: {os: %s, media: latest}
+layers:
+  - name: files
+    steps:
+      - copy: {src: greeting.txt, dst: /}
+`, runtime.GOOS)
+	specPath := filepath.Join(contextDir, "disco-vm.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.ok("build", "-f", specPath)
+	mode := func(name string) string {
+		t.Helper()
+		out := e.ok("inspect", name)
+		for _, m := range []string{"cold", "resume", "fork"} {
+			if strings.Contains(out, `"mode": "`+m+`"`) {
+				return m
+			}
+		}
+		t.Fatalf("inspect %s shows no mode:\n%s", name, out)
+		return ""
+	}
+
+	// Cold until warmed.
+	e.ok("run", "--name", "before", "test/warm")
+	if got := mode("before"); got != "cold" {
+		t.Fatalf("an instance of a cold image cloned %s", got)
+	}
+	if _, code := e.run("run", "--mode", "resume", "test/warm"); code == 0 {
+		t.Fatal("a resume clone of an image never warmed was allowed")
+	}
+
+	mustContain(t, e.ok("warm", "--count", "2", "test/warm"), "warm, 2 resume clones")
+	mustContain(t, e.ok("images"), "2 resume clones")
+	e.ok("run", "--name", "one", "test/warm")
+	e.ok("run", "--name", "two", "--mode", "resume", "test/warm")
+	for _, name := range []string{"one", "two"} {
+		if got := mode(name); got != "resume" {
+			t.Fatalf("instance %s of a warm image cloned %s", name, got)
+		}
+		mustContain(t, e.ok(append([]string{"exec", name}, catArgv("greeting.txt")...)...), "warm hello")
+	}
+	mustContain(t, e.ok("ps"), "resume")
+
+	// Used up: auto boots cold, and resume says to warm again.
+	e.ok("run", "--name", "after", "test/warm")
+	if got := mode("after"); got != "cold" {
+		t.Fatalf("an instance of a used-up stage cloned %s", got)
+	}
+	out, code := e.run("run", "--mode", "resume", "test/warm")
+	if code == 0 {
+		t.Fatal("a resume clone of a used-up stage was allowed")
+	}
+	mustContain(t, out, "disco-vm warm test/warm")
+
+	// Warming again tops the stage up.
+	mustContain(t, e.ok("warm", "test/warm"), "1 resume clone")
+
+	// A warm image is not deleted out from under its stage.
+	e.ok("rm", "-f", "before", "one", "two", "after")
+	if _, code := e.run("rmi", "test/warm"); code == 0 {
+		t.Fatal("rmi deleted a warm image")
+	}
+	mustContain(t, e.ok("warm", "--rm", "test/warm"), "cooled")
+	if strings.Contains(e.ok("images"), "clone") {
+		t.Fatal("a cooled image still shows a stage")
+	}
+	if entries, _ := os.ReadDir(filepath.Join(e.root, "warm")); len(entries) != 0 {
+		t.Fatalf("warm --rm left %d stages on disk", len(entries))
+	}
+	e.ok("rmi", "test/warm")
+}

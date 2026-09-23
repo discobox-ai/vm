@@ -230,7 +230,9 @@ func (b *Builder) install(ctx context.Context, p *Plan, in Install, contextDir, 
 // order, and commits its disk as the layer key.
 func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, parent, key string, layer PlannedLayer) (err error) {
 	e := b.Engine
-	inst, err := e.Create(ctx, parent, engine.CreateOptions{Temporary: true, CPUs: p.CPUs, Memory: p.Memory})
+	// Cold, always: a build starts from exactly the committed disk, and it
+	// must not spend a warm image's stages meant for instances.
+	inst, err := e.Create(ctx, parent, engine.CreateOptions{Temporary: true, Mode: machine.Cold, CPUs: p.CPUs, Memory: p.Memory})
 	if err != nil {
 		return err
 	}

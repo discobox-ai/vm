@@ -47,8 +47,6 @@ func (e *Engine) RunShim(ctx context.Context, id string) error {
 		_ = booted.Machine.Kill(context.Background())
 		return err
 	}
-	state := shimState{PID: os.Getpid(), Addr: listener.Addr().String(), Token: fsutil.RandomHex(16)}
-
 	var stopOnce sync.Once
 	var stopErr error
 	stop := func(timeout time.Duration) error {
@@ -92,6 +90,29 @@ func (e *Engine) RunShim(ctx context.Context, id string) error {
 		_ = rw.Flush()
 		splice(&bufConn{Conn: conn, r: rw.Reader}, upstream)
 	})
+	statePath := filepath.Join(e.instanceDir(id), shimStateName)
+	state, closeControl, err := serveControl(listener, mux, statePath)
+	if err != nil {
+		_ = booted.Machine.Kill(context.Background())
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "shim: %s running, control on %s\n", inst.Name, state.Addr)
+
+	select {
+	case <-booted.Machine.Done():
+	case <-ctx.Done():
+		_ = stop(time.Minute)
+	}
+	closeControl()
+	err = booted.Machine.Err()
+	fmt.Fprintf(os.Stderr, "shim: %s stopped (%v)\n", inst.Name, err)
+	return err
+}
+
+// serveControl serves a shim's control API on listener, behind a bearer token,
+// and publishes it at statePath. The returned func unpublishes and stops it.
+func serveControl(listener net.Listener, mux *http.ServeMux, statePath string) (shimState, func(), error) {
+	state := shimState{PID: os.Getpid(), Addr: listener.Addr().String(), Token: fsutil.RandomHex(16)}
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Authorization") != "Bearer "+state.Token {
@@ -103,26 +124,16 @@ func (e *Engine) RunShim(ctx context.Context, id string) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() { _ = server.Serve(listener) }()
-
-	statePath := filepath.Join(e.instanceDir(id), shimStateName)
 	if err := fsutil.WriteJSON(statePath, state); err != nil {
-		_ = booted.Machine.Kill(context.Background())
-		return err
+		_ = server.Close()
+		return shimState{}, nil, err
 	}
-	fmt.Fprintf(os.Stderr, "shim: %s running, control on %s\n", inst.Name, state.Addr)
-
-	select {
-	case <-booted.Machine.Done():
-	case <-ctx.Done():
-		_ = stop(time.Minute)
-	}
-	_ = os.Remove(statePath)
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = server.Shutdown(shutdownCtx)
-	err = booted.Machine.Err()
-	fmt.Fprintf(os.Stderr, "shim: %s stopped (%v)\n", inst.Name, err)
-	return err
+	return state, func() {
+		_ = os.Remove(statePath)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+	}, nil
 }
 
 // splice copies both ways until either side is done, then closes both.
@@ -148,11 +159,11 @@ type bufConn struct {
 
 func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
-// spawnShim starts `disco-vm shim <id>` detached from this process, so the VM
-// outlives the command that started it. The returned channel yields once, when
-// the shim exits.
-func spawnShim(exe, root, driver, id string, log *os.File) (<-chan error, error) {
-	cmd := exec.Command(exe, "--root", root, "--driver", driver, "shim", id)
+// spawnShim starts `disco-vm shim ARGS...` detached from this process, so the
+// VM outlives the command that started it. The returned channel yields once,
+// when the shim exits.
+func spawnShim(exe, root, driver string, args []string, log *os.File) (<-chan error, error) {
+	cmd := exec.Command(exe, append([]string{"--root", root, "--driver", driver, "shim"}, args...)...)
 	cmd.Stdout, cmd.Stderr = log, log
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
@@ -172,8 +183,13 @@ type shimClient struct {
 // shim finds a running instance's shim. It fails when the instance is not
 // running.
 func (e *Engine) shim(id string) (*shimClient, error) {
+	return openShim(filepath.Join(e.instanceDir(id), shimStateName))
+}
+
+// openShim finds the shim published at statePath.
+func openShim(statePath string) (*shimClient, error) {
 	var state shimState
-	if err := fsutil.ReadJSON(filepath.Join(e.instanceDir(id), shimStateName), &state); err != nil {
+	if err := fsutil.ReadJSON(statePath, &state); err != nil {
 		return nil, err
 	}
 	if !processAlive(state.PID) {

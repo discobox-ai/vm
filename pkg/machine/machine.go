@@ -46,15 +46,19 @@ const (
 type CloneMode string
 
 const (
+	// Auto asks the engine for the fastest mode the image is warm for, and
+	// cold when it is warm for none. The engine resolves it before Prepare, so
+	// a driver never sees it.
+	Auto CloneMode = "auto"
 	// Cold copies the disk copy-on-write and boots it from power-off with a
 	// fresh machine identity. Every driver supports it.
 	Cold CloneMode = "cold"
 	// Resume copies the disk and a saved memory state, and resumes the saved
 	// machine. The clone keeps the saved machine's identity, so each saved
-	// state is meant to be resumed once (vz).
+	// state is meant to be resumed once (vz). It needs a warm image.
 	Resume CloneMode = "resume"
 	// Fork clones a live, paused template: memory is shared copy-on-write and
-	// many clones can be forked from one template (HCS).
+	// many clones can be forked from one template (HCS). It needs a warm image.
 	Fork CloneMode = "fork"
 )
 
@@ -64,7 +68,9 @@ const (
 type Capabilities struct {
 	// GuestOS is every guest OS this driver can install and boot.
 	GuestOS []OS `json:"guestOS"`
-	// CloneModes is every mode Prepare accepts. Cold is always present.
+	// CloneModes is every mode Prepare accepts. Cold is always present; any
+	// other mode needs a warm image, so a driver that lists one implements
+	// Warmer.
 	CloneModes []CloneMode `json:"cloneModes"`
 	// MaxRunning caps concurrently running guests per guest OS. Zero means no
 	// cap. Virtualization.framework allows two macOS guests per host.
@@ -128,6 +134,10 @@ type InstanceSpec struct {
 	// Chain is the instance's image, base layer first and parent layer last.
 	Chain []Layer
 	Mode  CloneMode
+	// WarmDir is the image's stage (WarmSpec.Dir) when Mode is not cold. Only
+	// Prepare and the first Boot after it draw on the stage; a later boot of
+	// the same instance is cold.
+	WarmDir string
 }
 
 // Parent is the layer the instance is derived from.
@@ -174,6 +184,70 @@ type Driver interface {
 	// DeleteLayer releases anything the driver holds for a layer beyond its
 	// Dir, which the store removes itself.
 	DeleteLayer(ctx context.Context, layer Layer) error
+}
+
+// ErrNotWarm reports that nothing is staged for the clone mode Prepare was
+// asked for: the image was never warmed, its stage was used up, or the stage
+// was rejected (a saved state from before a host update). The engine answers
+// it by cloning cold when the mode was auto.
+var ErrNotWarm = errors.New("machine: the image is not warm for this clone mode")
+
+// WarmSpec is one image's stage: what Warm builds and what a warm Prepare
+// draws on.
+type WarmSpec struct {
+	GuestOS OS
+	// Chain is the image, base layer first, as in InstanceSpec.
+	Chain []Layer
+	// Dir is private to the driver for this image's stage. It exists, and it
+	// is the same directory for Warm, Warmth, Cool, and InstanceSpec.WarmDir.
+	Dir string
+	// Count is how many clones to stage where each stage is used once
+	// (resume). Warm tops an existing stage up to Count. A mode whose stage
+	// serves any number of clones (fork) ignores it.
+	Count int
+	// CPUs and Memory size the staged machine; zero is the driver's default.
+	// A clone of a stage runs at the stage's size.
+	CPUs   int
+	Memory uint64
+	// Log receives human-readable progress.
+	Log io.Writer
+}
+
+// Warmth is what a stage can serve now.
+type Warmth struct {
+	// Mode is the clone mode the stage serves, or Cold when nothing is staged.
+	Mode CloneMode `json:"mode"`
+	// Clones is how many Prepares the stage can serve: zero when nothing is
+	// staged, and -1 when it serves any number (a fork template).
+	Clones int `json:"clones"`
+}
+
+// Warmer is a driver that can stage an image so that clones skip the cold
+// boot: vz saves machine states to resume, and HCS freezes a live template to
+// fork. Every driver that lists a clone mode other than cold implements it.
+type Warmer interface {
+	// Warm stages spec.Chain in spec.Dir and returns once the stage is
+	// usable. The driver picks the mode, the fastest it has.
+	//
+	// A stage that lives on disk (saved states) returns a nil Stage. A stage
+	// that lives in memory (an HCS template) returns one, and the caller keeps
+	// its process alive for as long as the image stays warm: the engine runs
+	// Warm in a warm shim for exactly this.
+	Warm(ctx context.Context, spec WarmSpec) (Stage, error)
+	// Warmth reports what the stage can serve now. It is cheap and changes
+	// nothing; a stage that is gone or stale reports zero.
+	Warmth(ctx context.Context, spec WarmSpec) (Warmth, error)
+	// Cool releases everything Warm staged. A resident stage has already been
+	// closed.
+	Cool(ctx context.Context, spec WarmSpec) error
+}
+
+// Stage is a warm stage that lives in memory.
+type Stage interface {
+	// Done is closed once the stage is gone.
+	Done() <-chan struct{}
+	// Close releases the stage and waits for it to be gone.
+	Close(ctx context.Context) error
 }
 
 // Machine is a running guest.

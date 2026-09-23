@@ -14,7 +14,10 @@ func init() {
 // Driver runs macOS (and later Linux) guests under Virtualization.framework.
 type Driver struct{}
 
-var _ machine.Driver = (*Driver)(nil)
+var (
+	_ machine.Driver = (*Driver)(nil)
+	_ machine.Warmer = (*Driver)(nil)
+)
 
 func (*Driver) Name() string { return "vz" }
 
@@ -54,3 +57,13 @@ func (*Driver) Commit(context.Context, machine.InstanceSpec, machine.Layer) erro
 func (*Driver) Destroy(context.Context, machine.InstanceSpec) error { return notYet("destroy") }
 
 func (*Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
+
+func (*Driver) Warm(context.Context, machine.WarmSpec) (machine.Stage, error) {
+	return nil, notYet("warm")
+}
+
+func (*Driver) Warmth(context.Context, machine.WarmSpec) (machine.Warmth, error) {
+	return machine.Warmth{Mode: machine.Cold}, notYet("warmth")
+}
+
+func (*Driver) Cool(context.Context, machine.WarmSpec) error { return notYet("cool") }
