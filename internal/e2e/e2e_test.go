@@ -431,9 +431,6 @@ layers:
 // to the host on a port, and the instance's shim splices that into a Unix
 // socket on the host, in both directions.
 func TestForward(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the guest side is a POSIX shell pipeline")
-	}
 	e := newEnv(t)
 	if !strings.Contains(e.ok("info"), `"forward": true`) {
 		t.Skipf("driver %s cannot forward a guest's connections to the host", tg.driver)
@@ -473,13 +470,24 @@ func TestForward(t *testing.T) {
 	t.Cleanup(func() { e.run("rm", "-f", "fw") })
 	// The guest's disco-vm: this build, copied in on a real guest, whose
 	// baked-in agent may predate dial-host.
+	// A guest is Windows on a Windows host (fake, hcs), whose shell is cmd.
+	windows := runtime.GOOS == "windows"
 	agent := binary
 	if tg.driver != "fake" {
-		e.ok("exec", "fw", "mkdir", "-p", tg.cmd("dv"))
+		if windows {
+			e.ok("exec", "fw", "cmd", "/c", "mkdir", strings.ReplaceAll(tg.cmd("dv"), "/", `\`))
+		} else {
+			e.ok("exec", "fw", "mkdir", "-p", tg.cmd("dv"))
+		}
 		e.ok("cp", binary, "fw:"+tg.file("dv"))
 		agent = tg.cmd("dv/" + filepath.Base(binary))
 	}
-	out := e.ok("exec", "fw", "/bin/sh", "-c", `echo "hello from the guest" | "$0" dial-host 7401`, agent)
+	pipe := []string{"/bin/sh", "-c", `echo "hello from the guest" | "$0" dial-host 7401`, agent}
+	if windows {
+		// No space before the pipe: cmd would send it.
+		pipe = []string{"cmd", "/c", "echo hello from the guest| " + strings.ReplaceAll(agent, "/", `\`) + " dial-host 7401"}
+	}
+	out := e.ok(append([]string{"exec", "fw"}, pipe...)...)
 	mustContain(t, out, "hello from the host")
 	select {
 	case got := <-fromGuest:
