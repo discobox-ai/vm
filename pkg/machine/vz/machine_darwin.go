@@ -9,12 +9,16 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/Code-Hex/vz/v3"
+	"golang.org/x/sys/unix"
 
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -26,39 +30,92 @@ func (*Driver) Check(context.Context) error {
 	if runtime.GOARCH != "arm64" {
 		return errors.New("vz: macOS guests need an Apple silicon Mac")
 	}
+	// A macOS guest has no hypervisor: the framework nests only Linux guests,
+	// so disco-vm inside a macOS VM cannot run one.
+	if hv, err := unix.SysctlUint32("kern.hv_support"); err != nil || hv != 1 {
+		return errors.New("vz: this Mac has no hypervisor (kern.hv_support is not 1); inside a macOS VM there is none to nest")
+	}
 	if !entitled() {
 		return fmt.Errorf("vz: this binary is not signed with the %s entitlement, so it cannot create a VM; build it with `make build`, which signs it", virtualizationEntitlement)
 	}
 	return nil
 }
 
-// Prepare clones the parent layer's bundle into the instance. A cold clone
-// gets its own machine identifier (and a MAC address on its first boot). A
-// resume clone takes a whole staged bundle, identity and disk included.
+// Prepare clones the parent layer's bundle into the instance, with its own
+// machine identifier (and a MAC address on its first boot). A resume clone
+// only checks that the stage has a template and marks the instance: its first
+// boot takes a template that no running VM has, which only the process that
+// will run the VM can hold.
 func (*Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
 	if len(inst.Chain) == 0 {
 		return errors.New("vz: instance has no image")
 	}
 	switch inst.Mode {
 	case "", machine.Cold:
-		dst := bundle(inst.Dir)
-		if err := cloneLayer(bundle(inst.Parent().Dir), dst); err != nil {
+		return coldClone(inst)
+	case machine.Resume:
+		if ts, err := templates(inst.WarmDir, true); err != nil || len(ts) == 0 {
+			return fmt.Errorf("vz: %w", machine.ErrNotWarm)
+		}
+		if err := os.MkdirAll(inst.Dir, 0o700); err != nil {
 			return err
 		}
-		return dst.newIdentifier()
-	case machine.Resume:
-		return takeState(inst.WarmDir, inst.Dir)
+		return os.WriteFile(filepath.Join(inst.Dir, pendingName), nil, 0o600)
 	default:
 		return fmt.Errorf("vz: clone mode %q: %w", inst.Mode, machine.ErrUnsupported)
 	}
 }
 
-// Boot starts a prepared instance. The first boot of a resume clone restores
-// its saved state and consumes it; a state the framework rejects (a locked
-// screen, a host update) falls back to a cold boot rather than failing the
-// run. Every other boot is cold.
+// stageBase is what a resume clone boots cold from when it cannot resume: the
+// stage's base, which has the stage's user, or else the image.
+func stageBase(inst machine.InstanceSpec) bundle {
+	if inst.WarmDir != "" {
+		if base := bundle(filepath.Join(inst.WarmDir, "base")); base.installedLayer() == nil {
+			return base
+		}
+	}
+	return bundle(inst.Parent().Dir)
+}
+
+// coldClone clones the image into the instance with an identity of its own.
+func coldClone(inst machine.InstanceSpec) error {
+	dst := bundle(inst.Dir)
+	if err := cloneLayer(bundle(inst.Parent().Dir), dst); err != nil {
+		return err
+	}
+	return dst.newIdentifier()
+}
+
+// Boot starts a prepared instance. A resume clone's first boot restores a
+// template, and falls back to a cold boot of the image when none is free or
+// the framework refuses the restore (a locked screen, a host update). Every
+// other boot is cold.
 func (*Driver) Boot(_ context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
 	b := bundle(inst.Dir)
+	console := opts.Console
+	if console == nil {
+		console = io.Discard
+	}
+	if _, err := os.Stat(b.path(pendingName)); err == nil {
+		vm, err := resumeTemplate(inst, opts)
+		if err == nil {
+			_ = os.Remove(b.path(pendingName))
+			fmt.Fprintln(console, "vz: resumed a template")
+			return vm, vm.display(opts)
+		}
+		src := stageBase(inst)
+		fmt.Fprintf(console, "%v; booting a cold clone of %s instead\n", err, src)
+		for _, name := range templateFiles {
+			_ = os.Remove(b.path(name))
+		}
+		if err := cloneLayer(src, b); err != nil {
+			return nil, err
+		}
+		if err := b.newIdentifier(); err != nil {
+			return nil, err
+		}
+		_ = os.Remove(b.path(pendingName))
+	}
 	if err := b.installed(); err != nil {
 		return nil, err
 	}
@@ -66,24 +123,17 @@ func (*Driver) Boot(_ context.Context, inst machine.InstanceSpec, opts machine.B
 	if err != nil {
 		return nil, err
 	}
-	console := opts.Console
-	if console == nil {
-		console = io.Discard
-	}
-	if _, err := os.Stat(b.path(stateName)); err == nil {
-		vm, err := resume(b, m, opts.Shares)
-		// Consumed either way: a later boot of this instance is cold.
-		_ = os.Remove(b.path(stateName))
-		m.Saved = nil
-		if werr := b.writeMeta(m); werr != nil && err == nil {
-			_ = vm.Kill(context.Background())
-			return nil, werr
+	if m.Template != "" {
+		// Restored from a template, so still its identity, which the
+		// template's next clone will run with too.
+		if err := b.newIdentifier(); err != nil {
+			return nil, err
 		}
-		if err == nil {
-			fmt.Fprintln(console, "vz: resumed a saved state")
-			return vm, vm.display(opts)
+		_ = os.Remove(b.path(macName))
+		m.Template = ""
+		if err := b.writeMeta(m); err != nil {
+			return nil, err
 		}
-		fmt.Fprintf(console, "%v; booting cold instead\n", err)
 	}
 	cpus, memory := size(m, opts.CPUs, opts.Memory)
 	vm, err := start(b, cpus, memory, opts.Shares, nil)
@@ -115,6 +165,50 @@ func (m *vmMachine) display(opts machine.BootOptions) error {
 		closeWindow()
 	}()
 	return nil
+}
+
+// resumeTemplate locks a free template, clones it into the instance, and
+// restores it. The lock is held until the VM stops.
+func resumeTemplate(inst machine.InstanceSpec, opts machine.BootOptions) (*vmMachine, error) {
+	ts, err := templates(inst.WarmDir, false)
+	if err != nil {
+		return nil, err
+	}
+	b := bundle(inst.Dir)
+	for _, t := range ts {
+		lock, ok := lockTemplate(t)
+		if !ok {
+			continue
+		}
+		if err := cloneTemplate(t, b); err != nil {
+			lock.Close()
+			return nil, err
+		}
+		m, err := b.readMeta()
+		if err != nil {
+			lock.Close()
+			return nil, err
+		}
+		vm, err := resume(b, m, opts.Shares)
+		// The state is the template's; the clone's copy is done with.
+		_ = os.Remove(b.path(stateName))
+		if err != nil {
+			lock.Close()
+			return nil, err
+		}
+		m.Saved, m.Template = nil, filepath.Base(string(t))
+		if err := b.writeMeta(m); err != nil {
+			lock.Close()
+			_ = vm.Kill(context.Background())
+			return nil, err
+		}
+		go func() {
+			<-vm.done
+			lock.Close()
+		}()
+		return vm, nil
+	}
+	return nil, errors.New("vz: every template is running in another VM")
 }
 
 // start boots a bundle from power-off, provisioning its first account if asked.
@@ -252,7 +346,7 @@ func (m *vmMachine) Dial(ctx context.Context, port uint32) (net.Conn, error) {
 		if r.err != nil {
 			return nil, fmt.Errorf("vz: connect to guest port %d: %w", port, r.err)
 		}
-		return r.conn, nil
+		return vsockConn{r.conn}, nil
 	case <-ctx.Done():
 		go func() {
 			if r := <-ch; r.conn != nil {
@@ -263,6 +357,51 @@ func (m *vmMachine) Dial(ctx context.Context, port uint32) (net.Conn, error) {
 	case <-m.done:
 		return nil, errors.New("vz: the guest stopped")
 	}
+}
+
+var _ machine.HostListener = (*vmMachine)(nil)
+
+// Listen accepts what guest processes open to the host (CID 2) on a vsock
+// port.
+func (m *vmMachine) Listen(port uint32) (net.Listener, error) {
+	if m.socket == nil {
+		return nil, errors.New("vz: the guest has no socket device")
+	}
+	l, err := m.socket.Listen(port)
+	if err != nil {
+		return nil, fmt.Errorf("vz: listen for the guest on port %d: %w", port, err)
+	}
+	return hostListener{l}, nil
+}
+
+// hostListener hands out connections that can half-close.
+type hostListener struct{ *vz.VirtioSocketListener }
+
+func (l hostListener) Accept() (net.Conn, error) {
+	c, err := l.AcceptVirtioSocketConnection()
+	if err != nil {
+		return nil, err
+	}
+	return vsockConn{c}, nil
+}
+
+// vsockConn is a framework vsock connection that can close its sending half,
+// so the other end reads EOF while this one still reads: a request piped in
+// and its answer read back needs it. The bindings keep the connection's
+// socket unexported (a net.Conn made from the framework's Unix-domain
+// descriptor), so it is found by reflection; if their layout changes,
+// CloseWrite closes the whole connection instead.
+type vsockConn struct{ *vz.VirtioSocketConnection }
+
+func (c vsockConn) CloseWrite() error {
+	field := reflect.ValueOf(c.VirtioSocketConnection).Elem().FieldByName("rawConn")
+	if field.IsValid() && field.Kind() == reflect.Interface {
+		raw := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface()
+		if cw, ok := raw.(interface{ CloseWrite() error }); ok {
+			return cw.CloseWrite()
+		}
+	}
+	return c.Close()
 }
 
 // Kill powers the guest off at once. A macOS guest answers the framework's

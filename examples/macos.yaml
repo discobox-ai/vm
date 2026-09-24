@@ -2,12 +2,10 @@
 # Virtualization.framework, with the disco-vm agent baked in by the vz driver
 # as a root launchd daemon.
 #
-#   disco-vm build -f examples/macos.yaml
+#   disco-vm build -f examples/macos.yaml -t discobox/macos:27
 #
 # media: latest asks the framework for the newest restore image this Mac
 # supports (~20 GB, cached); a path to a local .ipsw pins one.
-name: discobox/macos
-tag: "27"
 args:
   USER: admin
 from:
@@ -21,6 +19,9 @@ from:
       # agent gets onto the disk; see docs/drivers/vz.md.
       username: ${USER}
       autologin: "true"
+      # Moved off 501 at install, so `disco-vm warm --local-user` can give 501
+      # to your own account (the default; named so the cache key says so).
+      uid: "600"
 resources:
   cpus: 4
   memory: 8GiB

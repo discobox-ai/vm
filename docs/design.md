@@ -50,10 +50,11 @@ is a `Capabilities` field, never a faked method:
 | capability | hcs | vz | fake |
 |---|---|---|---|
 | guest OS | windows | darwin | host's |
-| clone modes | cold, **fork** (live template, many clones, about 1s) | cold, **resume** (saved state, once per identity) | cold, resume (pre-copied roots) |
+| clone modes | cold, **fork** (live template, many clones, about 1s) | cold, **resume** (two saved templates, any number of clones) | cold, resume (pre-copied roots) |
 | max running | none | **2 macOS guests** (framework limit) | none |
 | shared dirs | (Plan9, later) | virtiofs | no |
 | display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no |
+| forward (guest to host) | (later) | vsock to the host, CID 2 | loopback |
 
 The engine enforces `MaxRunning`. `--mode fork|resume` is refused where it is
 unsupported. A fast mode also needs a warm image (decision 7), so it is a
@@ -68,6 +69,14 @@ is the vsock template GUID with the port in its first field
 ServiceTable. 7301 is reserved for the display stream. Because callers only
 ever say "port", the shim, the engine, and a discobox provider never need to
 know which hypervisor they are talking to.
+
+The other direction is a port too. A guest process connects out to the host
+with `guest.DialHost(port)` (vsock to CID 2 on vz, hvsocket to the parent
+partition on HCS), and an instance created with `Forwards` has its shim accept
+those connections (`machine.HostListener`) and splice each into a Unix socket on
+the host, passing half-closes through. That is how a guest reaches a host
+service with no TCP listener anywhere, as libkrun maps a vsock port to a Unix
+socket. `disco-vm dial-host PORT` does the same from a shell in the guest.
 
 ### 3a. A window is per boot, and lives with the VM
 
@@ -128,6 +137,10 @@ HCS's live-template fork needs something to hold the template. That is a shim
 too, a **warm shim** (`disco-vm shim --warm <layer>`), not a special daemon. See
 decision 7.
 
+A program that embeds the engine (discobox) starts its shims as a subcommand of
+its own binary: `Engine.ShimCommand` names it, and that subcommand calls
+`Engine.ShimMain`. So an embedder ships one binary, and its VMs outlive it.
+
 ### 6. The image store is the build cache
 
 A layer is an immutable, committed disk state owned by a driver:
@@ -159,9 +172,13 @@ disco-vm warm --rm IMAGE
 
 - **The driver picks how to stage** (`machine.Warmer`). hcs freezes one
   template that forks any number of clones (`Warmth.Clones` is -1). vz saves
-  `--count` states that are each resumed once, because a saved state carries
-  its machine identity. `warm` on a warm image tops a used stage back up to
-  `--count`.
+  two templates, one per guest the framework can run at once, and each resume
+  clone is an APFS clone of whichever one no running VM holds, so it too serves
+  any number (-1). A saved state restores only under the identity it was saved
+  with (measured: a new machine identifier or MAC is "invalid argument"), and
+  two running guests must not share one, which two templates guarantee. The
+  fake driver stages a pool of `--count` clones that is used up, and `warm`
+  tops it back up.
 - **`--mode auto` is the default** for `run` and `create`. It picks the mode
   the image is warm for, and cold when the stage is used up, missing, stale, or
   sized differently from the request (a clone runs at its stage's CPUs and
@@ -176,13 +193,19 @@ disco-vm warm --rm IMAGE
   image has staged, and `rmi` refuses a warm image until it is cooled.
 - **A stage is not a layer.** A layer is immutable and its ID is a content
   hash. A stage is tied to this host, can go stale (a host OS update
-  invalidates vz states), and is used up by clones. It lives in
+  invalidates vz states), and a pool (fake) is used up by clones. It lives in
   `warm/<layer>/` (`warm.json` plus the driver's `machine/`), and drivers see
   it as `WarmSpec.Dir` and `InstanceSpec.WarmDir`.
 - **Warming runs in a warm shim.** A resident stage must stay in the process
   that made it, so `warm` spawns `disco-vm shim --warm <layer>`. A stage on
   disk (vz, fake) lets the shim exit once it is written. A resident one (hcs)
   keeps the shim serving `/status` and `/stop` until `warm --rm`.
+- **A stage can log in a user** (`warm --user NAME[:UID]`, or `--local-user`
+  for the host's own account, with the same name and uid, so files on a shared
+  directory have one owner on both sides). The user is part of the stage, like
+  its size, and `WarmSpec.User` asks the driver for it; a driver that cannot
+  make one returns `ErrUnsupported` (fake does). A cold clone of the image does
+  not have the user.
 - **The builder always clones cold.** A build starts from exactly the
   committed disk, and it must not spend stages meant for instances.
 
@@ -216,8 +239,10 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | agent: TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ in-guest (`exec -t`) |
 | agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew |
 | unattended install from media (`examples/<os>.yaml`) | n/a | ✅ `examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap |
-| warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume (agent answers 3.5 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) |
+| warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) |
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window |
+| forward, guest to host (`internal/e2e` TestForward) | ✅ | ⬜ | ✅ in-guest, both directions |
+| warm with a user (`warm --user`, `--local-user`) | refused | ⬜ | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) |
 
 A platform driver is done when `machinetest.Run` passes against it on real
 hardware and `internal/e2e` passes with `DISCO_VM_DRIVER` set to it. See

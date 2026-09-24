@@ -19,9 +19,9 @@ disco-vm works on its own, and it is also meant to become a
 > brief is [docs/drivers/hcs.md](docs/drivers/hcs.md).
 
 ```sh
-disco-vm build -f examples/windows.yaml --build-arg ISO=D:\iso\Win11.iso   # OS image
-disco-vm build -f examples/discobox-base.yaml                              # + toolchains
-disco-vm run --name dev discobox/base:2026.09
+disco-vm build -f examples/windows.yaml -t discobox/windows:11 --build-arg ISO=D:\iso\Win11.iso   # OS image
+disco-vm build -f examples/discobox-base.yaml -t discobox/base                                    # + toolchains
+disco-vm run --name dev discobox/base
 disco-vm exec -t dev powershell
 disco-vm cp ./project dev:C:\src
 disco-vm stop dev && disco-vm rm dev
@@ -34,7 +34,6 @@ adds explicit layers, because committing an OS disk is a full shutdown, and
 per-OS conditions, so one spec describes the same toolset on Windows and macOS:
 
 ```yaml
-name: discobox/base
 from:
   image: ${OS_IMAGE}
 args:
@@ -58,7 +57,7 @@ virtualization entitlement a VM needs:
 
 ```sh
 make build
-bin/disco-vm build -f examples/macos.yaml     # downloads the restore image once, ~5 min after that
+bin/disco-vm build -f examples/macos.yaml -t discobox/macos:27     # downloads the restore image once, ~5 min after that
 bin/disco-vm run --name mac discobox/macos:27
 bin/disco-vm exec mac sw_vers
 bin/disco-vm run --gui --name desk discobox/macos:27   # the guest's screen in a window

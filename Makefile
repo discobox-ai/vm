@@ -23,8 +23,10 @@ test:
 # The vz conformance suite on real hardware. DISCO_VM_VZ_BASE names an
 # installed layer's directory (see docs/drivers/vz.md); without it the suite
 # skips.
+# caffeinate -d keeps the display awake, so the Mac does not lock mid-run: a
+# vz restore needs the screen unlocked.
 test-vz:
-	go test -exec $(CURDIR)/scripts/codesign-exec -timeout 4h -v -run 'TestConformance|TestResumeOrFallBack' ./pkg/machine/vz
+	caffeinate -d go test -exec $(CURDIR)/scripts/codesign-exec -timeout 4h -v -run 'TestConformance|TestResumeOrFallBack|TestWarmUser|TestTemplates' ./pkg/machine/vz
 
 # internal/e2e against vz: the signed binary, and a state root that keeps its
 # base install between runs (the first run installs macOS).
@@ -32,4 +34,4 @@ DISCO_VM_E2E_ROOT ?= $(HOME)/Library/Application Support/disco-vm-e2e
 
 test-e2e-vz: build
 	DISCO_VM_DRIVER=vz DISCO_VM_TEST_BINARY=$(CURDIR)/$(BIN) DISCO_VM_E2E_ROOT="$(DISCO_VM_E2E_ROOT)" \
-		go test -timeout 4h -v ./internal/e2e
+		caffeinate -d go test -timeout 4h -v ./internal/e2e

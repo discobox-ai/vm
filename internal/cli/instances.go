@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -23,6 +24,7 @@ import (
 type createFlags struct {
 	name, memory, mode string
 	cpus               int
+	forwards           []string
 }
 
 func (f *createFlags) register(cmd *cobra.Command) {
@@ -30,6 +32,7 @@ func (f *createFlags) register(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "vCPUs (default: the driver's)")
 	cmd.Flags().StringVar(&f.memory, "memory", "", "memory, e.g. 8GiB (default: the driver's)")
 	cmd.Flags().StringVar(&f.mode, "mode", string(machine.Auto), "clone mode: auto (what the image is warm for, else cold), cold, resume (vz), or fork (hcs)")
+	cmd.Flags().StringArrayVar(&f.forwards, "forward", nil, "send what the guest opens to the host on PORT to the Unix socket SOCKET: PORT:SOCKET (repeatable)")
 }
 
 func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) (*engine.Instance, error) {
@@ -37,8 +40,18 @@ func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) 
 	if err != nil {
 		return nil, err
 	}
+	var forwards []engine.Forward
+	for _, spec := range f.forwards {
+		port, socket, ok := strings.Cut(spec, ":")
+		n, err := strconv.ParseUint(port, 10, 32)
+		if !ok || err != nil || socket == "" {
+			return nil, fmt.Errorf("--forward %q is not PORT:SOCKET", spec)
+		}
+		forwards = append(forwards, engine.Forward{Port: uint32(n), Socket: socket})
+	}
 	return e.Create(ctx, ref, engine.CreateOptions{
 		Name: f.name, CPUs: f.cpus, Memory: memory, Mode: machine.CloneMode(f.mode),
+		Forwards: forwards,
 	})
 }
 

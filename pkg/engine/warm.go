@@ -33,12 +33,13 @@ const warmStateName = "warm.json"
 // warmState is what was asked of a stage. The warm shim reads it, so the
 // options need no flags of their own.
 type warmState struct {
-	Layer   string    `json:"layer"`
-	Image   string    `json:"image"`
-	Count   int       `json:"count"`
-	CPUs    int       `json:"cpus,omitempty"`
-	Memory  uint64    `json:"memory,omitempty"`
-	Created time.Time `json:"created"`
+	Layer   string        `json:"layer"`
+	Image   string        `json:"image"`
+	Count   int           `json:"count"`
+	CPUs    int           `json:"cpus,omitempty"`
+	Memory  uint64        `json:"memory,omitempty"`
+	User    *machine.User `json:"user,omitempty"`
+	Created time.Time     `json:"created"`
 }
 
 func (e *Engine) warmDir(layer string) string { return filepath.Join(e.Root, "warm", layer) }
@@ -74,7 +75,7 @@ func (e *Engine) warmSpec(st *warmState) (machine.WarmSpec, error) {
 	}
 	return machine.WarmSpec{
 		GuestOS: layer.GuestOS, Chain: chain, Dir: e.warmMachineDir(st.Layer),
-		Count: st.Count, CPUs: st.CPUs, Memory: st.Memory,
+		Count: st.Count, CPUs: st.CPUs, Memory: st.Memory, User: st.User,
 	}, nil
 }
 
@@ -105,6 +106,33 @@ func (e *Engine) Warmth(ctx context.Context, layer string) machine.Warmth {
 		return cold
 	}
 	return w
+}
+
+// StageInfo is an image's stage as a person reads it.
+type StageInfo struct {
+	// Warmth is what the stage can serve now, and why not when it is held.
+	machine.Warmth
+	// Count is how many clones warm was asked to stage.
+	Count int
+	// User is the account the stage logs in, if any.
+	User *machine.User
+}
+
+// Stage describes a layer's stage; ok is false when the layer has none.
+func (e *Engine) Stage(ctx context.Context, layer string) (info StageInfo, ok bool) {
+	st, err := e.readWarm(layer)
+	if err != nil {
+		return StageInfo{}, false
+	}
+	info = StageInfo{Warmth: machine.Warmth{Mode: machine.Cold}, Count: st.Count, User: st.User}
+	if warmer, err := e.warmer(); err == nil {
+		if spec, err := e.warmSpec(st); err == nil {
+			if w, err := warmer.Warmth(ctx, spec); err == nil {
+				info.Warmth = w
+			}
+		}
+	}
+	return info, true
 }
 
 // cloneMode resolves a requested mode against what the image is warm for.
@@ -143,6 +171,17 @@ type notWarmError string
 func (e notWarmError) Error() string { return string(e) }
 func (notWarmError) Unwrap() error   { return machine.ErrNotWarm }
 
+// userOf describes the user a stage logs in, for comparing and for messages.
+func userOf(u *machine.User) string {
+	if u == nil {
+		return "without a user"
+	}
+	if u.UID != 0 {
+		return fmt.Sprintf("as %s (uid %d)", u.Name, u.UID)
+	}
+	return "as " + u.Name
+}
+
 func sizeOf(cpus int, memory uint64) string {
 	c, m := "the default CPUs", "the default memory"
 	if cpus != 0 {
@@ -156,12 +195,16 @@ func sizeOf(cpus int, memory uint64) string {
 
 // WarmOptions describes a stage.
 type WarmOptions struct {
-	// Count is how many clones to stage where each stage is used once
+	// Count is how many clones to stage where a stage is a pool used once per
+	// clone (fake)
 	// (resume). Zero means one. Warming a warm image tops it up.
 	Count int
 	// CPUs and Memory size the staged machine, and so every clone of it.
 	CPUs   int
 	Memory uint64
+	// User is created in the stage and logged in, so every clone of it starts
+	// as that user.
+	User *machine.User
 	// Timeout bounds warming.
 	Timeout time.Duration
 }
@@ -193,6 +236,9 @@ func (e *Engine) Warm(ctx context.Context, ref string, opts WarmOptions) (machin
 	if prev, err := e.readWarm(layerID); err == nil && (prev.CPUs != opts.CPUs || prev.Memory != opts.Memory) {
 		return none, fmt.Errorf("image %s is already warm at %s; `disco-vm warm --rm %s` first", ref, sizeOf(prev.CPUs, prev.Memory), ref)
 	}
+	if prev, err := e.readWarm(layerID); err == nil && userOf(prev.User) != userOf(opts.User) {
+		return none, fmt.Errorf("image %s is already warm %s; `disco-vm warm --rm %s` first", ref, userOf(prev.User), ref)
+	}
 	if shim, err := openShim(filepath.Join(dir, shimStateName)); err == nil && shim.status(ctx) == nil {
 		// A resident stage is up, and it serves any number of clones.
 		return e.Warmth(ctx, layerID), nil
@@ -200,7 +246,7 @@ func (e *Engine) Warm(ctx context.Context, ref string, opts WarmOptions) (machin
 	if err := os.MkdirAll(e.warmMachineDir(layerID), 0o755); err != nil {
 		return none, err
 	}
-	st := warmState{Layer: layerID, Image: ref, Count: opts.Count, CPUs: opts.CPUs, Memory: opts.Memory, Created: time.Now().UTC()}
+	st := warmState{Layer: layerID, Image: ref, Count: opts.Count, CPUs: opts.CPUs, Memory: opts.Memory, User: opts.User, Created: time.Now().UTC()}
 	if err := fsutil.WriteJSON(filepath.Join(dir, warmStateName), st); err != nil {
 		return none, err
 	}
@@ -217,7 +263,7 @@ func (e *Engine) Warm(ctx context.Context, ref string, opts WarmOptions) (machin
 	if err != nil {
 		return fail(err)
 	}
-	exited, err := spawnShim(e.Exe, e.Root, e.Driver.Name(), []string{"--warm", layerID}, logFile)
+	exited, err := e.spawnShim([]string{"--warm", layerID}, logFile)
 	// The shim has its own handle; ours would keep a failed stage's directory
 	// from being removed on Windows.
 	logFile.Close()

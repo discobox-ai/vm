@@ -51,9 +51,21 @@ var daemonPlist = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// installScript runs as root in the guest. System sleep is turned off because
-// a sleeping guest's agent answers nothing.
+// installScript runs as root in the guest with the uploaded agent ($1), the
+// provisioned account ($2), and the uid to move that account to ($3). System
+// sleep is turned off because a sleeping guest's agent answers nothing.
+//
+// Provisioning always makes the first account uid 501, which is also the first
+// account on the host. It is moved so that a warm stage can give 501 to the
+// host's own user (warm --local-user). Only a session with Full Disk Access
+// may change a user record, which SSH has and the agent's daemon has not, so
+// this happens here.
 var installScript = `set -e
+old=$(id -u "$2")
+if [ "$old" != "$3" ]; then
+	dscl . -change "/Users/$2" UniqueID "$old" "$3"
+	find -x / -uid "$old" -print0 2>/dev/null | xargs -0 chown -h "$3" 2>/dev/null || true
+fi
 install -d -o root -g wheel -m 755 /usr/local/libexec
 install -o root -g wheel -m 755 "$1" ` + agentPath + `
 rm -f "$1"
@@ -135,9 +147,7 @@ func installAgent(ctx context.Context, vm *vmMachine, mac string, binary []byte,
 	if _, err := runSSH(client, "cat > "+upload, bytes.NewReader(binary)); err != nil {
 		return fmt.Errorf("vz: copy the agent into the guest: %w", err)
 	}
-	// sudo reads the password from stdin; the script is an argument.
-	cmd := "sudo -S -p '' /bin/sh -c " + shellQuote(installScript) + " install " + upload
-	if out, err := runSSH(client, cmd, strings.NewReader(opts.password+"\n")); err != nil {
+	if out, err := sudo(client, opts.password, installScript, upload, opts.user, strconv.Itoa(opts.uid)); err != nil {
 		return fmt.Errorf("vz: install the agent in the guest: %w\n%s", err, out)
 	}
 
@@ -278,6 +288,16 @@ func runSSH(client *ssh.Client, cmd string, stdin io.Reader) (string, error) {
 	session.Stdin = stdin
 	out, err := session.CombinedOutput(cmd)
 	return string(out), err
+}
+
+// sudo runs a script as root in the guest, with args as $1 and on. sudo reads
+// the password from stdin, and the script is an argument.
+func sudo(client *ssh.Client, password, script string, args ...string) (string, error) {
+	cmd := "sudo -S -p '' /bin/sh -c " + shellQuote(script) + " disco-vm"
+	for _, arg := range args {
+		cmd += " " + shellQuote(arg)
+	}
+	return runSSH(client, cmd, strings.NewReader(password+"\n"))
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

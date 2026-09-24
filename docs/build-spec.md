@@ -3,10 +3,13 @@
 A build spec is a YAML file (default `disco-vm.yaml`) that `disco-vm build`
 turns into an image. Unknown keys are errors, not silently ignored typos.
 
-```yaml
-name: discobox/base            # repository the result is tagged into (required)
-tag: "2026.09"                 # default "latest"; ${ARGS} allowed
+As with a Dockerfile, the spec says how to build and not what to call the
+result: `disco-vm build -t NAME[:TAG]` names it (repeatable; the tag defaults
+to `latest`), and a build without `-t` is known by its image ID, which `run`,
+`tag`, and the rest accept by prefix. A spec with `name:` or `tag:` is refused
+with that advice.
 
+```yaml
 from:                          # exactly one of image or install
   image: discobox/windows:11   #   an image already in the store
   install:                     #   or an OS installed from media

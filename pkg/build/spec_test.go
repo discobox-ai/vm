@@ -11,8 +11,6 @@ import (
 )
 
 const baseSpec = `
-name: discobox/base
-tag: "${VERSION}"
 from:
   image: ${OS_IMAGE}
 args:
@@ -40,10 +38,6 @@ func TestParseAndPlanPerOS(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := map[string]string{"VERSION": "2", "OS_IMAGE": "x"}
-	spec.Name, spec.Tag = expand(spec.Name, args), expand(spec.Tag, args)
-	if spec.Ref() != "discobox/base:2" {
-		t.Fatalf("ref = %q", spec.Ref())
-	}
 
 	win, err := plan(spec, args, t.TempDir(), machine.Windows)
 	if err != nil {
@@ -79,16 +73,18 @@ func TestParseAndPlanPerOS(t *testing.T) {
 
 func TestParseRejects(t *testing.T) {
 	for name, spec := range map[string]string{
-		"unknown key":  "name: a\nfrom: {image: b}\nlayrs: []\n",
-		"two bases":    "name: a\nfrom: {image: b, install: {os: windows, media: x}}\n",
-		"no base":      "name: a\nfrom: {}\n",
-		"bad os":       "name: a\nfrom: {install: {os: plan9, media: x}}\n",
-		"two kinds":    "name: a\nfrom: {image: b}\nlayers: [{name: l, steps: [{run: x, reboot: true}]}]\n",
-		"empty layer":  "name: a\nfrom: {image: b}\nlayers: [{name: l, steps: []}]\n",
-		"dup layer":    "name: a\nfrom: {image: b}\nlayers: [{name: l, steps: [{run: x}]}, {name: l, steps: [{run: y}]}]\n",
-		"bad timeout":  "name: a\nfrom: {image: b}\nlayers: [{name: l, steps: [{run: x, timeout: soon}]}]\n",
-		"bad when os":  "name: a\nfrom: {image: b}\nlayers: [{name: l, when: {os: beos}, steps: [{run: x}]}]\n",
-		"copy no dest": "name: a\nfrom: {image: b}\nlayers: [{name: l, steps: [{copy: {src: x}}]}]\n",
+		"name":         "name: a\nfrom: {image: b}\n",
+		"tag":          "tag: v1\nfrom: {image: b}\n",
+		"unknown key":  "from: {image: b}\nlayrs: []\n",
+		"two bases":    "from: {image: b, install: {os: windows, media: x}}\n",
+		"no base":      "from: {}\n",
+		"bad os":       "from: {install: {os: plan9, media: x}}\n",
+		"two kinds":    "from: {image: b}\nlayers: [{name: l, steps: [{run: x, reboot: true}]}]\n",
+		"empty layer":  "from: {image: b}\nlayers: [{name: l, steps: []}]\n",
+		"dup layer":    "from: {image: b}\nlayers: [{name: l, steps: [{run: x}]}, {name: l, steps: [{run: y}]}]\n",
+		"bad timeout":  "from: {image: b}\nlayers: [{name: l, steps: [{run: x, timeout: soon}]}]\n",
+		"bad when os":  "from: {image: b}\nlayers: [{name: l, when: {os: beos}, steps: [{run: x}]}]\n",
+		"copy no dest": "from: {image: b}\nlayers: [{name: l, steps: [{copy: {src: x}}]}]\n",
 	} {
 		if _, err := Parse([]byte(spec)); err == nil {
 			t.Errorf("%s: parsed", name)
@@ -101,7 +97,7 @@ func TestLayerKeys(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	spec, err := Parse([]byte("name: a\nfrom: {image: b}\nlayers: [{name: l, steps: [{copy: {src: a.txt, dst: /x}}, {name: say, run: echo hi}]}]\n"))
+	spec, err := Parse([]byte("from: {image: b}\nlayers: [{name: l, steps: [{copy: {src: a.txt, dst: /x}}, {name: say, run: echo hi}]}]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +125,7 @@ func TestLayerKeys(t *testing.T) {
 }
 
 func TestCopyMustStayInContext(t *testing.T) {
-	spec, err := Parse([]byte("name: a\nfrom: {image: b}\nlayers: [{name: l, steps: [{copy: {src: ../secret, dst: /x}}]}]\n"))
+	spec, err := Parse([]byte("from: {image: b}\nlayers: [{name: l, steps: [{copy: {src: ../secret, dst: /x}}]}]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

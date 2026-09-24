@@ -66,12 +66,17 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 // options are the install options a spec passes through (from.install.options).
 type options struct {
 	user, password, fullName string
+	uid                      int
 	autoLogin                bool
 	asif                     bool
 }
 
+// defaultUID is where the provisioned account is moved, off the 501 that the
+// host's first user has, so a warm stage can give 501 to that user.
+const defaultUID = 600
+
 func parseOptions(in map[string]string) (options, error) {
-	o := options{user: "admin", autoLogin: true}
+	o := options{user: "admin", uid: defaultUID, autoLogin: true}
 	keys := make([]string, 0, len(in))
 	for k := range in {
 		keys = append(keys, k)
@@ -86,6 +91,12 @@ func parseOptions(in map[string]string) (options, error) {
 			o.password = v
 		case "fullname":
 			o.fullName = v
+		case "uid":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 501 {
+				return o, fmt.Errorf("vz: option uid is a number from 501 up (below it macOS treats an account as a system one), not %q", v)
+			}
+			o.uid = n
 		case "autologin":
 			b, err := strconv.ParseBool(v)
 			if err != nil {
@@ -101,7 +112,7 @@ func parseOptions(in map[string]string) (options, error) {
 				return o, fmt.Errorf("vz: option disk-format is raw or asif, not %q", v)
 			}
 		default:
-			return o, fmt.Errorf("vz: unknown install option %q (have username, password, fullname, autologin, disk-format)", k)
+			return o, fmt.Errorf("vz: unknown install option %q (have username, password, fullname, uid, autologin, disk-format)", k)
 		}
 	}
 	if o.user == "" {
@@ -219,6 +230,7 @@ func install(ctx context.Context, b bundle, ipsw string, spec machine.InstallSpe
 		CPUs:         max(uint(spec.CPUs), uint(requirements.MinimumSupportedCPUCount())),
 		Memory:       max(spec.Memory, requirements.MinimumSupportedMemorySize()),
 		User:         opts.user,
+		UID:          opts.uid,
 		Password:     opts.password,
 	}
 	m.CPUs, m.Memory = size(m, 0, 0)

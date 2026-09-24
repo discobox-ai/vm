@@ -28,7 +28,8 @@ type Options struct {
 	Context string
 	// Args override the spec's args. Every one must be declared in the spec.
 	Args map[string]string
-	// Tags are extra references for the result, beside the spec's own.
+	// Tags name the result, as `docker build -t` does. Without one the result
+	// is only its image ID.
 	Tags []string
 	// NoCache rebuilds every layer.
 	NoCache bool
@@ -41,6 +42,7 @@ type Options struct {
 
 // Result is a finished build.
 type Result struct {
+	// Ref is the first tag, or empty for an untagged build.
 	Ref   string
 	Layer string
 }
@@ -84,10 +86,6 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 			return nil, fmt.Errorf("build arg %s is not declared in the spec's args", k)
 		}
 		args[k] = v
-	}
-	spec.Name, spec.Tag = expand(spec.Name, args), expand(spec.Tag, args)
-	if err := spec.validateRef(); err != nil {
-		return nil, err
 	}
 	for _, tag := range opts.Tags {
 		if err := image.ValidateRef(tag); err != nil {
@@ -156,20 +154,35 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 		}
 		b.logf("==> %s", prefix)
 		started := time.Now()
-		if err := b.buildLayer(ctx, p, spec.Name, parent, key, layer); err != nil {
+		if err := b.buildLayer(ctx, p, buildName(opts), parent, key, layer); err != nil {
 			return nil, fmt.Errorf("%s: %w", prefix, err)
 		}
 		b.logf("==> %s: committed %s in %s", prefix, image.Short(key), time.Since(started).Round(time.Second))
 		parent = key
 	}
 
-	for _, ref := range append([]string{p.Ref}, opts.Tags...) {
+	result := &Result{Layer: parent}
+	for _, ref := range opts.Tags {
 		if err := store.Tag(ref, parent); err != nil {
 			return nil, err
 		}
 		b.logf("==> tagged %s", image.NormalizeRef(ref))
 	}
-	return &Result{Ref: p.Ref, Layer: parent}, nil
+	if len(opts.Tags) > 0 {
+		result.Ref = image.NormalizeRef(opts.Tags[0])
+	} else {
+		b.logf("==> built %s, untagged; name it with -t, or `disco-vm tag %s NAME[:TAG]`", image.Short(parent), image.Short(parent))
+	}
+	return result, nil
+}
+
+// buildName names a build in layer comments and window titles: its first
+// tag, or its spec's file name.
+func buildName(opts Options) string {
+	if len(opts.Tags) > 0 {
+		return image.NormalizeRef(opts.Tags[0])
+	}
+	return filepath.Base(opts.File)
 }
 
 // install creates (or finds cached) the base layer for a from.install build.

@@ -11,7 +11,6 @@
 #
 # The fake driver records the media and never reads it, so "latest" is enough;
 # the copy step copies this file, so the example needs nothing beside it.
-name: demo/app
 args:
   MSG: hello
 from:

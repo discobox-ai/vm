@@ -5,18 +5,15 @@
 # One spec builds both. The base decides the guest OS, and `when` picks the
 # steps that apply:
 #
-#   disco-vm build -f examples/discobox-base.yaml --build-arg OS_IMAGE=discobox/windows:11
-#   disco-vm build -f examples/discobox-base.yaml --build-arg OS_IMAGE=discobox/macos:26
+#   disco-vm build -f examples/discobox-base.yaml -t discobox/base:windows --build-arg OS_IMAGE=discobox/windows:11
+#   disco-vm build -f examples/discobox-base.yaml -t discobox/base:macos --build-arg OS_IMAGE=discobox/macos:27
 #
 # Layers are ordered from least to most frequently changed, because a layer
 # boundary is a full guest shutdown and commit: bumping NODE_VERSION rebuilds
 # the toolchains layer and everything after it, never the package managers.
 #
 # UNVALIDATED: the steps below are the intended recipe, not yet run in a guest.
-name: discobox/base
-tag: ${VERSION}
 args:
-  VERSION: "2026.09"
   OS_IMAGE: discobox/windows:11
   MAC_USER: admin
   NODE_VERSION: "22.20.0"

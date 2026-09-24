@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -65,13 +67,48 @@ func shimCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			shimArgs := args
 			if warm {
-				return e.RunWarmShim(cmd.Context(), args[0])
+				shimArgs = append([]string{"--warm"}, shimArgs...)
 			}
-			return e.RunShim(cmd.Context(), args[0], gui)
+			if gui {
+				shimArgs = append([]string{"--gui"}, shimArgs...)
+			}
+			return e.ShimMain(cmd.Context(), shimArgs)
 		},
 	}
 	cmd.Flags().BoolVar(&warm, "warm", false, "stage LAYER and hold the stage")
 	cmd.Flags().BoolVar(&gui, "gui", false, "show the guest's display in a window")
 	return cmd
+}
+
+// dialHostCommand connects to the host from inside a guest and joins the
+// connection to stdin and stdout, for shells and tests: it is what a guest
+// program does with guest.DialHost.
+func dialHostCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "dial-host PORT",
+		Short:  "Connect to the host on PORT from inside a guest, over stdin and stdout",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			port, err := strconv.ParseUint(args[0], 10, 32)
+			if err != nil {
+				return fmt.Errorf("port %q: %w", args[0], err)
+			}
+			conn, err := guest.DialHost(uint32(port))
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			go func() {
+				_, _ = io.Copy(conn, os.Stdin)
+				if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+					_ = cw.CloseWrite()
+				}
+			}()
+			_, err = io.Copy(os.Stdout, conn)
+			return err
+		},
+	}
 }

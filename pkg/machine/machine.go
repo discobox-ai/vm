@@ -54,8 +54,9 @@ const (
 	// fresh machine identity. Every driver supports it.
 	Cold CloneMode = "cold"
 	// Resume copies the disk and a saved memory state, and resumes the saved
-	// machine. The clone keeps the saved machine's identity, so each saved
-	// state is meant to be resumed once (vz). It needs a warm image.
+	// machine. The clone runs with the saved machine's identity, which is why a
+	// vz stage keeps one template per guest that can run at once. It needs a
+	// warm image.
 	Resume CloneMode = "resume"
 	// Fork clones a live, paused template: memory is shared copy-on-write and
 	// many clones can be forked from one template (HCS). It needs a warm image.
@@ -79,6 +80,9 @@ type Capabilities struct {
 	SharedDirectories bool `json:"sharedDirectories"`
 	// Display reports a viewable guest framebuffer.
 	Display bool `json:"display"`
+	// Forward reports that guest processes can connect out to the host: a
+	// running Machine implements HostListener.
+	Forward bool `json:"forward"`
 }
 
 // SupportsOS reports whether the driver can run the given guest OS.
@@ -211,7 +215,8 @@ type WarmSpec struct {
 	// Dir is private to the driver for this image's stage. It exists, and it
 	// is the same directory for Warm, Warmth, Cool, and InstanceSpec.WarmDir.
 	Dir string
-	// Count is how many clones to stage where each stage is used once
+	// Count is how many clones to stage where a stage is a pool used once per
+	// clone (fake)
 	// (resume). Warm tops an existing stage up to Count. A mode whose stage
 	// serves any number of clones (fork) ignores it.
 	Count int
@@ -219,8 +224,21 @@ type WarmSpec struct {
 	// A clone of a stage runs at the stage's size.
 	CPUs   int
 	Memory uint64
+	// User, when set, is an account created in the stage and logged in on its
+	// display, so every clone of the stage starts as that user. A driver that
+	// cannot create one returns ErrUnsupported.
+	User *User
 	// Log receives human-readable progress.
 	Log io.Writer
+}
+
+// User is a guest account a driver creates.
+type User struct {
+	Name     string `json:"name"`
+	FullName string `json:"fullName,omitempty"`
+	// UID is the account's numeric ID where the guest OS has one (macOS), so
+	// that it can match the host's; zero lets the guest pick.
+	UID int `json:"uid,omitempty"`
 }
 
 // Warmth is what a stage can serve now.
@@ -230,6 +248,11 @@ type Warmth struct {
 	// Clones is how many Prepares the stage can serve: zero when nothing is
 	// staged, and -1 when it serves any number (a fork template).
 	Clones int `json:"clones"`
+	// Held says why the stage cannot serve as it should right now: a vz
+	// restore needs the Mac's screen unlocked. With Clones zero nothing is
+	// served; otherwise clones are served some slower way (vz boots them cold
+	// from the stage).
+	Held string `json:"held,omitempty"`
 }
 
 // Warmer is a driver that can stage an image so that clones skip the cold
@@ -258,6 +281,17 @@ type Stage interface {
 	Done() <-chan struct{}
 	// Close releases the stage and waits for it to be gone.
 	Close(ctx context.Context) error
+}
+
+// HostListener is a running machine whose guest processes can connect out to
+// the host. A driver that lists Capabilities.Forward returns machines that
+// implement it.
+type HostListener interface {
+	// Listen accepts the connections guest processes open to the host on a
+	// port: AF_VSOCK to the host (CID 2) on vz, hvsocket to the parent
+	// partition on HCS. A guest dials it with guest.DialHost. It lasts until
+	// it is closed or the machine stops.
+	Listen(port uint32) (net.Listener, error)
 }
 
 // Machine is a running guest.

@@ -1,6 +1,7 @@
 package guest
 
 import (
+	"context"
 	"net"
 
 	"github.com/Microsoft/go-winio"
@@ -15,6 +16,15 @@ import (
 func listenVsock(port uint32) (net.Listener, error) {
 	return winio.ListenHvsock(&winio.HvsockAddr{
 		VMID:      winio.HvsockGUIDWildcard(),
+		ServiceID: winio.VsockServiceID(port),
+	})
+}
+
+// dialVsockHost connects to the host (the parent partition) on the port's
+// hvsocket service ID.
+func dialVsockHost(port uint32) (net.Conn, error) {
+	return winio.Dial(context.Background(), &winio.HvsockAddr{
+		VMID:      winio.HvsockGUIDParent(),
 		ServiceID: winio.VsockServiceID(port),
 	})
 }

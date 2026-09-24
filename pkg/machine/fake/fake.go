@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,6 +72,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS:    []machine.OS{machine.OS(runtime.GOOS)},
 		CloneModes: []machine.CloneMode{machine.Cold, machine.Resume},
+		Forward:    true,
 	}
 }
 
@@ -80,7 +82,10 @@ const (
 	rootfsName = "rootfs"
 	stagesName = "stages"
 	addrName   = "agent.addr"
-	markerName = ".disco-vm-install"
+	// hostPortsName is where a running fake guest finds the ports its host
+	// listens on (guest.HostPortsEnv).
+	hostPortsName = "host-ports"
+	markerName    = ".disco-vm-install"
 )
 
 func rootfs(dir string) string { return filepath.Join(dir, rootfsName) }
@@ -130,6 +135,10 @@ func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
 func (d *Driver) Warm(_ context.Context, spec machine.WarmSpec) (machine.Stage, error) {
 	if len(spec.Chain) == 0 {
 		return nil, errors.New("fake: warm: no image")
+	}
+	if spec.User != nil {
+		// A fake guest is a host process; it has no accounts of its own.
+		return nil, fmt.Errorf("fake: warm as a user: %w", machine.ErrUnsupported)
 	}
 	stages, err := staged(spec.Dir)
 	if err != nil {
@@ -202,10 +211,16 @@ func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 		console = io.Discard
 	}
 	cmd.Stdout, cmd.Stderr = console, console
+	hostPorts := filepath.Join(inst.Dir, hostPortsName)
+	_ = os.RemoveAll(hostPorts)
+	if err := os.MkdirAll(hostPorts, 0o755); err != nil {
+		return nil, err
+	}
+	cmd.Env = append(os.Environ(), guest.HostPortsEnv+"="+hostPorts)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("fake: start guest agent %s: %w", d.Agent, err)
 	}
-	m := &proc{cmd: cmd, done: make(chan struct{})}
+	m := &proc{cmd: cmd, done: make(chan struct{}), hostPorts: hostPorts}
 	go func() {
 		err := cmd.Wait()
 		// A guest that exits 0 powered itself off; anything else crashed.
@@ -253,12 +268,13 @@ func (d *Driver) DeleteLayer(context.Context, machine.Layer) error { return nil 
 
 // proc is a running fake guest.
 type proc struct {
-	cmd    *exec.Cmd
-	addr   string
-	done   chan struct{}
-	err    error
-	once   sync.Once
-	killed atomic.Bool
+	cmd       *exec.Cmd
+	addr      string
+	hostPorts string
+	done      chan struct{}
+	err       error
+	once      sync.Once
+	killed    atomic.Bool
 }
 
 func (m *proc) Dial(ctx context.Context, port uint32) (net.Conn, error) {
@@ -272,6 +288,37 @@ func (m *proc) Dial(ctx context.Context, port uint32) (net.Conn, error) {
 	}
 	var d net.Dialer
 	return d.DialContext(ctx, "tcp", m.addr)
+}
+
+var _ machine.HostListener = (*proc)(nil)
+
+// Listen listens on loopback and publishes the address where the fake guest,
+// a host process, finds it (guest.DialHost).
+func (m *proc) Listen(port uint32) (net.Listener, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	file := filepath.Join(m.hostPorts, strconv.FormatUint(uint64(port), 10))
+	if err := os.WriteFile(file+".tmp", []byte(l.Addr().String()), 0o644); err == nil {
+		err = os.Rename(file+".tmp", file)
+	}
+	if err != nil {
+		_ = l.Close()
+		return nil, err
+	}
+	return &published{Listener: l, file: file}, nil
+}
+
+// published is a fake host port, unpublished when it closes.
+type published struct {
+	net.Listener
+	file string
+}
+
+func (p *published) Close() error {
+	_ = os.Remove(p.file)
+	return p.Listener.Close()
 }
 
 func (m *proc) Kill(context.Context) error {

@@ -60,7 +60,7 @@ func Main(args []string) int {
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
 		psCommand(g), inspectCommand(g), execCommand(g), cpCommand(g),
 		infoCommand(g),
-		guestCommand(), shimCommand(g),
+		guestCommand(), shimCommand(g), dialHostCommand(),
 	)
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)

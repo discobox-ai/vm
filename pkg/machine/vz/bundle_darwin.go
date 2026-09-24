@@ -64,11 +64,27 @@ type meta struct {
 	// was installed through. The password is here because nothing else knows
 	// it; the file is private to the owner.
 	User     string `json:"user"`
+	UID      int    `json:"uid,omitempty"`
 	Password string `json:"password,omitempty"`
+	// Login is the account a warm stage created and logs in at boot; every
+	// clone of the stage has it.
+	Login *login `json:"login,omitempty"`
+	// Template is the template a resume clone was restored from, whose
+	// identity it still has; its next boot gives it its own.
+	Template string `json:"template,omitempty"`
 	// Saved is set on a staged clone: the size and host its state was saved
 	// at. A restore needs the size exactly, and a host OS update can
 	// invalidate a state, so a state from another host build is stale.
 	Saved *saved `json:"saved,omitempty"`
+}
+
+type login struct {
+	Name     string `json:"name"`
+	UID      int    `json:"uid,omitempty"`
+	Password string `json:"password"`
+	// Version is how the account was set up (loginVersion); a base made an
+	// older way is made again.
+	Version int `json:"version,omitempty"`
 }
 
 type saved struct {

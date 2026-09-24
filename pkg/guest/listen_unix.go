@@ -48,6 +48,29 @@ func listenVsock(port uint32) (net.Listener, error) {
 	return &vsockListener{file: file, raw: raw, addr: vsockAddr{CID: unix.VMADDR_CID_ANY, Port: port}}, nil
 }
 
+// dialVsockHost connects to the host (CID 2) on a vsock port.
+func dialVsockHost(port uint32) (net.Conn, error) {
+	syscall.ForkLock.RLock()
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+	if err == nil {
+		unix.CloseOnExec(fd)
+	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		return nil, fmt.Errorf("vsock: socket: %w", err)
+	}
+	if err := unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: port}); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("vsock: connect to the host on port %d: %w", port, err)
+	}
+	if err := unix.SetNonblock(fd, true); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	remote := vsockAddr{CID: unix.VMADDR_CID_HOST, Port: port}
+	return &vsockConn{File: os.NewFile(uintptr(fd), "vsock-conn"), remote: remote}, nil
+}
+
 type vsockListener struct {
 	file *os.File
 	raw  syscall.RawConn
@@ -97,6 +120,20 @@ func (c *vsockConn) LocalAddr() net.Addr  { return c.local }
 func (c *vsockConn) RemoteAddr() net.Addr { return c.remote }
 
 func (c *vsockConn) SetDeadline(t time.Time) error { return c.File.SetDeadline(t) }
+
+// CloseWrite shuts the sending half, so the other end reads EOF while this one
+// can still read.
+func (c *vsockConn) CloseWrite() error {
+	raw, err := c.File.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var serr error
+	if err := raw.Control(func(fd uintptr) { serr = unix.Shutdown(int(fd), unix.SHUT_WR) }); err != nil {
+		return err
+	}
+	return serr
+}
 
 type vsockAddr struct{ CID, Port uint32 }
 

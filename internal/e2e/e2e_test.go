@@ -13,12 +13,15 @@ package e2e
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 var (
@@ -160,16 +163,16 @@ func newEnv(t *testing.T) env {
 	}
 	e := env{t: t, root: tg.root}
 	// Whatever a failed run left, so that this one builds its layers anew.
-	e.run("rm", "-f", "dev", "dev2", "before", "one", "two", "after")
+	e.run("rm", "-f", "dev", "dev2", "before", "one", "two", "after", "fw")
 	e.run("warm", "--rm", "test/warm")
-	for _, ref := range []string{"test/app:v1", "test/app:latest", "test/app:other", "test/warm"} {
+	for _, ref := range []string{"test/app:v1", "test/app:latest", "test/app:other", "test/warm", "test/fwd"} {
 		e.run("rmi", ref)
 	}
 	spec := filepath.Join(t.TempDir(), "base.yaml")
-	if err := os.WriteFile(spec, []byte("name: e2e/base\nfrom:\n  install: "+tg.install+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(spec, []byte("from:\n  install: "+tg.install+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	e.ok("build", "-f", spec)
+	e.ok("build", "-f", spec, "-t", "e2e/base")
 	return e
 }
 
@@ -204,7 +207,6 @@ func TestLifecycle(t *testing.T) {
 		shell, other = `["cmd", "/c"]`, "darwin"
 	}
 	spec := fmt.Sprintf(`
-name: test/app
 args:
   MSG: hello
 from:
@@ -225,11 +227,11 @@ layers:
 		t.Fatal(err)
 	}
 
-	// Build, then build again from cache.
-	out := e.ok("build", "-f", specPath, "--build-arg", "MSG=hi", "-t", "test/app:v1")
+	// Build, then build again from cache. The spec names nothing; -t does.
+	out := e.ok("build", "-f", specPath, "--build-arg", "MSG=hi", "-t", "test/app", "-t", "test/app:v1")
 	mustContain(t, out, "==> install "+guestOS, "[1/1] files", "committed", "elsewhere: skipped", "tagged test/app:latest", "tagged test/app:v1")
 	out = e.ok("build", "-f", specPath, "--build-arg", "MSG=hi")
-	mustContain(t, out, "install "+guestOS+": CACHED", "files: CACHED")
+	mustContain(t, out, "install "+guestOS+": CACHED", "files: CACHED", "untagged")
 	// A different arg is a different layer.
 	out = e.ok("build", "-f", specPath, "--build-arg", "MSG=other", "-t", "test/app:other")
 	mustContain(t, out, "install "+guestOS+": CACHED", "committed")
@@ -313,9 +315,10 @@ func TestInfo(t *testing.T) {
 	}
 }
 
-// A warm image serves clones from its stage. A fork template serves any
-// number; a resume pool serves one per staged state until it is used up, then
-// auto falls back to cold and an explicit resume says to warm again.
+// A warm image serves clones from its stage. A template (hcs fork, vz resume)
+// serves any number; a pool (fake) serves one per staged clone until it is
+// used up, then auto falls back to cold and an explicit resume says to warm
+// again.
 func TestWarm(t *testing.T) {
 	e := newEnv(t)
 	contextDir := t.TempDir()
@@ -323,7 +326,6 @@ func TestWarm(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := fmt.Sprintf(`
-name: test/warm
 from:
   install: %s
 layers:
@@ -335,7 +337,7 @@ layers:
 	if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	e.ok("build", "-f", specPath)
+	e.ok("build", "-f", specPath, "-t", "test/warm")
 	mode := func(name string) string {
 		t.Helper()
 		out := e.ok("inspect", name)
@@ -348,8 +350,7 @@ layers:
 		return ""
 	}
 
-	// The driver's fast mode: a fork template serves any number of clones, a
-	// resume pool one clone per staged state.
+	// The driver's fast mode.
 	fast := "resume"
 	if strings.Contains(e.ok("info"), `"fork"`) {
 		fast = "fork"
@@ -366,12 +367,14 @@ layers:
 	// No more than two run at once anywhere in this test: vz allows two.
 	e.ok("rm", "-f", "before")
 
-	if fast == "fork" {
-		mustContain(t, e.ok("warm", "test/warm"), "warm, fork clones")
-		mustContain(t, e.ok("images"), "fork clones")
+	// A template says "<mode> clones", any number; a pool counts them.
+	warmed := e.ok("warm", "--count", "2", "test/warm")
+	unlimited := strings.Contains(warmed, "warm, "+fast+" clones")
+	if unlimited {
+		mustContain(t, e.ok("images"), fast+" clones")
 	} else {
-		mustContain(t, e.ok("warm", "--count", "2", "test/warm"), "warm, 2 resume clones")
-		mustContain(t, e.ok("images"), "2 resume clones")
+		mustContain(t, warmed, "warm, 2 "+fast+" clones")
+		mustContain(t, e.ok("images"), "2 "+fast+" clones")
 	}
 	// Auto takes the fast mode, and naming it does too.
 	e.ok("run", "--name", "one", "test/warm")
@@ -385,13 +388,13 @@ layers:
 	mustContain(t, e.ok("ps"), fast)
 	e.ok("rm", "-f", "one", "two")
 
-	if fast == "fork" {
+	if unlimited {
 		// A template is never used up.
 		e.ok("run", "--name", "after", "test/warm")
-		if got := mode("after"); got != "fork" {
+		if got := mode("after"); got != fast {
 			t.Fatalf("an instance of a warm template cloned %s", got)
 		}
-		mustContain(t, e.ok("warm", "test/warm"), "warm, fork clones")
+		mustContain(t, e.ok("warm", "test/warm"), "warm, "+fast+" clones")
 	} else {
 		// Used up: auto boots cold, and resume says to warm again.
 		e.ok("run", "--name", "after", "test/warm")
@@ -403,6 +406,7 @@ layers:
 			t.Fatal("a resume clone of a used-up stage was allowed")
 		}
 		mustContain(t, out, "disco-vm warm test/warm")
+		mustContain(t, e.ok("images"), "used up (0 of 2)")
 
 		// Warming again tops the stage up.
 		mustContain(t, e.ok("warm", "test/warm"), "1 resume clone")
@@ -421,4 +425,68 @@ layers:
 		t.Fatalf("warm --rm left %d stages on disk", len(entries))
 	}
 	e.ok("rmi", "test/warm")
+}
+
+// A guest process reaches a host service through a forward: it connects out
+// to the host on a port, and the instance's shim splices that into a Unix
+// socket on the host, in both directions.
+func TestForward(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the guest side is a POSIX shell pipeline")
+	}
+	e := newEnv(t)
+	if !strings.Contains(e.ok("info"), `"forward": true`) {
+		t.Skipf("driver %s cannot forward a guest's connections to the host", tg.driver)
+	}
+	contextDir := t.TempDir()
+	specPath := filepath.Join(contextDir, "disco-vm.yaml")
+	if err := os.WriteFile(specPath, []byte("from:\n  install: "+tg.install+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.ok("build", "-f", specPath, "-t", "test/fwd")
+
+	// A short directory: a Unix socket path is limited to about 100 bytes.
+	dir, err := os.MkdirTemp("", "dvf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "host.sock")
+	l, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	fromGuest := make(chan string, 1)
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintln(conn, "hello from the host")
+		data, _ := io.ReadAll(conn)
+		fromGuest <- string(data)
+	}()
+
+	e.ok("run", "--name", "fw", "--forward", "7401:"+socket, "test/fwd")
+	t.Cleanup(func() { e.run("rm", "-f", "fw") })
+	// The guest's disco-vm: this build, copied in on a real guest, whose
+	// baked-in agent may predate dial-host.
+	agent := binary
+	if tg.driver != "fake" {
+		e.ok("exec", "fw", "mkdir", "-p", tg.cmd("dv"))
+		e.ok("cp", binary, "fw:"+tg.file("dv"))
+		agent = tg.cmd("dv/" + filepath.Base(binary))
+	}
+	out := e.ok("exec", "fw", "/bin/sh", "-c", `echo "hello from the guest" | "$0" dial-host 7401`, agent)
+	mustContain(t, out, "hello from the host")
+	select {
+	case got := <-fromGuest:
+		mustContain(t, got, "hello from the guest")
+	case <-time.After(30 * time.Second):
+		t.Fatal("the host socket never heard from the guest")
+	}
+	e.ok("rm", "-f", "fw")
+	e.ok("rmi", "test/fwd")
 }

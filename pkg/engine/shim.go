@@ -11,12 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 const shimStateName = "shim.json"
@@ -42,6 +44,12 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 	if err != nil {
 		return err
 	}
+	forwards, err := serveForwards(booted.Machine, inst.Forwards)
+	if err != nil {
+		_ = booted.Machine.Kill(context.Background())
+		return err
+	}
+	defer forwards()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = booted.Machine.Kill(context.Background())
@@ -109,6 +117,50 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 	return err
 }
 
+// serveForwards listens for the guest on each forward's port and splices every
+// connection into its host socket. The returned func stops listening.
+func serveForwards(m machine.Machine, forwards []Forward) (func(), error) {
+	if len(forwards) == 0 {
+		return func() {}, nil
+	}
+	hl, ok := m.(machine.HostListener)
+	if !ok {
+		return nil, errors.New("this machine cannot take a guest's connections to the host")
+	}
+	var listeners []net.Listener
+	closeAll := func() {
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+	}
+	for _, f := range forwards {
+		l, err := hl.Listen(f.Port)
+		if err != nil {
+			closeAll()
+			return nil, err
+		}
+		listeners = append(listeners, l)
+		go func(l net.Listener, f Forward) {
+			for {
+				conn, err := l.Accept()
+				if err != nil {
+					return
+				}
+				go func() {
+					host, err := net.Dial("unix", f.Socket)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "shim: forward port %d: %v\n", f.Port, err)
+						_ = conn.Close()
+						return
+					}
+					spliceHalves(conn, host)
+				}()
+			}
+		}(l, f)
+	}
+	return closeAll, nil
+}
+
 // serveControl serves a shim's control API on listener, behind a bearer token,
 // and publishes it at statePath. The returned func unpublishes and stops it.
 func serveControl(listener net.Listener, mux *http.ServeMux, statePath string) (shimState, func(), error) {
@@ -151,6 +203,28 @@ func splice(a, b net.Conn) {
 	wg.Wait()
 }
 
+// spliceHalves copies both ways and passes each end's EOF on as a half-close,
+// so one side can finish sending and still read the answer. It closes both
+// once both directions are done. An end that cannot half-close is closed.
+func spliceHalves(a, b net.Conn) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	copyHalf := func(dst, src net.Conn) {
+		defer wg.Done()
+		_, _ = io.Copy(dst, src)
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		} else {
+			_ = dst.Close()
+		}
+	}
+	go copyHalf(a, b)
+	go copyHalf(b, a)
+	wg.Wait()
+	_ = a.Close()
+	_ = b.Close()
+}
+
 // bufConn is a hijacked connection whose first bytes may already be buffered.
 type bufConn struct {
 	net.Conn
@@ -159,11 +233,40 @@ type bufConn struct {
 
 func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
-// spawnShim starts `disco-vm shim ARGS...` detached from this process, so the
-// VM outlives the command that started it. The returned channel yields once,
+// ShimMain is the body of a shim, given the arguments the engine appends to
+// ShimCommand: [--gui] INSTANCE, or --warm LAYER. A program that embeds the
+// engine calls it from the subcommand ShimCommand names.
+func (e *Engine) ShimMain(ctx context.Context, args []string) error {
+	var gui, warm bool
+	var rest []string
+	for _, arg := range args {
+		switch arg {
+		case "--gui":
+			gui = true
+		case "--warm":
+			warm = true
+		default:
+			rest = append(rest, arg)
+		}
+	}
+	if len(rest) != 1 || (warm && gui) {
+		return fmt.Errorf("shim: want [--gui] INSTANCE or --warm LAYER, not %q", args)
+	}
+	if warm {
+		return e.RunWarmShim(ctx, rest[0])
+	}
+	return e.RunShim(ctx, rest[0], gui)
+}
+
+// spawnShim starts a shim with args, detached from this process, so the VM
+// outlives the command that started it. The returned channel yields once,
 // when the shim exits.
-func spawnShim(exe, root, driver string, args []string, log *os.File) (<-chan error, error) {
-	cmd := exec.Command(exe, append([]string{"--root", root, "--driver", driver, "shim"}, args...)...)
+func (e *Engine) spawnShim(args []string, log *os.File) (<-chan error, error) {
+	argv := e.ShimCommand
+	if len(argv) == 0 {
+		argv = []string{e.Exe, "--root", e.Root, "--driver", e.Driver.Name(), "shim"}
+	}
+	cmd := exec.Command(argv[0], append(slices.Clone(argv[1:]), args...)...)
 	cmd.Stdout, cmd.Stderr = log, log
 	detach(cmd)
 	if err := cmd.Start(); err != nil {

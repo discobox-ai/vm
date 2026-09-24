@@ -12,14 +12,17 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Warm stages resume clones until spec.Count are ready. Each one is a clone of
-// the image with its own identity, booted cold, saved once its agent answers,
-// and stopped. The pool is on disk, so Warm returns no Stage and the warm shim
-// exits when it returns. Clones are staged one at a time: a staging boot counts
-// against the framework's two running macOS guests.
+// Warm stages the image's two templates (see templates), which serve any
+// number of resume clones; spec.Count does not apply. Each template is a clone
+// of the image with its own identity, booted cold, saved once its agent answers
+// (and its user is logged in), and stopped. The templates are on disk, so Warm
+// returns no Stage and the warm shim exits when it returns. They are staged one
+// at a time: a staging boot counts against the framework's two running macOS
+// guests.
 func (d *Driver) Warm(ctx context.Context, spec machine.WarmSpec) (machine.Stage, error) {
 	if len(spec.Chain) == 0 {
 		return nil, errors.New("vz: warm: no image")
@@ -29,33 +32,41 @@ func (d *Driver) Warm(ctx context.Context, spec machine.WarmSpec) (machine.Stage
 		log = io.Discard
 	}
 	parent := bundle(spec.Chain[len(spec.Chain)-1].Dir)
+	if spec.User != nil {
+		// Every state is cloned from a base that has the user and logs it in,
+		// so each resumes into that user's session.
+		base, err := loginBase(ctx, parent, spec.Dir, spec.User, log)
+		if err != nil {
+			return nil, err
+		}
+		parent = base
+	}
 	m, err := parent.readMeta()
 	if err != nil {
 		return nil, err
 	}
 	cpus, memory := size(m, spec.CPUs, spec.Memory)
-	states, err := stagedStates(spec.Dir, true)
+	staged, err := templates(spec.Dir, true)
 	if err != nil {
 		return nil, err
 	}
-	want := max(spec.Count, 1)
-	for n := len(states); n < want; n++ {
+	for n := len(staged); n < templateCount; n++ {
 		started := time.Now()
-		// Staged under a temporary name and renamed, so Prepare never takes
-		// a half-written state.
+		// Staged under a temporary name and renamed, so a boot never takes a
+		// half-written template.
 		tmp := bundle(filepath.Join(spec.Dir, "tmp-"+fsutil.RandomHex(6)))
 		if err := stage(ctx, parent, tmp, cpus, memory); err != nil {
 			_ = os.RemoveAll(string(tmp))
 			return nil, err
 		}
-		if err := os.MkdirAll(filepath.Join(spec.Dir, statesName), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Join(spec.Dir, templatesName), 0o700); err != nil {
 			return nil, err
 		}
-		if err := os.Rename(string(tmp), filepath.Join(spec.Dir, statesName, fsutil.RandomHex(6))); err != nil {
+		if err := os.Rename(string(tmp), filepath.Join(spec.Dir, templatesName, fsutil.RandomHex(6))); err != nil {
 			_ = os.RemoveAll(string(tmp))
 			return nil, err
 		}
-		fmt.Fprintf(log, "vz: staged resume clone %d of %d in %s\n", n+1, want, time.Since(started).Round(time.Second))
+		fmt.Fprintf(log, "vz: staged template %d of %d in %s\n", n+1, templateCount, time.Since(started).Round(time.Second))
 	}
 	return nil, nil
 }
@@ -87,6 +98,18 @@ func stage(ctx context.Context, parent, dst bundle, cpus uint, memory uint64) er
 	ready, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	agent := vm.agent()
 	err = agent.WaitReady(ready, vm.Done())
+	if err == nil {
+		if m, merr := parent.readMeta(); merr == nil && m.Login != nil {
+			err = waitLoggedIn(ready, agent, m.Login.Name)
+			// A template saved in Setup Assistant resumes every clone into it.
+			if err == nil {
+				check := guest.ExecRequest{Argv: []string{"pgrep", "-qx", "Setup Assistant"}}
+				if code, rerr := agent.Run(ready, check, nil, io.Discard, io.Discard); rerr == nil && code == 0 {
+					err = fmt.Errorf("vz: %s logged in to Setup Assistant; `disco-vm warm --rm` and warm again", m.Login.Name)
+				}
+			}
+		}
+	}
 	cancel()
 	// Nothing of the host's may be connected when memory is saved: a restored
 	// guest would hold connections to nobody.
@@ -114,14 +137,18 @@ func stage(ctx context.Context, parent, dst bundle, cpus uint, memory uint64) er
 	return dst.writeMeta(m)
 }
 
-// Warmth counts the staged states this host can restore now. It reports none
-// while the screen is locked, when every restore would be refused, so that an
-// auto clone boots the image cold instead of a resume clone's disk.
+// Warmth reports any number of resume clones while the stage has a template
+// this host can restore. While the screen is locked every restore is refused,
+// so it says so in Held, but still serves: a clone then boots cold from the
+// stage's base, which is slower but still has the stage's user.
 func (*Driver) Warmth(_ context.Context, spec machine.WarmSpec) (machine.Warmth, error) {
 	cold := machine.Warmth{Mode: machine.Cold}
-	states, err := stagedStates(spec.Dir, false)
-	if err != nil || len(states) == 0 || screenLocked() {
+	staged, err := templates(spec.Dir, false)
+	if err != nil || len(staged) == 0 {
 		return cold, err
 	}
-	return machine.Warmth{Mode: machine.Resume, Clones: len(states)}, nil
+	if screenLocked() {
+		return machine.Warmth{Mode: machine.Resume, Clones: -1, Held: "the screen is locked, and a restore needs it unlocked; clones boot cold until then"}, nil
+	}
+	return machine.Warmth{Mode: machine.Resume, Clones: -1}, nil
 }

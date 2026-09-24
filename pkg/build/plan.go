@@ -22,7 +22,6 @@ import (
 // paths resolved: exactly what will run, and therefore exactly what the cache
 // keys hash.
 type Plan struct {
-	Ref     string
 	GuestOS machine.OS
 	// BaseImage is the from.image reference, or empty for an install.
 	BaseImage string
@@ -102,7 +101,7 @@ const windowsPrelude = "$ErrorActionPreference = 'Stop'; $ProgressPreference = '
 // plan resolves a spec for a guest OS. The caller has already resolved the
 // base, which is where the guest OS comes from for a from.image build.
 func plan(spec *Spec, args map[string]string, contextDir string, guestOS machine.OS) (*Plan, error) {
-	p := &Plan{Ref: spec.Ref(), GuestOS: guestOS, CPUs: spec.Resources.CPUs}
+	p := &Plan{GuestOS: guestOS, CPUs: spec.Resources.CPUs}
 	memory, err := units.ParseBytes(expand(spec.Resources.Memory, args))
 	if err != nil {
 		return nil, fmt.Errorf("resources.memory: %w", err)

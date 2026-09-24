@@ -1,12 +1,10 @@
 # The Windows OS image: a retail ISO, installed unattended, with the disco-vm
 # agent baked in by the hcs driver as a boot-start SYSTEM service.
 #
-#   disco-vm build -f examples/windows.yaml --build-arg ISO=D:\iso\Win11_25H2_English_x64.iso
+#   disco-vm build -f examples/windows.yaml -t discobox/windows:11 --build-arg ISO=D:\iso\Win11_25H2_English_x64.iso
 #
 # Microsoft does not allow an unattended ISO download, so the ISO is an input:
 # https://www.microsoft.com/software-download/windows11
-name: discobox/windows
-tag: "11"
 args:
   ISO: Win11_English_x64.iso
 from:

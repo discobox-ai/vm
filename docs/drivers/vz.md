@@ -79,12 +79,24 @@ volumes is an error that says so, never a silent 100 GiB copy.
    also sets `pmset -a sleep 0`, because a sleeping guest's agent answers
    nothing. Then it waits for the agent on vsock 7300 and shuts down through
    it. That took 45 seconds.
-4. Options (`from.install.options`, with build args substituted): `username`
+4. **The account moves off uid 501.** Provisioning always makes the first
+   account 501, which is also the first account on the host, so the bootstrap
+   moves it to `uid` (default 600) and chowns its files. That frees 501 for a
+   warm stage to give to the host's user. It keeps its SecureToken, so it
+   stays the disk's volume owner.
+5. Options (`from.install.options`, with build args substituted): `username`
    (default `admin`), `password` (default random, recorded in the layer's
-   `vz.json`, which is private to the owner), `fullname`, `autologin`
-   (default true), and `disk-format`. An unknown key is an error.
+   `vz.json`, which is private to the owner), `fullname`, `uid` (default 600),
+   `autologin` (default true), and `disk-format`. An unknown key is an error.
 
 Learned the hard way:
+
+- **Only SSH may change an account.** macOS lets only a session with Full
+  Disk Access write a user record. The agent's launchd daemon has none, so
+  from it `dscl` fails with `-14120` and `sysadminctl -addUser -UID` silently
+  picks another uid; SSH has it. So everything that touches accounts (moving
+  the install account, creating a warm stage's user) goes over SSH as the
+  install account with `sudo`, whose password the layer records.
 
 - **A new guest restarts itself during first-boot setup, and to the framework
   a restart is a stop.** A guest that stops cleanly before the agent is in is
@@ -102,20 +114,28 @@ Learned the hard way:
 
 - **cold:** clone the parent layer's files, then write a new machine
   identifier. The MAC is created on the first boot.
-- **resume:** take one whole staged bundle from `inst.WarmDir` by renaming it
-  into `inst.Dir`. A rename is atomic, so two clones can't take the same one.
-  Return `machine.ErrNotWarm` when none is left.
+- **resume:** check that the stage in `inst.WarmDir` has a template
+  (`machine.ErrNotWarm` otherwise) and mark the instance `resume.pending`. The
+  template is taken by the first boot, in the process that will hold the VM.
 
 **Boot(inst, opts):** one configuration for install, every boot, and every
 save and restore: the Mac platform, virtio block, NAT with the bundle's MAC,
 the Mac framebuffer (always attached, so opening a window never changes the
 hardware), keyboard and pointer, a virtio socket device, and optional virtiofs
 shares. There is **no memory balloon**: a macOS guest ignores its target, and
-any device added later strands every saved state. A bundle with `state.bin` is
-restored at the size it was saved at, then resumed. The state is consumed
-whether or not that works, and a refused restore falls back to a cold boot of
-the same bundle. `Dial` is the socket device's `Connect`, with the caller's
-deadline enforced around it. `Done` follows the VM's state channel. `Kill` is
+any device added later strands every saved state. A pending resume clone locks a
+template that no running VM holds (`flock` on its `lock`, held until the VM
+stops, and by the process, so a dead shim frees it), clones its files into the
+instance, and restores it at the size it was saved at. If no template is free,
+or the framework refuses the restore, the instance becomes a cold clone of the
+image instead. A resumed clone still has its template's identity, so its next
+boot first gives it a new machine identifier and MAC. `Dial` is the socket device's `Connect`, with the caller's
+deadline enforced around it, and `Listen` (`machine.HostListener`, for an
+instance's forwards) is the socket device's `Listen`: a guest process connects
+to the host at CID 2. Connections both ways can half-close, which a request
+piped in and its answer read back need; the bindings keep the connection's
+Unix-domain socket unexported, so `CloseWrite` reaches it by reflection and
+falls back to a full close if their layout changes. `Done` follows the VM's state channel. `Kill` is
 `Stop`.
 
 **GUI** (`BootOptions.GUI`, `InstallSpec.GUI`; design decision 3a): after the
@@ -142,19 +162,41 @@ discobox's fork.
 
 **Warm, Warmth, Cool** (`machine.Warmer`, design decision 7):
 
-- **A stage is a pool of complete bundles** under `<stage>/states/`, not a
-  pool of `state.bin` files. A saved state only restores against the disk as
-  it stood when the state was saved, so each staged clone carries its own
-  disk, identity, and MAC. APFS makes that cheap.
-- **Warm** stages one clone at a time until `spec.Count` are staged: clone the
-  image with a new identity, boot it cold at the stage's size, wait for the
-  agent, close every host connection, pause, save, and stop while paused. Each
-  clone is written under a temporary name and renamed into place. That took
-  about 30 seconds per clone.
-- **Warmth** counts the staged bundles whose recorded host build matches this
-  host's (a host update invalidates saved states), and reports zero while the
-  screen is locked, so that auto mode clones cold.
-- **Cool** removes the pool.
+- **A stage is two templates** under `<stage>/templates/`, each a complete
+  bundle: disk, identity, MAC, and saved state. A saved state restores only
+  against the disk as it stood when it was saved, and only under the identity
+  it was saved with: a clone given a new machine identifier, a new MAC, or
+  both, is refused with "invalid argument" (measured). A template is never
+  used up, since every resume clone is an APFS clone of one. Two clones of one
+  template must not run at once (a shared MAC is a shared address on the NAT,
+  and a shared identifier is undefined behavior), and the framework runs at
+  most two macOS guests, so two templates always leave one free.
+- **Warm** stages the two templates one at a time (`spec.Count` does not
+  apply): clone the image with a new identity, boot it cold at the stage's
+  size, wait for the agent, close every host connection, pause, save, and stop
+  while paused. Each is written under a temporary name and renamed into place.
+  That took about 30 seconds each.
+- **A user** (`WarmSpec.User`, `disco-vm warm --user NAME[:UID]` or
+  `--local-user`): before staging, Warm boots the image once and, over SSH,
+  creates the account (an administrator with passwordless sudo and a random
+  password recorded in the stage), sets it to log in at boot (`/etc/kcpassword`
+  and loginwindow's `autoLoginUser`), and hides the install account. It then
+  boots twice more, because the user's first login marks it for Setup
+  Assistant's first-login setup (`MiniBuddyLaunch` in the user's loginwindow
+  preferences), and every template would resume into Setup Assistant: the
+  first boot quits Setup Assistant (which sets the mark again while it runs)
+  and clears the mark, and the second checks for a plain desktop. Clearing it
+  at creation does not stick, since the login sets it. Staging a template
+  refuses to save one with Setup Assistant running. A base records how it was
+  made (`loginVersion`), so a stage made an older way is made again. That
+  bundle is the stage's `base/`, kept for topping up, and each template is
+  cloned from it and saved only once the user owns the console and Finder is up. So a
+  resumed clone opens in that user's session. A cold clone of the image does
+  not have the user.
+- **Warmth** reports any number (-1) while a template's recorded host build
+  matches this host's (a host update invalidates saved states), and zero, with
+  `Held` saying why, while the screen is locked, so that auto mode clones cold.
+- **Cool** removes the stage.
 
 ## Measured on real hardware
 

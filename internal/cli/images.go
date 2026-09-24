@@ -47,7 +47,7 @@ func buildCommand(g *globals) *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&file, "file", "f", "disco-vm.yaml", "build spec")
 	cmd.Flags().StringArrayVar(&buildArgs, "build-arg", nil, "override a spec arg (KEY=VALUE)")
-	cmd.Flags().StringArrayVarP(&tags, "tag", "t", nil, "extra name:tag for the result")
+	cmd.Flags().StringArrayVarP(&tags, "tag", "t", nil, "name the result NAME[:TAG] (repeatable); without it the build is known by its ID")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "rebuild every layer")
 	cmd.Flags().BoolVar(&gui, "gui", false, "show each build VM's display in a native window")
 	cmd.Flags().StringVar(&agent, "agent", "", "disco-vm binary for the guest OS (default: this one)")
@@ -72,8 +72,8 @@ func imagesCommand(g *globals) *cobra.Command {
 			fmt.Fprintln(w, "IMAGE\tLAYER\tOS\tDRIVER\tWARM\tCREATED")
 			for _, img := range images {
 				warm := "-"
-				if e.IsWarm(img.Layer.ID) {
-					warm = describeWarmth(e.Warmth(cmd.Context(), img.Layer.ID))
+				if stage, ok := e.Stage(cmd.Context(), img.Layer.ID); ok {
+					warm = describeStage(stage)
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", img.Ref, image.Short(img.Layer.ID), img.Layer.GuestOS, img.Layer.Driver, warm, ago(img.Layer.Created))
 			}

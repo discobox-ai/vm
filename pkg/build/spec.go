@@ -23,17 +23,12 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/discobox-ai/vm/pkg/image"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // Spec is a build spec file.
 type Spec struct {
-	// Name is the image repository the build is tagged into, e.g. discobox/base.
-	Name string `yaml:"name"`
-	// Tag defaults to "latest".
-	Tag  string `yaml:"tag,omitempty"`
-	From From   `yaml:"from"`
+	From From `yaml:"from"`
 	// Args are build arguments, substituted as ${NAME} into the spec and
 	// exported to run steps as environment variables. --build-arg overrides.
 	Args map[string]string `yaml:"args,omitempty"`
@@ -48,6 +43,11 @@ type Spec struct {
 	// Resources sizes the build VM; it does not affect the cache.
 	Resources Resources `yaml:"resources,omitempty"`
 	Layers    []Layer   `yaml:"layers,omitempty"`
+	// LegacyName and LegacyTag are the spec's old name and tag, which `build
+	// -t` replaced, as a Dockerfile has none. They are read only to refuse
+	// them with that message rather than as unknown keys.
+	LegacyName string `yaml:"name,omitempty"`
+	LegacyTag  string `yaml:"tag,omitempty"`
 }
 
 // From is the build's base: exactly one of Image or Install.
@@ -175,8 +175,8 @@ var knownOS = map[machine.OS]bool{machine.Windows: true, machine.Darwin: true, m
 // after substitution, when the build plans.
 func (s *Spec) Validate() error {
 	var errs []error
-	if s.Name == "" {
-		errs = append(errs, errors.New("name is required"))
+	if s.LegacyName != "" || s.LegacyTag != "" {
+		errs = append(errs, errors.New("name and tag are not part of a spec; name the result with `disco-vm build -t NAME[:TAG]`"))
 	}
 	if (s.From.Image == "") == (s.From.Install == nil) {
 		errs = append(errs, errors.New("from needs exactly one of image or install"))
@@ -245,18 +245,6 @@ func (s Step) validate(where string) error {
 	}
 	return validateWhen(where, s.When)
 }
-
-// Ref is the image reference the build tags.
-func (s *Spec) Ref() string {
-	tag := s.Tag
-	if tag == "" {
-		tag = "latest"
-	}
-	return s.Name + ":" + tag
-}
-
-// validateRef checks the spec's reference once args are substituted.
-func (s *Spec) validateRef() error { return image.ValidateRef(s.Ref()) }
 
 var argPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 

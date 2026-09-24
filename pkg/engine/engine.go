@@ -40,6 +40,12 @@ type Engine struct {
 	Images *image.Store
 	// Exe is the disco-vm binary, started as each instance's shim.
 	Exe string
+	// ShimCommand is how a shim is started: a program and its leading
+	// arguments, to which the shim's own ([--gui] INSTANCE, or --warm LAYER)
+	// are appended. Empty means Exe's `shim` subcommand. A program that embeds
+	// the engine points it at a subcommand of its own that opens the same root
+	// and driver and calls ShimMain, so it ships no second binary.
+	ShimCommand []string
 }
 
 // RootEnv overrides DefaultRoot.
@@ -120,6 +126,18 @@ type Instance struct {
 	Created time.Time         `json:"created"`
 	// Temporary instances belong to a build and are not listed.
 	Temporary bool `json:"temporary,omitempty"`
+	// Forwards are served by the instance's shim whenever it runs.
+	Forwards []Forward `json:"forwards,omitempty"`
+}
+
+// Forward sends the connections a guest process opens to the host on a port
+// (guest.DialHost: vsock to the host on vz, hvsocket on HCS) to a Unix socket
+// on the host, which something there serves. It is how a guest reaches a host
+// service without a TCP listener, as libkrun maps a vsock port to a Unix
+// socket.
+type Forward struct {
+	Port   uint32 `json:"port"`
+	Socket string `json:"socket"`
 }
 
 func (e *Engine) instanceDir(id string) string { return filepath.Join(e.Root, "instances", id) }
@@ -153,6 +171,9 @@ type CreateOptions struct {
 	CPUs      int
 	Memory    uint64
 	Temporary bool
+	// Forwards are served whenever the instance runs; the driver must list
+	// Capabilities.Forward.
+	Forwards []Forward
 }
 
 // Create makes an instance from an image reference or layer ID.
@@ -167,6 +188,9 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 	}
 	if layer.Driver != e.Driver.Name() {
 		return nil, fmt.Errorf("image %s was built for driver %s, not %s", ref, layer.Driver, e.Driver.Name())
+	}
+	if err := e.checkForwards(opts.Forwards); err != nil {
+		return nil, err
 	}
 	mode, err := e.cloneMode(ctx, ref, layerID, opts)
 	if err != nil {
@@ -184,6 +208,7 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 		Driver: e.Driver.Name(), GuestOS: layer.GuestOS, Mode: mode,
 		CPUs: opts.CPUs, Memory: opts.Memory,
 		Created: time.Now().UTC(), Temporary: opts.Temporary,
+		Forwards: opts.Forwards,
 	}
 	if err := os.MkdirAll(e.instanceDir(id), 0o755); err != nil {
 		return nil, err
@@ -309,6 +334,29 @@ type StartOptions struct {
 	GUI bool
 }
 
+// checkForwards refuses forwards the driver cannot serve or that make no sense.
+func (e *Engine) checkForwards(forwards []Forward) error {
+	if len(forwards) == 0 {
+		return nil
+	}
+	if !e.Driver.Capabilities().Forward {
+		return fmt.Errorf("driver %s cannot forward a guest's connections to the host: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
+	ports := map[uint32]bool{}
+	for _, f := range forwards {
+		switch {
+		case f.Port == 0:
+			return errors.New("a forward needs a port")
+		case !filepath.IsAbs(f.Socket):
+			return fmt.Errorf("port %d forwards to %q, which is not an absolute path", f.Port, f.Socket)
+		case ports[f.Port]:
+			return fmt.Errorf("port %d is forwarded twice", f.Port)
+		}
+		ports[f.Port] = true
+	}
+	return nil
+}
+
 // CheckGUI refuses a window from a driver that has no display to show.
 func (e *Engine) CheckGUI(gui bool) error {
 	if gui && !e.Driver.Capabilities().Display {
@@ -342,7 +390,7 @@ func (e *Engine) Start(ctx context.Context, inst *Instance, opts StartOptions) e
 	if opts.GUI {
 		args = []string{"--gui", inst.ID}
 	}
-	exited, err := spawnShim(e.Exe, e.Root, e.Driver.Name(), args, logFile)
+	exited, err := e.spawnShim(args, logFile)
 	if err != nil {
 		return err
 	}
