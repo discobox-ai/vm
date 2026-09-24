@@ -54,7 +54,7 @@ is a `Capabilities` field, never a faked method:
 | max running | none | **2 macOS guests** (framework limit) | none |
 | shared dirs | (Plan9, later) | virtiofs | no |
 | display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no |
-| forward (guest to host) | (later) | vsock to the host, CID 2 | loopback |
+| forward (guest to host) | hvsocket to the parent partition | vsock to the host, CID 2 | loopback |
 
 The engine enforces `MaxRunning`. `--mode fork|resume` is refused where it is
 unsupported. A fast mode also needs a warm image (decision 7), so it is a
@@ -241,8 +241,8 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | unattended install from media (`examples/<os>.yaml`) | n/a | ✅ `examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap |
 | warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) |
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window |
-| forward, guest to host (`internal/e2e` TestForward) | ✅ | ⬜ | ✅ in-guest, both directions |
-| warm with a user (`warm --user`, `--local-user`) | refused | ⬜ | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) |
+| forward, guest to host (`internal/e2e` TestForward) | ✅ | ✅ in-guest, both directions (hcs TestForward: `dial-host` from `cmd`; the e2e test is POSIX-only, so `run --forward` to a host socket is not yet run on Windows) | ✅ in-guest, both directions |
+| warm with a user (`warm --user`, `--local-user`) | refused | refused | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) |
 
 A platform driver is done when `machinetest.Run` passes against it on real
 hardware and `internal/e2e` passes with `DISCO_VM_DRIVER` set to it. See

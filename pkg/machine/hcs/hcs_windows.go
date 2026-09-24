@@ -40,6 +40,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 		GuestOS:    []machine.OS{machine.Windows},
 		CloneModes: []machine.CloneMode{machine.Cold, machine.Fork},
 		Display:    true,
+		Forward:    true,
 	}
 }
 

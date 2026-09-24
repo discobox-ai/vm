@@ -111,6 +111,9 @@ func (d *Driver) Warm(ctx context.Context, spec machine.WarmSpec) (machine.Stage
 	if len(spec.Chain) == 0 {
 		return nil, errors.New("hcs: warm: no image")
 	}
+	if spec.User != nil {
+		return nil, fmt.Errorf("hcs: warm: a stage that logs in a user: %w", machine.ErrUnsupported)
+	}
 	log := spec.Log
 	if log == nil {
 		log = io.Discard

@@ -31,7 +31,10 @@ type vm struct {
 	unregister func()
 }
 
-var _ machine.Machine = (*vm)(nil)
+var (
+	_ machine.Machine      = (*vm)(nil)
+	_ machine.HostListener = (*vm)(nil)
+)
 
 // startVM creates and starts a compute system from c. Its files must already
 // be granted to id. On failure nothing is left running, and c.NIC is freed.
@@ -133,6 +136,21 @@ func (m *vm) shutdown() {
 		m.exited(nil)
 	}
 	<-m.done
+}
+
+// Listen accepts the connections guest processes open to the host on port:
+// hvsocket from the guest to its parent partition, on the port's vsock
+// service ID, bound to this VM alone. It closes when the VM stops.
+func (m *vm) Listen(port uint32) (net.Listener, error) {
+	l, err := winio.ListenHvsock(&winio.HvsockAddr{VMID: m.runtimeID, ServiceID: winio.VsockServiceID(port)})
+	if err != nil {
+		return nil, fmt.Errorf("hcs: listen for the guest on port %d: %w", port, err)
+	}
+	go func() {
+		<-m.done
+		_ = l.Close()
+	}()
+	return l, nil
 }
 
 func (m *vm) Dial(ctx context.Context, port uint32) (net.Conn, error) {
