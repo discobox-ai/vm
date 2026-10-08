@@ -1,0 +1,40 @@
+# Managed by repostd (go tool repocheck sync).
+#
+# The whole GitHub Actions layer: install Nix, restore the Go caches, run one
+# Taskfile target in the flake's devShell. What a target does lives in
+# Taskfile.yml and runs the same way in a terminal. Jobs run actions/checkout
+# first, because a local action resolves only once the repo is on disk.
+name: Task
+description: Run one Taskfile target in the repository's Nix devShell.
+
+inputs:
+  target:
+    description: The Taskfile target to run.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Nix
+      uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      with:
+        extra_nix_config: |
+          experimental-features = nix-command flakes
+
+    # Depot runners back the Actions cache API with Depot Cache, so plain
+    # actions/cache is already the fast path.
+    - name: Restore the Go caches
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/Library/Caches/go-build
+          ~/go/pkg/mod
+        key: go-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('go.work.sum', '**/go.sum') }}
+        restore-keys: |
+          go-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
+          go-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: go tool task ${{ inputs.target }}
+      shell: bash
+      run: nix develop -c go tool task ${{ inputs.target }}

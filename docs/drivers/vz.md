@@ -8,11 +8,11 @@ Above the `machine.Driver` seam, the driver needed only neutral additions:
 **Done means:**
 
 1. `machinetest.Run` passes against `vz.Driver` on an Apple silicon Mac
-   (`make test-vz`).
-2. `internal/e2e` passes with `DISCO_VM_DRIVER=vz` (`make test-e2e-vz`).
-3. `examples/macos.yaml` builds.
+   (`go tool task test:vz`).
+2. `internal/e2e` passes with `DISCO_VM_DRIVER=vz` (`go tool task test:e2e:vz`).
+3. `docs/examples/macos.yaml` builds.
 
-Where each stands is in the proof table in [../design.md](../design.md).
+Where each stands is in the proof table in [DESIGN.md](../../DESIGN.md).
 
 **Prior art:** discobox's proof of concept, `server/internal/macvm` and
 `server/cmd/discobox-macvm` (commit a6bedda3). The behavior is ported; the
@@ -27,7 +27,7 @@ structure is not.
   compile) gets `stub_darwin.go`, whose every method says to rebuild with
   `CGO_ENABLED=1`.
 - Creating a VM needs the `com.apple.security.virtualization` entitlement.
-  `make build` builds and ad-hoc signs `bin/disco-vm` with
+  `go tool task build` builds and ad-hoc signs `build/disco-vm` with
   `cmd/disco-vm/disco-vm.entitlements`. Tests that create VMs run through
   `scripts/codesign-exec`, a `go test -exec` wrapper that signs the test
   binary. `Check` asks the process for its own entitlement

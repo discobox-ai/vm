@@ -7,7 +7,7 @@ host. There is one codebase, one binary per host OS, and one command line. It is
 
 - **Standalone:** `disco-vm build | run | exec | cp | stop | rm ...`.
 - **As a discobox sandbox provider:** discobox embeds `pkg/engine` as a
-  library. See [discobox.md](discobox.md).
+  library. See [docs/discobox.md](docs/discobox.md).
 
 ## The stack
 
@@ -232,7 +232,7 @@ TTL for templates.
 
 boxd offers machines and snapshots of running machines, not disk images, and
 no socket into a guest. The boxd driver maps the seam onto what it has. See
-[drivers/boxd.md](drivers/boxd.md).
+[docs/drivers/boxd.md](docs/drivers/boxd.md).
 
 - **A layer is a snapshot** (memory and disk) of the guest booted from the
   committed disk. Commit starts the stopped instance and snapshots it, because
@@ -258,14 +258,14 @@ no socket into a guest. The boxd driver maps the seam onto what it has. See
 
 ## The build spec
 
-This has its own document: [build-spec.md](build-spec.md). In short, it is
+This has its own document: [docs/build-spec.md](docs/build-spec.md). In short, it is
 Dockerfile-shaped YAML (a base, then ordered steps, cached by prefix) with two
 changes that OS images force:
 
 - **Explicit layers.** A layer boundary is a full guest shutdown and disk
   commit, not a cheap filesystem diff, so the author places boundaries.
 - **`when: {os: ...}` on layers and steps.** One spec, such as
-  [examples/discobox-base.yaml](../examples/discobox-base.yaml), describes the
+  [docs/examples/discobox-base.yaml](docs/examples/discobox-base.yaml), describes the
   same batteries-included toolset on Windows and macOS. The base image decides
   which steps apply.
 
@@ -277,11 +277,11 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | | fake (all OSes, CI) | hcs | vz | boxd |
 |---|---|---|---|---|
 | machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ✅ macOS 27 guest | ✅ boxd (by hand, `BOXD_API_KEY`), ✅ fake API (Linux CI) |
-| e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ✅ `DISCO_VM_DRIVER=vz` | ⬜ (not run with `DISCO_VM_DRIVER=boxd` yet; the same lifecycle passed by hand with `examples/boxd.yaml`) |
+| e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ✅ `DISCO_VM_DRIVER=vz` | ⬜ (not run with `DISCO_VM_DRIVER=boxd` yet; the same lifecycle passed by hand with `docs/examples/boxd.yaml`) |
 | agent: exec, files, shutdown, info | ✅ | ✅ in-guest | ✅ in-guest (vsock, launchd daemon) | ✅ in-guest |
 | agent: TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ in-guest (`exec -t`) | ⬜ in-guest |
 | agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew | ⬜ in-guest |
-| unattended install from media (`examples/<os>.yaml`) | n/a | ✅ `examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap | n/a (boots a boxd image) |
+| unattended install from media (`docs/examples/<os>.yaml`) | n/a | ✅ `docs/examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap | n/a (boots a boxd image) |
 | warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) | ✅ resume (`machinetest` on boxd) |
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window | refused |
 | forward, guest to host (`internal/e2e` TestForward) | ✅ | ✅ in-guest, both directions | ✅ in-guest, both directions | refused |
@@ -289,8 +289,8 @@ forced off fails the build rather than caching a disk with unflushed writes.
 
 A platform driver is done when `machinetest.Run` passes against it on real
 hardware and `internal/e2e` passes with `DISCO_VM_DRIVER` set to it. See
-[drivers/hcs.md](drivers/hcs.md), [drivers/vz.md](drivers/vz.md), and
-[drivers/boxd.md](drivers/boxd.md). boxd's "fake API" column is
+[docs/drivers/hcs.md](docs/drivers/hcs.md), [docs/drivers/vz.md](docs/drivers/vz.md), and
+[docs/drivers/boxd.md](docs/drivers/boxd.md). boxd's "fake API" column is
 `TestConformanceFakeAPI`: the whole suite against an in-process fake of boxd's
 API, which proves the driver's calls and the Exec relay but not boxd's
 behavior.

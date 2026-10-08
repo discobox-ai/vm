@@ -1,31 +1,80 @@
-name: ci
+# Every job body is one Taskfile target; what it does lives in Taskfile.yml
+# and runs the same way in a terminal.
+name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  verify:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        with:
+          target: verify
+
+  check:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        with:
+          target: check
+
+  test:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        with:
+          target: test
+
+  # disco-vm ships on macOS, and vz is cgo: darwin is linted and tested only
+  # here.
+  macos:
+    runs-on: depot-macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        with:
+          target: check:go
+      - uses: ./.github/actions/task
+        with:
+          target: test
+
+  # Nix does not run on Windows: this job gets Go from setup-go and nothing
+  # else (repostd ci.no-setup).
+  windows:
+    runs-on: depot-windows-2025-4
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: vet (every target OS)
-        shell: bash
-        run: |
-          go vet ./...
-          GOOS=windows go vet ./...
-          GOOS=darwin go vet ./...
-          GOOS=linux go vet ./...
-      - name: gofmt
-        if: runner.os != 'Windows'
-        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
-      - name: test
-        run: go test ./...
+      - run: go tool task test

@@ -9,7 +9,7 @@ import (
 
 // The shipped examples must stay valid specs that plan on both guest OSes.
 func TestExamplesPlan(t *testing.T) {
-	files, err := filepath.Glob("../../examples/*.yaml")
+	files, err := filepath.Glob("../../docs/examples/*.yaml")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no examples: %v", err)
 	}

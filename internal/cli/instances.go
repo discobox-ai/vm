@@ -16,6 +16,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/discobox-ai/vm/internal/units"
+	"github.com/discobox-ai/vm/internal/version"
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -364,7 +365,7 @@ func infoCommand(g *globals) *cobra.Command {
 			}
 			caps, _ := json.MarshalIndent(e.Driver.Capabilities(), "  ", "  ")
 			fmt.Printf("version:  %s\nroot:     %s\ndriver:   %s (available: %s)\ncheck:    %s\ncapabilities:\n  %s\n",
-				Version, e.Root, e.Driver.Name(), strings.Join(machine.Names(), ", "), check, caps)
+				version.String(), e.Root, e.Driver.Name(), strings.Join(machine.Names(), ", "), check, caps)
 			return nil
 		},
 	}

@@ -3,7 +3,7 @@
 # boxd driver. Each layer is a boxd snapshot.
 #
 #   export BOXD_API_KEY=$(boxd auth keys create disco-vm)
-#   disco-vm --driver boxd build -f examples/boxd.yaml -t demo/boxd
+#   disco-vm --driver boxd build -f docs/examples/boxd.yaml -t demo/boxd
 #   disco-vm --driver boxd run --name dev demo/boxd
 #   disco-vm --driver boxd exec dev cat /etc/motd.d/disco-vm
 #

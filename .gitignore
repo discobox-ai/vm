@@ -1,4 +1,9 @@
 /disco-vm
 /disco-vm.exe
 *.test
-/bin/
+/build/
+/.direnv/
+/result*
+.env
+.env.*
+!.env.example

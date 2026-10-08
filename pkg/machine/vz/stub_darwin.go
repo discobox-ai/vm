@@ -11,7 +11,7 @@ import (
 
 // errNoCgo is every framework call in a build without cgo: the bindings are
 // Objective-C.
-var errNoCgo = errors.New("vz: this disco-vm was built without cgo, and Virtualization.framework needs it; rebuild with CGO_ENABLED=1 (make build)")
+var errNoCgo = errors.New("vz: this disco-vm was built without cgo, and Virtualization.framework needs it; rebuild with CGO_ENABLED=1 (go tool task build)")
 
 func (*Driver) Check(context.Context) error { return errNoCgo }
 

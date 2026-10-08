@@ -7,5 +7,5 @@
 // such a program has to use one or the other.
 package boxdapi
 
-// Needs buf, protoc-gen-go, and protoc-gen-go-grpc on PATH.
-//go:generate buf generate
+// buf and both protoc plugins are go.mod tools.
+//go:generate go tool buf generate

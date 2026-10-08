@@ -8,7 +8,7 @@ design finding: raise it rather than work around it.
 
 1. `machinetest.Run` passes against `hcs.Driver` on a real Windows host.
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=hcs` and a real image.
-3. `examples/windows.yaml` builds.
+3. `docs/examples/windows.yaml` builds.
 
 ## Status
 
@@ -21,7 +21,7 @@ Hyper-V role needed) with a Windows 11 Pro 25H2 guest:
   DISCO_VM_E2E_ISO=<iso> go test ./internal/e2e` from an elevated shell. The
   first run installs and tags `e2e/base` (about 15 min in all); later runs
   reuse it. TestWarm takes its fork branch: a template never runs out.
-- (3) passes: `examples/windows.yaml` builds from the retail ISO (the 128 GiB
+- (3) passes: `docs/examples/windows.yaml` builds from the retail ISO (the 128 GiB
   fixed disk alone takes over ten minutes to allocate), its OpenSSH step
   downloads from Windows Update through the guest's NIC, and a second build
   is fully cached.
@@ -58,7 +58,7 @@ What building it found, beyond the recipes below:
   networked logon it installs a Zero Day Patch and reboots
   (`CloudExperienceHostBroker`, event 1074). A base cut before that made every
   instance reboot itself a minute or ten after starting, which killed the
-  `examples/windows.yaml` build mid-step. Windows Update policy does not stop
+  `docs/examples/windows.yaml` build mid-step. Windows Update policy does not stop
   it; waiting for it does.
 - **Run as user is LogonUser**, with the blank password Install's unattend
   gives the account (`LimitBlankPasswordUse` is turned off in the offline

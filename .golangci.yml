@@ -1,0 +1,111 @@
+# Managed by repostd (go tool repocheck sync). Edit only inside the
+# "repostd:local" blocks; everything else is rewritten from the standard.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bidichk
+    - bodyclose
+    - depguard
+    - errcheck
+    - errchkjson
+    - errorlint
+    - godoclint
+    - godot
+    - gosec
+    - loggercheck
+    - misspell
+    - modernize
+    - nilerr
+    - noctx
+    - nolintlint
+    - revive
+    - rowserrcheck
+    - sloglint
+    - sqlclosecheck
+    - thelper
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+    # repostd:local enable
+    # repostd:end
+  settings:
+    depguard:
+      rules:
+        testify:
+          deny:
+            - pkg: github.com/stretchr/testify
+              desc: tests use the standard testing package (repostd)
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+    misspell:
+      locale: US
+      # The standard's own name, which every conforming repo references.
+      ignore-rules:
+        - repostd
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      # Whether a directive is "used" varies across golangci/gosec versions,
+      # so unused directives cannot be reported stably.
+      allow-unused: true
+    revive:
+      enable-default-rules: true
+      rules:
+        - name: exported
+          disabled: true
+    # repostd:local settings
+    # repostd:end
+  exclusions:
+    generated: lax
+    # Agent worktrees (.claude/worktrees, .codex/worktrees, ...) are throwaway
+    # checkouts of this repo; linting them duplicates every finding.
+    paths:
+      - (^|/)\.[^/]+/worktrees/
+      # repostd:local exclusion-paths
+      # repostd:end
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # G115 and the G70x taint family fire only in some gosec versions;
+      # excluded so local and CI lint agree regardless of version.
+      - text: "G115:"
+        linters:
+          - gosec
+      - text: "G70[0-9]:"
+        linters:
+          - gosec
+      - path: _test\.go
+        linters:
+          - errcheck
+      - path: _test\.go
+        text: "G306:"
+        linters:
+          - gosec
+      # repostd:local exclusion-rules
+      # repostd:end
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    paths:
+      - (^|/)\.[^/]+/worktrees/
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

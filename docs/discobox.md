@@ -91,7 +91,7 @@ discobox must add:
 
 1. **A native-guest sandbox kind.** ADR 0126 assumes each environment boots
    the Linux harness image with sandbox-agent as PID 1. A native guest boots a
-   disco-vm image (built from `examples/discobox-base.yaml`), runs
+   disco-vm image (built from `docs/examples/discobox-base.yaml`), runs
    sandbox-agent as a service, and keeps `/.discobox/{data,cache,config,
    sources,secrets}` as plain directories.
 2. **sandbox-agent on darwin and windows.** Its exec, PTY, services, and meta

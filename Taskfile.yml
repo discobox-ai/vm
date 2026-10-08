@@ -1,0 +1,188 @@
+version: "3"
+
+vars:
+  # Windows resolves an extensionless name through PATHEXT, so a build without
+  # the suffix lands beside a stale .exe the shell keeps running.
+  EXE: '{{if eq OS "windows"}}.exe{{end}}'
+  BINARY: build/disco-vm{{.EXE}}
+  MAIN: ./cmd/disco-vm
+  # On macOS the binary must carry the virtualization entitlement before it can
+  # create a VM, and a rebuild drops the signature, so build re-signs it.
+  ENTITLEMENTS: cmd/disco-vm/disco-vm.entitlements
+  PACKAGES: ./...
+  LINT_BIN: golangci-lint{{.EXE}}
+  # The race detector needs cgo, which the Windows runner does not provide.
+  RACE: '{{if ne OS "windows"}}-race{{end}}'
+  # vz is cgo, so darwin lints only on a Mac: cross-linting it elsewhere sees
+  # the no-cgo stub. CI's macos job covers it.
+  LINT_OSES: '{{if eq OS "darwin"}}darwin {{end}}linux windows'
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  LDFLAGS: -X github.com/discobox-ai/vm/internal/version.Version={{.VERSION}}
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Compile disco-vm into build/, signed on macOS
+    cmds:
+      - mkdir -p build
+      - go build -ldflags '{{.LDFLAGS}}' -o {{.BINARY}} {{.MAIN}}
+      - cmd: codesign --force --sign - --entitlements {{.ENTITLEMENTS}} {{.BINARY}}
+        platforms: [darwin]
+
+  run:
+    desc: Build and run disco-vm (pass flags after --)
+    deps:
+      - build
+    cmds:
+      - ./{{.BINARY}} {{.CLI_ARGS}}
+
+  test:
+    desc: Run tests with the race detector
+    cmds:
+      - go test {{.RACE}} {{.PACKAGES}}
+
+  # The vz conformance suite on real hardware. DISCO_VM_VZ_BASE names an
+  # installed layer's directory (see docs/drivers/vz.md); without it the suite
+  # skips. caffeinate -d keeps the display awake, so the Mac does not lock
+  # mid-run: a vz restore needs the screen unlocked.
+  test:vz:
+    desc: Run the vz conformance suite on this Mac (needs DISCO_VM_VZ_BASE)
+    platforms: [darwin]
+    cmds:
+      - caffeinate -d go test -exec {{.ROOT_DIR}}/scripts/codesign-exec -timeout 4h -v -run 'TestConformance|TestResumeOrFallBack|TestWarmUser|TestTemplates' ./pkg/machine/vz
+
+  # internal/e2e against vz: the signed binary, and a state root that keeps its
+  # base install between runs (the first run installs macOS).
+  test:e2e:vz:
+    desc: Run internal/e2e against vz on this Mac
+    platforms: [darwin]
+    deps:
+      - build
+    env:
+      DISCO_VM_DRIVER: vz
+      DISCO_VM_TEST_BINARY: '{{.ROOT_DIR}}/{{.BINARY}}'
+      DISCO_VM_E2E_ROOT:
+        sh: echo "${DISCO_VM_E2E_ROOT:-$HOME/Library/Application Support/disco-vm-e2e}"
+    cmds:
+      - caffeinate -d go test -timeout 4h -v ./internal/e2e
+
+  build:lint-tool:
+    desc: Build the golangci-lint binary checks use
+    # Built to a known path rather than run through `go tool`, so a fresh
+    # checkout does not depend on build-cache state.
+    run: once
+    cmds:
+      - mkdir -p build/tools
+      - go build -o build/tools/{{.LINT_BIN}} github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+
+  check:
+    desc: Run static checks
+    cmds:
+      - task: check:vet
+      - task: check:go
+      - task: check:repo
+      - task: check:shell
+      - task: check:actions
+
+  check:vet:
+    desc: Run go vet for every OS disco-vm ships on
+    cmds:
+      - for: [linux, darwin, windows]
+        cmd: GOOS={{.ITEM}} go vet {{.PACKAGES}}
+
+  check:go:
+    desc: Run golangci-lint for linux, windows, and darwin on a Mac
+    deps:
+      - build:lint-tool
+    cmds:
+      - for: { var: LINT_OSES, split: ' ' }
+        cmd: GOOS={{.ITEM}} ./build/tools/{{.LINT_BIN}} run
+
+  check:repo:
+    desc: Check the repository against the discobox-ai standard
+    cmds:
+      - go tool repocheck
+
+  check:shell:
+    desc: Run shellcheck on every tracked shell script
+    cmds:
+      - git ls-files -z '*.sh' | xargs -0 -r shellcheck
+
+  check:actions:
+    desc: Run actionlint on the workflows
+    cmds:
+      - actionlint
+
+  check:fix:
+    desc: Run static checks and apply safe fixes
+    deps:
+      - build:lint-tool
+    cmds:
+      - for: { var: LINT_OSES, split: ' ' }
+        cmd: GOOS={{.ITEM}} ./build/tools/{{.LINT_BIN}} run --fix
+
+  fmt:
+    desc: Format every tracked Go source
+    cmds:
+      - git ls-files -z '*.go' | xargs -0 -r gofmt -w
+
+  tidy:
+    desc: Tidy go.mod/go.sum
+    cmds:
+      - go mod tidy
+
+  generate:
+    desc: Regenerate generated files
+    cmds:
+      - go generate {{.PACKAGES}}
+
+  sync:
+    desc: Rewrite repostd-managed files and the ADR index
+    cmds:
+      - go tool repocheck sync
+
+  verify:unchanged:
+    desc: Run VERIFY_TASK and fail if it changed anything tracked
+    internal: true
+    cmds:
+      # Compared against a snapshot rather than a clean tree: a developer's
+      # tree is usually dirty for unrelated reasons.
+      - |
+        set -eu
+        before="$(git status --porcelain; git --no-pager diff)"
+        go tool task {{.VERIFY_TASK}}
+        after="$(git status --porcelain; git --no-pager diff)"
+        if [ "$before" != "$after" ]; then
+          echo "'go tool task {{.VERIFY_TASK}}' changed the tree; run it and commit the result." >&2
+          git status --porcelain >&2
+          exit 1
+        fi
+
+  verify:
+    desc: Fail when formatting, go.mod, generated, or managed files are stale
+    cmds:
+      - task: verify:unchanged
+        vars: { VERIFY_TASK: fmt }
+      - task: verify:unchanged
+        vars: { VERIFY_TASK: tidy }
+      - task: verify:unchanged
+        vars: { VERIFY_TASK: generate }
+      - task: verify:unchanged
+        vars: { VERIFY_TASK: sync }
+
+  ci:
+    desc: Everything CI runs
+    cmds:
+      - task: verify
+      - task: check
+      - task: test
+
+  clean:
+    desc: Remove build output
+    cmds:
+      - rm -rf build

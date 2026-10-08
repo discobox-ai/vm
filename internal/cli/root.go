@@ -12,13 +12,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/discobox-ai/vm/internal/version"
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/machine"
 	_ "github.com/discobox-ai/vm/pkg/machine/drivers"
 )
-
-// Version is set at link time.
-var Version = "dev"
 
 // exitError carries a guest process's exit code out as disco-vm's own.
 type exitError struct{ code int }
@@ -49,7 +47,7 @@ func Main(args []string) int {
 		Short:         "Build OS images and run them as VMs, on Windows and macOS",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Version:       Version,
+		Version:       version.String(),
 	}
 	root.PersistentFlags().StringVar(&g.root, "root", "", "state directory (default $"+engine.RootEnv+" or the per-OS data directory)")
 	root.PersistentFlags().StringVar(&g.driver, "driver", os.Getenv("DISCO_VM_DRIVER"), "hypervisor driver (default "+machine.DefaultName()+"; also $DISCO_VM_DRIVER)")

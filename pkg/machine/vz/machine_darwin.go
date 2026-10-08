@@ -36,7 +36,7 @@ func (*Driver) Check(context.Context) error {
 		return errors.New("vz: this Mac has no hypervisor (kern.hv_support is not 1); inside a macOS VM there is none to nest")
 	}
 	if !entitled() {
-		return fmt.Errorf("vz: this binary is not signed with the %s entitlement, so it cannot create a VM; build it with `make build`, which signs it", virtualizationEntitlement)
+		return fmt.Errorf("vz: this binary is not signed with the %s entitlement, so it cannot create a VM; build it with `go tool task build`, which signs it", virtualizationEntitlement)
 	}
 	return nil
 }
