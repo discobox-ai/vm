@@ -20,7 +20,7 @@ func guestCommand() *cobra.Command {
 		Use:   "guest",
 		Short: "Run the guest agent (inside a VM)",
 		Args:  cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			listener, err := guest.Listen(listen)
 			if err != nil {
 				return err
@@ -40,7 +40,21 @@ func guestCommand() *cobra.Command {
 				}
 			}
 			server := &guest.Server{Version: Version, Root: root, Fake: fake}
-			return guest.RunAgent(func() error { return server.Serve(listener) }, func() { _ = listener.Close() })
+			// The root command turns SIGTERM into a cancelled context. The
+			// agent must still exit on it: the guest's init sends it at
+			// shutdown, and waits out its stop timeout for an agent that
+			// does not go.
+			go func() {
+				<-cmd.Context().Done()
+				_ = listener.Close()
+			}()
+			serve := func() error {
+				if err := server.Serve(listener); cmd.Context().Err() == nil {
+					return err
+				}
+				return nil
+			}
+			return guest.RunAgent(serve, func() { _ = listener.Close() })
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", fmt.Sprintf("vsock:%d", guest.AgentPort), "listen address (vsock:PORT or tcp:ADDR)")
