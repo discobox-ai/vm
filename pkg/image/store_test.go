@@ -19,7 +19,7 @@ func commit(t *testing.T, s *Store, id, parent string) {
 	if err := os.WriteFile(p.MachineLayer().Dir+"/data", []byte(id), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Commit(); err != nil {
+	if _, err := p.Commit(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 }

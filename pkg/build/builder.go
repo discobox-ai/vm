@@ -241,10 +241,11 @@ func (b *Builder) install(ctx context.Context, p *Plan, in Install, contextDir, 
 		Log:       b.Out,
 	}, pending.MachineLayer())
 	if err != nil {
-		pending.Abort()
+		pending.Abort(context.Background(), driver)
 		return "", fmt.Errorf("install %s: %w", in.OS, err)
 	}
-	if _, err := pending.Commit(); err != nil {
+	if _, err := pending.Commit(ctx, driver); err != nil {
+		pending.Abort(context.Background(), driver)
 		return "", err
 	}
 	return key, nil
@@ -316,7 +317,7 @@ func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, parent, key str
 		return err
 	}
 	if _, err = e.Commit(ctx, inst, pending); err != nil {
-		pending.Abort()
+		pending.Abort(context.Background(), e.Driver)
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil

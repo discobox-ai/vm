@@ -75,6 +75,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err := driver.Install(ctx, cfg.Install, layer); err != nil {
 			t.Fatalf("install: %v", err)
 		}
+		// A driver may hold a layer outside its Dir, as boxd holds a
+		// snapshot, so the suite releases the layers it made.
+		t.Cleanup(func() { _ = driver.DeleteLayer(context.Background(), layer) })
 		base = &layer
 	}
 	guestOS := cfg.Install.GuestOS
@@ -123,6 +126,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err := driver.Prepare(ctx, inst); err != nil {
 			t.Fatalf("prepare: %v", err)
 		}
+		// Destroyed below once committed; this covers a step that fails
+		// first, which on a cloud driver would leave a billed machine.
+		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
 		m, client := boot(t, inst)
 		info, err := client.Info(ctx)
 		if err != nil {
@@ -149,6 +155,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	if committed.Dir == "" {
 		t.FailNow()
 	}
+	t.Cleanup(func() { _ = driver.DeleteLayer(context.Background(), committed) })
 
 	// A clone of the committed layer sees the marker; a clone of the base does
 	// not; both run at once.

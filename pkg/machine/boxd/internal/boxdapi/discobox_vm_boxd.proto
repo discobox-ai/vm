@@ -1,0 +1,187 @@
+// The subset of boxd's public API (boxd.api.v1.BoxdApi at boxd.sh:9443) that
+// the boxd driver calls. It is cut from https://docs.boxd.sh/reference/grpc-proto
+// with every field number unchanged, so it stays wire-compatible; fields the
+// driver never reads are left out and skipped as unknown. To refresh it, copy
+// the RPCs and messages from that page again and run `go generate`.
+//
+// The file name is what the protobuf registry knows this file by, and a
+// duplicate panics at startup. Any program that embeds disco-vm links it, so
+// it is not called api.proto. The package cannot change: it is part of every
+// RPC's path. A program that also links boxd's own Go stubs would collide on
+// it, and has to choose one.
+syntax = "proto3";
+package boxd.api.v1;
+
+option go_package = "github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi";
+
+service BoxdApi {
+  rpc CreateVm(CreateVmRequest)             returns (CreateVmResponse);
+  rpc DestroyVm(DestroyVmRequest)           returns (DestroyVmResponse);
+  rpc StartVm(StartVmRequest)               returns (StartVmResponse);
+  rpc StopVm(StopVmRequest)                 returns (StopVmResponse);
+  // NOT_FOUND for an id/name with no matching machine, including a destroyed
+  // one.
+  rpc GetVm(GetVmRequest)                   returns (GetVmResponse);
+  // The first request chunk carries vm_id/command; later chunks carry stdin.
+  // The stream ends with a final chunk carrying exit_code. Cancelling the
+  // call kills the remote command.
+  rpc Exec(stream ExecChunk)                returns (stream ExecChunk);
+  rpc Whoami(WhoamiRequest)                 returns (WhoamiResponse);
+  // The first chunk carries vm_id/path/total_size; later chunks carry bytes.
+  rpc UploadFileStream(stream UploadFileChunk) returns (UploadFileResponse);
+  rpc SuspendVm(SuspendVmRequest)           returns (SuspendVmResponse);
+  rpc ResumeVm(ResumeVmRequest)             returns (ResumeVmResponse);
+  rpc WakeVm(WakeVmRequest)                 returns (WakeVmResponse);
+  rpc SetAutoSuspendTimeout(SetAutoSuspendTimeoutRequest) returns (SetAutoSuspendTimeoutResponse);
+  rpc SetAutoHibernateTimeout(SetAutoHibernateTimeoutRequest) returns (SetAutoHibernateTimeoutResponse);
+  // Memory + disk of a running VM, replicated and versioned (latest-only).
+  rpc CreateSnapshot(CreateSnapshotRequest)   returns (CreateSnapshotResponse);
+  rpc GetSnapshot(GetSnapshotRequest)         returns (GetSnapshotResponse);
+  rpc DeleteSnapshot(DeleteSnapshotRequest)   returns (DeleteSnapshotResponse);
+  rpc CreateVmFromSnapshot(CreateVmFromSnapshotRequest) returns (CreateVmResponse);
+  rpc ResizeVm(ResizeVmRequest) returns (ResizeVmResponse);
+}
+
+message VmConfig {
+  uint32 vcpu         = 1;  // 0 = the org's default; else a size class
+  uint64 memory_bytes = 2;  // 0 = the org's default; else a size class
+  uint64 disk_bytes   = 3;  // must be 0 or exactly the fixed 100 GiB
+}
+
+message CreateVmRequest {
+  string          name           = 1;
+  string          image_ref      = 2;
+  string          restart_policy = 7;  // "always" | "never"
+  VmConfig        config         = 8;
+  string          org            = 9;
+  bool            isolated       = 12;
+}
+
+message CreateVmResponse {
+  string vm_id        = 1;
+  string name         = 2;
+  string public_ip    = 3;
+  string url          = 4;
+  string image        = 5;
+  string status       = 6;
+  uint64 boot_time_ms = 7;
+}
+
+message DestroyVmRequest  { string vm_id = 1; }
+message DestroyVmResponse {}
+
+message StartVmRequest  { string vm_id = 1; }
+message StartVmResponse {}
+
+message StopVmRequest  { string vm_id = 1; }
+message StopVmResponse {}
+
+message SuspendVmRequest  { string vm_id = 1; }
+message SuspendVmResponse { uint64 suspend_us = 1; }
+
+message ResumeVmRequest  { string vm_id = 1; }
+message ResumeVmResponse { uint64 resume_us = 1; }
+
+message WakeVmRequest  { string vm_id = 1; }
+message WakeVmResponse {}
+
+message SetAutoSuspendTimeoutRequest {
+  string vm_id        = 1;
+  uint32 timeout_secs = 2;  // 0 = disable
+}
+message SetAutoSuspendTimeoutResponse {}
+
+message SetAutoHibernateTimeoutRequest {
+  string vm_id        = 1;
+  uint32 timeout_secs = 2;  // 0 = disable
+}
+message SetAutoHibernateTimeoutResponse {}
+
+message GetVmRequest { string vm_id = 1; }
+message GetVmResponse {
+  string vm_id          = 1;
+  string name           = 2;
+  string image_ref      = 3;
+  string status         = 5;
+  string restart_policy = 6;
+  uint32 vcpu           = 15;
+  uint64 memory_bytes   = 16;
+}
+
+message ExecChunk {
+  bytes  data      = 1;
+  bool   stdin     = 2;
+  bool   tty       = 3;
+  string command   = 4;
+  string vm_id     = 5;
+  int32  exit_code = 6;
+  bool   is_stderr = 10;
+}
+
+message WhoamiRequest {}
+message WhoamiResponse {
+  string user_id      = 1;
+  string display_name = 5;
+}
+
+message UploadFileChunk {
+  string vm_id      = 1;
+  string path       = 2;
+  uint64 total_size = 3;
+  bytes  data       = 4;
+}
+
+message UploadFileResponse { uint64 bytes_written = 1; }
+
+message CreateSnapshotRequest {
+  string vm   = 1;  // must be running
+  string name = 2;  // unique per owner; re-saving bumps the version
+}
+
+message CreateSnapshotResponse {
+  string snapshot_id = 1;
+  string name        = 2;
+  uint64 version     = 3;
+  string status      = 4;  // "pending" until the capture is stored
+}
+
+message SnapshotInfo {
+  string snapshot_id  = 1;
+  string name         = 2;
+  uint64 version      = 3;
+  string status       = 4;  // "pending" | "ready" | "failed"
+  uint64 size_bytes   = 7;
+  uint32 vcpu         = 9;
+  uint64 memory_bytes = 10;
+}
+
+message GetSnapshotRequest {
+  string name = 1;
+  string org  = 2;
+}
+message GetSnapshotResponse { SnapshotInfo snapshot = 1; }
+
+message DeleteSnapshotRequest {
+  string name = 1;
+  string org  = 2;
+}
+message DeleteSnapshotResponse {}
+
+message CreateVmFromSnapshotRequest {
+  string   snapshot = 1;
+  string   name     = 2;
+  VmConfig config   = 3;
+  string   org      = 4;
+  bool     isolated = 5;
+}
+
+message ResizeVmRequest {
+  string vm_id        = 1;  // VM name or id
+  uint32 vcpu         = 2;  // names a size class (0 = derive from memory_bytes)
+  uint64 memory_bytes = 3;  // names a size class (0 = derive from vcpu)
+}
+message ResizeVmResponse {
+  uint32 vcpu         = 1;
+  uint64 memory_bytes = 2;
+  bool   rebooted     = 3;
+}

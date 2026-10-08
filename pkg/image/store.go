@@ -165,8 +165,9 @@ func (p *Pending) MachineLayer() machine.Layer {
 	return machine.Layer{ID: p.meta.ID, Dir: filepath.Join(p.tmp, "payload")}
 }
 
-// Commit publishes the layer.
-func (p *Pending) Commit() (Layer, error) {
+// Commit publishes the layer. driver is the one that wrote it, which releases
+// what it holds for this copy if another build published the same layer first.
+func (p *Pending) Commit(ctx context.Context, driver machine.Driver) (Layer, error) {
 	if p.meta.Created.IsZero() {
 		p.meta.Created = time.Now().UTC()
 	}
@@ -176,8 +177,9 @@ func (p *Pending) Commit() (Layer, error) {
 	if err := os.Rename(p.tmp, p.store.layerDir(p.meta.ID)); err != nil {
 		if p.store.Has(p.meta.ID) {
 			// Another build committed the same inputs first; its layer is
-			// identical by construction.
-			_ = os.RemoveAll(p.tmp)
+			// identical by construction. This copy may still hold something
+			// outside its directory, such as a boxd snapshot.
+			p.Abort(ctx, driver)
 			return p.store.Layer(p.meta.ID)
 		}
 		return Layer{}, err
@@ -185,8 +187,14 @@ func (p *Pending) Commit() (Layer, error) {
 	return p.meta, nil
 }
 
-// Abort discards the layer.
-func (p *Pending) Abort() { _ = os.RemoveAll(p.tmp) }
+// Abort discards the layer, and has driver release anything it holds for the
+// layer beyond its directory, as removing a published layer does.
+func (p *Pending) Abort(ctx context.Context, driver machine.Driver) {
+	if driver != nil {
+		_ = driver.DeleteLayer(ctx, p.MachineLayer())
+	}
+	_ = os.RemoveAll(p.tmp)
+}
 
 // NormalizeRef adds ":latest" to a reference without a tag.
 func NormalizeRef(ref string) string {

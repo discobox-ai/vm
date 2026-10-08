@@ -1,8 +1,9 @@
 # Working on disco-vm
 
 Read [docs/design.md](docs/design.md) first. If you are implementing a driver,
-your brief is [docs/drivers/hcs.md](docs/drivers/hcs.md) or
-[docs/drivers/vz.md](docs/drivers/vz.md).
+your brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
+[docs/drivers/vz.md](docs/drivers/vz.md), or
+[docs/drivers/boxd.md](docs/drivers/boxd.md).
 
 ## Rules
 

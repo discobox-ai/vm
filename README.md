@@ -5,6 +5,8 @@ Build OS images and run them as VMs, from one codebase and one command line:
 - **Windows guests on Windows**, through Host Compute Service. There is no
   Hyper-V manager, no Windows Sandbox, and no WSL, so it works on Home.
 - **macOS guests on macOS**, through Virtualization.framework.
+- **Linux guests in the cloud**, on [boxd](https://boxd.sh) microVMs, from
+  any host.
 
 disco-vm works on its own, and it is also meant to become a
 [discobox](https://github.com/discobox-ai/discobox) sandbox provider (see
@@ -16,7 +18,10 @@ disco-vm works on its own, and it is also meant to become a
 > per VM, and the guest agent and its protocol. The `vz` driver runs macOS 27
 > guests on Apple silicon, including resume clones and a native window
 > (`--gui`) ([docs/drivers/vz.md](docs/drivers/vz.md)). The `hcs` driver's
-> brief is [docs/drivers/hcs.md](docs/drivers/hcs.md).
+> brief is [docs/drivers/hcs.md](docs/drivers/hcs.md). The `boxd` driver passes
+> the conformance suite against boxd itself, and `examples/boxd.yaml` builds and
+> runs on it by hand; `internal/e2e` does not run on it yet (see
+> [docs/drivers/boxd.md](docs/drivers/boxd.md)).
 
 ```sh
 disco-vm build -f examples/windows.yaml -t discobox/windows:11 --build-arg ISO=D:\iso\Win11.iso   # OS image

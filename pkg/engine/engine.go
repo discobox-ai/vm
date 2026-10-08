@@ -577,7 +577,7 @@ func (e *Engine) Commit(ctx context.Context, inst *Instance, pending *image.Pend
 	if err := e.Driver.Commit(ctx, spec, pending.MachineLayer()); err != nil {
 		return image.Layer{}, err
 	}
-	layer, err := pending.Commit()
+	layer, err := pending.Commit(ctx, e.Driver)
 	if err != nil {
 		return image.Layer{}, err
 	}

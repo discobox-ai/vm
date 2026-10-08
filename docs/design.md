@@ -1,9 +1,9 @@
 # disco-vm design
 
 disco-vm builds OS images and runs them as VMs. It runs Windows guests on
-Windows (Host Compute Service) and macOS guests on macOS
-(Virtualization.framework). There is one codebase, one binary per host OS, and
-one command line. It is used two ways:
+Windows (Host Compute Service), macOS guests on macOS
+(Virtualization.framework), and Linux guests in the cloud on boxd from any
+host. There is one codebase, one binary per host OS, and one command line. It is used two ways:
 
 - **Standalone:** `disco-vm build | run | exec | cp | stop | rm ...`.
 - **As a discobox sandbox provider:** discobox embeds `pkg/engine` as a
@@ -19,17 +19,20 @@ one command line. It is used two ways:
                   pkg/image   ── layer store + name:tag
                   pkg/guest   ── agent protocol, host client  ◄──── same code ────┐
   ────────────────────────────── machine.Driver seam ──────────────────────────── │
-       machine/hcs (windows)    machine/vz (darwin)    machine/fake (any OS)      │
-            │                         │                        │                  │
-       HCS VM (vmcompute)       VZ VM (in-process)       a host process           │
-            └──────── hvsocket / vsock / tcp: port 7300 ───────┘                  │
+   machine/hcs (windows)  machine/vz (darwin)  machine/boxd (any)  machine/fake   │
+          │                      │                    │                 │         │
+   HCS VM (vmcompute)    VZ VM (in-process)    boxd microVM      a host process   │
+          │                      │             (gRPC API)               │         │
+     hvsocket               vsock          Exec + `pipe`              tcp         │
+          └────────────────────── port 7300 ─────────┴──────────────────┘         │
                                    disco-vm guest (the agent) ◄───────────────────┘
 ```
 
 Everything above the seam is OS-neutral and is tested on every OS through the
 fake driver. Everything below it is one package per hypervisor, selected by
 build tags, so each binary contains only the drivers its OS can run
-(`pkg/machine/drivers`).
+(`pkg/machine/drivers`). boxd's hypervisor is in the cloud, behind an API, so
+every binary contains it.
 
 ## Decisions
 
@@ -39,7 +42,8 @@ build tags, so each binary contains only the drivers its OS can run
 VM's supervisor (`disco-vm shim <id>`). The agent is the same program built for
 the guest's GOOS. On a Windows host the guest is Windows, and on a macOS host
 the guest is macOS, so the running binary is also the agent, and install bakes
-in `os.Executable()`. Protocol changes therefore ship to both ends at once.
+in `os.Executable()`. A boxd guest is linux/amd64, so from any other host
+`build --agent` names a disco-vm built for it. Protocol changes therefore ship to both ends at once.
 
 ### 2. The driver contract is the intersection, and differences are reported
 
@@ -47,14 +51,14 @@ in `os.Executable()`. Protocol changes therefore ship to both ends at once.
 `Machine` offers Dial(port), Kill, and Done. Anything only one hypervisor can do
 is a `Capabilities` field, never a faked method:
 
-| capability | hcs | vz | fake |
-|---|---|---|---|
-| guest OS | windows | darwin | host's |
-| clone modes | cold, **fork** (live template, many clones, about 1s) | cold, **resume** (two saved templates, any number of clones) | cold, resume (pre-copied roots) |
-| max running | none | **2 macOS guests** (framework limit) | none |
-| shared dirs | (Plan9, later) | virtiofs | no |
-| display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no |
-| forward (guest to host) | hvsocket to the parent partition | vsock to the host, CID 2 | loopback |
+| capability | hcs | vz | boxd | fake |
+|---|---|---|---|---|
+| guest OS | windows | darwin | linux | host's |
+| clone modes | cold, **fork** (live template, many clones, about 1s) | cold, **resume** (two saved templates, any number of clones) | cold, **resume** (a snapshot, any number of clones) | cold, resume (pre-copied roots) |
+| max running | none | **2 macOS guests** (framework limit) | none (the org's quota) | none |
+| shared dirs | (Plan9, later) | virtiofs | no | no |
+| display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no |
+| forward (guest to host) | hvsocket to the parent partition | vsock to the host, CID 2 | no | loopback |
 
 The engine enforces `MaxRunning`. `--mode fork|resume` is refused where it is
 unsupported. A fast mode also needs a warm image (decision 7), so it is a
@@ -66,7 +70,10 @@ The guest agent listens on **port 7300** everywhere. On vz that is AF_VSOCK. On
 hcs it is the hvsocket service ID `00001C84-FACB-11E6-BD58-64006A7986D3`, which
 is the vsock template GUID with the port in its first field
 (`winio.VsockServiceID`). The hcs driver must list that ID in the VM's HvSocket
-ServiceTable. 7301 is reserved for the display stream. Because callers only
+ServiceTable. On boxd there is no socket from the host into the guest at all:
+the agent listens on a root-only unix socket, and Dial runs `disco-vm pipe` in
+the guest through boxd's authenticated Exec stream, which relays stdin and
+stdout to the port (decision 8). 7301 is reserved for the display stream. Because callers only
 ever say "port", the shim, the engine, and a discobox provider never need to
 know which hypervisor they are talking to.
 
@@ -132,6 +139,10 @@ VM belongs to vmcompute. A **shim per VM** makes both look the same:
   and splices bytes to any guest port.
 - Any process (a later CLI invocation, a discobox server) reaches any instance
   through the shim. A crash is contained to one VM.
+- The shim exits when the VM stops. A remote driver (boxd) whose API stops
+  answering gives the VM up instead of holding the shim forever. Its `Done`
+  closes with an error, and the VM may still be running. The instance still
+  names it, so `rm` destroys it.
 
 HCS's live-template fork needs something to hold the template. That is a shim
 too, a **warm shim** (`disco-vm shim --warm <layer>`), not a special daemon. See
@@ -147,6 +158,7 @@ A layer is an immutable, committed disk state owned by a driver:
 
 - hcs: a differencing VHDX
 - vz: an APFS-cloned bundle
+- boxd: a boxd snapshot, named in `layer.json` and deleted with the layer
 - fake: a directory tree
 
 A layer's **ID is its cache key**. The key is a hash of the parent ID, driver,
@@ -157,7 +169,10 @@ deletes layers that nothing else tags, parents, or runs, as `docker rmi` does.
 A layer is written under a temporary name and renamed into place, so a crash
 never leaves a half-layer under a real ID. Installation media a driver
 downloads itself (`media: latest`) is not a layer; it is kept in
-`cache/<driver>/` (`InstallSpec.CacheDir`), so it is fetched once per host.
+`cache/<driver>/` (`InstallSpec.CacheDir`), so it is fetched once per host. A
+driver may hold a layer outside its directory (a boxd snapshot), so the store
+has the driver release a layer whenever it drops one: on `rmi`, on an aborted
+build, and when another build published the same layer first.
 
 ### 7. Fast clones come from warm images, and auto falls back to cold
 
@@ -213,6 +228,34 @@ Later, and not built yet: refilling a resume pool as clones use it, `run
 --warm` (boot cold now, stage in the background), `build --warm`, and an idle
 TTL for templates.
 
+### 8. boxd: a layer is a snapshot, and the guest is reached through Exec
+
+boxd offers machines and snapshots of running machines, not disk images, and
+no socket into a guest. The boxd driver maps the seam onto what it has. See
+[drivers/boxd.md](drivers/boxd.md).
+
+- **A layer is a snapshot** (memory and disk) of the guest booted from the
+  committed disk. Commit starts the stopped instance and snapshots it, because
+  boxd only snapshots a running machine. The layer is still cut from an
+  orderly shutdown: the snapshot's disk is the one the guest flushed.
+- **A cold clone** restores the layer's snapshot and powers it off through the
+  agent, so its first boot is a cold boot of that disk. **A resume clone**
+  restores the stage's snapshot and suspends it until Boot. A snapshot
+  restores any number of times, so resume never runs out (`Clones` is -1),
+  and warming at the layer's own size costs nothing.
+- **Dial is an Exec stream** running `disco-vm pipe` in the guest. The pipe
+  writes one ready byte once it reaches the port, so a relay that failed is a
+  Dial error, not a conn that reads EOF. boxd authenticates every stream, and
+  the agent's socket is root-only, so nothing else in the guest reaches it
+  without sudo.
+- **A guest cannot power its machine off.** boxd leaves a halted guest
+  `running`, so the agent's orderly shutdown ends with the driver stopping the
+  machine through the API. A systemd shutdown hook marks the moment the
+  guest's disks are synced, and the driver waits for that mark.
+- **The driver talks to boxd's public gRPC API directly**, not through the
+  boxd CLI: it works from a server that embeds the engine, from any host OS,
+  and with an API key (`BOXD_API_KEY`) rather than a browser login.
+
 ## The build spec
 
 This has its own document: [build-spec.md](build-spec.md). In short, it is
@@ -231,19 +274,23 @@ forced off fails the build rather than caching a disk with unflushed writes.
 
 ## What is proven, and where
 
-| | fake (all OSes, CI) | hcs | vz |
-|---|---|---|---|
-| machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ✅ macOS 27 guest |
-| e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ✅ `DISCO_VM_DRIVER=vz` |
-| agent: exec, files, shutdown, info | ✅ | ✅ in-guest | ✅ in-guest (vsock, launchd daemon) |
-| agent: TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ in-guest (`exec -t`) |
-| agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew |
-| unattended install from media (`examples/<os>.yaml`) | n/a | ✅ `examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap |
-| warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) |
-| `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window |
-| forward, guest to host (`internal/e2e` TestForward) | ✅ | ✅ in-guest, both directions | ✅ in-guest, both directions |
-| warm with a user (`warm --user`, `--local-user`) | refused | refused | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) |
+| | fake (all OSes, CI) | hcs | vz | boxd |
+|---|---|---|---|---|
+| machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ✅ macOS 27 guest | ✅ boxd (by hand, `BOXD_API_KEY`), ✅ fake API (Linux CI) |
+| e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ✅ `DISCO_VM_DRIVER=vz` | ⬜ (not run with `DISCO_VM_DRIVER=boxd` yet; the same lifecycle passed by hand with `examples/boxd.yaml`) |
+| agent: exec, files, shutdown, info | ✅ | ✅ in-guest | ✅ in-guest (vsock, launchd daemon) | ✅ in-guest |
+| agent: TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ in-guest (`exec -t`) | ⬜ in-guest |
+| agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew | ⬜ in-guest |
+| unattended install from media (`examples/<os>.yaml`) | n/a | ✅ `examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap | n/a (boots a boxd image) |
+| warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) | ✅ resume (`machinetest` on boxd) |
+| `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window | refused |
+| forward, guest to host (`internal/e2e` TestForward) | ✅ | ✅ in-guest, both directions | ✅ in-guest, both directions | refused |
+| warm with a user (`warm --user`, `--local-user`) | refused | refused | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) | refused |
 
 A platform driver is done when `machinetest.Run` passes against it on real
 hardware and `internal/e2e` passes with `DISCO_VM_DRIVER` set to it. See
-[drivers/hcs.md](drivers/hcs.md) and [drivers/vz.md](drivers/vz.md).
+[drivers/hcs.md](drivers/hcs.md), [drivers/vz.md](drivers/vz.md), and
+[drivers/boxd.md](drivers/boxd.md). boxd's "fake API" column is
+`TestConformanceFakeAPI`: the whole suite against an in-process fake of boxd's
+API, which proves the driver's calls and the Exec relay but not boxd's
+behavior.

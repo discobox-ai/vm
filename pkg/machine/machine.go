@@ -55,8 +55,8 @@ const (
 	Cold CloneMode = "cold"
 	// Resume copies the disk and a saved memory state, and resumes the saved
 	// machine. The clone runs with the saved machine's identity, which is why a
-	// vz stage keeps one template per guest that can run at once. It needs a
-	// warm image.
+	// vz stage keeps one template per guest that can run at once; a boxd
+	// snapshot restores any number of times. It needs a warm image.
 	Resume CloneMode = "resume"
 	// Fork clones a live, paused template: memory is shared copy-on-write and
 	// many clones can be forked from one template (HCS). It needs a warm image.
@@ -302,8 +302,12 @@ type Machine interface {
 	// Kill powers the guest off immediately. An orderly shutdown goes through
 	// the guest agent instead; Kill is the fallback.
 	Kill(ctx context.Context) error
-	// Done is closed once the guest has stopped.
+	// Done is closed once the guest has stopped, or once the driver can no
+	// longer tell: a remote driver whose API stops answering gives the
+	// machine up rather than hold its caller forever. Err is non-nil then,
+	// and the guest may still be running.
 	Done() <-chan struct{}
 	// Err is why the guest stopped, once Done is closed; nil for a power-off.
+	// It is non-nil when the driver gave the machine up without seeing it stop.
 	Err() error
 }

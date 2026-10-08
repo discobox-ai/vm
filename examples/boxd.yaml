@@ -1,0 +1,28 @@
+# A Linux image on boxd (https://boxd.sh): a cloud microVM from boxd's own
+# Ubuntu image, with the disco-vm agent installed as a systemd service by the
+# boxd driver. Each layer is a boxd snapshot.
+#
+#   export BOXD_API_KEY=$(boxd auth keys create disco-vm)
+#   disco-vm --driver boxd build -f examples/boxd.yaml -t demo/boxd
+#   disco-vm --driver boxd run --name dev demo/boxd
+#   disco-vm --driver boxd exec dev cat /etc/motd.d/disco-vm
+#
+# boxd has no install media: media is always "latest", and options.image picks
+# one of boxd's images instead of the default. Every machine has a 100 GiB
+# disk, and resources must name a boxd size (1/4GiB, 2/8GiB, 4/16GiB, 8/32GiB).
+# From a host that is not linux/amd64, pass --agent, a disco-vm built with
+# GOOS=linux GOARCH=amd64.
+from:
+  install:
+    os: linux
+    media: latest
+    disk: 100GiB
+shell: ["/bin/sh", "-c"]
+resources:
+  cpus: 2
+  memory: 8GiB
+layers:
+  - name: tools
+    steps:
+      - run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tree
+      - run: mkdir -p /etc/motd.d && echo "built by disco-vm" > /etc/motd.d/disco-vm

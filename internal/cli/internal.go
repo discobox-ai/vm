@@ -57,7 +57,7 @@ func guestCommand() *cobra.Command {
 			return guest.RunAgent(serve, func() { _ = listener.Close() })
 		},
 	}
-	cmd.Flags().StringVar(&listen, "listen", fmt.Sprintf("vsock:%d", guest.AgentPort), "listen address (vsock:PORT or tcp:ADDR)")
+	cmd.Flags().StringVar(&listen, "listen", fmt.Sprintf("vsock:%d", guest.AgentPort), "listen address (vsock:PORT, tcp:ADDR, or unix:PATH)")
 	cmd.Flags().StringVar(&addrFile, "addr-file", "", "write the bound address here once listening")
 	cmd.Flags().StringVar(&root, "root", "", "confine file paths and processes to this directory (fake driver)")
 	cmd.Flags().BoolVar(&fake, "fake", false, "shutdown exits the agent instead of powering off (fake driver)")
@@ -65,6 +65,21 @@ func guestCommand() *cobra.Command {
 		_ = cmd.Flags().MarkHidden(name)
 	}
 	return cmd
+}
+
+// pipeCommand relays its stdin and stdout to a port inside the guest. A driver
+// with no hypervisor socket to the guest (boxd) dials a guest port by running
+// this through its own authenticated exec stream.
+func pipeCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "pipe tcp:ADDR|unix:PATH",
+		Short:  "Relay stdin and stdout to an address inside the guest",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return guest.Pipe(cmd.Context(), args[0], os.Stdin, os.Stdout)
+		},
+	}
 }
 
 // shimCommand is one instance's supervisor, started by `start` and `run`, or
