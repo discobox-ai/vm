@@ -103,7 +103,7 @@ func (d *Driver) Install(_ context.Context, spec machine.InstallSpec, dst machin
 		fmt.Fprintf(spec.Log, "fake: installed %s from %q\n", spec.GuestOS, spec.Media)
 	}
 	marker := fmt.Sprintf("os=%s\nmedia=%s\nedition=%s\n", spec.GuestOS, spec.Media, spec.Edition)
-	return os.WriteFile(filepath.Join(rootfs(dst.Dir), markerName), []byte(marker), 0o644)
+	return os.WriteFile(filepath.Join(rootfs(dst.Dir), markerName), []byte(marker), 0o644) //nolint:gosec // G306: the fake guest's install marker, no secrets
 }
 
 func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
@@ -201,6 +201,7 @@ func staged(warmDir string) ([]string, error) {
 func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
 	addrFile := filepath.Join(inst.Dir, addrName)
 	_ = os.Remove(addrFile)
+	//nolint:gosec,noctx // G204: the agent is the driver's own disco-vm binary; noctx: the guest outlives Boot's ctx and stops through Stop or Kill
 	cmd := exec.Command(d.Agent, "guest",
 		"--listen", "tcp:127.0.0.1:0",
 		"--addr-file", addrFile,
@@ -240,7 +241,10 @@ func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 		}
 		select {
 		case <-m.done:
-			return nil, fmt.Errorf("fake: guest agent exited during boot: %v", m.err)
+			if m.err == nil {
+				return nil, errors.New("fake: guest agent exited during boot")
+			}
+			return nil, fmt.Errorf("fake: guest agent exited during boot: %w", m.err)
 		case <-ctx.Done():
 			_ = m.Kill(context.Background())
 			return nil, ctx.Err()
@@ -295,12 +299,15 @@ var _ machine.HostListener = (*proc)(nil)
 // Listen listens on loopback and publishes the address where the fake guest,
 // a host process, finds it (guest.DialHost).
 func (m *proc) Listen(port uint32) (net.Listener, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	// machine.HostListener.Listen takes no context; a loopback listen does not
+	// block.
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
 	file := filepath.Join(m.hostPorts, strconv.FormatUint(uint64(port), 10))
-	if err := os.WriteFile(file+".tmp", []byte(l.Addr().String()), 0o644); err == nil {
+	err = os.WriteFile(file+".tmp", []byte(l.Addr().String()), 0o644) //nolint:gosec // G306: a loopback address the fake guest reads, no secrets
+	if err == nil {
 		err = os.Rename(file+".tmp", file)
 	}
 	if err != nil {

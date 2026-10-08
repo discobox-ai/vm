@@ -1,6 +1,7 @@
 package guest
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -29,7 +30,7 @@ func powerOff(reboot bool) error {
 			args[0] = "reboot"
 		}
 	}
-	out, err := exec.Command(name, args...).CombinedOutput() //nolint:gosec // Fixed lifecycle command.
+	out, err := exec.CommandContext(context.Background(), name, args...).CombinedOutput() //nolint:gosec // Fixed lifecycle command.
 	if err != nil {
 		return fmt.Errorf("%s: %w: %s", name, err, out)
 	}

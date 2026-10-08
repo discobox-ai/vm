@@ -215,7 +215,7 @@ func ValidateRef(ref string) error {
 		return fmt.Errorf("image: invalid reference %q", ref)
 	}
 	for _, r := range name + tag {
-		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || strings.ContainsRune("._-/", r)) {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && !strings.ContainsRune("._-/", r) {
 			return fmt.Errorf("image: reference %q may use only a-z, 0-9, and . _ - /", ref)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -181,9 +182,7 @@ func expandAll(in []string, args map[string]string) []string {
 // map order.
 func environment(args map[string]string, layers ...map[string]string) []string {
 	merged := map[string]string{}
-	for k, v := range args {
-		merged[k] = v
-	}
+	maps.Copy(merged, args)
 	for _, env := range layers {
 		for k, v := range env {
 			merged[k] = expand(v, args)
@@ -213,7 +212,7 @@ func digestTree(root string) (string, error) {
 		fmt.Fprintf(h, "%s\x00%o\x00", filepath.ToSlash(rel), info.Mode())
 		switch {
 		case info.Mode().IsRegular():
-			f, err := os.Open(path)
+			f, err := os.Open(path) //nolint:gosec // G122: the build context is the user's own tree; a symlink swapped in mid-walk only changes the digest
 			if err != nil {
 				return err
 			}

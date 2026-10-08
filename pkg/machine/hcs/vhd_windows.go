@@ -128,7 +128,7 @@ func setParent(path, parent string) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	defer syscall.CloseHandle(h)
+	defer func() { _ = syscall.CloseHandle(h) }()
 	parentp, err := windows.UTF16PtrFromString(parent)
 	if err != nil {
 		return err

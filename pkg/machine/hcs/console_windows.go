@@ -50,7 +50,9 @@ type viewer struct {
 // openViewer relays a loopback port to the VM's console pipe and opens mstsc
 // on it, titled title. It returns once mstsc is started.
 func openViewer(id, title string) (*viewer, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// The viewer outlives the boot or install that opens it, and Close ends
+	// it, so neither the listener nor mstsc is tied to the caller's context.
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +105,7 @@ func openViewer(id, title string) (*viewer, error) {
 		os.RemoveAll(dir)
 		return nil, err
 	}
-	cmd := exec.Command("mstsc.exe", rdp)
+	cmd := exec.CommandContext(context.Background(), "mstsc.exe", rdp)
 	if err := cmd.Start(); err != nil {
 		listener.Close()
 		os.RemoveAll(dir)

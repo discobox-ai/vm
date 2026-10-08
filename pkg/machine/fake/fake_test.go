@@ -22,7 +22,7 @@ func TestConformance(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			agent += ".exe"
 		}
-		build := exec.Command("go", "build", "-o", agent, "../../../cmd/disco-vm")
+		build := exec.CommandContext(t.Context(), "go", "build", "-o", agent, "../../../cmd/disco-vm")
 		build.Stdout, build.Stderr = os.Stdout, os.Stderr
 		if err := build.Run(); err != nil {
 			t.Fatal(err)

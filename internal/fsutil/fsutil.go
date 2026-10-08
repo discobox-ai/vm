@@ -39,7 +39,7 @@ func CopyTree(src, dst string) error {
 			if err != nil {
 				return err
 			}
-			return os.Symlink(link, target)
+			return os.Symlink(link, target) //nolint:gosec // G122: src and dst are disco-vm's own store and build trees, not paths a guest controls
 		case info.Mode().IsRegular():
 			return CopyFile(path, target, info.Mode().Perm())
 		default:

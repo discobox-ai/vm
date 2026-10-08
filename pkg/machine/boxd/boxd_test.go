@@ -221,7 +221,7 @@ func TestKillDuringReboot(t *testing.T) {
 func fakeDriver(t *testing.T, agent, dir string) (*Driver, *fakeAPI) {
 	t.Helper()
 	fake := newFakeAPI(agent, dir)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func linuxAgent(t *testing.T) string {
 		return agent
 	}
 	agent := filepath.Join(t.TempDir(), "disco-vm")
-	build := exec.Command("go", "build", "-o", agent, "../../../cmd/disco-vm")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", agent, "../../../cmd/disco-vm")
 	build.Env = append(os.Environ(), "GOOS=linux", "CGO_ENABLED=0")
 	if runtime.GOOS == "linux" {
 		build.Env = append(build.Env, "GOARCH="+runtime.GOARCH)

@@ -25,7 +25,7 @@ import (
 // fakeAPI is boxd's API with no cloud behind it. A machine is a directory
 // standing in for its disk, and a guest agent process (`disco-vm guest
 // --fake`) while it runs; a snapshot is a copy of that directory. Memory is not
-// modelled: a restored machine's agent starts fresh. Exec understands exactly
+// modeled: a restored machine's agent starts fresh. Exec understands exactly
 // the commands the driver sends.
 //
 // As on boxd, a guest that shuts itself down leaves its machine "running": the
@@ -99,7 +99,7 @@ func (f *fakeAPI) boot(v *fakeVM) error {
 	if !v.installed {
 		return nil
 	}
-	cmd := exec.Command(f.agent, "guest", "--listen", "unix:"+f.socket(v), "--root", f.root(v), "--fake")
+	cmd := exec.Command(f.agent, "guest", "--listen", "unix:"+f.socket(v), "--root", f.root(v), "--fake") //nolint:gosec,noctx // G204: the test's own disco-vm binary; noctx: the agent outlives the RPC that boots it and is killed on stop
 	if err := cmd.Start(); err != nil {
 		return err
 	}

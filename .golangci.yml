@@ -96,6 +96,12 @@ linters:
         linters:
           - gosec
       # repostd:local exclusion-rules
+      # The boxd fake implements boxdapi's server interface, whose method names
+      # (CreateVm, ...) protoc generates from boxd's proto.
+      - path: pkg/machine/boxd/fakeapi_test\.go
+        text: "var-naming: method \\w*Vm\\w* should be"
+        linters:
+          - revive
       # repostd:end
 
 formatters:

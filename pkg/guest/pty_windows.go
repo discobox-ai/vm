@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -93,19 +94,19 @@ func startPTY(cmd *exec.Cmd, rows, cols uint16) (ptyHandle, error) {
 		return ptyHandle{}, err
 	}
 	if err := windows.CreatePipe(&outRead, &outWrite, nil, 0); err != nil {
-		windows.CloseHandle(inRead)
-		windows.CloseHandle(inWrite)
+		_ = windows.CloseHandle(inRead)
+		_ = windows.CloseHandle(inWrite)
 		return ptyHandle{}, err
 	}
 	var console windows.Handle
 	err := windows.CreatePseudoConsole(windows.Coord{X: int16(cols), Y: int16(rows)}, inRead, outWrite, 0, &console)
 	// The console holds its own references; ours would keep the pipes from
 	// ever reporting EOF.
-	windows.CloseHandle(inRead)
-	windows.CloseHandle(outWrite)
+	_ = windows.CloseHandle(inRead)
+	_ = windows.CloseHandle(outWrite)
 	if err != nil {
-		windows.CloseHandle(inWrite)
-		windows.CloseHandle(outRead)
+		_ = windows.CloseHandle(inWrite)
+		_ = windows.CloseHandle(outRead)
 		return ptyHandle{}, err
 	}
 	p := &conPTY{console: console, in: os.NewFile(uintptr(inWrite), "conpty-in"), out: os.NewFile(uintptr(outRead), "conpty-out")}
@@ -118,7 +119,7 @@ func startPTY(cmd *exec.Cmd, rows, cols uint16) (ptyHandle, error) {
 	}
 	go func() {
 		_, _ = windows.WaitForSingleObject(process, windows.INFINITE)
-		windows.CloseHandle(process)
+		_ = windows.CloseHandle(process)
 		p.drainThenClose()
 	}()
 	return ptyHandle{p}, nil
@@ -176,13 +177,13 @@ func createConsoleProcess(cmd *exec.Cmd, console windows.Handle) (windows.Handle
 	if err != nil {
 		return 0, &os.PathError{Op: "CreateProcess", Path: cmd.Path, Err: err}
 	}
-	windows.CloseHandle(pi.Thread)
+	_ = windows.CloseHandle(pi.Thread)
 	// The handle stays open until after FindProcess, so the PID cannot have
 	// been reused by the time it is looked up.
 	proc, err := os.FindProcess(int(pi.ProcessId))
 	if err != nil {
 		_ = windows.TerminateProcess(pi.Process, 1)
-		windows.CloseHandle(pi.Process)
+		_ = windows.CloseHandle(pi.Process)
 		return 0, err
 	}
 	cmd.Process = proc
@@ -195,22 +196,22 @@ func createConsoleProcess(cmd *exec.Cmd, console windows.Handle) (windows.Handle
 func environmentBlock(env []string) *uint16 {
 	seen := map[string]bool{}
 	var kept []string
-	for i := len(env) - 1; i >= 0; i-- {
-		name, _, _ := strings.Cut(env[i], "=")
-		if env[i] != "" && strings.HasPrefix(env[i], "=") {
+	for _, e := range slices.Backward(env) {
+		name, _, _ := strings.Cut(e, "=")
+		if e != "" && strings.HasPrefix(e, "=") {
 			// "=C:=C:\dir" entries carry per-drive directories; keep them.
-			name = env[i]
+			name = e
 		}
 		key := strings.ToUpper(name)
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		kept = append(kept, env[i])
+		kept = append(kept, e)
 	}
 	var block []uint16
-	for i := len(kept) - 1; i >= 0; i-- {
-		block = append(block, utf16.Encode([]rune(kept[i]))...)
+	for _, e := range slices.Backward(kept) {
+		block = append(block, utf16.Encode([]rune(e))...)
 		block = append(block, 0)
 	}
 	block = append(block, 0)

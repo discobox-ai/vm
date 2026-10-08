@@ -38,6 +38,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -175,8 +176,10 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 	if err := upload(ctx, api, vm, spec.Agent, "/tmp/disco-vm-agent"); err != nil {
 		return fmt.Errorf("boxd: upload agent: %w", err)
 	}
-	if out, code, err := run(ctx, api, vm, installScript); err != nil || code != 0 {
-		return fmt.Errorf("boxd: install agent: exit %d, %v: %s", code, err, out)
+	if out, code, err := run(ctx, api, vm, installScript); err != nil {
+		return fmt.Errorf("boxd: install agent: %w: %s", err, out)
+	} else if code != 0 {
+		return fmt.Errorf("boxd: install agent: exit %d: %s", code, out)
 	}
 	if err := d.waitAgent(ctx, api, vm); err != nil {
 		return err
@@ -403,7 +406,7 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.InstanceSpec) error {
 func (d *Driver) DeleteLayer(ctx context.Context, layer machine.Layer) error {
 	var snap snapshotRef
 	if err := readJSON(filepath.Join(layer.Dir, layerFile), &snap); err != nil {
-		return nil // never committed, or already released
+		return nil //nolint:nilerr // never committed, or already released: nothing to delete
 	}
 	return d.deleteSnapshot(ctx, snap.Name)
 }
@@ -478,7 +481,7 @@ func (d *Driver) Warm(ctx context.Context, spec machine.WarmSpec) (machine.Stage
 func (d *Driver) Warmth(ctx context.Context, spec machine.WarmSpec) (machine.Warmth, error) {
 	var stage snapshotRef
 	if err := readJSON(filepath.Join(spec.Dir, stageFile), &stage); err != nil {
-		return machine.Warmth{Mode: machine.Cold}, nil
+		return machine.Warmth{Mode: machine.Cold}, nil //nolint:nilerr // no readable stage snapshot means a cold start, not a failure
 	}
 	api, err := d.api.API()
 	if err != nil {
@@ -661,10 +664,8 @@ func waitVM(ctx context.Context, api boxdapi.BoxdApiClient, vm string, want ...s
 			return "", fmt.Errorf("boxd: machine %s is gone", vm)
 		case err == nil:
 			last = info.GetStatus()
-			for _, w := range want {
-				if last == w {
-					return last, nil
-				}
+			if slices.Contains(want, last) {
+				return last, nil
 			}
 			if last == "failed" || last == "destroying" {
 				return last, fmt.Errorf("boxd: machine %s is %s", vm, last)
@@ -766,8 +767,11 @@ func checkArch(ctx context.Context, api boxdapi.BoxdApiClient, vm, agent string)
 	defer f.Close()
 	want := map[elf.Machine]string{elf.EM_X86_64: "x86_64", elf.EM_AARCH64: "aarch64"}[f.Machine]
 	out, code, err := run(ctx, api, vm, "uname -m")
-	if err != nil || code != 0 {
-		return fmt.Errorf("boxd: uname -m: exit %d, %v: %s", code, err, out)
+	if err != nil {
+		return fmt.Errorf("boxd: uname -m: %w: %s", err, out)
+	}
+	if code != 0 {
+		return fmt.Errorf("boxd: uname -m: exit %d: %s", code, out)
 	}
 	if got := strings.TrimSpace(out); got != want {
 		return fmt.Errorf("boxd: the machine is %s but the agent %s is built for %s", got, agent, f.Machine)
@@ -819,7 +823,7 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // G306: snapshot and stage references, no secrets; readable like the rest of the state root
 		return err
 	}
 	return os.Rename(tmp, path)

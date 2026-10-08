@@ -64,7 +64,7 @@ func Pack(w io.Writer, src string, contents bool) error {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		f, err := os.Open(p)
+		f, err := os.Open(p) //nolint:gosec // G122: the tree is the caller's own source, packed on its side of the copy
 		if err != nil {
 			return err
 		}
@@ -115,7 +115,7 @@ func Unpack(r io.Reader, dir string) error {
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(f, tr); err != nil {
+			if _, err := io.Copy(f, tr); err != nil { //nolint:gosec // G110: the archive is the host's copy into its own guest, not untrusted input
 				_ = f.Close()
 				return err
 			}

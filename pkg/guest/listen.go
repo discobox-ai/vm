@@ -29,7 +29,7 @@ func Listen(address string) (net.Listener, error) {
 	}
 	switch scheme {
 	case "tcp":
-		return net.Listen("tcp", rest)
+		return (&net.ListenConfig{}).Listen(context.Background(), "tcp", rest)
 	case "unix":
 		return listenUnix(rest)
 	case "vsock":
@@ -53,7 +53,7 @@ func listenUnix(path string) (net.Listener, error) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	listener, err := net.Listen("unix", path)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", path)
 	if err != nil {
 		return nil, err
 	}

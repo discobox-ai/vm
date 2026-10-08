@@ -106,7 +106,7 @@ func (b bundle) readMeta() (meta, error) {
 }
 
 func (b bundle) writeMeta(m meta) error {
-	data, err := json.MarshalIndent(m, "", "  ")
+	data, err := json.MarshalIndent(m, "", "  ") //nolint:gosec // the guest login password is kept on purpose, in a 0600 file, so the driver can sign in again
 	if err != nil {
 		return err
 	}

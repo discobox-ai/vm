@@ -28,7 +28,7 @@ func TestForward(t *testing.T) {
 	// This build's disco-vm, since the image's baked-in agent may predate
 	// dial-host.
 	exe := filepath.Join(t.TempDir(), "disco-vm.exe")
-	build := exec.Command("go", "build", "-o", exe, "../../../cmd/disco-vm")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", exe, "../../../cmd/disco-vm")
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		t.Fatal(err)

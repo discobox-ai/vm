@@ -228,11 +228,7 @@ func (s *stage) serve() {
 		if err != nil {
 			return
 		}
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			s.clone(conn)
-		}()
+		s.wg.Go(func() { s.clone(conn) })
 	}
 }
 
@@ -250,7 +246,7 @@ func (s *stage) clone(conn net.Conn) {
 		if err != nil {
 			r.Error = err.Error()
 		}
-		_ = json.NewEncoder(conn).Encode(r)
+		_ = json.NewEncoder(conn).Encode(r) //nolint:errchkjson // best effort: a requester that hung up sees the dropped connection either way
 	}
 	sys, err := createSystem(req.ID, newDocument(vmConfig{
 		Disk: req.Disk, GuestFile: req.GuestFile, StateFile: req.StateFile,
@@ -289,7 +285,7 @@ func (s *stage) clone(conn net.Conn) {
 func (d *Driver) Warmth(_ context.Context, spec machine.WarmSpec) (machine.Warmth, error) {
 	t, err := readTemplate(spec.Dir)
 	if err != nil || !t.alive() {
-		return machine.Warmth{Mode: machine.Cold}, nil
+		return machine.Warmth{Mode: machine.Cold}, nil //nolint:nilerr // no readable template means the image is cold, not an error
 	}
 	return machine.Warmth{Mode: machine.Fork, Clones: -1}, nil
 }

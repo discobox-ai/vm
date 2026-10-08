@@ -24,7 +24,7 @@ func TestShimCommand(t *testing.T) {
 	}
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "disco-vm")
-	if out, err := exec.Command("go", "build", "-o", binary, "../../cmd/disco-vm").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "../../cmd/disco-vm").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	root := filepath.Join(dir, "root")

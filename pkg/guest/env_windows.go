@@ -18,7 +18,7 @@ func processEnv() []string {
 	if err := windows.CreateEnvironmentBlock(&block, 0, false); err != nil {
 		return os.Environ()
 	}
-	defer windows.DestroyEnvironmentBlock(block)
+	defer func() { _ = windows.DestroyEnvironmentBlock(block) }()
 	env := parseEnvironmentBlock(block)
 	if len(env) == 0 {
 		return os.Environ()

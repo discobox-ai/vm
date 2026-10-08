@@ -47,6 +47,7 @@ type Config struct {
 
 // Run runs the suite.
 func Run(t *testing.T, driver machine.Driver, cfg Config) {
+	t.Helper()
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 10 * time.Minute
 	}

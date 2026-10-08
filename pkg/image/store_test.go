@@ -70,7 +70,7 @@ func TestRemoveKeepsLayersInUse(t *testing.T) {
 	commit(t, s, "aaaaaaaaaaaa1", "")
 	_ = s.Tag("base", "aaaaaaaaaaaa1")
 	driver, _ := fake.New()
-	removed, err := s.Remove(context.Background(), "base", driver, func(id string) bool { return true })
+	removed, err := s.Remove(context.Background(), "base", driver, func(string) bool { return true })
 	if err != nil || len(removed) != 0 || !s.Has("aaaaaaaaaaaa1") {
 		t.Fatalf("removed %v, %v", removed, err)
 	}
