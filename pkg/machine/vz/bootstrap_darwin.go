@@ -271,7 +271,7 @@ func dialSSH(ctx context.Context, ip, user, password string, stopped <-chan stru
 		last = err
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("vz: SSH to the guest as %s: %w (last: %v)", user, ctx.Err(), last)
+			return nil, fmt.Errorf("vz: SSH to the guest as %s: %w (last: %w)", user, ctx.Err(), last)
 		case <-stopped:
 			return nil, errRestarted
 		case <-time.After(3 * time.Second):
@@ -293,11 +293,12 @@ func runSSH(client *ssh.Client, cmd string, stdin io.Reader) (string, error) {
 // sudo runs a script as root in the guest, with args as $1 and on. sudo reads
 // the password from stdin, and the script is an argument.
 func sudo(client *ssh.Client, password, script string, args ...string) (string, error) {
-	cmd := "sudo -S -p '' /bin/sh -c " + shellQuote(script) + " disco-vm"
+	var cmd strings.Builder
+	cmd.WriteString("sudo -S -p '' /bin/sh -c " + shellQuote(script) + " disco-vm")
 	for _, arg := range args {
-		cmd += " " + shellQuote(arg)
+		cmd.WriteString(" " + shellQuote(arg))
 	}
-	return runSSH(client, cmd, strings.NewReader(password+"\n"))
+	return runSSH(client, cmd.String(), strings.NewReader(password+"\n"))
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

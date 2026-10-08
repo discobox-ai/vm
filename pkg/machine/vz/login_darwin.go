@@ -183,7 +183,7 @@ func loggedInSetup(ctx context.Context, vm *vmMachine, name string) (bool, error
 		return false, err
 	}
 	check := guest.ExecRequest{Argv: []string{"pgrep", "-qx", "Setup Assistant"}}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if code, err := agent.Run(ctx, check, nil, io.Discard, io.Discard); err == nil && code == 0 {
 			return true, nil
 		}
@@ -196,15 +196,19 @@ func loggedInSetup(ctx context.Context, vm *vmMachine, name string) (bool, error
 func clearSetup(ctx context.Context, vm *vmMachine, name string) error {
 	agent := vm.agent()
 	defer agent.Close()
-	clear := guest.ExecRequest{Argv: []string{"/bin/sh", "-c", `pkill -x "Setup Assistant" || true
+	req := guest.ExecRequest{Argv: []string{"/bin/sh", "-c", `pkill -x "Setup Assistant" || true
 sleep 2
 lw="/Users/$1/Library/Preferences/com.apple.loginwindow"
 defaults delete "$lw" MiniBuddyLaunch 2>/dev/null || true
 defaults delete "$lw" MiniBuddyLaunchCount 2>/dev/null || true
 chown "$1:staff" "$lw.plist"`, "sh", name}}
 	var out strings.Builder
-	if code, err := agent.Run(ctx, clear, nil, &out, &out); err != nil || code != 0 {
-		return fmt.Errorf("vz: clear %s's first-login setup: %v (exit %d): %s", name, err, code, out.String())
+	code, err := agent.Run(ctx, req, nil, &out, &out)
+	if err != nil {
+		return fmt.Errorf("vz: clear %s's first-login setup: %w: %s", name, err, out.String())
+	}
+	if code != 0 {
+		return fmt.Errorf("vz: clear %s's first-login setup: exit %d: %s", name, code, out.String())
 	}
 	return nil
 }
