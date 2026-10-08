@@ -290,6 +290,7 @@ func createDisk(ctx context.Context, path string, size int64, asif bool) error {
 	}
 	// --fs None leaves the image blank; the installer would only discard a
 	// volume made here.
+	//nolint:gosec // G204: a fixed program; the arguments are a size and the driver's own path.
 	cmd := exec.CommandContext(ctx, "diskutil", "image", "create", "blank",
 		"--format", "ASIF", "--fs", "None", "--size", strconv.FormatInt(size, 10), path)
 	if out, err := cmd.CombinedOutput(); err != nil {
