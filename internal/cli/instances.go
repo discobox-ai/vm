@@ -331,7 +331,7 @@ func execIn(ctx context.Context, e *engine.Engine, inst *engine.Instance, opts e
 		if err != nil {
 			return err
 		}
-		defer term.Restore(inFD, state)
+		defer func() { _ = term.Restore(inFD, state) }()
 	}
 	// TODO: follow terminal resizes (SIGWINCH on unix, console events on
 	// Windows); the size is set once, at start.

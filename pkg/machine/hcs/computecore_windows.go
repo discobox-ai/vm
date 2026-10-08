@@ -70,8 +70,7 @@ func (e *hcsError) Error() string {
 }
 
 func hresultOf(err error) uint32 {
-	var he *hcsError
-	if errors.As(err, &he) {
+	if he, ok := errors.AsType[*hcsError](err); ok {
 		return he.HR
 	}
 	return 0
@@ -120,7 +119,7 @@ func run(op string, start func(operation uintptr) uintptr) (string, error) {
 	if operation == 0 {
 		return "", &hcsError{Op: op, Detail: "HcsCreateOperation returned null"}
 	}
-	defer procHcsCloseOperation.Call(operation)
+	defer func() { _, _, _ = procHcsCloseOperation.Call(operation) }()
 
 	startHR := uint32(start(operation))
 	var result *uint16
@@ -196,7 +195,7 @@ func createSystem(id string, doc any) (*system, error) {
 	runtime.KeepAlive(configp)
 	if err != nil {
 		if handle != 0 {
-			procHcsCloseComputeSystem.Call(handle)
+			_, _, _ = procHcsCloseComputeSystem.Call(handle)
 		}
 		return nil, err
 	}
@@ -291,7 +290,7 @@ func (s *system) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.handle != 0 {
-		procHcsCloseComputeSystem.Call(s.handle)
+		_, _, _ = procHcsCloseComputeSystem.Call(s.handle)
 		s.handle = 0
 	}
 }

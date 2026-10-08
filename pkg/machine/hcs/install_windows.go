@@ -138,7 +138,7 @@ func sweepAttached(dir string, log io.Writer) {
 func writeDisk(ctx context.Context, fixed string, spec machine.InstallSpec, log io.Writer) error {
 	dir := filepath.Dir(fixed)
 	crumb := filepath.Join(dir, breadcrumb)
-	if err := os.WriteFile(crumb, []byte(fixed), 0o644); err != nil {
+	if err := os.WriteFile(crumb, []byte(fixed), 0o600); err != nil {
 		return err
 	}
 	defer os.Remove(crumb)
@@ -151,7 +151,7 @@ func writeDisk(ctx context.Context, fixed string, spec machine.InstallSpec, log 
 
 	script := filepath.Join(dir, "install.ps1")
 	// A BOM, so Windows PowerShell reads the script as UTF-8.
-	if err := os.WriteFile(script, append([]byte("\xEF\xBB\xBF"), installScript...), 0o644); err != nil {
+	if err := os.WriteFile(script, append([]byte("\xEF\xBB\xBF"), installScript...), 0o600); err != nil {
 		return err
 	}
 	defer os.Remove(script)
@@ -177,7 +177,7 @@ func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, disk string, 
 	if err := os.MkdirAll(work, 0o755); err != nil {
 		return err
 	}
-	defer removeAll(work)
+	defer func() { _ = removeAll(work) }()
 	if err := freshState(work); err != nil {
 		return err
 	}
@@ -254,7 +254,10 @@ func waitSetup(ctx context.Context, client *guest.Client, m *vm, started time.Ti
 	for {
 		select {
 		case <-m.Done():
-			return fmt.Errorf("hcs: the guest stopped during Setup (waiting for %s): %v", stage, m.Err())
+			if err := m.Err(); err != nil {
+				return fmt.Errorf("hcs: the guest stopped during Setup (waiting for %s): %w", stage, err)
+			}
+			return fmt.Errorf("hcs: the guest stopped during Setup (waiting for %s)", stage)
 		case <-ctx.Done():
 			return fmt.Errorf("hcs: Setup did not finish in %s (waiting for %s)", setupTimeout, stage)
 		case <-time.After(5 * time.Second):
@@ -296,7 +299,7 @@ func waitSetup(ctx context.Context, client *guest.Client, m *vm, started time.Ti
 }
 
 func imageState(out string) string {
-	for _, field := range strings.Fields(out) {
+	for field := range strings.FieldsSeq(out) {
 		if strings.HasPrefix(field, "IMAGE_STATE_") {
 			return field
 		}

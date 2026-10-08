@@ -50,7 +50,7 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 		return err
 	}
 	defer forwards()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = booted.Machine.Kill(context.Background())
 		return err
@@ -89,7 +89,7 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		conn, rw, err := w.(http.Hijacker).Hijack()
+		conn, rw, err := http.NewResponseController(w).Hijack()
 		if err != nil {
 			_ = upstream.Close()
 			return
@@ -147,7 +147,10 @@ func serveForwards(m machine.Machine, forwards []Forward) (func(), error) {
 					return
 				}
 				go func() {
-					host, err := net.Dial("unix", f.Socket)
+					// Not the shim's ctx: a guest shutting down in order after
+					// a signal may still connect out.
+					var d net.Dialer
+					host, err := d.DialContext(context.Background(), "unix", f.Socket)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "shim: forward port %d: %v\n", f.Port, err)
 						_ = conn.Close()
@@ -266,7 +269,8 @@ func (e *Engine) spawnShim(args []string, log *os.File) (<-chan error, error) {
 	if len(argv) == 0 {
 		argv = []string{e.Exe, "--root", e.Root, "--driver", e.Driver.Name(), "shim"}
 	}
-	cmd := exec.Command(argv[0], append(slices.Clone(argv[1:]), args...)...)
+	// Not tied to a ctx: the shim outlives the command that spawned it.
+	cmd := exec.CommandContext(context.Background(), argv[0], append(slices.Clone(argv[1:]), args...)...) //nolint:gosec // G204: argv is the engine's own executable or its configured ShimCommand
 	cmd.Stdout, cmd.Stderr = log, log
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
@@ -348,7 +352,7 @@ func (c *shimClient) dial(ctx context.Context, port uint32) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodGet, "http://shim/dial?port="+strconv.FormatUint(uint64(port), 10), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://shim/dial?port="+strconv.FormatUint(uint64(port), 10), nil)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -364,7 +368,7 @@ func (c *shimClient) dial(ctx context.Context, port uint32) (net.Conn, error) {
 		return nil, err
 	}
 	reader := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(reader, req)
+	resp, err := http.ReadResponse(reader, req) //nolint:bodyclose // on 101 the body is the upgraded conn, returned as bufConn; otherwise conn is closed
 	if err != nil {
 		_ = conn.Close()
 		return nil, err

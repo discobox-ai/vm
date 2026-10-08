@@ -96,7 +96,7 @@ func newID() string {
 // Check reports whether this host can run HCS virtual machines.
 func (*Driver) Check(context.Context) error {
 	if err := computecore.Load(); err != nil {
-		return fmt.Errorf("hcs: computecore.dll is missing: enable the Virtual Machine Platform Windows feature and reboot (%v)", err)
+		return fmt.Errorf("hcs: computecore.dll is missing: enable the Virtual Machine Platform Windows feature and reboot (%w)", err)
 	}
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		return errors.New("hcs: creating VMs needs an elevated (administrator) process: run disco-vm from an elevated shell")
@@ -282,7 +282,7 @@ func (d *Driver) Destroy(_ context.Context, inst machine.InstanceSpec) error {
 // after the VM is gone, and Windows will not delete an open file.
 func removeAll(dir string) error {
 	var err error
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		if err = os.RemoveAll(dir); err == nil {
 			return nil
 		}

@@ -403,7 +403,7 @@ func (e *Engine) Start(ctx context.Context, inst *Instance, opts StartOptions) e
 		}
 		select {
 		case err := <-exited:
-			return fmt.Errorf("instance %s failed to start: %v\n%s", inst.Name, err, tail(filepath.Join(dir, "shim.log")))
+			return fmt.Errorf("instance %s failed to start: %w\n%s", inst.Name, err, tail(filepath.Join(dir, "shim.log")))
 		case <-ctx.Done():
 			return fmt.Errorf("instance %s: shim did not come up: %w", inst.Name, ctx.Err())
 		case <-time.After(50 * time.Millisecond):
@@ -447,7 +447,7 @@ func (e *Engine) checkCapacity(ctx context.Context, inst *Instance) error {
 func (e *Engine) Stop(ctx context.Context, inst *Instance, timeout time.Duration) error {
 	shim, err := e.shim(inst.ID)
 	if err != nil {
-		return nil // not running
+		return nil //nolint:nilerr // no shim answering means the instance is not running, which is what Stop wants
 	}
 	return shim.stop(ctx, timeout)
 }

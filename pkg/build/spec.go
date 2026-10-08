@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -117,12 +118,7 @@ func (w *When) Matches(os machine.OS) bool {
 	if w == nil || len(w.OS) == 0 {
 		return true
 	}
-	for _, candidate := range w.OS {
-		if candidate == os {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(w.OS, os)
 }
 
 // UnmarshalYAML accepts `os: windows` as well as `os: [windows, darwin]`.

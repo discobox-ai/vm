@@ -29,14 +29,14 @@ const (
 	// APIKeyEnv is a boxd API key (bxd_...), from `boxd auth keys create`.
 	// BOXD_TOKEN, which the boxd CLI reads, is accepted too, and may hold a
 	// key or an already-exchanged JWT.
-	APIKeyEnv = "BOXD_API_KEY"
+	APIKeyEnv = "BOXD_API_KEY" //nolint:gosec // G101: an environment variable's name, not a credential
 	tokenEnv  = "BOXD_TOKEN"
 	// AddrEnv and TokenURLEnv point the driver at another boxd cluster.
 	AddrEnv     = "BOXD_GRPC_ADDR"
-	TokenURLEnv = "BOXD_TOKEN_URL"
+	TokenURLEnv = "BOXD_TOKEN_URL" //nolint:gosec // G101: an environment variable's name, not a credential
 
 	defaultAddr     = "boxd.sh:9443"
-	defaultTokenURL = "https://app.boxd.sh/api/v1/auth/token"
+	defaultTokenURL = "https://app.boxd.sh/api/v1/auth/token" //nolint:gosec // G101: an endpoint URL, not a credential
 )
 
 // errNoCredentials names the fix, since Check is where a user meets it first.
@@ -132,7 +132,10 @@ func (c *client) token(ctx context.Context) (string, error) {
 	if c.jwt != "" && time.Until(c.expires) > 5*time.Minute {
 		return c.jwt, nil
 	}
-	body, _ := json.Marshal(map[string]string{"api_key": c.secret})
+	body, err := json.Marshal(map[string]string{"api_key": c.secret})
+	if err != nil {
+		return "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -172,7 +175,7 @@ func socksDialer() (func(context.Context, string) (net.Conn, error), error) {
 	}
 	u, err := url.Parse(raw)
 	if raw == "" || err != nil || (u.Scheme != "socks5" && u.Scheme != "socks5h") {
-		return nil, nil
+		return nil, nil //nolint:nilerr // an ALL_PROXY that is not a SOCKS URL is not ours to honor; gRPC goes direct or through HTTPS_PROXY
 	}
 	var auth *proxy.Auth
 	if u.User != nil {
@@ -183,7 +186,10 @@ func socksDialer() (func(context.Context, string) (net.Conn, error), error) {
 	if err != nil {
 		return nil, fmt.Errorf("boxd: ALL_PROXY: %w", err)
 	}
-	dial := socks.(proxy.ContextDialer)
+	dial, ok := socks.(proxy.ContextDialer)
+	if !ok {
+		return nil, errors.New("boxd: ALL_PROXY: the SOCKS5 dialer cannot dial with a context")
+	}
 	return func(ctx context.Context, addr string) (net.Conn, error) {
 		return dial.DialContext(ctx, "tcp", addr)
 	}, nil

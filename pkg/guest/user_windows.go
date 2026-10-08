@@ -81,7 +81,7 @@ func runAs(cmd *exec.Cmd, name string) ([]string, func(), error) {
 	}
 	var block *uint16
 	if err := windows.CreateEnvironmentBlock(&block, token, false); err != nil {
-		unloadUserProfile.Call(uintptr(token), uintptr(profile.profile))
+		_, _, _ = unloadUserProfile.Call(uintptr(token), uintptr(profile.profile))
 		return fail(err)
 	}
 	env := parseEnvironmentBlock(block)
@@ -92,7 +92,7 @@ func runAs(cmd *exec.Cmd, name string) ([]string, func(), error) {
 	}
 	cmd.SysProcAttr.Token = syscall.Token(token)
 	release := func() {
-		unloadUserProfile.Call(uintptr(token), uintptr(profile.profile))
+		_, _, _ = unloadUserProfile.Call(uintptr(token), uintptr(profile.profile))
 		token.Close()
 	}
 	return env, release, nil
@@ -124,7 +124,7 @@ func grantDesktop(token windows.Token) error {
 	if desktop == 0 {
 		return fmt.Errorf("OpenDesktop: %w", e)
 	}
-	defer closeDesktop.Call(desktop)
+	defer func() { _, _, _ = closeDesktop.Call(desktop) }()
 	if err := grantObject(windows.Handle(desktop), sid); err != nil {
 		return err
 	}

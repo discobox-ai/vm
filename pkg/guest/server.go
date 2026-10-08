@@ -188,7 +188,7 @@ func (f frameWriter) Write(p []byte) (int, error) {
 
 func (s *Server) runSession(conn net.Conn, in *bufio.Reader, req ExecRequest) {
 	out := &session{conn: conn}
-	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	cmd := exec.Command(req.Argv[0], req.Argv[1:]...) //nolint:gosec,noctx // G204: running the host's command is the agent's job; the session, not a ctx, bounds the process
 	cmd.Dir = s.resolve(req.Dir)
 	var login []string
 	if req.User != "" {
@@ -220,12 +220,10 @@ func (s *Server) runSession(conn net.Conn, in *bufio.Reader, req ExecRequest) {
 		}
 		defer pty.Close()
 		stdin, resize = pty, pty.Resize
-		copies.Add(1)
-		go func() {
-			defer copies.Done()
+		copies.Go(func() {
 			// A PTY reports the child's exit as a read error (EIO), not EOF.
 			_, _ = io.Copy(frameWriter{out, FrameStdout}, pty)
-		}()
+		})
 	} else {
 		var err error
 		if stdin, err = cmd.StdinPipe(); err != nil {
@@ -304,8 +302,7 @@ func exitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return exitErr.ExitCode()
 	}
 	return -1
@@ -314,7 +311,7 @@ func exitCode(err error) int {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v) //nolint:errchkjson // the status is already written; a failed body has nowhere to be reported
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {

@@ -15,6 +15,8 @@ import (
 	"github.com/discobox-ai/vm/internal/version"
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/machine"
+
+	// Registers this host OS's drivers with pkg/machine.
 	_ "github.com/discobox-ai/vm/pkg/machine/drivers"
 )
 

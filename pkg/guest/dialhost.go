@@ -1,6 +1,7 @@
 package guest
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -24,7 +25,8 @@ func DialHost(port uint32) (net.Conn, error) {
 		if err != nil {
 			return nil, fmt.Errorf("guest: the host does not listen on port %d: %w", port, err)
 		}
-		return net.Dial("tcp", strings.TrimSpace(string(addr)))
+		var d net.Dialer
+		return d.DialContext(context.Background(), "tcp", strings.TrimSpace(string(addr)))
 	}
 	return dialVsockHost(port)
 }

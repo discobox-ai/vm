@@ -83,7 +83,7 @@ func (c *Client) WaitReady(ctx context.Context, stopped <-chan struct{}) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("guest agent did not answer: %w (last: %v)", ctx.Err(), last)
+			return fmt.Errorf("guest agent did not answer: %w (last: %w)", ctx.Err(), last)
 		case <-stopped:
 			return errors.New("guest stopped before its agent answered")
 		case <-time.After(250 * time.Millisecond):
@@ -153,7 +153,7 @@ func (c *Client) Exec(ctx context.Context, req ExecRequest) (*Process, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	httpReq, err := http.NewRequest(http.MethodPost, "http://guest/v1/exec", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://guest/v1/exec", bytes.NewReader(body))
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -169,7 +169,7 @@ func (c *Client) Exec(ctx context.Context, req ExecRequest) (*Process, error) {
 		return nil, err
 	}
 	in := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(in, httpReq)
+	resp, err := http.ReadResponse(in, httpReq) //nolint:bodyclose // on 101 the body is the upgraded conn, which Process owns; otherwise conn is closed
 	if err != nil {
 		_ = conn.Close()
 		return nil, err

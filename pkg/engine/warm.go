@@ -124,7 +124,7 @@ func (e *Engine) Stage(ctx context.Context, layer string) (info StageInfo, ok bo
 	if err != nil {
 		return StageInfo{}, false
 	}
-	info = StageInfo{Warmth: machine.Warmth{Mode: machine.Cold}, Count: st.Count, User: st.User}
+	info = StageInfo{Mode: machine.Cold, Count: st.Count, User: st.User}
 	if warmer, err := e.warmer(); err == nil {
 		if spec, err := e.warmSpec(st); err == nil {
 			if w, err := warmer.Warmth(ctx, spec); err == nil {
@@ -278,7 +278,7 @@ func (e *Engine) Warm(ctx context.Context, ref string, opts WarmOptions) (machin
 		select {
 		case err := <-exited:
 			if err != nil {
-				return fail(fmt.Errorf("warm %s: %v\n%s", ref, err, tail(filepath.Join(dir, "shim.log"))))
+				return fail(fmt.Errorf("warm %s: %w\n%s", ref, err, tail(filepath.Join(dir, "shim.log"))))
 			}
 			return e.Warmth(ctx, layerID), nil
 		case <-ctx.Done():
@@ -349,7 +349,7 @@ func (e *Engine) RunWarmShim(ctx context.Context, layerID string) error {
 		return err
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = stage.Close(context.Background())
 		return err

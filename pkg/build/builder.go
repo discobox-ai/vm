@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -77,9 +78,9 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 	if contextDir, err = filepath.Abs(contextDir); err != nil {
 		return nil, err
 	}
-	args := map[string]string{}
-	for k, v := range spec.Args {
-		args[k] = v
+	args := maps.Clone(spec.Args)
+	if args == nil {
+		args = map[string]string{}
 	}
 	for k, v := range opts.Args {
 		if _, declared := spec.Args[k]; !declared {

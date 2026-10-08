@@ -3,6 +3,7 @@ package boxd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -126,7 +127,7 @@ func (c *execConn) relayFailed() error {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
 	msg := bytes.TrimSpace(c.stderr.Bytes())
-	if c.recvErr != nil && c.recvErr != io.EOF {
+	if c.recvErr != nil && !errors.Is(c.recvErr, io.EOF) {
 		return fmt.Errorf("boxd: relay to %s: %w", c.addr, c.recvErr)
 	}
 	return fmt.Errorf("boxd: relay to %s exited %d: %s", c.addr, c.exit, msg)

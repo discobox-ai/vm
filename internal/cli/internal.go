@@ -41,7 +41,7 @@ func guestCommand() *cobra.Command {
 				}
 			}
 			server := &guest.Server{Version: version.String(), Root: root, Fake: fake}
-			// The root command turns SIGTERM into a cancelled context. The
+			// The root command turns SIGTERM into a canceled context. The
 			// agent must still exit on it: the guest's init sends it at
 			// shutdown, and waits out its stop timeout for an agent that
 			// does not go.

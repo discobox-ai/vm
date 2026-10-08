@@ -31,7 +31,7 @@ func darwinPath(etc, current string) string {
 		if err != nil {
 			return
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			add(line)
 		}
 	}

@@ -124,7 +124,7 @@ func (c *vsockConn) SetDeadline(t time.Time) error { return c.File.SetDeadline(t
 // CloseWrite shuts the sending half, so the other end reads EOF while this one
 // can still read.
 func (c *vsockConn) CloseWrite() error {
-	raw, err := c.File.SyscallConn()
+	raw, err := c.SyscallConn()
 	if err != nil {
 		return err
 	}

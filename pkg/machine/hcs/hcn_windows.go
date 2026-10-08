@@ -96,7 +96,7 @@ func createEndpoint(mac string) (*endpoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer procHcnCloseNetwork.Call(network)
+	defer func() { _, _, _ = procHcnCloseNetwork.Call(network) }()
 	id, err := windows.GenerateGUID()
 	if err != nil {
 		return nil, err
@@ -108,7 +108,10 @@ func createEndpoint(mac string) (*endpoint, error) {
 	if mac != "" {
 		settings["MacAddress"] = mac
 	}
-	doc, _ := json.Marshal(settings)
+	doc, err := json.Marshal(settings)
+	if err != nil {
+		return nil, err
+	}
 	docp := utf16(string(doc))
 	var ep uintptr
 	var record *uint16
@@ -119,7 +122,7 @@ func createEndpoint(mac string) (*endpoint, error) {
 		return nil, hcnError("HcnCreateEndpoint", hr, record)
 	}
 	hcnResult(record)
-	defer procHcnCloseEndpoint.Call(ep)
+	defer func() { _, _, _ = procHcnCloseEndpoint.Call(ep) }()
 
 	query := utf16(`{"SchemaVersion":{"Major":2,"Minor":0}}`)
 	var props *uint16
@@ -149,6 +152,6 @@ func deleteEndpoint(id string) {
 		return
 	}
 	var record *uint16
-	procHcnDeleteEndpoint.Call(uintptr(unsafe.Pointer(&g)), uintptr(unsafe.Pointer(&record)))
+	_, _, _ = procHcnDeleteEndpoint.Call(uintptr(unsafe.Pointer(&g)), uintptr(unsafe.Pointer(&record)))
 	hcnResult(record)
 }

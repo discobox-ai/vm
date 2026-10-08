@@ -12,6 +12,8 @@ package e2e
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -106,7 +108,7 @@ func TestMain(m *testing.M) {
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	build := exec.Command("go", "build", "-o", binary, "../../cmd/disco-vm")
+	build := exec.CommandContext(context.Background(), "go", "build", "-o", binary, "../../cmd/disco-vm")
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		panic(err)
@@ -123,13 +125,14 @@ type env struct {
 
 func (e env) run(args ...string) (string, int) {
 	e.t.Helper()
-	cmd := exec.Command(binary, args...)
+	// Not t.Context(): cleanups call run too, after that is canceled.
+	cmd := exec.CommandContext(context.Background(), binary, args...)
 	cmd.Env = append(os.Environ(), "DISCO_VM_ROOT="+e.root, "DISCO_VM_DRIVER="+tg.driver)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
 	code := 0
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		code = exitErr.ExitCode()
 	} else if err != nil {
 		e.t.Fatalf("disco-vm %v: %v", args, err)
@@ -158,6 +161,7 @@ func mustContain(t *testing.T, out string, wants ...string) {
 // newEnv is a state root for one test: a fresh one on the fake driver, and on
 // a real driver the persistent one, with its base install built and tagged.
 func newEnv(t *testing.T) env {
+	t.Helper()
 	if tg.root == "" {
 		return env{t: t, root: t.TempDir()}
 	}
@@ -449,7 +453,7 @@ func TestForward(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "host.sock")
-	l, err := net.Listen("unix", socket)
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
