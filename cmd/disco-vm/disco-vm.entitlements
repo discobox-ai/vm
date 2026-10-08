@@ -4,7 +4,7 @@
 <dict>
 	<!--
 	  Creating a Virtualization.framework VM requires this entitlement, and it
-	  exists only on a signed binary, so every build is re-signed (make build).
+	  exists only on a signed binary, so every build is re-signed (go tool task build).
 	  Ad-hoc signing is enough locally; distribution needs Developer ID and
 	  notarization.
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/discobox-ai/vm/internal/version"
 	"github.com/discobox-ai/vm/pkg/guest"
 )
 
@@ -39,7 +40,7 @@ func guestCommand() *cobra.Command {
 					return err
 				}
 			}
-			server := &guest.Server{Version: Version, Root: root, Fake: fake}
+			server := &guest.Server{Version: version.String(), Root: root, Fake: fake}
 			// The root command turns SIGTERM into a cancelled context. The
 			// agent must still exit on it: the guest's init sends it at
 			// shutdown, and waits out its stop timeout for an agent that

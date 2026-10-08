@@ -9,10 +9,10 @@
 1. `machinetest.Run` passes against boxd itself: `TestConformance` with
    `BOXD_API_KEY` set.
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=boxd`.
-3. `examples/boxd.yaml` builds.
+3. `docs/examples/boxd.yaml` builds.
 
 Status, 2026-10-07: criteria 1 and 3 hold. `TestConformance` passes against
-boxd. `examples/boxd.yaml` builds, and the CLI runs it through `run`, `exec`,
+boxd. `docs/examples/boxd.yaml` builds, and the CLI runs it through `run`, `exec`,
 `cp`, `stop`, `start`, `warm`, a resumed `run`, `rm`, and `rmi` with nothing
 left on boxd. Criterion 2 waits on `internal/e2e`, which is written for the
 fake driver. `TestConformanceFakeAPI` runs the same suite in CI against an
@@ -77,7 +77,7 @@ export BOXD_API_KEY=$(boxd auth keys create disco-vm)   # once; keep it somewher
 export DISCO_VM_DRIVER=boxd
 
 ./disco-vm info                                         # check: ok means the key works
-./disco-vm build -f examples/boxd.yaml -t demo/boxd     # add --agent ./disco-vm-linux off linux/amd64
+./disco-vm build -f docs/examples/boxd.yaml -t demo/boxd     # add --agent ./disco-vm-linux off linux/amd64
 ./disco-vm images
 ./disco-vm run --name dev demo/boxd
 ./disco-vm exec dev cat /etc/motd.d/disco-vm

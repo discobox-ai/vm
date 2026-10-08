@@ -1,0 +1,5 @@
+# Managed by repostd (go tool repocheck sync).
+# Every job runs on a Depot runner (repostd ci.runners).
+self-hosted-runner:
+  labels:
+    - depot-*

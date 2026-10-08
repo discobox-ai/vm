@@ -239,5 +239,5 @@ func entitlementHint(err error) error {
 	if err == nil || entitled() {
 		return err
 	}
-	return fmt.Errorf("%w (this binary lacks the %s entitlement; build it with `make build`, which signs it)", err, virtualizationEntitlement)
+	return fmt.Errorf("%w (this binary lacks the %s entitlement; build it with `go tool task build`, which signs it)", err, virtualizationEntitlement)
 }

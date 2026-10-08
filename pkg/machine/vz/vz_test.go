@@ -23,7 +23,7 @@ import (
 const BaseEnv = "DISCO_VM_VZ_BASE"
 
 // TestConformance is the vz driver's definition of done. It creates VMs, so
-// the test binary has to be signed: run it with `make test-vz`.
+// the test binary has to be signed: run it with `go tool task test:vz`.
 func TestConformance(t *testing.T) {
 	base := os.Getenv(BaseEnv)
 	if base == "" {

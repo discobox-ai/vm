@@ -2,7 +2,7 @@
 # fake driver's guest OS is always the host's, so this installs linux: run it
 # on Linux, where fake is the default driver, or change os to match your host.
 #
-#   disco-vm build -f examples/fake.yaml -t demo/app:v1
+#   disco-vm build -f docs/examples/fake.yaml -t demo/app:v1
 #   disco-vm run --name dev demo/app:v1
 #   disco-vm exec dev cat greeting.txt
 #   disco-vm exec -it dev sh

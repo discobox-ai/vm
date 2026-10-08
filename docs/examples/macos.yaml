@@ -2,7 +2,7 @@
 # Virtualization.framework, with the disco-vm agent baked in by the vz driver
 # as a root launchd daemon.
 #
-#   disco-vm build -f examples/macos.yaml -t discobox/macos:27
+#   disco-vm build -f docs/examples/macos.yaml -t discobox/macos:27
 #
 # media: latest asks the framework for the newest restore image this Mac
 # supports (~20 GB, cached); a path to a local .ipsw pins one.

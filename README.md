@@ -19,13 +19,13 @@ disco-vm works on its own, and it is also meant to become a
 > guests on Apple silicon, including resume clones and a native window
 > (`--gui`) ([docs/drivers/vz.md](docs/drivers/vz.md)). The `hcs` driver's
 > brief is [docs/drivers/hcs.md](docs/drivers/hcs.md). The `boxd` driver passes
-> the conformance suite against boxd itself, and `examples/boxd.yaml` builds and
+> the conformance suite against boxd itself, and `docs/examples/boxd.yaml` builds and
 > runs on it by hand; `internal/e2e` does not run on it yet (see
 > [docs/drivers/boxd.md](docs/drivers/boxd.md)).
 
 ```sh
-disco-vm build -f examples/windows.yaml -t discobox/windows:11 --build-arg ISO=D:\iso\Win11.iso   # OS image
-disco-vm build -f examples/discobox-base.yaml -t discobox/base                                    # + toolchains
+disco-vm build -f docs/examples/windows.yaml -t discobox/windows:11 --build-arg ISO=D:\iso\Win11.iso   # OS image
+disco-vm build -f docs/examples/discobox-base.yaml -t discobox/base                                    # + toolchains
 disco-vm run --name dev discobox/base
 disco-vm exec -t dev powershell
 disco-vm cp ./project dev:C:\src
@@ -57,15 +57,15 @@ The reference is [docs/build-spec.md](docs/build-spec.md).
 
 ## Run macOS guests
 
-On an Apple silicon Mac, build through `make`, which signs the binary with the
+On an Apple silicon Mac, build through `go tool task build`, which signs the binary with the
 virtualization entitlement a VM needs:
 
 ```sh
-make build
-bin/disco-vm build -f examples/macos.yaml -t discobox/macos:27     # downloads the restore image once, ~5 min after that
-bin/disco-vm run --name mac discobox/macos:27
-bin/disco-vm exec mac sw_vers
-bin/disco-vm run --gui --name desk discobox/macos:27   # the guest's screen in a window
+go tool task build
+build/disco-vm build -f docs/examples/macos.yaml -t discobox/macos:27     # downloads the restore image once, ~5 min after that
+build/disco-vm run --name mac discobox/macos:27
+build/disco-vm exec mac sw_vers
+build/disco-vm run --gui --name desk discobox/macos:27   # the guest's screen in a window
 ```
 
 ## Try it without a hypervisor
@@ -91,4 +91,4 @@ go test ./...          # includes the full CLI lifecycle on the fake driver
 | `pkg/guest` | agent protocol, server, and host client |
 | `internal/e2e` | the CLI end to end |
 
-The design and its reasoning are in [docs/design.md](docs/design.md).
+The design and its reasoning are in [DESIGN.md](DESIGN.md).
