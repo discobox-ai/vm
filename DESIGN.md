@@ -328,7 +328,7 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) | ✅ resume (`machinetest` on boxd) | n/a (cold only) |
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window | refused | refused |
 | forward, guest to host (`internal/e2e` TestForward) | ✅ | ✅ in-guest, both directions | ✅ in-guest, both directions | refused | refused |
-| service endpoint (`Engine.Endpoint`, `disco-vm endpoint`) | ✅ through the transport (`pkg/engine` TestEndpoint, `internal/e2e` TestEndpoint) | ⬜ | ⬜ | ✅ boxd (`TestEndpoint`, by hand, `BOXD_API_KEY`): a guest's HTTP server through the URL on two boots, the same URL and a pinned port across stop and start; ✅ fake API (`TestEndpointFakeAPI`) | ⬜ |
+| service endpoint (`Engine.Endpoint`, `disco-vm endpoint`) | ✅ through the transport (`pkg/engine` TestEndpoint, `internal/e2e` TestEndpoint) | ⬜ | ⬜ | ✅ boxd (`TestEndpoint`, by hand, `DISCO_VM_INTEGRATION=1` and `BOXD_API_KEY`): a guest's HTTP server through the URL on two boots, the same URL and a pinned port across stop and start; ✅ fake API (`TestEndpointFakeAPI`) | ⬜ |
 | warm with a user (`warm --user`, `--local-user`) | refused | refused | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) | refused | n/a (cold only) |
 
 A platform driver is done when `machinetest.Run` passes against it on real
