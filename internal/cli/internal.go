@@ -10,6 +10,7 @@ import (
 
 	"github.com/discobox-ai/vm/internal/version"
 	"github.com/discobox-ai/vm/pkg/guest"
+	"github.com/discobox-ai/vm/pkg/machine/docker"
 )
 
 // guestCommand is the agent. It is the same binary, built for the guest's OS
@@ -81,6 +82,27 @@ func pipeCommand() *cobra.Command {
 			return guest.Pipe(cmd.Context(), args[0], os.Stdin, os.Stdout)
 		},
 	}
+}
+
+// dockerInitCommand is a docker guest's PID 1, which starts systemd in a user
+// namespace of the guest's own; with --shift it is the docker driver's install
+// step that moves the base image's files into the guest's uids.
+func dockerInitCommand() *cobra.Command {
+	var shift bool
+	cmd := &cobra.Command{
+		Use:    "docker-init [--shift]",
+		Short:  "Boot a docker guest's systemd in its own user namespace (inside the container)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			if shift {
+				return docker.Shift()
+			}
+			return docker.Init()
+		},
+	}
+	cmd.Flags().BoolVar(&shift, "shift", false, "shift the root filesystem's owners into the guest's uids")
+	return cmd
 }
 
 // shimCommand is one instance's supervisor, started by `start` and `run`, or

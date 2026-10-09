@@ -7,6 +7,9 @@ Build OS images and run them as VMs, from one codebase and one command line:
 - **macOS guests on macOS**, through Virtualization.framework.
 - **Linux guests in the cloud**, on [boxd](https://boxd.sh) microVMs, from
   any host.
+- **Linux guests as Docker containers that look like machines**: systemd is
+  their init, and their root is root only over the guest, as an unprivileged
+  uid on the host, without `--privileged`.
 
 disco-vm works on its own, and it is also meant to become a
 [discobox](https://github.com/discobox-ai/discobox) sandbox provider (see
@@ -21,7 +24,10 @@ disco-vm works on its own, and it is also meant to become a
 > brief is [docs/drivers/hcs.md](docs/drivers/hcs.md). The `boxd` driver passes
 > the conformance suite against boxd itself, and `docs/examples/boxd.yaml` builds and
 > runs on it by hand; `internal/e2e` does not run on it yet (see
-> [docs/drivers/boxd.md](docs/drivers/boxd.md)).
+> [docs/drivers/boxd.md](docs/drivers/boxd.md)). The `docker` driver passes the
+> conformance suite and `internal/e2e` against a local Docker daemon, and
+> `docs/examples/docker.yaml` builds on it (see
+> [docs/drivers/docker.md](docs/drivers/docker.md)).
 
 ```sh
 disco-vm build -f docs/examples/windows.yaml -t discobox/windows:11 --build-arg ISO=D:\iso\Win11.iso   # OS image

@@ -5,6 +5,9 @@ package drivers
 import (
 	// boxd's hypervisor is in the cloud, so every host can drive it.
 	_ "github.com/discobox-ai/vm/pkg/machine/boxd"
+	// docker's daemon may be on another host, or in Docker Desktop's VM, so
+	// every host can drive it too.
+	_ "github.com/discobox-ai/vm/pkg/machine/docker"
 	// The fake driver is in every build: it is what CI and the neutral tests
 	// boot, on every OS.
 	_ "github.com/discobox-ai/vm/pkg/machine/fake"

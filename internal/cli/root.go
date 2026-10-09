@@ -60,7 +60,7 @@ func Main(args []string) int {
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
 		psCommand(g), inspectCommand(g), execCommand(g), cpCommand(g),
 		infoCommand(g),
-		guestCommand(), pipeCommand(), shimCommand(g), dialHostCommand(),
+		guestCommand(), pipeCommand(), shimCommand(g), dialHostCommand(), dockerInitCommand(),
 	)
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
