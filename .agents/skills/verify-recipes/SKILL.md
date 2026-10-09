@@ -1,6 +1,6 @@
 ---
 name: verify-recipes
-description: How to verify a disco-vm change at runtime — the CLI against real boxd (run, exec, cp, stop, start, ps, rm, build), including from inside a discobox whose boxd credential is a five-minute sentinel. Read before verifying anything that touches the engine, the CLI, or the boxd driver.
+description: How to verify a disco-vm change at runtime — the CLI against real boxd or a real Docker daemon (run, exec, cp, stop, start, ps, rm, build), including from inside a discobox whose boxd credential is a five-minute sentinel. Read before verifying anything that touches the engine, the CLI, or the boxd or docker driver.
 ---
 
 # Verifying disco-vm
@@ -45,6 +45,35 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   `from: {install: {os: linux, media: latest}}`. Install takes about a minute.
   A layer costs a shutdown, a cold boot, and a snapshot (~40s on top of its
   steps).
+
+## docker
+
+- Needs a rootful Docker daemon on cgroup v2; a discobox has one. Build with
+  `go tool task build:linux-agent`, static, as for boxd: install copies the
+  CLI binary into the image as the guest's agent and the container's init,
+  where it runs on the image's libc. A plain `go build` links glibc
+  dynamically (the devShell's from `/nix/store`), and it fails at install or
+  boot on an image without that libc.
+- Isolate state: `export DISCO_VM_ROOT=<a scratch directory>/dvm
+  DISCO_VM_DRIVER=docker`. Layers are images named `disco-vm-layer:*`, and
+  instances are containers named `dvm-*`.
+- Base image: `docs/examples/docker.yaml`. Install takes 30s to 2 minutes
+  (apt installs systemd); a layer costs a shutdown and a `docker commit`.
+- Inside a discobox, build steps that use the network need the proxy in the
+  spec, because the guest's systemd starts services with a clean environment.
+  Use a copy of the spec with `env: {http_proxy: http://172.17.0.1:17008,
+  https_proxy: http://172.17.0.1:17008}`. The install itself needs nothing:
+  the box's runc injects its CA and proxy into every container. Fedora is the
+  exception, where that injection fails and `dnf` hangs.
+- Worth driving beyond the common flows: `exec dev systemctl
+  is-system-running` (`running`), `ps -eo uid,comm` on the host (the guest's
+  processes at uid 16777216 and up), `cat /etc/machine-id` in two instances
+  (different), a guest's own `systemctl reboot` (back, still `running`), and
+  `docker kill` or `docker rm -f` on the container behind disco-vm's back,
+  then `ps -a`, `start`, `rm -f`. No `disco-vm shim` process should exist.
+- Clean up: `ps -a` empty, and no `dvm-*` containers or `disco-vm-layer`
+  images left (`docker ps -a`, `docker images`). `rmi` keeps an image's
+  layers while an instance uses them; tag and `rmi` a leftover layer by ID.
 
 ## Flows worth driving
 
