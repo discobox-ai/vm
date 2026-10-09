@@ -241,6 +241,7 @@ func (d *Driver) boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 		Memory:    opts.Memory,
 		NIC:       nic,
 		Console:   consolePipe(id), ConsoleSID: currentUserSID(),
+		Service: inst.Service,
 	})
 }
 

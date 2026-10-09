@@ -74,7 +74,7 @@ elsewhere `http://guest`, which a program embedding the engine reaches through
 `Engine.Endpoint`'s transport. The port is recorded on the last layer the
 build makes, so a spec that declares one must make a layer. An image built
 `from:` it inherits it until a spec declares another. Port 7300 is the
-agent's and is refused.
+agent's and 7301 is reserved for the display, so both are refused.
 
 **Args.** Only `${NAME}` with braces, and only for declared args, is
 substituted. `$env:PATH` in PowerShell and `$HOME` or `${HOME}` in sh reach the

@@ -79,10 +79,15 @@ type cloneRequest struct {
 	// Console is the clone's own console pipe, and who may open it.
 	Console    string `json:"console,omitempty"`
 	ConsoleSID string `json:"consoleSID,omitempty"`
+	// Service is the clone's service port, for its ServiceTable.
+	Service uint32 `json:"service,omitempty"`
 }
 
 type cloneReply struct {
 	Error string `json:"error,omitempty"`
+	// Service is the service port the clone's ServiceTable lists. A holder
+	// started by a disco-vm that predates services leaves it out.
+	Service uint32 `json:"service,omitempty"`
 }
 
 func readTemplate(dir string) (*template, error) {
@@ -242,7 +247,7 @@ func (s *stage) clone(conn net.Conn) {
 		return
 	}
 	reply := func(err error) {
-		r := cloneReply{}
+		r := cloneReply{Service: req.Service}
 		if err != nil {
 			r.Error = err.Error()
 		}
@@ -251,7 +256,7 @@ func (s *stage) clone(conn net.Conn) {
 	sys, err := createSystem(req.ID, newDocument(vmConfig{
 		Disk: req.Disk, GuestFile: req.GuestFile, StateFile: req.StateFile,
 		CPUs: s.cpus, Memory: s.memory, Template: s.id,
-		Console: req.Console, ConsoleSID: req.ConsoleSID,
+		Console: req.Console, ConsoleSID: req.ConsoleSID, Service: req.Service,
 	}))
 	if err != nil {
 		reply(err)
@@ -367,6 +372,7 @@ func (d *Driver) bootFork(ctx context.Context, inst machine.InstanceSpec, st ins
 		ID: id, Disk: filepath.Join(inst.Dir, diskName),
 		GuestFile: filepath.Join(inst.Dir, guestFileName), StateFile: sf, NIC: nic,
 		Console: consolePipe(id), ConsoleSID: currentUserSID(),
+		Service: inst.Service,
 	}
 	var reply cloneReply
 	if err := json.NewEncoder(conn).Encode(req); err == nil {
@@ -380,6 +386,12 @@ func (d *Driver) bootFork(ctx context.Context, inst machine.InstanceSpec, st ins
 	if reply.Error != "" {
 		deleteEndpoint(nic.ID)
 		return nil, fmt.Errorf("hcs: fork: %s", reply.Error)
+	}
+	if reply.Service != inst.Service {
+		// The clone's guest could not bind its service.
+		terminateStale(id)
+		deleteEndpoint(nic.ID)
+		return nil, fmt.Errorf("hcs: fork: the template's holder predates service ports; cool the image and warm it again (disco-vm warm --rm, then warm)")
 	}
 	sys, err := openSystem(id)
 	if err != nil {

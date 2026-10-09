@@ -58,8 +58,8 @@ func pinProxy(ctx context.Context, api boxdapi.BoxdApiClient, vm string, port ui
 	if def, err = defaultProxy(ctx, api, vm); err != nil {
 		return "", err
 	}
-	if def.GetEffectivePort() != port || def.GetDomain() == "" {
-		return "", fmt.Errorf("boxd: %s's proxy forwards %q to port %d, not %d", vm, def.GetDomain(), def.GetEffectivePort(), port)
+	if def.GetPortMode() != "locked" || def.GetEffectivePort() != port || def.GetDomain() == "" {
+		return "", fmt.Errorf("boxd: %s's proxy forwards %q to port %d (%s), not locked to %d", vm, def.GetDomain(), def.GetEffectivePort(), def.GetPortMode(), port)
 	}
 	return "https://" + def.GetDomain(), nil
 }
