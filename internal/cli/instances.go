@@ -227,6 +227,34 @@ func psCommand(g *globals) *cobra.Command {
 	return cmd
 }
 
+func endpointCommand(g *globals) *cobra.Command {
+	return &cobra.Command{
+		Use:   "endpoint INSTANCE",
+		Short: "Print the URL of an instance's service",
+		Long: "Print the URL of the service its image declares (service: {port: N}).\n" +
+			"On boxd it is a public HTTPS URL, the same across stop and start, so the\n" +
+			"service must authenticate its callers. Elsewhere it is http://guest, which\n" +
+			"a program embedding the engine reaches through Engine.Endpoint's transport.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := g.engine()
+			if err != nil {
+				return err
+			}
+			inst, err := e.Get(args[0])
+			if err != nil {
+				return err
+			}
+			endpoint, err := e.Endpoint(cmd.Context(), inst)
+			if err != nil {
+				return err
+			}
+			fmt.Println(endpoint.URL)
+			return nil
+		},
+	}
+}
+
 func inspectCommand(g *globals) *cobra.Command {
 	return &cobra.Command{
 		Use:   "inspect INSTANCE",

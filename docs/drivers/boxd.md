@@ -54,6 +54,8 @@ use. The parts that matter here:
 | `Destroy` | `DestroyVm`. |
 | `Warm` | at the layer's size, point `stage.json` at the layer's snapshot. At another size, boot a cold clone at that size and snapshot it (`own`, deleted by `Cool`). |
 | `Warmth` | `{resume, -1}` while the stage's snapshot is ready. |
+| `Prepare` with a service | once the machine is restored, `SetBotProtection` off, `SetProxyPort` pins the default proxy (the one `ListProxies` marks `is_default`) to the service port, and its domain is recorded in `vm.json`. |
+| `Endpoint` | `https://<machine>.boxd.sh` from `vm.json`, with no API call. |
 
 The agent runs as root under systemd and listens on
 `unix:/run/disco-vm/agent.sock` (mode 0600). Exec runs as boxd's `boxd` user,
@@ -84,6 +86,7 @@ export DISCO_VM_DRIVER=boxd
 ./disco-vm exec dev cat /etc/motd.d/disco-vm
 ./disco-vm exec -it dev bash
 ./disco-vm cp ./README.md dev:/tmp
+./disco-vm endpoint dev                                 # an image with `service: {port: N}` only
 ./disco-vm stop dev && ./disco-vm start dev
 ./disco-vm warm demo/boxd && ./disco-vm run --name fast demo/boxd   # resumes from the snapshot
 ./disco-vm rm -f dev fast
@@ -117,6 +120,22 @@ the next time the instance is started, stopped or removed: it is asked for its
 status with its token first, so a reused PID is never signaled, and the
 machine is left as it is.
 
+## The endpoint
+
+Every boxd machine has a default proxy at `<machine>.boxd.sh`, which
+terminates TLS with a managed certificate and forwards HTTP, websockets
+included, to one port of the machine. Left alone, it forwards to the first of
+80, 443, 8080, 8000, 3000, 5000, and 5173 the guest listens on, else 8000. For
+an instance whose image declares `service: {port: N}`, Prepare pins it to N,
+so the service is the only thing it reaches, and turns bot protection off.
+The URL is recorded with the instance, so `disco-vm endpoint` and
+`Engine.Endpoint` answer without a credential, and it stays the same across
+stop and start. Anyone who has it reaches the service, which authenticates
+its callers itself (discobox ADR 26-10-09-143 §3).
+
+A machine with no service keeps the default, so a guest server on one of
+those ports is public at `<machine>.boxd.sh` all the same.
+
 ## A guest cannot power its machine off
 
 Found against boxd on 2026-10-07. `systemctl poweroff` in a boxd guest stops
@@ -142,6 +161,13 @@ cancelled context, and `disco-vm guest` now closes its listener on it.
 
 ## Confirmed against boxd
 
+- The endpoint (2026-10-09, `TestEndpoint`): `SetProxyPort` pins a restored
+  machine's default proxy to the service port, a guest's HTTP server listening
+  on all interfaces answers at `https://<machine>.boxd.sh` within a few
+  retries, and after a stop and a start the proxy is still locked to the port
+  and answers again. The default proxy is not named `default`: `SetProxyPort`
+  with that name is NotFound, so the driver uses the name `ListProxies` gives
+  the proxy it marks `is_default`.
 - Exec carries the agent's HTTP, tar streams, and exit codes through
   `disco-vm pipe` unmodified, without a TTY. A half-close reaches the command
   as EOF. `command` runs through a shell as the `boxd` user, who has

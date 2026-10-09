@@ -154,6 +154,10 @@ type InstanceSpec struct {
 	// Prepare and the first Boot after it draw on the stage; a later boot of
 	// the same instance is cold.
 	WarmDir string
+	// Service is the guest port of the image's one service, which the
+	// instance exposes as its endpoint; zero when the image declares none.
+	// Prepare sets up whatever the driver needs to reach it from outside.
+	Service uint32
 }
 
 // Parent is the layer the instance is derived from.
@@ -203,6 +207,13 @@ type Driver interface {
 	// DeleteLayer releases anything the driver holds for a layer beyond its
 	// Dir, which the store removes itself.
 	DeleteLayer(ctx context.Context, layer Layer) error
+	// Endpoint is the public URL of a prepared instance's service
+	// (InstanceSpec.Service), which any process can use with no credential
+	// of the driver's: an HTTPS URL whose TLS the provider terminates (boxd).
+	// It is the same across stop and start, and reads nothing but what
+	// Prepare recorded. A driver with no such URL returns empty, and the
+	// service is reached by dialing its port.
+	Endpoint(ctx context.Context, inst InstanceSpec) (string, error)
 }
 
 // ErrNotWarm reports that nothing is staged for the clone mode Prepare was

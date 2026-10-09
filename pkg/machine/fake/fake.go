@@ -270,6 +270,9 @@ func (d *Driver) Destroy(_ context.Context, inst machine.InstanceSpec) error {
 
 func (d *Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
 
+// Endpoint is empty: a fake guest's service listens on the host's loopback.
+func (*Driver) Endpoint(context.Context, machine.InstanceSpec) (string, error) { return "", nil }
+
 // proc is a running fake guest.
 type proc struct {
 	cmd       *exec.Cmd
@@ -281,17 +284,20 @@ type proc struct {
 	killed    atomic.Bool
 }
 
+// Dial reaches the agent at its own address. A fake guest is a host process,
+// so any other port is the host's loopback.
 func (m *proc) Dial(ctx context.Context, port uint32) (net.Conn, error) {
-	if port != guest.AgentPort {
-		return nil, fmt.Errorf("fake: port %d: only the agent port %d exists", port, guest.AgentPort)
-	}
 	select {
 	case <-m.done:
 		return nil, errors.New("fake: guest is stopped")
 	default:
 	}
+	addr := m.addr
+	if port != guest.AgentPort {
+		addr = net.JoinHostPort("127.0.0.1", strconv.FormatUint(uint64(port), 10))
+	}
 	var d net.Dialer
-	return d.DialContext(ctx, "tcp", m.addr)
+	return d.DialContext(ctx, "tcp", addr)
 }
 
 var _ machine.HostListener = (*proc)(nil)

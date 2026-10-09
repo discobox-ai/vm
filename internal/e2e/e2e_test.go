@@ -191,9 +191,9 @@ func newEnv(t *testing.T) env {
 	}
 	e := env{t: t, root: tg.root}
 	// Whatever a failed run left, so that this one builds its layers anew.
-	e.run("rm", "-f", "dev", "dev2", "before", "one", "two", "after", "fw")
+	e.run("rm", "-f", "dev", "dev2", "before", "one", "two", "after", "fw", "svc", "nosvc")
 	e.run("warm", "--rm", "test/warm")
-	for _, ref := range []string{"test/app:v1", "test/app:latest", "test/app:other", "test/warm", "test/fwd"} {
+	for _, ref := range []string{"test/app:v1", "test/app:latest", "test/app:other", "test/warm", "test/fwd", "test/svc", "test/nosvc"} {
 		e.run("rmi", ref)
 	}
 	spec := filepath.Join(t.TempDir(), "base.yaml")
@@ -549,4 +549,33 @@ func TestForward(t *testing.T) {
 	}
 	e.ok("rm", "-f", "fw")
 	e.ok("rmi", "test/fwd")
+}
+
+// An image that declares a service gives its instances an endpoint, and one
+// that does not refuses to print one. The URL is the driver's: http://guest
+// where the service is reached through the engine, a public https URL on boxd.
+func TestEndpoint(t *testing.T) {
+	e := newEnv(t)
+	contextDir := t.TempDir()
+	for tag, service := range map[string]string{"test/svc": "service: {port: 8080}\n", "test/nosvc": ""} {
+		specPath := filepath.Join(contextDir, strings.TrimPrefix(tag, "test/")+".yaml")
+		spec := "from:\n  install: " + tg.install + "\n" + service + "layers:\n  - name: a\n    steps:\n      - run: echo " + tag + "\n"
+		if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		e.ok("build", "-f", specPath, "-t", tag)
+	}
+	e.ok("create", "--name", "svc", "test/svc")
+	e.ok("create", "--name", "nosvc", "test/nosvc")
+	t.Cleanup(func() { e.run("rm", "-f", "svc", "nosvc") })
+	url := strings.TrimSpace(e.ok("endpoint", "svc"))
+	if url != "http://guest" && !strings.HasPrefix(url, "https://") {
+		t.Fatalf("endpoint svc = %q", url)
+	}
+	mustContain(t, e.ok("inspect", "svc"), `"service": 8080`)
+	if out, code := e.run("endpoint", "nosvc"); code == 0 || !strings.Contains(out, "declares no service") {
+		t.Fatalf("endpoint of an image with no service: exit %d\n%s", code, out)
+	}
+	e.ok("rm", "svc", "nosvc")
+	e.ok("rmi", "test/svc", "test/nosvc")
 }

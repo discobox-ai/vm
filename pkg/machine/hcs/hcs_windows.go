@@ -292,3 +292,6 @@ func removeAll(dir string) error {
 }
 
 func (*Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
+
+// Endpoint is empty: an hcs guest's service is reached over hvsocket.
+func (*Driver) Endpoint(context.Context, machine.InstanceSpec) (string, error) { return "", nil }

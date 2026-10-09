@@ -467,6 +467,10 @@ func (d *Driver) DeleteLayer(ctx context.Context, layer machine.Layer) error {
 	return nil
 }
 
+// Endpoint is empty: a container's service is reached by dialing its port
+// through the daemon.
+func (*Driver) Endpoint(context.Context, machine.InstanceSpec) (string, error) { return "", nil }
+
 // removeContainer is best-effort cleanup of a container the driver made for
 // itself.
 func (d *Driver) removeContainer(id string) {

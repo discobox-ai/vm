@@ -49,6 +49,9 @@ const (
 	BoxdApi_DeleteSnapshot_FullMethodName          = "/boxd.api.v1.BoxdApi/DeleteSnapshot"
 	BoxdApi_CreateVmFromSnapshot_FullMethodName    = "/boxd.api.v1.BoxdApi/CreateVmFromSnapshot"
 	BoxdApi_ResizeVm_FullMethodName                = "/boxd.api.v1.BoxdApi/ResizeVm"
+	BoxdApi_ListProxies_FullMethodName             = "/boxd.api.v1.BoxdApi/ListProxies"
+	BoxdApi_SetProxyPort_FullMethodName            = "/boxd.api.v1.BoxdApi/SetProxyPort"
+	BoxdApi_SetBotProtection_FullMethodName        = "/boxd.api.v1.BoxdApi/SetBotProtection"
 )
 
 // BoxdApiClient is the client API for BoxdApi service.
@@ -80,6 +83,13 @@ type BoxdApiClient interface {
 	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
 	CreateVmFromSnapshot(ctx context.Context, in *CreateVmFromSnapshotRequest, opts ...grpc.CallOption) (*CreateVmResponse, error)
 	ResizeVm(ctx context.Context, in *ResizeVmRequest, opts ...grpc.CallOption) (*ResizeVmResponse, error)
+	// Every machine has a default proxy at <machine>.<zone>: an HTTPS domain
+	// whose TLS boxd terminates, forwarding HTTP to one port of the machine.
+	ListProxies(ctx context.Context, in *ListProxiesRequest, opts ...grpc.CallOption) (*ListProxiesResponse, error)
+	SetProxyPort(ctx context.Context, in *SetProxyPortRequest, opts ...grpc.CallOption) (*SetProxyPortResponse, error)
+	// Bot protection challenges an HTTPS request that would wake a sleeping
+	// machine on <machine>.<zone>. On by default.
+	SetBotProtection(ctx context.Context, in *SetBotProtectionRequest, opts ...grpc.CallOption) (*SetBotProtectionResponse, error)
 }
 
 type boxdApiClient struct {
@@ -276,6 +286,36 @@ func (c *boxdApiClient) ResizeVm(ctx context.Context, in *ResizeVmRequest, opts 
 	return out, nil
 }
 
+func (c *boxdApiClient) ListProxies(ctx context.Context, in *ListProxiesRequest, opts ...grpc.CallOption) (*ListProxiesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListProxiesResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_ListProxies_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *boxdApiClient) SetProxyPort(ctx context.Context, in *SetProxyPortRequest, opts ...grpc.CallOption) (*SetProxyPortResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetProxyPortResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_SetProxyPort_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *boxdApiClient) SetBotProtection(ctx context.Context, in *SetBotProtectionRequest, opts ...grpc.CallOption) (*SetBotProtectionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetBotProtectionResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_SetBotProtection_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BoxdApiServer is the server API for BoxdApi service.
 // All implementations must embed UnimplementedBoxdApiServer
 // for forward compatibility.
@@ -305,6 +345,13 @@ type BoxdApiServer interface {
 	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
 	CreateVmFromSnapshot(context.Context, *CreateVmFromSnapshotRequest) (*CreateVmResponse, error)
 	ResizeVm(context.Context, *ResizeVmRequest) (*ResizeVmResponse, error)
+	// Every machine has a default proxy at <machine>.<zone>: an HTTPS domain
+	// whose TLS boxd terminates, forwarding HTTP to one port of the machine.
+	ListProxies(context.Context, *ListProxiesRequest) (*ListProxiesResponse, error)
+	SetProxyPort(context.Context, *SetProxyPortRequest) (*SetProxyPortResponse, error)
+	// Bot protection challenges an HTTPS request that would wake a sleeping
+	// machine on <machine>.<zone>. On by default.
+	SetBotProtection(context.Context, *SetBotProtectionRequest) (*SetBotProtectionResponse, error)
 	mustEmbedUnimplementedBoxdApiServer()
 }
 
@@ -368,6 +415,15 @@ func (UnimplementedBoxdApiServer) CreateVmFromSnapshot(context.Context, *CreateV
 }
 func (UnimplementedBoxdApiServer) ResizeVm(context.Context, *ResizeVmRequest) (*ResizeVmResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResizeVm not implemented")
+}
+func (UnimplementedBoxdApiServer) ListProxies(context.Context, *ListProxiesRequest) (*ListProxiesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListProxies not implemented")
+}
+func (UnimplementedBoxdApiServer) SetProxyPort(context.Context, *SetProxyPortRequest) (*SetProxyPortResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetProxyPort not implemented")
+}
+func (UnimplementedBoxdApiServer) SetBotProtection(context.Context, *SetBotProtectionRequest) (*SetBotProtectionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetBotProtection not implemented")
 }
 func (UnimplementedBoxdApiServer) mustEmbedUnimplementedBoxdApiServer() {}
 func (UnimplementedBoxdApiServer) testEmbeddedByValue()                 {}
@@ -692,6 +748,60 @@ func _BoxdApi_ResizeVm_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BoxdApi_ListProxies_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProxiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).ListProxies(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_ListProxies_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).ListProxies(ctx, req.(*ListProxiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BoxdApi_SetProxyPort_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetProxyPortRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).SetProxyPort(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_SetProxyPort_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).SetProxyPort(ctx, req.(*SetProxyPortRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BoxdApi_SetBotProtection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetBotProtectionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).SetBotProtection(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_SetBotProtection_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).SetBotProtection(ctx, req.(*SetBotProtectionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // BoxdApi_ServiceDesc is the grpc.ServiceDesc for BoxdApi service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -762,6 +872,18 @@ var BoxdApi_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResizeVm",
 			Handler:    _BoxdApi_ResizeVm_Handler,
+		},
+		{
+			MethodName: "ListProxies",
+			Handler:    _BoxdApi_ListProxies_Handler,
+		},
+		{
+			MethodName: "SetProxyPort",
+			Handler:    _BoxdApi_SetProxyPort_Handler,
+		},
+		{
+			MethodName: "SetBotProtection",
+			Handler:    _BoxdApi_SetBotProtection_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

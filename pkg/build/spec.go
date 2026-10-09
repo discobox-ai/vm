@@ -24,6 +24,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -43,7 +44,11 @@ type Spec struct {
 	User string `yaml:"user,omitempty"`
 	// Resources sizes the build VM; it does not affect the cache.
 	Resources Resources `yaml:"resources,omitempty"`
-	Layers    []Layer   `yaml:"layers,omitempty"`
+	// Service is the image's one service, which an instance exposes as its
+	// endpoint. It is recorded on the last layer the build makes, and
+	// inherited by images built on this one until one declares another.
+	Service *Service `yaml:"service,omitempty"`
+	Layers  []Layer  `yaml:"layers,omitempty"`
 	// LegacyName and LegacyTag are the spec's old name and tag, which `build
 	// -t` replaced, as a Dockerfile has none. They are read only to refuse
 	// them with that message rather than as unknown keys.
@@ -67,6 +72,11 @@ type Install struct {
 	Disk    string `yaml:"disk,omitempty"`
 	// Options pass through to the driver untouched.
 	Options map[string]string `yaml:"options,omitempty"`
+}
+
+// Service is a guest port an instance exposes as its endpoint.
+type Service struct {
+	Port uint32 `yaml:"port"`
 }
 
 // Resources sizes the build VM.
@@ -183,6 +193,14 @@ func (s *Spec) Validate() error {
 		}
 		if in.Media == "" {
 			errs = append(errs, errors.New("from.install.media is required"))
+		}
+	}
+	if s.Service != nil {
+		switch port := s.Service.Port; {
+		case port == 0 || port > 65535:
+			errs = append(errs, fmt.Errorf("service.port %d is not a TCP port", port))
+		case port == guest.AgentPort:
+			errs = append(errs, fmt.Errorf("service.port %d is the disco-vm agent's", port))
 		}
 	}
 	names := map[string]bool{}

@@ -49,7 +49,8 @@ in `os.Executable()`. A boxd guest is linux/amd64, so from any other host
 
 ### 2. The driver contract is the intersection, and differences are reported
 
-`machine.Driver` is Install, Prepare (clone), Boot, Commit, Destroy. A running
+`machine.Driver` is Install, Prepare (clone), Boot, Commit, Destroy, and
+Endpoint (decision 3b). A running
 `Machine` offers Dial(port), Kill, and Done. Anything only one hypervisor can do
 is a `Capabilities` field, never a faked method:
 
@@ -105,6 +106,26 @@ the program through `machine.Main`. A driver that shows windows installs a
 `machine.MainLoop` there; vz brings AppKit up on the main thread only when the
 first window is asked for, so no other command (and not the guest agent) ever
 touches it.
+
+### 3b. An image has one service, and an instance exposes it as its endpoint
+
+A build spec may declare `service: {port: N}`
+([ADR 0001](docs/adr/0001-a-driver-runs-guest-operations-and-exposes-one-service-endpoint.md)
+§2). It is recorded on the last layer the build makes, in that layer's key,
+and inherited by images built on it until one declares another. An instance
+records its image's port when it is created (`Instance.Service`, and
+`InstanceSpec.Service` for the driver), and a build's own instances expose
+nothing. `Engine.Endpoint` returns how a caller reaches it:
+
+- **A public URL**, where the driver has one (`Driver.Endpoint`): boxd's HTTPS
+  proxy, set up at Prepare and recorded with the instance, so any process
+  reads it with no credential and it is the same across stop and start. It
+  has no access control, so the service authenticates every request.
+- **`http://guest` and a transport** that dials the port through `Dial`
+  everywhere else (hcs, vz, docker, fake).
+
+`disco-vm endpoint INSTANCE` prints the URL. An image with no service has no
+endpoint (`ErrNoService`), and the agent's port is never one.
 
 ### 4. HTTP between host and guest
 
@@ -256,6 +277,13 @@ no socket into a guest. The boxd driver maps the seam onto what it has. See
   Dial error, not a conn that reads EOF. boxd authenticates every stream, and
   the agent's socket is root-only, so nothing else in the guest reaches it
   without sudo.
+- **The endpoint is the machine's default proxy.** For an instance with a
+  service, Prepare pins the default proxy at `<machine>.boxd.sh` to its port
+  and turns off bot protection, which would put a browser challenge in front
+  of a request that wakes the machine. Pinning it also stops the proxy
+  forwarding to whichever common port the guest listens on. A machine with
+  no service keeps boxd's default, which forwards to the first of 80, 443,
+  8080, 8000, 3000, 5000, and 5173 the guest listens on.
 - **A guest cannot power its machine off.** boxd leaves a halted guest
   `running`, so the agent's orderly shutdown ends with the driver stopping the
   machine through the API. A systemd shutdown hook marks the moment the
@@ -300,6 +328,7 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) | ✅ resume (`machinetest` on boxd) | n/a (cold only) |
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window | refused | refused |
 | forward, guest to host (`internal/e2e` TestForward) | ✅ | ✅ in-guest, both directions | ✅ in-guest, both directions | refused | refused |
+| service endpoint (`Engine.Endpoint`, `disco-vm endpoint`) | ✅ through the transport (`pkg/engine` TestEndpoint, `internal/e2e` TestEndpoint) | ⬜ | ⬜ | ✅ boxd (`TestEndpoint`, by hand, `BOXD_API_KEY`): a guest's HTTP server through the URL on two boots, the same URL and a pinned port across stop and start; ✅ fake API (`TestEndpointFakeAPI`) | ⬜ |
 | warm with a user (`warm --user`, `--local-user`) | refused | refused | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) | refused | n/a (cold only) |
 
 A platform driver is done when `machinetest.Run` passes against it on real
