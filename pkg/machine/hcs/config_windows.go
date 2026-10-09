@@ -1,6 +1,7 @@
 package hcs
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/Microsoft/go-winio"
@@ -159,11 +160,15 @@ type vmConfig struct {
 	// has the video devices, so a template and its clones agree on them.
 	Console    string
 	ConsoleSID string
+	// Service is the instance's service port, listed with hvsockPorts so the
+	// guest can bind it; zero for none.
+	Service uint32
 }
 
-// hvsockPorts are the guest ports listed in the ServiceTable. The guest's
-// bind is refused for any port not listed. 7301 (display) joins when the
-// display lands.
+// hvsockPorts are the guest ports every VM's ServiceTable lists; the guest's
+// bind is refused for any port not listed. An instance's service port is
+// added per VM (vmConfig.Service), on a cold boot and in a fork clone's
+// document. 7301 (display) joins when the display lands.
 var hvsockPorts = []uint32{guest.AgentPort}
 
 func slashes(path string) string { return strings.ReplaceAll(path, `\`, "/") }
@@ -177,7 +182,11 @@ func newDocument(c vmConfig) document {
 		mb = defaultMemoryMB
 	}
 	services := map[string]hvSocketService{}
-	for _, port := range hvsockPorts {
+	ports := hvsockPorts
+	if c.Service != 0 {
+		ports = append(slices.Clone(ports), c.Service)
+	}
+	for _, port := range ports {
 		id := winio.VsockServiceID(port)
 		services[strings.ToUpper(id.String())] = hvSocketService{
 			BindSecurityDescriptor: sddlEveryone, ConnectSecurityDescriptor: sddlAdmins, AllowWildcardBinds: true,

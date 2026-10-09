@@ -88,6 +88,7 @@ func TestParseRejects(t *testing.T) {
 		"service 0":    "from: {image: b}\nservice: {port: 0}\n",
 		"service big":  "from: {image: b}\nservice: {port: 70000}\n",
 		"agent port":   "from: {image: b}\nservice: {port: 7300}\n",
+		"display port": "from: {image: b}\nservice: {port: 7301}\n",
 	} {
 		if _, err := Parse([]byte(spec)); err == nil {
 			t.Errorf("%s: parsed", name)

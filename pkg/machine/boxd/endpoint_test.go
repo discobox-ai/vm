@@ -175,10 +175,18 @@ sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, port)
 	if err != nil {
 		t.Fatal(err)
 	}
+	found := false
 	for _, p := range list.GetProxies() {
-		if p.GetIsDefault() && (p.GetPortMode() != "locked" || p.GetEffectivePort() != port) {
+		if !p.GetIsDefault() {
+			continue
+		}
+		found = true
+		if p.GetPortMode() != "locked" || p.GetEffectivePort() != port {
 			t.Errorf("the default proxy is %s at port %d after a restart, want locked at %d", p.GetPortMode(), p.GetEffectivePort(), port)
 		}
+	}
+	if !found {
+		t.Error("no default proxy after a restart")
 	}
 }
 

@@ -201,6 +201,8 @@ func (s *Spec) Validate() error {
 			errs = append(errs, fmt.Errorf("service.port %d is not a TCP port", port))
 		case port == guest.AgentPort:
 			errs = append(errs, fmt.Errorf("service.port %d is the disco-vm agent's", port))
+		case port == guest.DisplayPort:
+			errs = append(errs, fmt.Errorf("service.port %d is reserved for the display stream", port))
 		}
 	}
 	names := map[string]bool{}
