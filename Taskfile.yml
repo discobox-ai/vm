@@ -34,6 +34,15 @@ tasks:
       - cmd: codesign --force --sign - --entitlements {{.ENTITLEMENTS}} {{.BINARY}}
         platforms: [darwin]
 
+  build:linux-agent:
+    desc: Compile a static linux/amd64 disco-vm into build/linux-amd64/, the CLI and the agent a boxd install uploads
+    cmds:
+      # Static, because install uploads this very binary as the guest's
+      # agent: one linked against the devShell's /nix/store glibc never
+      # starts on a boxd guest, and install only checks its architecture.
+      - mkdir -p build/linux-amd64
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '{{.LDFLAGS}}' -o build/linux-amd64/disco-vm {{.MAIN}}
+
   run:
     desc: Build and run disco-vm (pass flags after --)
     deps:
