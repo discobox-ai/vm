@@ -215,7 +215,7 @@ func psCommand(g *globals) *cobra.Command {
 			fmt.Fprintln(w, "ID\tNAME\tIMAGE\tOS\tMODE\tSTATE\tCREATED")
 			for _, inst := range instances {
 				state := e.State(cmd.Context(), inst)
-				if state != engine.Running && !all {
+				if state == engine.Stopped && !all {
 					continue
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", inst.ID, inst.Name, inst.Image, inst.GuestOS, inst.Mode, state, ago(inst.Created))

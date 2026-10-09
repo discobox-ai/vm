@@ -283,6 +283,67 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatal("Done was not closed after Kill")
 		}
 	})
+
+	if caps.Remote {
+		// A remote machine outlives the process that booted it: another
+		// process attaches to it, and a guest that powers itself off while
+		// nothing watches is found stopped.
+		t.Run("attach", func(t *testing.T) {
+			attacher, ok := driver.(machine.Attacher)
+			if !ok {
+				t.Fatal("Capabilities.Remote is listed, but the driver is not a machine.Attacher")
+			}
+			inst := instance("attached", *base)
+			if err := driver.Prepare(ctx, inst); err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+			if _, err := attacher.Attach(ctx, inst); !errors.Is(err, machine.ErrNotRunning) {
+				t.Fatalf("attach to a prepared, unbooted instance: %v, want ErrNotRunning", err)
+			}
+
+			// Booted and let go, as by a process that has since exited:
+			// nothing ever waits on this machine's Done.
+			bootCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+			defer cancel()
+			booted, err := driver.Boot(bootCtx, inst, cfg.Boot)
+			if err != nil {
+				t.Fatalf("boot: %v", err)
+			}
+			first := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return booted.Dial(ctx, guest.AgentPort) })
+			err = first.WaitReady(bootCtx, nil)
+			first.Close()
+			if err != nil {
+				t.Fatalf("agent: %v", err)
+			}
+
+			m, err := attacher.Attach(ctx, inst)
+			if err != nil {
+				t.Fatalf("attach to a running instance: %v", err)
+			}
+			t.Cleanup(func() { _ = m.Kill(context.Background()) })
+			client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
+			t.Cleanup(client.Close)
+			if err := client.WaitReady(bootCtx, nil); err != nil {
+				t.Fatalf("agent through an attached machine: %v", err)
+			}
+
+			if err := client.Shutdown(ctx, false); err != nil {
+				t.Fatalf("shutdown request: %v", err)
+			}
+			deadline := time.Now().Add(cfg.Timeout)
+			for {
+				_, err := attacher.Attach(ctx, inst)
+				if errors.Is(err, machine.ErrNotRunning) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("a guest that powered itself off still attaches: %v", err)
+				}
+				time.Sleep(time.Second)
+			}
+		})
+	}
 }
 
 func tarOf(t *testing.T, name, content string) io.Reader {

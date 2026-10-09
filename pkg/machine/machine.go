@@ -83,6 +83,11 @@ type Capabilities struct {
 	// Forward reports that guest processes can connect out to the host: a
 	// running Machine implements HostListener.
 	Forward bool `json:"forward"`
+	// Remote reports that a running machine is owned by a service, not by
+	// the process that booted it (boxd's API), so any process can reach it
+	// again: the driver implements Attacher, and the engine runs no shim for
+	// its instances.
+	Remote bool `json:"remote"`
 }
 
 // SupportsOS reports whether the driver can run the given guest OS.
@@ -281,6 +286,23 @@ type Stage interface {
 	Done() <-chan struct{}
 	// Close releases the stage and waits for it to be gone.
 	Close(ctx context.Context) error
+}
+
+// ErrNotRunning reports that an instance has no running machine to attach to.
+var ErrNotRunning = errors.New("machine: the instance is not running")
+
+// Attacher is a driver whose running machines outlive the process that booted
+// them, because a service owns them. Every driver that lists
+// Capabilities.Remote implements it.
+type Attacher interface {
+	// Attach returns the running machine of a booted instance, or
+	// ErrNotRunning. Any process may call it, any number of times, with its
+	// own credentials. A guest that shut itself down while nothing watched
+	// is finished here, as Done would have finished it, and reads as not
+	// running. The machine watches for its own stop only once Done, Err, or
+	// Kill is called, so attaching to dial costs nothing that outlives the
+	// call.
+	Attach(ctx context.Context, inst InstanceSpec) (Machine, error)
 }
 
 // HostListener is a running machine whose guest processes can connect out to
