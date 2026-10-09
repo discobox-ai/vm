@@ -15,4 +15,5 @@ Follow `template.md` and the `repostd` skill.
 <!-- repostd:adr-index -->
 | ADR | Title | Status |
 |---|---|---|
+| [0001](0001-a-driver-runs-guest-operations-and-exposes-one-service-endpoint.md) | A driver runs guest operations itself and exposes one service endpoint | Proposed |
 <!-- /repostd:adr-index -->
