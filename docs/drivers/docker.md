@@ -1,8 +1,11 @@
 # docker driver (Linux guests as containers that look like machines)
 
 **Scope:** `pkg/machine/docker`, and the hidden `disco-vm docker-init`
-command that is a guest container's PID 1. Nothing above the
-`machine.Driver` seam changed. `internal/e2e` gained a `docker` target. Like
+command that is a guest container's PID 1. That command is the one place
+above the `machine.Driver` seam that names the driver: `internal/cli` imports
+`pkg/machine/docker` for it, since the guest's init is the same binary (one
+binary, decision 1). It picks no behavior by OS or driver. Nothing else above
+the seam changed, and `internal/e2e` gained a `docker` target. Like
 boxd, the driver is remote (`Capabilities.Remote`): the Docker daemon owns a
 running guest, so the engine runs no shim, and every command attaches to the
 container.
@@ -134,10 +137,12 @@ through the docker CLI or SDK, as boxd's does.
 
 ## Try it
 
-On a Linux host with a rootful Docker daemon:
+On a Linux host with a rootful Docker daemon. Install copies the binary into
+the image as the guest's agent and the container's init, where it runs on the
+image's libc, so build it static:
 
 ```sh
-go build -o disco-vm ./cmd/disco-vm
+CGO_ENABLED=0 go build -o disco-vm ./cmd/disco-vm   # or: go tool task build:linux-agent (amd64)
 export DISCO_VM_DRIVER=docker
 
 ./disco-vm info                                            # check: ok
@@ -150,8 +155,11 @@ export DISCO_VM_DRIVER=docker
 ```
 
 From a host whose daemon is elsewhere, the agent must be built for the
-daemon's OS and CPU: `GOOS=linux go build -o disco-vm-linux ./cmd/disco-vm`
-and `build --agent ./disco-vm-linux`.
+daemon's OS and CPU, static:
+`CGO_ENABLED=0 GOOS=linux go build -o disco-vm-linux ./cmd/disco-vm` and
+`build --agent ./disco-vm-linux`. Install checks only the CPU, so a binary
+linked against a libc the image lacks fails at install, where the install
+script runs it to shift the image's owners (exit 127), before any guest boots.
 
 ## Configuration
 
