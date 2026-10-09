@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -28,7 +29,8 @@ const sigPoweroff = syscall.Signal(34 + 4)
 // does not offer per container:
 //
 //  1. It delegates the container's cgroup: Init moves itself into a leaf
-//     (init), and hands a sibling (guest) to the guest's root.
+//     (init), and hands a sibling (guest) to the guest's root, made anew for
+//     every boot.
 //  2. It starts the guest in new user, mount, pid, cgroup, uts, and ipc
 //     namespaces, with guest uids 0-65535 mapped to UIDBase and up on the
 //     host. The guest's side mounts what systemd needs and execs it.
@@ -46,6 +48,9 @@ func Init() error {
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	for {
+		if err := freshGuestCgroup(); err != nil {
+			return fmt.Errorf("docker-init: the guest's cgroup: %w", err)
+		}
 		pid, err := startGuest()
 		if err != nil {
 			return fmt.Errorf("docker-init: start the guest: %w", err)
@@ -67,20 +72,21 @@ func Init() error {
 	}
 }
 
-// delegateCgroup moves this process out of the container's cgroup into a leaf,
-// enables every controller below it, and makes the guest cgroup the guest
-// root's own, so systemd can manage its subtree. Docker mounts the container's
-// cgroup writable only with --security-opt writable-cgroups=true.
+// cgroupRoot is the container's cgroup, as its own cgroup namespace sees it.
+const cgroupRoot = "/sys/fs/cgroup"
+
+// delegateCgroup moves this process out of the container's cgroup into a leaf
+// and enables every controller below it, so a guest cgroup beside it can have
+// them. Docker mounts the container's cgroup writable only with --security-opt
+// writable-cgroups=true.
 func delegateCgroup() error {
-	root := "/sys/fs/cgroup"
+	root := cgroupRoot
 	controllers, err := os.ReadFile(filepath.Join(root, "cgroup.controllers"))
 	if err != nil {
 		return fmt.Errorf("cgroup v2 is required: %w", err)
 	}
-	for _, dir := range []string{"init", "guest"} {
-		if err := os.Mkdir(filepath.Join(root, dir), 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
-			return err
-		}
+	if err := os.Mkdir(filepath.Join(root, "init"), 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
 	}
 	if err := joinCgroup("init"); err != nil {
 		return err
@@ -90,7 +96,22 @@ func delegateCgroup() error {
 		// should not keep the others from the guest.
 		_ = os.WriteFile(filepath.Join(root, "cgroup.subtree_control"), []byte("+"+c), 0)
 	}
-	guest := filepath.Join(root, "guest")
+	return nil
+}
+
+// freshGuestCgroup makes the guest cgroup anew and makes it the guest root's
+// own, so systemd can manage its subtree. A guest that rebooted leaves its
+// systemd's cgroups and enabled controllers behind, and a cgroup with
+// controllers enabled cannot take a process, so the next boot could not start
+// in it: the old tree is removed first, leaves before parents.
+func freshGuestCgroup() error {
+	guest := filepath.Join(cgroupRoot, "guest")
+	if err := removeCgroup(guest); err != nil {
+		return err
+	}
+	if err := os.Mkdir(guest, 0o755); err != nil {
+		return err
+	}
 	for _, name := range []string{"", "cgroup.procs", "cgroup.threads", "cgroup.subtree_control"} {
 		if err := os.Lchown(filepath.Join(guest, name), UIDBase, UIDBase); err != nil {
 			return err
@@ -99,8 +120,39 @@ func delegateCgroup() error {
 	return nil
 }
 
+// removeCgroup removes a cgroup and every cgroup below it. A cgroup goes only
+// once its processes have exited, which the old guest's do moments after its
+// init (the kernel kills a pid namespace with its init), so it waits for them.
+func removeCgroup(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			if err := removeCgroup(filepath.Join(dir, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := unix.Rmdir(dir)
+		if err == nil || errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		if !errors.Is(err, unix.EBUSY) || time.Now().After(deadline) {
+			return fmt.Errorf("remove %s: %w", dir, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func joinCgroup(dir string) error {
-	return os.WriteFile(filepath.Join("/sys/fs/cgroup", dir, "cgroup.procs"), []byte(strconv.Itoa(os.Getpid())), 0)
+	return os.WriteFile(filepath.Join(cgroupRoot, dir, "cgroup.procs"), []byte(strconv.Itoa(os.Getpid())), 0)
 }
 
 // startGuest starts this binary again in the guest's namespaces. A new cgroup

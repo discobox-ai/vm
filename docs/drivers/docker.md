@@ -188,12 +188,14 @@ Linux 7.0.11), 2026-10-09:
   host, `ps` shows those processes at uids 16777216 and up.
 - An orderly shutdown through the agent powers systemd off, Init exits 0, and
   the container stops.
+- A guest's own `systemctl reboot` comes back in the same container, in a
+  cgroup made anew, with its writes kept and `systemctl is-system-running`
+  `running`.
 
 ## Not verified yet
 
 - Docker Desktop on macOS and Windows, a remote `tcp://` daemon, and arm64.
 - SELinux hosts (`label=disable` is passed, but not run against).
-- A guest reboot, which Init turns into a new guest in the same container.
 - Load: each Dial is a docker exec, and every engine call on an instance
   inspects its container first.
 
