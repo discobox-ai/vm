@@ -13,7 +13,7 @@
 // any process (a CLI invocation, a discobox server) reaches any instance
 // through the same socket.
 //
-// A remote driver (Capabilities.Remote, boxd) runs no shim. Its service owns
+// A remote driver (Capabilities.Remote: boxd, docker) runs no shim. Its service owns
 // the machine whatever process booted it, so each call attaches to the machine
 // through the driver, with the calling process's own credentials, and nothing
 // outlives the call.

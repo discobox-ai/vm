@@ -1,0 +1,30 @@
+# A Linux image that runs as a Docker container that looks like a machine:
+# systemd boots as its init, and its root is root only over the guest, as an
+# unprivileged uid on the host. The docker driver installs systemd and the
+# disco-vm agent into an image from a registry, and each layer is a Docker
+# image committed from the stopped guest.
+#
+#   disco-vm --driver docker build -f docs/examples/docker.yaml -t demo/docker
+#   disco-vm --driver docker run --name dev demo/docker
+#   disco-vm --driver docker exec dev systemctl is-system-running
+#
+# media is always "latest", and options.image picks the image to start from
+# (debian:trixie when it is not set). An image without systemd gets it from
+# its package manager (apt-get, dnf, or zypper). The daemon must be rootful,
+# on a cgroup v2 host. From a host that is not linux, pass --agent, a disco-vm
+# built with GOOS=linux for the daemon's CPU.
+from:
+  install:
+    os: linux
+    media: latest
+    options:
+      image: debian:trixie
+shell: ["/bin/sh", "-c"]
+resources:
+  cpus: 2
+  memory: 4GiB
+layers:
+  - name: tools
+    steps:
+      - run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tree sudo
+      - run: mkdir -p /etc/motd.d && echo "built by disco-vm" > /etc/motd.d/disco-vm

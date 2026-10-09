@@ -7,7 +7,9 @@
 // binary on macOS ($DISCO_VM_TEST_BINARY) and a persistent state root
 // ($DISCO_VM_E2E_ROOT), where the base install is built once, tagged
 // e2e/base, and found in the build cache by every later run. On hcs it also
-// needs a Windows ISO ($DISCO_VM_E2E_ISO) and an elevated shell.
+// needs a Windows ISO ($DISCO_VM_E2E_ISO) and an elevated shell. The docker
+// driver installs in seconds, so its state root is optional; it installs from
+// debian:trixie, or the image $DISCO_VM_E2E_IMAGE names.
 package e2e
 
 import (
@@ -43,6 +45,9 @@ type target struct {
 	// root is a state root that outlives the run, for a driver whose install
 	// is too slow to repeat.
 	root string
+	// slow says the install is too slow to repeat in every test, so root is
+	// required.
+	slow bool
 }
 
 // file is a guest path for the file API and for a spec's copy destination.
@@ -71,6 +76,18 @@ func targetFromEnv() target {
 			install: "{os: darwin, media: latest, disk: 64GiB}",
 			dir:     "/Users/Shared",
 			root:    os.Getenv("DISCO_VM_E2E_ROOT"),
+			slow:    true,
+		}
+	case "docker":
+		image := os.Getenv("DISCO_VM_E2E_IMAGE")
+		if image == "" {
+			image = "debian:trixie"
+		}
+		return target{
+			driver:  "docker",
+			install: fmt.Sprintf("{os: linux, media: latest, options: {image: '%s'}}", image),
+			dir:     "/srv",
+			root:    os.Getenv("DISCO_VM_E2E_ROOT"),
 		}
 	case "hcs":
 		iso := os.Getenv("DISCO_VM_E2E_ISO")
@@ -83,6 +100,7 @@ func targetFromEnv() target {
 			install: fmt.Sprintf("{os: windows, media: '%s', edition: Windows 11 Pro, disk: 64GiB}", strings.ReplaceAll(iso, "'", "''")),
 			dir:     "C:/Users/Public",
 			root:    os.Getenv("DISCO_VM_E2E_ROOT"),
+			slow:    true,
 		}
 	default:
 		panic("e2e: no guest layout for driver " + driver)
@@ -91,7 +109,7 @@ func targetFromEnv() target {
 
 func TestMain(m *testing.M) {
 	tg = targetFromEnv()
-	if tg.driver != "fake" && tg.root == "" {
+	if tg.slow && tg.root == "" {
 		fmt.Fprintf(os.Stderr, "e2e: driver %s needs $DISCO_VM_E2E_ROOT, a state root that keeps its base install between runs\n", tg.driver)
 		os.Exit(2)
 	}
@@ -163,7 +181,13 @@ func mustContain(t *testing.T, out string, wants ...string) {
 func newEnv(t *testing.T) env {
 	t.Helper()
 	if tg.root == "" {
-		return env{t: t, root: t.TempDir()}
+		e := env{t: t, root: t.TempDir()}
+		if tg.driver != "fake" {
+			// A real driver may hold layers outside the state root (docker
+			// images), which a root thrown away would leave behind.
+			t.Cleanup(e.release)
+		}
+		return e
 	}
 	e := env{t: t, root: tg.root}
 	// Whatever a failed run left, so that this one builds its layers anew.
@@ -178,6 +202,26 @@ func newEnv(t *testing.T) env {
 	}
 	e.ok("build", "-f", spec, "-t", "e2e/base")
 	return e
+}
+
+// release removes every instance and image in the state root.
+func (e env) release() {
+	rows := func(out string) []string {
+		var first []string
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n")[1:] {
+			if f := strings.Fields(line); len(f) > 0 {
+				first = append(first, f[0])
+			}
+		}
+		return first
+	}
+	if ids := rows(e.ok("ps", "-a")); len(ids) > 0 {
+		e.run(append([]string{"rm", "-f"}, ids...)...)
+	}
+	for _, ref := range rows(e.ok("images")) {
+		e.run("warm", "--rm", ref)
+		e.run("rmi", ref)
+	}
 }
 
 // catArgv reads a guest file under the target's directory.
@@ -204,6 +248,8 @@ func TestLifecycle(t *testing.T) {
 		guestOS = "windows"
 	case "vz":
 		guestOS = "darwin"
+	case "docker":
+		guestOS = "linux"
 	}
 	shell := `["/bin/sh", "-c"]`
 	other := "windows"
@@ -325,6 +371,14 @@ func TestInfo(t *testing.T) {
 // again.
 func TestWarm(t *testing.T) {
 	e := newEnv(t)
+	// The driver's fast mode.
+	info := e.ok("info")
+	fast := "resume"
+	if strings.Contains(info, `"fork"`) {
+		fast = "fork"
+	} else if !strings.Contains(info, `"resume"`) {
+		t.Skipf("driver %s clones cold only", tg.driver)
+	}
 	contextDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(contextDir, "greeting.txt"), []byte("warm hello"), 0o644); err != nil {
 		t.Fatal(err)
@@ -352,12 +406,6 @@ layers:
 		}
 		t.Fatalf("inspect %s shows no mode:\n%s", name, out)
 		return ""
-	}
-
-	// The driver's fast mode.
-	fast := "resume"
-	if strings.Contains(e.ok("info"), `"fork"`) {
-		fast = "fork"
 	}
 
 	// Cold until warmed.
