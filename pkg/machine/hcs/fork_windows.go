@@ -391,7 +391,7 @@ func (d *Driver) bootFork(ctx context.Context, inst machine.InstanceSpec, st ins
 		// The clone's guest could not bind its service.
 		terminateStale(id)
 		deleteEndpoint(nic.ID)
-		return nil, fmt.Errorf("hcs: fork: the template's holder predates service ports; cool the image and warm it again (disco-vm warm --rm, then warm)")
+		return nil, fmt.Errorf("hcs: fork: the template's holder predates service ports; cool the image and warm it again (disco-vm warm --rm IMAGE, then disco-vm warm IMAGE)")
 	}
 	sys, err := openSystem(id)
 	if err != nil {
