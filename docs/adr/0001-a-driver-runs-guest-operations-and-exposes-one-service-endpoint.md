@@ -1,6 +1,6 @@
 # 0001 — A driver runs guest operations itself and exposes one service endpoint
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-10-09
 
 ## Context
