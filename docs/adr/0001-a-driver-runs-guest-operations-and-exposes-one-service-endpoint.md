@@ -13,21 +13,30 @@ agent, installed by the driver at install time.
 
 That is the only option on Virtualization.framework and Hyper-V: neither
 offers an exec or file API into a macOS or Windows guest, so something inside
-has to provide one. boxd does offer it. Its `Exec` stream carries stdin,
-stdout, stderr, exit codes, a TTY with its size and resizes, and it has
-streaming file upload and download. On boxd the agent buys nothing and costs:
+has to provide one. boxd does offer it. Its published API
+(docs.boxd.sh/reference/grpc-proto) has an `Exec` stream that carries stdin,
+stdout, stderr, exit codes, and a TTY with its size and resizes (`tty`,
+`cols`, `rows`, `window_change`), and streaming file upload and download
+(`UploadFileStream`, `DownloadFileStream`). The proto subset this repository
+vendors in `pkg/machine/boxd/internal/boxdapi` has only what the driver calls
+today — `tty` without its size, and upload without download — and is extended
+from that page as its own header describes. On boxd the agent buys nothing and
+costs:
 
 - Install uploads a binary and adds a systemd unit to every base image.
 - Every operation is a second hop: boxd Exec runs `sudo -n disco-vm pipe` to
   reach the agent's socket, and readiness polls it every 250ms.
 - Every snapshot pins the agent's version.
 
-The other direction of the seam is ports. `Machine.Dial(port)` reaches any
-guest port, and `Forward`/`HostListener` let a guest connect out to the host.
-disco-vm's embedder, discobox, needs neither. Its ADR 26-10-09-143 fixes the
-contract: start the VM, place one bootstrap file through the guest, and get
-back **one address** to the sandbox agent, which serves exec, files,
-terminals, and every user port (`tcp/attach`, `udp/attach`) itself. On boxd
+The other side of the seam is ports, in two directions. `Machine.Dial(port)`
+reaches any guest port from the host. `Forward`/`HostListener` let a guest
+connect out to the host, and discobox needs that one: its ADR 0144 §4 has a
+host-VM sandbox (vz, hcs) reach its pool's proxy, credentials broker and Git
+over the guest socket, which is this path. The host-to-guest direction it does
+not need beyond one port: its ADR 26-10-09-143 fixes the contract as start the
+VM, place one bootstrap file through the guest, and get back **one address**
+to the sandbox agent, which serves exec, files, terminals, and every user port
+(`tcp/attach`, `udp/attach`) itself. On boxd
 (and other providers, exe.dev among them) that address is the provider's
 public HTTPS URL. `docs/discobox.md`'s earlier plan of routing discobox
 through disco-vm's guest agent and `Dial(port)` is superseded by it.
@@ -75,12 +84,14 @@ type Endpoint struct {
 `disco-vm endpoint <instance>` prints it. An image that declares no service
 has no endpoint.
 
-### 3. Raw guest ports and forwards leave the seam
+### 3. Raw guest ports leave the seam; forwards stay
 
 `Machine.Dial(port)` is no longer part of `machine.Machine`; each driver keeps
-whatever private channel it needs. `Capabilities.Forward`, `HostListener`,
-`run --forward`, and `dial-host` are removed: a guest reaches host or pool
-services over the network, as discobox's ADR 0126 has its sandboxes do.
+whatever private channel it needs. The guest-to-host direction is unchanged:
+`Capabilities.Forward`, `HostListener`, `run --forward`, and `dial-host` stay,
+because they are how a host-VM sandbox reaches its pool (discobox ADR 0144
+§4). A provider-hosted guest reaches its pool over the network instead, and
+its driver does not list `Forward`.
 
 ## Alternatives rejected
 
@@ -100,6 +111,9 @@ services over the network, as discobox's ADR 0126 has its sandboxes do.
 - **An endpoint per declared port.** The service behind the one endpoint
   reaches every other port from inside the guest, behind its own
   authentication; more public URLs are more surface for nothing.
+- **Remove forwards too**, since a provider guest reaches its pool over the
+  network. A host-VM guest has no network to its pool by design (discobox ADR
+  0144 §4), and the guest socket is how it gets there.
 
 ## Consequences
 
@@ -108,7 +122,9 @@ services over the network, as discobox's ADR 0126 has its sandboxes do.
 - boxd's install, builds, `exec`, and `cp` no longer depend on a guest agent,
   and a boxd build no longer waits on agent health between layers.
 - The proof table in `DESIGN.md` gains a guest-operations row per driver and
-  an endpoint row; the forward rows go.
+  an endpoint row.
+- The vendored boxd proto gains `Exec`'s TTY size and resize fields,
+  `DownloadFileStream`, and the proxy calls the endpoint needs.
 - `docs/discobox.md` is rewritten to the start, bootstrap, endpoint contract.
 
 ## Deferred
