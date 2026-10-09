@@ -1961,6 +1961,370 @@ func (x *ResizeVmResponse) GetRebooted() bool {
 	return false
 }
 
+type ListProxiesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Vm            string                 `protobuf:"bytes,2,opt,name=vm,proto3" json:"vm,omitempty"` // machine id OR name; empty = every proxy the caller can see
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListProxiesRequest) Reset() {
+	*x = ListProxiesRequest{}
+	mi := &file_discobox_vm_boxd_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListProxiesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListProxiesRequest) ProtoMessage() {}
+
+func (x *ListProxiesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_discobox_vm_boxd_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListProxiesRequest.ProtoReflect.Descriptor instead.
+func (*ListProxiesRequest) Descriptor() ([]byte, []int) {
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *ListProxiesRequest) GetVm() string {
+	if x != nil {
+		return x.Vm
+	}
+	return ""
+}
+
+type ListProxiesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Proxies       []*ProxyInfo           `protobuf:"bytes,1,rep,name=proxies,proto3" json:"proxies,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListProxiesResponse) Reset() {
+	*x = ListProxiesResponse{}
+	mi := &file_discobox_vm_boxd_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListProxiesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListProxiesResponse) ProtoMessage() {}
+
+func (x *ListProxiesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_discobox_vm_boxd_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListProxiesResponse.ProtoReflect.Descriptor instead.
+func (*ListProxiesResponse) Descriptor() ([]byte, []int) {
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ListProxiesResponse) GetProxies() []*ProxyInfo {
+	if x != nil {
+		return x.Proxies
+	}
+	return nil
+}
+
+type ProxyInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	VmName        string                 `protobuf:"bytes,2,opt,name=vm_name,json=vmName,proto3" json:"vm_name,omitempty"`
+	Domain        string                 `protobuf:"bytes,3,opt,name=domain,proto3" json:"domain,omitempty"`
+	IsDefault     bool                   `protobuf:"varint,5,opt,name=is_default,json=isDefault,proto3" json:"is_default,omitempty"`
+	VmId          string                 `protobuf:"bytes,7,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"`
+	PortMode      string                 `protobuf:"bytes,8,opt,name=port_mode,json=portMode,proto3" json:"port_mode,omitempty"`                 // "locked" | "auto"
+	EffectivePort uint32                 `protobuf:"varint,9,opt,name=effective_port,json=effectivePort,proto3" json:"effective_port,omitempty"` // the port traffic lands on
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProxyInfo) Reset() {
+	*x = ProxyInfo{}
+	mi := &file_discobox_vm_boxd_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProxyInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProxyInfo) ProtoMessage() {}
+
+func (x *ProxyInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_discobox_vm_boxd_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProxyInfo.ProtoReflect.Descriptor instead.
+func (*ProxyInfo) Descriptor() ([]byte, []int) {
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *ProxyInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ProxyInfo) GetVmName() string {
+	if x != nil {
+		return x.VmName
+	}
+	return ""
+}
+
+func (x *ProxyInfo) GetDomain() string {
+	if x != nil {
+		return x.Domain
+	}
+	return ""
+}
+
+func (x *ProxyInfo) GetIsDefault() bool {
+	if x != nil {
+		return x.IsDefault
+	}
+	return false
+}
+
+func (x *ProxyInfo) GetVmId() string {
+	if x != nil {
+		return x.VmId
+	}
+	return ""
+}
+
+func (x *ProxyInfo) GetPortMode() string {
+	if x != nil {
+		return x.PortMode
+	}
+	return ""
+}
+
+func (x *ProxyInfo) GetEffectivePort() uint32 {
+	if x != nil {
+		return x.EffectivePort
+	}
+	return 0
+}
+
+type SetProxyPortRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Port          string                 `protobuf:"bytes,3,opt,name=port,proto3" json:"port,omitempty"` // a port number, or "auto" (the default proxy only)
+	Vm            string                 `protobuf:"bytes,4,opt,name=vm,proto3" json:"vm,omitempty"`     // machine id OR name
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetProxyPortRequest) Reset() {
+	*x = SetProxyPortRequest{}
+	mi := &file_discobox_vm_boxd_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetProxyPortRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetProxyPortRequest) ProtoMessage() {}
+
+func (x *SetProxyPortRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_discobox_vm_boxd_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetProxyPortRequest.ProtoReflect.Descriptor instead.
+func (*SetProxyPortRequest) Descriptor() ([]byte, []int) {
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *SetProxyPortRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SetProxyPortRequest) GetPort() string {
+	if x != nil {
+		return x.Port
+	}
+	return ""
+}
+
+func (x *SetProxyPortRequest) GetVm() string {
+	if x != nil {
+		return x.Vm
+	}
+	return ""
+}
+
+type SetProxyPortResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetProxyPortResponse) Reset() {
+	*x = SetProxyPortResponse{}
+	mi := &file_discobox_vm_boxd_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetProxyPortResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetProxyPortResponse) ProtoMessage() {}
+
+func (x *SetProxyPortResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_discobox_vm_boxd_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetProxyPortResponse.ProtoReflect.Descriptor instead.
+func (*SetProxyPortResponse) Descriptor() ([]byte, []int) {
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{40}
+}
+
+type SetBotProtectionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	VmId          string                 `protobuf:"bytes,1,opt,name=vm_id,json=vmId,proto3" json:"vm_id,omitempty"` // name or id
+	Enabled       bool                   `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetBotProtectionRequest) Reset() {
+	*x = SetBotProtectionRequest{}
+	mi := &file_discobox_vm_boxd_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetBotProtectionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetBotProtectionRequest) ProtoMessage() {}
+
+func (x *SetBotProtectionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_discobox_vm_boxd_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetBotProtectionRequest.ProtoReflect.Descriptor instead.
+func (*SetBotProtectionRequest) Descriptor() ([]byte, []int) {
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *SetBotProtectionRequest) GetVmId() string {
+	if x != nil {
+		return x.VmId
+	}
+	return ""
+}
+
+func (x *SetBotProtectionRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+type SetBotProtectionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetBotProtectionResponse) Reset() {
+	*x = SetBotProtectionResponse{}
+	mi := &file_discobox_vm_boxd_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetBotProtectionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetBotProtectionResponse) ProtoMessage() {}
+
+func (x *SetBotProtectionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_discobox_vm_boxd_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetBotProtectionResponse.ProtoReflect.Descriptor instead.
+func (*SetBotProtectionResponse) Descriptor() ([]byte, []int) {
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{42}
+}
+
 var File_discobox_vm_boxd_proto protoreflect.FileDescriptor
 
 const file_discobox_vm_boxd_proto_rawDesc = "" +
@@ -2089,7 +2453,29 @@ const file_discobox_vm_boxd_proto_rawDesc = "" +
 	"\x10ResizeVmResponse\x12\x12\n" +
 	"\x04vcpu\x18\x01 \x01(\rR\x04vcpu\x12!\n" +
 	"\fmemory_bytes\x18\x02 \x01(\x04R\vmemoryBytes\x12\x1a\n" +
-	"\brebooted\x18\x03 \x01(\bR\brebooted2\xab\v\n" +
+	"\brebooted\x18\x03 \x01(\bR\brebooted\"$\n" +
+	"\x12ListProxiesRequest\x12\x0e\n" +
+	"\x02vm\x18\x02 \x01(\tR\x02vm\"G\n" +
+	"\x13ListProxiesResponse\x120\n" +
+	"\aproxies\x18\x01 \x03(\v2\x16.boxd.api.v1.ProxyInfoR\aproxies\"\xc8\x01\n" +
+	"\tProxyInfo\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x17\n" +
+	"\avm_name\x18\x02 \x01(\tR\x06vmName\x12\x16\n" +
+	"\x06domain\x18\x03 \x01(\tR\x06domain\x12\x1d\n" +
+	"\n" +
+	"is_default\x18\x05 \x01(\bR\tisDefault\x12\x13\n" +
+	"\x05vm_id\x18\a \x01(\tR\x04vmId\x12\x1b\n" +
+	"\tport_mode\x18\b \x01(\tR\bportMode\x12%\n" +
+	"\x0eeffective_port\x18\t \x01(\rR\reffectivePort\"M\n" +
+	"\x13SetProxyPortRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04port\x18\x03 \x01(\tR\x04port\x12\x0e\n" +
+	"\x02vm\x18\x04 \x01(\tR\x02vm\"\x16\n" +
+	"\x14SetProxyPortResponse\"H\n" +
+	"\x17SetBotProtectionRequest\x12\x13\n" +
+	"\x05vm_id\x18\x01 \x01(\tR\x04vmId\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\"\x1a\n" +
+	"\x18SetBotProtectionResponse2\xb3\r\n" +
 	"\aBoxdApi\x12G\n" +
 	"\bCreateVm\x12\x1c.boxd.api.v1.CreateVmRequest\x1a\x1d.boxd.api.v1.CreateVmResponse\x12J\n" +
 	"\tDestroyVm\x12\x1d.boxd.api.v1.DestroyVmRequest\x1a\x1e.boxd.api.v1.DestroyVmResponse\x12D\n" +
@@ -2108,7 +2494,10 @@ const file_discobox_vm_boxd_proto_rawDesc = "" +
 	"\vGetSnapshot\x12\x1f.boxd.api.v1.GetSnapshotRequest\x1a .boxd.api.v1.GetSnapshotResponse\x12Y\n" +
 	"\x0eDeleteSnapshot\x12\".boxd.api.v1.DeleteSnapshotRequest\x1a#.boxd.api.v1.DeleteSnapshotResponse\x12_\n" +
 	"\x14CreateVmFromSnapshot\x12(.boxd.api.v1.CreateVmFromSnapshotRequest\x1a\x1d.boxd.api.v1.CreateVmResponse\x12G\n" +
-	"\bResizeVm\x12\x1c.boxd.api.v1.ResizeVmRequest\x1a\x1d.boxd.api.v1.ResizeVmResponseB=Z;github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapib\x06proto3"
+	"\bResizeVm\x12\x1c.boxd.api.v1.ResizeVmRequest\x1a\x1d.boxd.api.v1.ResizeVmResponse\x12P\n" +
+	"\vListProxies\x12\x1f.boxd.api.v1.ListProxiesRequest\x1a .boxd.api.v1.ListProxiesResponse\x12S\n" +
+	"\fSetProxyPort\x12 .boxd.api.v1.SetProxyPortRequest\x1a!.boxd.api.v1.SetProxyPortResponse\x12_\n" +
+	"\x10SetBotProtection\x12$.boxd.api.v1.SetBotProtectionRequest\x1a%.boxd.api.v1.SetBotProtectionResponseB=Z;github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapib\x06proto3"
 
 var (
 	file_discobox_vm_boxd_proto_rawDescOnce sync.Once
@@ -2122,7 +2511,7 @@ func file_discobox_vm_boxd_proto_rawDescGZIP() []byte {
 	return file_discobox_vm_boxd_proto_rawDescData
 }
 
-var file_discobox_vm_boxd_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_discobox_vm_boxd_proto_msgTypes = make([]protoimpl.MessageInfo, 43)
 var file_discobox_vm_boxd_proto_goTypes = []any{
 	(*VmConfig)(nil),                        // 0: boxd.api.v1.VmConfig
 	(*CreateVmRequest)(nil),                 // 1: boxd.api.v1.CreateVmRequest
@@ -2160,52 +2549,66 @@ var file_discobox_vm_boxd_proto_goTypes = []any{
 	(*CreateVmFromSnapshotRequest)(nil),     // 33: boxd.api.v1.CreateVmFromSnapshotRequest
 	(*ResizeVmRequest)(nil),                 // 34: boxd.api.v1.ResizeVmRequest
 	(*ResizeVmResponse)(nil),                // 35: boxd.api.v1.ResizeVmResponse
+	(*ListProxiesRequest)(nil),              // 36: boxd.api.v1.ListProxiesRequest
+	(*ListProxiesResponse)(nil),             // 37: boxd.api.v1.ListProxiesResponse
+	(*ProxyInfo)(nil),                       // 38: boxd.api.v1.ProxyInfo
+	(*SetProxyPortRequest)(nil),             // 39: boxd.api.v1.SetProxyPortRequest
+	(*SetProxyPortResponse)(nil),            // 40: boxd.api.v1.SetProxyPortResponse
+	(*SetBotProtectionRequest)(nil),         // 41: boxd.api.v1.SetBotProtectionRequest
+	(*SetBotProtectionResponse)(nil),        // 42: boxd.api.v1.SetBotProtectionResponse
 }
 var file_discobox_vm_boxd_proto_depIdxs = []int32{
 	0,  // 0: boxd.api.v1.CreateVmRequest.config:type_name -> boxd.api.v1.VmConfig
 	28, // 1: boxd.api.v1.GetSnapshotResponse.snapshot:type_name -> boxd.api.v1.SnapshotInfo
 	0,  // 2: boxd.api.v1.CreateVmFromSnapshotRequest.config:type_name -> boxd.api.v1.VmConfig
-	1,  // 3: boxd.api.v1.BoxdApi.CreateVm:input_type -> boxd.api.v1.CreateVmRequest
-	3,  // 4: boxd.api.v1.BoxdApi.DestroyVm:input_type -> boxd.api.v1.DestroyVmRequest
-	5,  // 5: boxd.api.v1.BoxdApi.StartVm:input_type -> boxd.api.v1.StartVmRequest
-	7,  // 6: boxd.api.v1.BoxdApi.StopVm:input_type -> boxd.api.v1.StopVmRequest
-	19, // 7: boxd.api.v1.BoxdApi.GetVm:input_type -> boxd.api.v1.GetVmRequest
-	21, // 8: boxd.api.v1.BoxdApi.Exec:input_type -> boxd.api.v1.ExecChunk
-	22, // 9: boxd.api.v1.BoxdApi.Whoami:input_type -> boxd.api.v1.WhoamiRequest
-	24, // 10: boxd.api.v1.BoxdApi.UploadFileStream:input_type -> boxd.api.v1.UploadFileChunk
-	9,  // 11: boxd.api.v1.BoxdApi.SuspendVm:input_type -> boxd.api.v1.SuspendVmRequest
-	11, // 12: boxd.api.v1.BoxdApi.ResumeVm:input_type -> boxd.api.v1.ResumeVmRequest
-	13, // 13: boxd.api.v1.BoxdApi.WakeVm:input_type -> boxd.api.v1.WakeVmRequest
-	15, // 14: boxd.api.v1.BoxdApi.SetAutoSuspendTimeout:input_type -> boxd.api.v1.SetAutoSuspendTimeoutRequest
-	17, // 15: boxd.api.v1.BoxdApi.SetAutoHibernateTimeout:input_type -> boxd.api.v1.SetAutoHibernateTimeoutRequest
-	26, // 16: boxd.api.v1.BoxdApi.CreateSnapshot:input_type -> boxd.api.v1.CreateSnapshotRequest
-	29, // 17: boxd.api.v1.BoxdApi.GetSnapshot:input_type -> boxd.api.v1.GetSnapshotRequest
-	31, // 18: boxd.api.v1.BoxdApi.DeleteSnapshot:input_type -> boxd.api.v1.DeleteSnapshotRequest
-	33, // 19: boxd.api.v1.BoxdApi.CreateVmFromSnapshot:input_type -> boxd.api.v1.CreateVmFromSnapshotRequest
-	34, // 20: boxd.api.v1.BoxdApi.ResizeVm:input_type -> boxd.api.v1.ResizeVmRequest
-	2,  // 21: boxd.api.v1.BoxdApi.CreateVm:output_type -> boxd.api.v1.CreateVmResponse
-	4,  // 22: boxd.api.v1.BoxdApi.DestroyVm:output_type -> boxd.api.v1.DestroyVmResponse
-	6,  // 23: boxd.api.v1.BoxdApi.StartVm:output_type -> boxd.api.v1.StartVmResponse
-	8,  // 24: boxd.api.v1.BoxdApi.StopVm:output_type -> boxd.api.v1.StopVmResponse
-	20, // 25: boxd.api.v1.BoxdApi.GetVm:output_type -> boxd.api.v1.GetVmResponse
-	21, // 26: boxd.api.v1.BoxdApi.Exec:output_type -> boxd.api.v1.ExecChunk
-	23, // 27: boxd.api.v1.BoxdApi.Whoami:output_type -> boxd.api.v1.WhoamiResponse
-	25, // 28: boxd.api.v1.BoxdApi.UploadFileStream:output_type -> boxd.api.v1.UploadFileResponse
-	10, // 29: boxd.api.v1.BoxdApi.SuspendVm:output_type -> boxd.api.v1.SuspendVmResponse
-	12, // 30: boxd.api.v1.BoxdApi.ResumeVm:output_type -> boxd.api.v1.ResumeVmResponse
-	14, // 31: boxd.api.v1.BoxdApi.WakeVm:output_type -> boxd.api.v1.WakeVmResponse
-	16, // 32: boxd.api.v1.BoxdApi.SetAutoSuspendTimeout:output_type -> boxd.api.v1.SetAutoSuspendTimeoutResponse
-	18, // 33: boxd.api.v1.BoxdApi.SetAutoHibernateTimeout:output_type -> boxd.api.v1.SetAutoHibernateTimeoutResponse
-	27, // 34: boxd.api.v1.BoxdApi.CreateSnapshot:output_type -> boxd.api.v1.CreateSnapshotResponse
-	30, // 35: boxd.api.v1.BoxdApi.GetSnapshot:output_type -> boxd.api.v1.GetSnapshotResponse
-	32, // 36: boxd.api.v1.BoxdApi.DeleteSnapshot:output_type -> boxd.api.v1.DeleteSnapshotResponse
-	2,  // 37: boxd.api.v1.BoxdApi.CreateVmFromSnapshot:output_type -> boxd.api.v1.CreateVmResponse
-	35, // 38: boxd.api.v1.BoxdApi.ResizeVm:output_type -> boxd.api.v1.ResizeVmResponse
-	21, // [21:39] is the sub-list for method output_type
-	3,  // [3:21] is the sub-list for method input_type
-	3,  // [3:3] is the sub-list for extension type_name
-	3,  // [3:3] is the sub-list for extension extendee
-	0,  // [0:3] is the sub-list for field type_name
+	38, // 3: boxd.api.v1.ListProxiesResponse.proxies:type_name -> boxd.api.v1.ProxyInfo
+	1,  // 4: boxd.api.v1.BoxdApi.CreateVm:input_type -> boxd.api.v1.CreateVmRequest
+	3,  // 5: boxd.api.v1.BoxdApi.DestroyVm:input_type -> boxd.api.v1.DestroyVmRequest
+	5,  // 6: boxd.api.v1.BoxdApi.StartVm:input_type -> boxd.api.v1.StartVmRequest
+	7,  // 7: boxd.api.v1.BoxdApi.StopVm:input_type -> boxd.api.v1.StopVmRequest
+	19, // 8: boxd.api.v1.BoxdApi.GetVm:input_type -> boxd.api.v1.GetVmRequest
+	21, // 9: boxd.api.v1.BoxdApi.Exec:input_type -> boxd.api.v1.ExecChunk
+	22, // 10: boxd.api.v1.BoxdApi.Whoami:input_type -> boxd.api.v1.WhoamiRequest
+	24, // 11: boxd.api.v1.BoxdApi.UploadFileStream:input_type -> boxd.api.v1.UploadFileChunk
+	9,  // 12: boxd.api.v1.BoxdApi.SuspendVm:input_type -> boxd.api.v1.SuspendVmRequest
+	11, // 13: boxd.api.v1.BoxdApi.ResumeVm:input_type -> boxd.api.v1.ResumeVmRequest
+	13, // 14: boxd.api.v1.BoxdApi.WakeVm:input_type -> boxd.api.v1.WakeVmRequest
+	15, // 15: boxd.api.v1.BoxdApi.SetAutoSuspendTimeout:input_type -> boxd.api.v1.SetAutoSuspendTimeoutRequest
+	17, // 16: boxd.api.v1.BoxdApi.SetAutoHibernateTimeout:input_type -> boxd.api.v1.SetAutoHibernateTimeoutRequest
+	26, // 17: boxd.api.v1.BoxdApi.CreateSnapshot:input_type -> boxd.api.v1.CreateSnapshotRequest
+	29, // 18: boxd.api.v1.BoxdApi.GetSnapshot:input_type -> boxd.api.v1.GetSnapshotRequest
+	31, // 19: boxd.api.v1.BoxdApi.DeleteSnapshot:input_type -> boxd.api.v1.DeleteSnapshotRequest
+	33, // 20: boxd.api.v1.BoxdApi.CreateVmFromSnapshot:input_type -> boxd.api.v1.CreateVmFromSnapshotRequest
+	34, // 21: boxd.api.v1.BoxdApi.ResizeVm:input_type -> boxd.api.v1.ResizeVmRequest
+	36, // 22: boxd.api.v1.BoxdApi.ListProxies:input_type -> boxd.api.v1.ListProxiesRequest
+	39, // 23: boxd.api.v1.BoxdApi.SetProxyPort:input_type -> boxd.api.v1.SetProxyPortRequest
+	41, // 24: boxd.api.v1.BoxdApi.SetBotProtection:input_type -> boxd.api.v1.SetBotProtectionRequest
+	2,  // 25: boxd.api.v1.BoxdApi.CreateVm:output_type -> boxd.api.v1.CreateVmResponse
+	4,  // 26: boxd.api.v1.BoxdApi.DestroyVm:output_type -> boxd.api.v1.DestroyVmResponse
+	6,  // 27: boxd.api.v1.BoxdApi.StartVm:output_type -> boxd.api.v1.StartVmResponse
+	8,  // 28: boxd.api.v1.BoxdApi.StopVm:output_type -> boxd.api.v1.StopVmResponse
+	20, // 29: boxd.api.v1.BoxdApi.GetVm:output_type -> boxd.api.v1.GetVmResponse
+	21, // 30: boxd.api.v1.BoxdApi.Exec:output_type -> boxd.api.v1.ExecChunk
+	23, // 31: boxd.api.v1.BoxdApi.Whoami:output_type -> boxd.api.v1.WhoamiResponse
+	25, // 32: boxd.api.v1.BoxdApi.UploadFileStream:output_type -> boxd.api.v1.UploadFileResponse
+	10, // 33: boxd.api.v1.BoxdApi.SuspendVm:output_type -> boxd.api.v1.SuspendVmResponse
+	12, // 34: boxd.api.v1.BoxdApi.ResumeVm:output_type -> boxd.api.v1.ResumeVmResponse
+	14, // 35: boxd.api.v1.BoxdApi.WakeVm:output_type -> boxd.api.v1.WakeVmResponse
+	16, // 36: boxd.api.v1.BoxdApi.SetAutoSuspendTimeout:output_type -> boxd.api.v1.SetAutoSuspendTimeoutResponse
+	18, // 37: boxd.api.v1.BoxdApi.SetAutoHibernateTimeout:output_type -> boxd.api.v1.SetAutoHibernateTimeoutResponse
+	27, // 38: boxd.api.v1.BoxdApi.CreateSnapshot:output_type -> boxd.api.v1.CreateSnapshotResponse
+	30, // 39: boxd.api.v1.BoxdApi.GetSnapshot:output_type -> boxd.api.v1.GetSnapshotResponse
+	32, // 40: boxd.api.v1.BoxdApi.DeleteSnapshot:output_type -> boxd.api.v1.DeleteSnapshotResponse
+	2,  // 41: boxd.api.v1.BoxdApi.CreateVmFromSnapshot:output_type -> boxd.api.v1.CreateVmResponse
+	35, // 42: boxd.api.v1.BoxdApi.ResizeVm:output_type -> boxd.api.v1.ResizeVmResponse
+	37, // 43: boxd.api.v1.BoxdApi.ListProxies:output_type -> boxd.api.v1.ListProxiesResponse
+	40, // 44: boxd.api.v1.BoxdApi.SetProxyPort:output_type -> boxd.api.v1.SetProxyPortResponse
+	42, // 45: boxd.api.v1.BoxdApi.SetBotProtection:output_type -> boxd.api.v1.SetBotProtectionResponse
+	25, // [25:46] is the sub-list for method output_type
+	4,  // [4:25] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_discobox_vm_boxd_proto_init() }
@@ -2219,7 +2622,7 @@ func file_discobox_vm_boxd_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_discobox_vm_boxd_proto_rawDesc), len(file_discobox_vm_boxd_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   36,
+			NumMessages:   43,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

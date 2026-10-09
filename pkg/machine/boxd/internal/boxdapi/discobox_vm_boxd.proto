@@ -40,6 +40,13 @@ service BoxdApi {
   rpc DeleteSnapshot(DeleteSnapshotRequest)   returns (DeleteSnapshotResponse);
   rpc CreateVmFromSnapshot(CreateVmFromSnapshotRequest) returns (CreateVmResponse);
   rpc ResizeVm(ResizeVmRequest) returns (ResizeVmResponse);
+  // Every machine has a default proxy at <machine>.<zone>: an HTTPS domain
+  // whose TLS boxd terminates, forwarding HTTP to one port of the machine.
+  rpc ListProxies(ListProxiesRequest)       returns (ListProxiesResponse);
+  rpc SetProxyPort(SetProxyPortRequest)     returns (SetProxyPortResponse);
+  // Bot protection challenges an HTTPS request that would wake a sleeping
+  // machine on <machine>.<zone>. On by default.
+  rpc SetBotProtection(SetBotProtectionRequest) returns (SetBotProtectionResponse);
 }
 
 message VmConfig {
@@ -185,3 +192,31 @@ message ResizeVmResponse {
   uint64 memory_bytes = 2;
   bool   rebooted     = 3;
 }
+
+message ListProxiesRequest {
+  string vm = 2;  // machine id OR name; empty = every proxy the caller can see
+}
+message ListProxiesResponse { repeated ProxyInfo proxies = 1; }
+
+message ProxyInfo {
+  string name           = 1;
+  string vm_name        = 2;
+  string domain         = 3;
+  bool   is_default     = 5;
+  string vm_id          = 7;
+  string port_mode      = 8;  // "locked" | "auto"
+  uint32 effective_port = 9;  // the port traffic lands on
+}
+
+message SetProxyPortRequest {
+  string name = 1;
+  string port = 3;  // a port number, or "auto" (the default proxy only)
+  string vm   = 4;  // machine id OR name
+}
+message SetProxyPortResponse {}
+
+message SetBotProtectionRequest {
+  string vm_id   = 1;  // name or id
+  bool   enabled = 2;
+}
+message SetBotProtectionResponse {}

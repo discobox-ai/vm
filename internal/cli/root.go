@@ -58,7 +58,7 @@ func Main(args []string) int {
 		imagesCommand(g), rmiCommand(g), tagCommand(g),
 		warmCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
-		psCommand(g), inspectCommand(g), execCommand(g), cpCommand(g),
+		psCommand(g), inspectCommand(g), endpointCommand(g), execCommand(g), cpCommand(g),
 		infoCommand(g),
 		guestCommand(), pipeCommand(), shimCommand(g), dialHostCommand(), dockerInitCommand(),
 	)

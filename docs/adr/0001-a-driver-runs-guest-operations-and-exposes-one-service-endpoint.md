@@ -73,11 +73,12 @@ type Endpoint struct {
 }
 ```
 
-- **boxd**: at create, `CreateProxy` points a named proxy at the port, with
-  bot protection off. The endpoint is its HTTPS URL, stored with the instance,
-  usable by any process with no boxd credential, the same across stop and
-  start. boxd's proxy is public and offers no access control; the service
-  behind it authenticates every request.
+- **boxd**: at create, `SetProxyPort` pins the machine's default proxy, at
+  `<machine>.boxd.sh`, to the port, with bot protection off. The endpoint is
+  its HTTPS URL, stored with the instance, usable by any process with no boxd
+  credential, the same across stop and start. boxd's proxy is public and
+  offers no access control; the service behind it authenticates every
+  request.
 - **vz, hcs**: a transport that dials the port over vsock or hvsocket.
 - **fake**: loopback.
 
@@ -105,6 +106,12 @@ its driver does not list `Forward`.
 - **Keep `Dial(port)` for boxd as `socat` over `Exec`.** A provider credential
   and an Exec call per connection, for a raw stream no caller needs once the
   service endpoint exists.
+- **A named proxy (`CreateProxy`) for the endpoint**, at
+  `<name>.<machine>.boxd.sh`. The default proxy would still forward to
+  whichever common port the guest listens on (80, 443, 8080, 8000, 3000,
+  5000, 5173, else 8000), which pinning it to the service stops, and bot
+  protection, the challenge before a request may wake the machine, covers
+  only the default domain.
 - **boxd's `ExposePort` for the endpoint.** A raw public TCP port with no TLS
   and, like the proxy, no access control: everything the HTTPS proxy gives,
   minus TLS.

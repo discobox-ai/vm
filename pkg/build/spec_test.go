@@ -85,6 +85,9 @@ func TestParseRejects(t *testing.T) {
 		"bad timeout":  "from: {image: b}\nlayers: [{name: l, steps: [{run: x, timeout: soon}]}]\n",
 		"bad when os":  "from: {image: b}\nlayers: [{name: l, when: {os: beos}, steps: [{run: x}]}]\n",
 		"copy no dest": "from: {image: b}\nlayers: [{name: l, steps: [{copy: {src: x}}]}]\n",
+		"service 0":    "from: {image: b}\nservice: {port: 0}\n",
+		"service big":  "from: {image: b}\nservice: {port: 70000}\n",
+		"agent port":   "from: {image: b}\nservice: {port: 7300}\n",
 	} {
 		if _, err := Parse([]byte(spec)); err == nil {
 			t.Errorf("%s: parsed", name)
@@ -131,5 +134,34 @@ func TestCopyMustStayInContext(t *testing.T) {
 	}
 	if _, err := plan(spec, nil, t.TempDir(), machine.Linux); err == nil {
 		t.Fatal("a copy from outside the context was planned")
+	}
+}
+
+// The service is recorded on the last layer the build makes, so it is part of
+// that layer's key only, and a spec that makes no layer cannot declare one.
+func TestServiceOnLastLayer(t *testing.T) {
+	spec, err := Parse([]byte("from: {image: b}\nservice: {port: 8080}\nlayers: [{name: a, steps: [{run: x}]}, {name: b, steps: [{run: y}]}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := plan(spec, nil, t.TempDir(), machine.Linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Layers[0].Service != 0 || p.Layers[1].Service != 8080 {
+		t.Fatalf("services %d, %d; want 0, 8080", p.Layers[0].Service, p.Layers[1].Service)
+	}
+	without := p.Layers[1]
+	without.Service = 0
+	if layerKey("parent", "fake", machine.Linux, p.Layers[1], "") == layerKey("parent", "fake", machine.Linux, without, "") {
+		t.Fatal("the service did not change the last layer's key")
+	}
+
+	spec, err = Parse([]byte("from: {image: b}\nservice: {port: 8080}\nlayers: [{name: a, when: {os: windows}, steps: [{run: x}]}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plan(spec, nil, t.TempDir(), machine.Linux); err == nil || !strings.Contains(err.Error(), "nothing in this spec makes one") {
+		t.Fatalf("plan of a service with no layer: %v", err)
 	}
 }

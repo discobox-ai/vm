@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,8 @@ type fakeAPI struct {
 
 	// down makes GetVm and StopVm fail as an unreachable API does.
 	down atomic.Bool
+	// proxyErr, when set, is SetProxyPort's answer.
+	proxyErr error
 }
 
 type fakeVM struct {
@@ -53,6 +56,10 @@ type fakeVM struct {
 	memory    uint64
 	agent     *exec.Cmd
 	halted    string
+	// proxyPort is the port the default proxy is pinned to, zero for auto;
+	// botProtection is on for a new machine, as on boxd.
+	proxyPort     uint32
+	botProtection bool
 }
 
 type fakeSnapshot struct {
@@ -87,7 +94,7 @@ func (f *fakeAPI) newVM(name string, vcpu uint32, memory uint64) *fakeVM {
 	if vcpu == 0 {
 		vcpu, memory = 2, 8<<30
 	}
-	v := &fakeVM{id: id, name: name, dir: filepath.Join(f.dir, id), status: "running", vcpu: vcpu, memory: memory}
+	v := &fakeVM{id: id, name: name, dir: filepath.Join(f.dir, id), status: "running", vcpu: vcpu, memory: memory, botProtection: true}
 	f.vms[id] = v
 	return v
 }
@@ -257,6 +264,53 @@ func (f *fakeAPI) ResizeVm(_ context.Context, req *boxdapi.ResizeVmRequest) (*bo
 	}
 	v.vcpu, v.memory = req.GetVcpu(), req.GetMemoryBytes()
 	return &boxdapi.ResizeVmResponse{Vcpu: v.vcpu, MemoryBytes: v.memory}, nil
+}
+
+func (f *fakeAPI) ListProxies(_ context.Context, req *boxdapi.ListProxiesRequest) (*boxdapi.ListProxiesResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, err := f.vm(req.GetVm())
+	if err != nil {
+		return nil, err
+	}
+	// boxd's default proxy is not named "default", so neither is this one.
+	p := &boxdapi.ProxyInfo{Name: v.name, VmName: v.name, VmId: v.id, Domain: v.name + ".boxd.test", IsDefault: true, PortMode: "auto", EffectivePort: 8000}
+	if v.proxyPort != 0 {
+		p.PortMode, p.EffectivePort = "locked", v.proxyPort
+	}
+	return &boxdapi.ListProxiesResponse{Proxies: []*boxdapi.ProxyInfo{p}}, nil
+}
+
+func (f *fakeAPI) SetProxyPort(_ context.Context, req *boxdapi.SetProxyPortRequest) (*boxdapi.SetProxyPortResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, err := f.vm(req.GetVm())
+	if err != nil {
+		return nil, err
+	}
+	if f.proxyErr != nil {
+		return nil, f.proxyErr
+	}
+	if req.GetName() != v.name {
+		return nil, status.Errorf(codes.NotFound, "%s has no proxy %q", v.name, req.GetName())
+	}
+	port, err := strconv.ParseUint(req.GetPort(), 10, 16)
+	if err != nil || port == 0 {
+		return nil, status.Errorf(codes.InvalidArgument, "port %q", req.GetPort())
+	}
+	v.proxyPort = uint32(port)
+	return &boxdapi.SetProxyPortResponse{}, nil
+}
+
+func (f *fakeAPI) SetBotProtection(_ context.Context, req *boxdapi.SetBotProtectionRequest) (*boxdapi.SetBotProtectionResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, err := f.vm(req.GetVmId())
+	if err != nil {
+		return nil, err
+	}
+	v.botProtection = req.GetEnabled()
+	return &boxdapi.SetBotProtectionResponse{}, nil
 }
 
 func (f *fakeAPI) CreateSnapshot(_ context.Context, req *boxdapi.CreateSnapshotRequest) (*boxdapi.CreateSnapshotResponse, error) {

@@ -52,6 +52,9 @@ func (*Driver) Destroy(_ context.Context, inst machine.InstanceSpec) error {
 
 func (*Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
 
+// Endpoint is empty: a vz guest's service is reached over vsock.
+func (*Driver) Endpoint(context.Context, machine.InstanceSpec) (string, error) { return "", nil }
+
 func (*Driver) Cool(_ context.Context, spec machine.WarmSpec) error {
 	return os.RemoveAll(spec.Dir)
 }

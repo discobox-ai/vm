@@ -39,6 +39,14 @@ type Layer struct {
 	Created time.Time  `json:"created"`
 	// Comment says what made the layer: "install windows", "build base:toolchains".
 	Comment string `json:"comment,omitempty"`
+	// Service is the image's one service, declared by the build that made
+	// this layer. A layer that declares none inherits its parent's.
+	Service *Service `json:"service,omitempty"`
+}
+
+// Service is a guest port an instance exposes as its endpoint.
+type Service struct {
+	Port uint32 `json:"port"`
 }
 
 // Image is a tag and the layer it names.
@@ -124,6 +132,21 @@ func (s *Store) Chain(id string) ([]Layer, error) {
 		id = layer.Parent
 	}
 	return chain, nil
+}
+
+// Service is the service of the image a layer tops: the nearest one declared
+// on the layer or an ancestor, or nil when none is.
+func (s *Store) Service(id string) (*Service, error) {
+	chain, err := s.Chain(id)
+	if err != nil {
+		return nil, err
+	}
+	for _, layer := range slices.Backward(chain) {
+		if layer.Service != nil {
+			return layer.Service, nil
+		}
+	}
+	return nil, nil
 }
 
 // MachineChain is Chain in the driver's terms.

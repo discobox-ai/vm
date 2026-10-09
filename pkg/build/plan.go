@@ -41,6 +41,9 @@ type Plan struct {
 type PlannedLayer struct {
 	Name  string
 	Steps []PlannedStep
+	// Service is the spec's service port on the last layer, and zero on the
+	// others. It is part of the layer's key.
+	Service uint32
 }
 
 // PlannedStep is one step, fully resolved.
@@ -166,6 +169,12 @@ func plan(spec *Spec, args map[string]string, contextDir string, guestOS machine
 		}
 		p.Layers = append(p.Layers, planned)
 	}
+	if spec.Service != nil {
+		if len(p.Layers) == 0 {
+			return nil, fmt.Errorf("service is recorded on the last layer the build makes, and nothing in this spec makes one for %s", guestOS)
+		}
+		p.Layers[len(p.Layers)-1].Service = spec.Service.Port
+	}
 	return p, nil
 }
 
@@ -259,8 +268,9 @@ func layerKey(parent, driver string, guestOS machine.OS, layer PlannedLayer, sal
 		Driver  string        `json:"driver"`
 		GuestOS machine.OS    `json:"guestOS"`
 		Steps   []PlannedStep `json:"steps"`
+		Service uint32        `json:"service,omitempty"`
 		Salt    string        `json:"salt,omitempty"`
-	}{keyVersion, parent, driver, guestOS, layer.Steps, salt})
+	}{keyVersion, parent, driver, guestOS, layer.Steps, layer.Service, salt})
 }
 
 // installKey is a base layer's ID. The media is identified by path, size, and

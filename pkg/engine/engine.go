@@ -26,6 +26,7 @@ import (
 	"io"
 	"io/fs"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -140,6 +141,9 @@ type Instance struct {
 	Temporary bool `json:"temporary,omitempty"`
 	// Forwards are served by the instance's shim whenever it runs.
 	Forwards []Forward `json:"forwards,omitempty"`
+	// Service is the guest port of its image's service, exposed as its
+	// endpoint; zero when the image declares none.
+	Service uint32 `json:"service,omitempty"`
 }
 
 // Forward sends the connections a guest process opens to the host on a port
@@ -166,6 +170,7 @@ func (e *Engine) machineSpec(inst *Instance) (machine.InstanceSpec, error) {
 		GuestOS: inst.GuestOS,
 		Chain:   chain,
 		Mode:    inst.Mode,
+		Service: inst.Service,
 	}
 	if inst.Mode != machine.Cold {
 		spec.WarmDir = e.warmMachineDir(inst.Layer)
@@ -221,6 +226,16 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 		CPUs: opts.CPUs, Memory: opts.Memory,
 		Created: time.Now().UTC(), Temporary: opts.Temporary,
 		Forwards: opts.Forwards,
+	}
+	if !opts.Temporary {
+		// A build's own instances expose nothing.
+		service, err := e.Images.Service(layerID)
+		if err != nil {
+			return nil, err
+		}
+		if service != nil {
+			inst.Service = service.Port
+		}
 	}
 	if err := os.MkdirAll(e.instanceDir(id), 0o755); err != nil {
 		return nil, err
@@ -649,6 +664,50 @@ func (e *Engine) Dial(ctx context.Context, inst *Instance, port uint32) (net.Con
 		return nil, fmt.Errorf("instance %s is not running", inst.Name)
 	}
 	return shim.dial(ctx, port)
+}
+
+// ErrNoService reports an instance whose image declares no service, so it has
+// no endpoint.
+var ErrNoService = errors.New("its image declares no service")
+
+// Endpoint is how a caller reaches an instance's service: a URL, and the
+// transport that reaches it.
+type Endpoint struct {
+	// URL is the service's public URL (https://<machine>.boxd.sh), or
+	// http://guest when the service is reached only through Transport.
+	URL string
+	// Transport is nil for a public URL. Otherwise it dials the service's
+	// port in the guest, whatever host a request names.
+	Transport http.RoundTripper
+}
+
+// Endpoint returns an instance's endpoint, for its image's service port. A
+// public URL is the driver's, made when the instance was created and the same
+// across stop and start; reaching it needs no credential, so the service
+// behind it authenticates every request. Without one, the transport dials the
+// port of the running instance.
+func (e *Engine) Endpoint(ctx context.Context, inst *Instance) (Endpoint, error) {
+	if inst.Service == 0 {
+		return Endpoint{}, fmt.Errorf("instance %s has no endpoint: %w", inst.Name, ErrNoService)
+	}
+	spec, err := e.machineSpec(inst)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	url, err := e.Driver.Endpoint(ctx, spec)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	if url != "" {
+		return Endpoint{URL: url}, nil
+	}
+	return Endpoint{URL: "http://guest", Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return e.Dial(ctx, inst, inst.Service)
+		},
+		// A caller that drops the endpoint leaves no guest connection open.
+		IdleConnTimeout: 30 * time.Second,
+	}}, nil
 }
 
 // Booted is a machine running in this process, with a client for its agent.

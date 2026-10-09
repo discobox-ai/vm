@@ -127,6 +127,8 @@ type snapshotRef struct {
 type vmRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// Endpoint is the URL of the instance's service, set by Prepare.
+	Endpoint string `json:"endpoint,omitempty"`
 }
 
 // Install creates a machine from one of boxd's own images, installs the agent
@@ -251,6 +253,9 @@ func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
 		if err != nil {
 			return err
 		}
+		if err := d.expose(ctx, api, inst); err != nil {
+			return err
+		}
 		// The snapshot is of a running guest. Power it off in order, so the
 		// first boot is a cold boot of the layer's disk.
 		return d.powerOff(ctx, api, vm)
@@ -264,6 +269,9 @@ func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
 			return fmt.Errorf("boxd: snapshot %s is gone: %w", stage.Name, machine.ErrNotWarm)
 		}
 		if err != nil {
+			return err
+		}
+		if err := d.expose(ctx, api, inst); err != nil {
 			return err
 		}
 		// Held suspended, with its memory, until Boot resumes it.

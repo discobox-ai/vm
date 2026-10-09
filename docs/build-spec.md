@@ -28,6 +28,7 @@ user: admin                    # default account for run steps
 resources:                     # the build VM's size; not part of the cache key
   cpus: 4
   memory: 8GiB
+service: {port: 8080}          # the image's one service, an instance's endpoint
 
 layers:
   - name: toolchains           # unique; shown in the build log
@@ -59,11 +60,21 @@ cutting a layer per step as a Dockerfile does.
 - the driver and guest OS
 - each step's resolved argv, environment, workdir, and user
 - each copy step's destination and a content digest of its source
+- on the build's last layer, the service port
 
 Step names, timeouts, and resources are not part of it. An unchanged prefix of
 layers is reused. `--no-cache` builds every layer under fresh IDs and
 overwrites nothing. An install layer is keyed on the media's path, size, and
 mtime, not its hash, so a 6 GB ISO is not reread on every build.
+
+**Service.** `service: {port: N}` names the guest port of the image's one
+service, and `disco-vm endpoint INSTANCE` prints how an instance of it is
+reached: on boxd a public HTTPS URL made when the instance is created, and
+elsewhere `http://guest`, which a program embedding the engine reaches through
+`Engine.Endpoint`'s transport. The port is recorded on the last layer the
+build makes, so a spec that declares one must make a layer. An image built
+`from:` it inherits it until a spec declares another. Port 7300 is the
+agent's and is refused.
 
 **Args.** Only `${NAME}` with braces, and only for declared args, is
 substituted. `$env:PATH` in PowerShell and `$HOME` or `${HOME}` in sh reach the
