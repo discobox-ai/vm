@@ -118,7 +118,7 @@ The offset is in every layer, so all of an image store's guests share it.
 
 | seam | docker |
 |---|---|
-| `Install` | pull `options.image` (default `debian:trixie`) if the daemon lacks it; in a container from it, as root: install systemd and dbus if missing (apt-get, dnf, or zypper), install the agent as `disco-vm-guest.service`, mask units a container cannot run, remove Docker's `policy-rc.d`, empty `/etc/machine-id`, and shift; commit with `docker-init` as the entrypoint. Media must be `latest`. |
+| `Install` | pull `options.image` (default `debian:trixie`) if the daemon lacks it; in a container from it, as root: install systemd and dbus if missing (apt-get, dnf, or zypper), install the agent as `disco-vm-guest.service`, mask units a container cannot run, remove Docker's `policy-rc.d`, empty `/etc/machine-id` and make D-Bus's copy a link to it, and shift; commit with `docker-init` as the entrypoint. Media must be `latest`. |
 | layer | `layer.json`: the committed image's ID and the tag (`disco-vm-layer:<id>-<rand>`) that keeps it from being pruned. `DeleteLayer` removes the tag, and the image with it. |
 | `Prepare` | create the container from the parent's image, with the settings above, named `dvm-<instance id>-<rand>`. Cold only. |
 | `Boot` | size the container (`docker update`: CPUs, and memory with no swap) and start it. |
@@ -126,7 +126,7 @@ The offset is in every layer, so all of an image store's guests share it.
 | `Machine.Done` | waiting starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to dial leaves nothing running. The daemon's `wait` on the container: exit 0 is a power-off. A failed wait (the daemon restarted) inspects and waits again. |
 | `Machine.Kill` | SIGKILL to the container. |
 | `Machine.Dial(port)` | docker exec `disco-vm pipe`, on the container's side: `unix:/run/disco-vm-relay/guest/run/disco-vm/agent.sock` for the agent, `tcp:127.0.0.1:PORT` otherwise, which the guest shares. |
-| `Commit` | `docker commit` of the stopped container. |
+| `Commit` | empty the stopped container's `/etc/machine-id`, so every instance of the layer makes its own, and `docker commit` it. |
 | `Destroy` | `docker rm -f`. |
 
 The driver talks to the Docker Engine API over `DOCKER_HOST` itself, not
@@ -191,6 +191,8 @@ Linux 7.0.11), 2026-10-09:
 - A guest's own `systemctl reboot` comes back in the same container, in a
   cgroup made anew, with its writes kept and `systemctl is-system-running`
   `running`.
+- Every instance has its own machine ID, of a built layer and of the base
+  alike, and keeps it across a reboot and a stop and start.
 
 ## Not verified yet
 

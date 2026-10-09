@@ -306,7 +306,9 @@ func (a *api) removeContainer(ctx context.Context, id string) error {
 	return err
 }
 
-// putArchive extracts a tar stream into the container's filesystem at dir.
+// putArchive extracts a tar stream into the container's filesystem at dir,
+// running or not, with the owners its headers name. (copyUIDGID would do the
+// opposite: it gives every file to the image's USER, which is 0.)
 func (a *api) putArchive(ctx context.Context, id, dir string, tarball io.Reader) error {
 	resp, err := a.do(ctx, http.MethodPut, "/containers/"+id+"/archive", url.Values{"path": {dir}}, tarball, "application/x-tar")
 	if err != nil {

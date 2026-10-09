@@ -269,8 +269,10 @@ for target in /lib/systemd/system/multi-user.target /usr/lib/systemd/system/mult
 done
 # Docker's images keep packages from starting services; a machine's do not.
 rm -f /usr/sbin/policy-rc.d
-# Every clone makes its own.
+# Every clone makes its own. D-Bus keeps a copy, which systemd would take for
+# an empty /etc/machine-id, so it is made a link to it, as Debian does.
 : > /etc/machine-id
+if [ -d /var/lib/dbus ]; then ln -sf /etc/machine-id /var/lib/dbus/machine-id; fi
 exec ` + agentPath + ` docker-init --shift
 `
 
@@ -423,7 +425,23 @@ func (d *Driver) Commit(ctx context.Context, inst machine.InstanceSpec, dst mach
 	if c.State.Running {
 		return fmt.Errorf("docker: commit needs a stopped container; %s is %s", ref.Name, c.State.Status)
 	}
+	// systemd wrote the guest's machine ID at its first boot; a layer that
+	// kept it would give it to every instance built on the layer. (D-Bus's
+	// copy is a link to it, from Install.)
+	if err := d.api.putArchive(ctx, ref.ID, "/", emptyMachineID()); err != nil {
+		return fmt.Errorf("docker: clear %s's machine ID: %w", ref.Name, err)
+	}
 	return d.commit(ctx, ref.ID, dst, nil)
+}
+
+// emptyMachineID is /etc/machine-id, empty and the guest root's, as a tar
+// stream to extract at /. systemd makes a new ID at the next first boot.
+func emptyMachineID() io.Reader {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "etc/machine-id", Typeflag: tar.TypeReg, Mode: 0o444, Uid: UIDBase, Gid: UIDBase})
+	_ = tw.Close()
+	return &buf
 }
 
 func (d *Driver) Destroy(ctx context.Context, inst machine.InstanceSpec) error {
