@@ -17,19 +17,23 @@ import (
 var pollEvery = 2 * time.Second
 
 // killLimit bounds Kill on its own, since its callers pass a context with no
-// deadline: past it, Kill gives the machine up rather than hang its shim on an
-// API that does not answer.
+// deadline: past it, Kill gives the machine up rather than hang its caller on
+// an API that does not answer.
 var killLimit = 5 * time.Minute
 
-// vm is a running boxd machine. Nothing ties it to this process: the shim that
-// holds it only watches it.
+// vm is a running boxd machine. Nothing ties it to this process, and any
+// number of processes may hold one for the same machine (Attach). It watches
+// the machine only once something waits for it to stop, so one held only to
+// dial polls nothing.
 type vm struct {
-	api  boxdapi.BoxdApiClient
-	ref  vmRef
-	done chan struct{}
-	err  error
-	once sync.Once
-	stop context.CancelFunc
+	api      boxdapi.BoxdApiClient
+	ref      vmRef
+	done     chan struct{}
+	err      error
+	once     sync.Once
+	watching sync.Once
+	ctx      context.Context
+	stop     context.CancelFunc
 
 	// poll and killLimit are read once, when the machine is booted.
 	poll, killLimit time.Duration
@@ -40,11 +44,15 @@ type vm struct {
 	killed atomic.Bool
 }
 
-func watch(api boxdapi.BoxdApiClient, ref vmRef) *vm {
+func newVM(api boxdapi.BoxdApiClient, ref vmRef) *vm {
 	ctx, stop := context.WithCancel(context.Background())
-	m := &vm{api: api, ref: ref, done: make(chan struct{}), stop: stop, poll: pollEvery, killLimit: killLimit}
-	go m.watch(ctx)
-	return m
+	return &vm{api: api, ref: ref, done: make(chan struct{}), ctx: ctx, stop: stop, poll: pollEvery, killLimit: killLimit}
+}
+
+// watched starts the watcher, once, and returns the channel it closes.
+func (m *vm) watched() <-chan struct{} {
+	m.watching.Do(func() { go m.watch(m.ctx) })
+	return m.done
 }
 
 func (m *vm) watch(ctx context.Context) {
@@ -157,6 +165,7 @@ func (m *vm) Dial(ctx context.Context, port uint32) (net.Conn, error) {
 func (m *vm) Kill(ctx context.Context) error {
 	limit, cancel := context.WithTimeout(context.Background(), m.killLimit)
 	defer cancel()
+	m.watched()
 	m.mu.Lock()
 	m.killed.Store(true)
 	m.mu.Unlock()
@@ -200,9 +209,9 @@ func (m *vm) giveUp(why error) error {
 	return err
 }
 
-func (m *vm) Done() <-chan struct{} { return m.done }
+func (m *vm) Done() <-chan struct{} { return m.watched() }
 
 func (m *vm) Err() error {
-	<-m.done
+	<-m.watched()
 	return m.err
 }

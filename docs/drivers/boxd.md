@@ -46,7 +46,8 @@ use. The parts that matter here:
 | `Prepare` cold | restore the layer's snapshot, power the guest off through the agent, and `StopVm` once the shutdown hook says it halted. The first boot is a cold boot of the layer's disk. A guest that cannot be shut down in order is stopped anyway, and Prepare fails. |
 | `Prepare` resume | restore the stage's snapshot and suspend it. A missing stage or snapshot is `ErrNotWarm`. |
 | `Boot` | `StartVm` (after `ResizeVm` when the boot asks for another size), `ResumeVm`, or `WakeVm`, by state. |
-| `Machine.Done` | `GetVm` every 2s: `stopped` is a power-off, and `failed`, `destroying`, or not-found is an error. While it is `running`, an Exec reads the shutdown hook's marker, and a guest that has halted is stopped with `StopVm` (and started again if it rebooted). |
+| `Attach` | (`Capabilities.Remote`: the engine runs no shim for boxd.) `GetVm`: not found, `stopped`, or any state but `running` or `starting` is `ErrNotRunning`. While it is `running`, an Exec reads the shutdown hook's marker: a guest that halted while nothing watched is stopped with `StopVm` and reads as not running, and one that rebooted is started again. |
+| `Machine.Done` | watching starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to dial polls nothing. `GetVm` every 2s: `stopped` is a power-off, and `failed`, `destroying`, or not-found is an error. While it is `running`, an Exec reads the shutdown hook's marker, and a guest that has halted is stopped with `StopVm` (and started again if it rebooted). |
 | `Machine.Kill` | `StopVm`, retried until boxd takes it, then wait for `stopped`. Callers pass no deadline, so Kill has its own (5 minutes). Past it, Kill gives the machine up: `Done` closes, and `Err` says it may still be running. Its instance still names it, so `rm` destroys it later. A guest reboot that the watcher is turning into a stop and start never leaves a machine started after Kill. Kill waits for a start already under way, which is bounded to 30s, and then stops the machine. |
 | `Machine.Dial(port)` | Exec `sudo -n /usr/local/libexec/disco-vm pipe ADDR`: the agent's unix socket for port 7300, `tcp:127.0.0.1:PORT` otherwise. |
 | `Commit` | the guest is stopped after an orderly shutdown. Start it, wait for the agent, and snapshot. |
@@ -104,8 +105,14 @@ is local, under `DISCO_VM_ROOT`, so use one host for one set of images.
 | `HTTPS_PROXY` | | gRPC goes through it with HTTP CONNECT, as does the key exchange. A proxy that intercepts TLS has to offer HTTP/2 (ALPN `h2`) for gRPC to work through it. A discobox's egress proxy does, and the conformance suite passes through it (2026-10-08). |
 | `ALL_PROXY` | | a `socks5://` or `socks5h://` proxy carries the gRPC connection instead, for an HTTP proxy without HTTP/2. The key exchange still goes through `HTTPS_PROXY`. |
 
-A key is fenced to one org, so the org is the key's. The shim inherits the
-environment of the CLI that started it.
+A key is fenced to one org, so the org is the key's. There is no shim for a
+boxd instance, so every command authenticates with its own environment, and a
+credential only has to outlive the command it was given to. Inside a discobox,
+whose `discobox-access run` hands out a sentinel that lives five minutes, that
+is what makes an instance usable past its `run`. A single build longer than
+that still outlives its sentinel. `ps` shows an instance boxd cannot be asked
+about as `unknown`, and `run --forward` is refused: nothing would hold the
+forwards' listeners.
 
 ## A guest cannot power its machine off
 
@@ -156,15 +163,18 @@ cancelled context, and `disco-vm guest` now closes its listener on it.
 - A guest reboot (`Shutdown(reboot=true)`), which the driver turns into a stop
   and a start. Nothing in disco-vm sends one today.
 - `exec -t`, the TTY path, through the relay.
-- Load. Each Dial is a new Exec call, `WaitReady` dials every 250ms, and the
-  watcher makes one Exec and one `GetVm` call every 2s per running machine.
+- Load. Each Dial is a new Exec call, `WaitReady` dials every 250ms, and a
+  watched machine (a build's, or one being stopped) makes one Exec and one
+  `GetVm` call every 2s. Every engine call on an instance attaches first: one
+  `GetVm` and one Exec for the shutdown marker.
 
 ## A machine given up
 
-When Kill gives a machine up, the shim exits and `ps` shows the instance as
-stopped, but boxd may still be running the machine, and billing it. `start`
-adopts it again, and `rm` destroys it. Kill's error, in the shim's log, says
-so.
+When Kill gives a machine up (`stop` or `rm -f` whose orderly shutdown
+failed, and boxd then would not stop it within five minutes), the command
+fails with an error that says the machine may still be running, and billing.
+`ps` asks boxd, so it shows the machine as it is. A later `stop` or `rm -f`
+tries again.
 
 ## Not done
 

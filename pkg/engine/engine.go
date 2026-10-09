@@ -2,15 +2,21 @@
 // lifecycle over one machine.Driver. The CLI is a thin layer over it, and a
 // discobox provider embeds it the same way.
 //
-// There is no daemon. Each running instance is owned by its own shim process
-// (`disco-vm shim <id>`), which boots the machine, holds it for its whole life,
-// and serves a small control API on loopback: status, stop, and a dial that
-// splices a stream to any guest port. The shim exists because the two
-// hypervisors disagree about who owns a running VM — a Virtualization.framework
-// VM dies with the process that made it, while an HCS VM belongs to vmcompute —
-// and a process per VM makes both look the same: the VM lives exactly as long
-// as its shim, crashes are contained to one VM, and any process (a CLI
-// invocation, a discobox server) reaches any instance through the same socket.
+// There is no daemon. Each running instance of a local hypervisor is owned by
+// its own shim process (`disco-vm shim <id>`), which boots the machine, holds
+// it for its whole life, and serves a small control API on loopback: status,
+// stop, and a dial that splices a stream to any guest port. The shim exists
+// because the two hypervisors disagree about who owns a running VM — a
+// Virtualization.framework VM dies with the process that made it, while an HCS
+// VM belongs to vmcompute — and a process per VM makes both look the same: the
+// VM lives exactly as long as its shim, crashes are contained to one VM, and
+// any process (a CLI invocation, a discobox server) reaches any instance
+// through the same socket.
+//
+// A remote driver (Capabilities.Remote, boxd) runs no shim. Its service owns
+// the machine whatever process booted it, so each call attaches to the machine
+// through the driver, with the calling process's own credentials, and nothing
+// outlives the call.
 package engine
 
 import (
@@ -25,6 +31,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
@@ -110,6 +117,8 @@ type State string
 const (
 	Stopped State = "stopped"
 	Running State = "running"
+	// Unknown is a remote instance whose service could not be asked.
+	Unknown State = "unknown"
 )
 
 // Instance is one VM made from an image.
@@ -292,8 +301,41 @@ func (e *Engine) list(all bool) ([]*Instance, error) {
 	return out, nil
 }
 
-// State reports whether an instance's shim is up.
+// remote is the driver as an Attacher when its machines are owned by a
+// service rather than by a shim.
+func (e *Engine) remote() machine.Attacher {
+	if !e.Driver.Capabilities().Remote {
+		return nil
+	}
+	attacher, _ := e.Driver.(machine.Attacher)
+	return attacher
+}
+
+// attach finds a remote instance's running machine.
+func (e *Engine) attach(ctx context.Context, attacher machine.Attacher, inst *Instance) (machine.Machine, error) {
+	spec, err := e.machineSpec(inst)
+	if err != nil {
+		return nil, err
+	}
+	return attacher.Attach(ctx, spec)
+}
+
+// State reports whether an instance is running: whether its shim is up, or for
+// a remote driver, what its service says.
 func (e *Engine) State(ctx context.Context, inst *Instance) State {
+	if attacher := e.remote(); attacher != nil {
+		ctx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		_, err := e.attach(ctx, attacher, inst)
+		switch {
+		case err == nil:
+			return Running
+		case errors.Is(err, machine.ErrNotRunning):
+			return Stopped
+		default:
+			return Unknown
+		}
+	}
 	shim, err := e.shim(inst.ID)
 	if err != nil {
 		return Stopped
@@ -339,7 +381,8 @@ func (e *Engine) checkForwards(forwards []Forward) error {
 	if len(forwards) == 0 {
 		return nil
 	}
-	if !e.Driver.Capabilities().Forward {
+	if caps := e.Driver.Capabilities(); !caps.Forward || caps.Remote {
+		// A remote instance has no shim to hold the forwards' listeners.
 		return fmt.Errorf("driver %s cannot forward a guest's connections to the host: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
 	ports := map[uint32]bool{}
@@ -365,7 +408,8 @@ func (e *Engine) CheckGUI(gui bool) error {
 	return nil
 }
 
-// Start boots an instance under a new shim and waits for its agent.
+// Start boots an instance and waits for its agent: under a new shim, or for a
+// remote driver, from this process, which lets the machine go once it answers.
 func (e *Engine) Start(ctx context.Context, inst *Instance, opts StartOptions) error {
 	if e.State(ctx, inst) == Running {
 		return fmt.Errorf("instance %s is already running", inst.Name)
@@ -378,6 +422,9 @@ func (e *Engine) Start(ctx context.Context, inst *Instance, opts StartOptions) e
 	}
 	if opts.Timeout == 0 {
 		opts.Timeout = 10 * time.Minute
+	}
+	if e.remote() != nil {
+		return e.startRemote(ctx, inst, opts)
 	}
 	dir := e.instanceDir(inst.ID)
 	_ = os.Remove(filepath.Join(dir, shimStateName))
@@ -419,6 +466,29 @@ func (e *Engine) Start(ctx context.Context, inst *Instance, opts StartOptions) e
 	return client.WaitReady(ctx, stopped)
 }
 
+// startRemote boots a remote instance and waits for its agent. Nothing waits
+// on the machine's Done, so it is not watched, and nothing of it outlives this
+// call but the machine itself.
+func (e *Engine) startRemote(ctx context.Context, inst *Instance, opts StartOptions) error {
+	spec, err := e.machineSpec(inst)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	m, err := e.Driver.Boot(ctx, spec, machine.BootOptions{CPUs: inst.CPUs, Memory: inst.Memory})
+	if err != nil {
+		return fmt.Errorf("instance %s failed to start: %w", inst.Name, err)
+	}
+	client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
+	defer client.Close()
+	if err := client.WaitReady(ctx, nil); err != nil {
+		_ = m.Kill(context.Background())
+		return fmt.Errorf("instance %s: %w", inst.Name, err)
+	}
+	return nil
+}
+
 // checkCapacity enforces the driver's per-OS cap on running guests, which is
 // a limit of the hypervisor (two macOS guests under Virtualization.framework),
 // not a policy.
@@ -445,6 +515,17 @@ func (e *Engine) checkCapacity(ctx context.Context, inst *Instance) error {
 
 // Stop shuts an instance down in order, forcing it off after timeout.
 func (e *Engine) Stop(ctx context.Context, inst *Instance, timeout time.Duration) error {
+	if attacher := e.remote(); attacher != nil {
+		m, err := e.attach(ctx, attacher, inst)
+		if errors.Is(err, machine.ErrNotRunning) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		booted := &Booted{Machine: m, Guest: guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })}
+		return booted.Shutdown(ctx, timeout)
+	}
 	shim, err := e.shim(inst.ID)
 	if err != nil {
 		return nil //nolint:nilerr // no shim answering means the instance is not running, which is what Stop wants
@@ -455,9 +536,9 @@ func (e *Engine) Stop(ctx context.Context, inst *Instance, timeout time.Duration
 // Remove deletes an instance. A running one is refused unless force, which
 // stops it first.
 func (e *Engine) Remove(ctx context.Context, inst *Instance, force bool) error {
-	if e.State(ctx, inst) == Running {
+	if state := e.State(ctx, inst); state != Stopped {
 		if !force {
-			return fmt.Errorf("instance %s is running; stop it or remove it with --force", inst.Name)
+			return fmt.Errorf("instance %s is %s; stop it or remove it with --force", inst.Name, state)
 		}
 		// A guest forced off after the timeout is still off, and removing it
 		// is what was asked for.
@@ -474,8 +555,26 @@ func (e *Engine) Remove(ctx context.Context, inst *Instance, force bool) error {
 }
 
 // Guest returns a client for a running instance's agent, reached through its
-// shim.
+// shim, or for a remote driver, through a machine attached on first use.
 func (e *Engine) Guest(inst *Instance) *guest.Client {
+	if attacher := e.remote(); attacher != nil {
+		var mu sync.Mutex
+		var m machine.Machine
+		return guest.NewClient(func(ctx context.Context) (net.Conn, error) {
+			mu.Lock()
+			if m == nil {
+				attached, err := e.attach(ctx, attacher, inst)
+				if err != nil {
+					mu.Unlock()
+					return nil, err
+				}
+				m = attached
+			}
+			attached := m
+			mu.Unlock()
+			return attached.Dial(ctx, guest.AgentPort)
+		})
+	}
 	return guest.NewClient(func(ctx context.Context) (net.Conn, error) {
 		shim, err := e.shim(inst.ID)
 		if err != nil {
@@ -487,6 +586,13 @@ func (e *Engine) Guest(inst *Instance) *guest.Client {
 
 // Dial opens a stream to any port of a running instance.
 func (e *Engine) Dial(ctx context.Context, inst *Instance, port uint32) (net.Conn, error) {
+	if attacher := e.remote(); attacher != nil {
+		m, err := e.attach(ctx, attacher, inst)
+		if err != nil {
+			return nil, fmt.Errorf("instance %s: %w", inst.Name, err)
+		}
+		return m.Dial(ctx, port)
+	}
 	shim, err := e.shim(inst.ID)
 	if err != nil {
 		return nil, fmt.Errorf("instance %s is not running", inst.Name)

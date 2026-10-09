@@ -59,6 +59,7 @@ is a `Capabilities` field, never a faked method:
 | shared dirs | (Plan9, later) | virtiofs | no | no |
 | display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no |
 | forward (guest to host) | hvsocket to the parent partition | vsock to the host, CID 2 | no | loopback |
+| remote (no shim; any process attaches) | no | no | **yes** | no |
 
 The engine enforces `MaxRunning`. `--mode fork|resume` is refused where it is
 unsupported. A fast mode also needs a warm image (decision 7), so it is a
@@ -139,10 +140,11 @@ VM belongs to vmcompute. A **shim per VM** makes both look the same:
   and splices bytes to any guest port.
 - Any process (a later CLI invocation, a discobox server) reaches any instance
   through the shim. A crash is contained to one VM.
-- The shim exits when the VM stops. A remote driver (boxd) whose API stops
-  answering gives the VM up instead of holding the shim forever. Its `Done`
-  closes with an error, and the VM may still be running. The instance still
-  names it, so `rm` destroys it.
+- The shim exits when the VM stops.
+
+A **remote driver** (`Capabilities.Remote`, boxd) runs no shim: its service owns
+the VM, so each call attaches (`machine.Attacher`) with its own credentials. See
+[docs/drivers/boxd.md](docs/drivers/boxd.md).
 
 HCS's live-template fork needs something to hold the template. That is a shim
 too, a **warm shim** (`disco-vm shim --warm <layer>`), not a special daemon. See
@@ -276,7 +278,8 @@ forced off fails the build rather than caching a disk with unflushed writes.
 
 | | fake (all OSes, CI) | hcs | vz | boxd |
 |---|---|---|---|---|
-| machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ✅ macOS 27 guest | ✅ boxd (by hand, `BOXD_API_KEY`), ✅ fake API (Linux CI) |
+| machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ✅ macOS 27 guest | ✅ boxd (by hand, `BOXD_API_KEY`), ✅ fake API (Linux CI); ⬜ `attach` on boxd itself (fake API only) |
+| no shim: run, then exec/cp/stop/start/rm with a fresh credential each | n/a | n/a | n/a | ✅ by hand in a discobox (2026-10-08): exec and cp 5.5 minutes after `run`, once its sentinel had expired; stop, start, a guest's own `poweroff` found stopped by the next `ps`, rm |
 | e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ✅ `DISCO_VM_DRIVER=vz` | ⬜ (not run with `DISCO_VM_DRIVER=boxd` yet; the same lifecycle passed by hand with `docs/examples/boxd.yaml`) |
 | agent: exec, files, shutdown, info | ✅ | ✅ in-guest | ✅ in-guest (vsock, launchd daemon) | ✅ in-guest |
 | agent: TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ in-guest (`exec -t`) | ⬜ in-guest |

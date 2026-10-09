@@ -79,8 +79,9 @@ type Driver struct {
 }
 
 var (
-	_ machine.Driver = (*Driver)(nil)
-	_ machine.Warmer = (*Driver)(nil)
+	_ machine.Driver   = (*Driver)(nil)
+	_ machine.Warmer   = (*Driver)(nil)
+	_ machine.Attacher = (*Driver)(nil)
 )
 
 // New returns a driver that authenticates with $BOXD_API_KEY. It dials
@@ -93,6 +94,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS:    []machine.OS{machine.Linux},
 		CloneModes: []machine.CloneMode{machine.Cold, machine.Resume},
+		Remote:     true,
 	}
 }
 
@@ -352,7 +354,49 @@ func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 	if opts.Console != nil {
 		fmt.Fprintf(opts.Console, "boxd: %s (%s) is running\n", ref.Name, ref.ID)
 	}
-	return watch(api, ref), nil
+	return newVM(api, ref), nil
+}
+
+// Attach finds the instance's machine through the API, as any process can. A
+// guest that shut itself down is left running by boxd, and with no shim to
+// watch it nothing has stopped it yet: Attach reads the shutdown hook's marker
+// and finishes the job, so a powered-off guest is stopped and reads as not
+// running, and a rebooted one is started again.
+func (d *Driver) Attach(ctx context.Context, inst machine.InstanceSpec) (machine.Machine, error) {
+	var ref vmRef
+	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
+		return nil, fmt.Errorf("boxd: instance %s has no machine: %w", inst.ID, machine.ErrNotRunning)
+	}
+	api, err := d.api.API()
+	if err != nil {
+		return nil, err
+	}
+	info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: ref.ID})
+	switch {
+	case isNotFound(err):
+		return nil, fmt.Errorf("boxd: machine %s is gone: %w", ref.Name, machine.ErrNotRunning)
+	case err != nil:
+		return nil, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
+	}
+	switch state := info.GetStatus(); state {
+	case "running":
+		m := newVM(api, ref)
+		how := halted(ctx, api, ref.ID)
+		if how == "" {
+			return m, nil
+		}
+		if err := m.afterHalt(ctx, how); err != nil {
+			return nil, err
+		}
+		if how == "reboot" {
+			return m, nil
+		}
+		return nil, fmt.Errorf("boxd: machine %s powered itself off: %w", ref.Name, machine.ErrNotRunning)
+	case "starting":
+		return newVM(api, ref), nil
+	default:
+		return nil, fmt.Errorf("boxd: machine %s is %s: %w", ref.Name, state, machine.ErrNotRunning)
+	}
 }
 
 // Commit boots the stopped instance from its committed disk and snapshots it:

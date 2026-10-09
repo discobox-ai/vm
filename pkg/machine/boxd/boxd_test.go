@@ -148,7 +148,7 @@ func TestDialFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := watch(api, vmRef{ID: created.GetVmId(), Name: created.GetName()})
+	m := newVM(api, vmRef{ID: created.GetVmId(), Name: created.GetName()})
 	defer func() { _ = m.Kill(ctx) }()
 	_, err = m.Dial(ctx, guest.AgentPort)
 	if err == nil || !strings.Contains(err.Error(), "agent.sock") {
@@ -157,8 +157,8 @@ func TestDialFailure(t *testing.T) {
 }
 
 // TestKillGivesUp checks that Kill returns, and Done closes with an error that
-// says so, when boxd stops answering: the shim calls Kill with no deadline and
-// then waits on Done.
+// says so, when boxd stops answering: an orderly stop's fallback
+// (Booted.Shutdown) calls Kill with no deadline and then waits on Done.
 func TestKillGivesUp(t *testing.T) {
 	defer func(poll, limit time.Duration) { pollEvery, killLimit = poll, limit }(pollEvery, killLimit)
 	pollEvery, killLimit = 100*time.Millisecond, time.Second
@@ -168,7 +168,7 @@ func TestKillGivesUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := watch(api, vmRef{ID: created.GetVmId(), Name: created.GetName()})
+	m := newVM(api, vmRef{ID: created.GetVmId(), Name: created.GetName()})
 	fake.down.Store(true)
 
 	returned := make(chan error, 1)
@@ -203,7 +203,7 @@ func TestKillDuringReboot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := watch(api, vmRef{ID: created.GetVmId(), Name: created.GetName()})
+	m := newVM(api, vmRef{ID: created.GetVmId(), Name: created.GetName()})
 	defer m.stop()
 	m.killed.Store(true) // Kill has begun
 	if err := m.afterHalt(ctx, "reboot"); err != nil {
