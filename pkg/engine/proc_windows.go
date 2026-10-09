@@ -32,3 +32,16 @@ func processAlive(pid int) bool {
 	const stillActive = 259
 	return code == stillActive
 }
+
+// killProcess ends a process at once, without letting it clean up.
+func killProcess(pid int) {
+	if pid <= 0 {
+		return
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		return
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	_ = windows.TerminateProcess(h, 1)
+}

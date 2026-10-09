@@ -105,6 +105,9 @@ func Open(root string, driver machine.Driver) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, ok := driver.(machine.Attacher); driver.Capabilities().Remote && !ok {
+		return nil, fmt.Errorf("driver %s lists Capabilities.Remote but is not a machine.Attacher", driver.Name())
+	}
 	return &Engine{Root: root, Driver: driver, Images: store, Exe: exe}, nil
 }
 
@@ -302,13 +305,36 @@ func (e *Engine) list(all bool) ([]*Instance, error) {
 }
 
 // remote is the driver as an Attacher when its machines are owned by a
-// service rather than by a shim.
+// service rather than by a shim. Open refuses a driver that lists Remote and
+// is not one.
 func (e *Engine) remote() machine.Attacher {
 	if !e.Driver.Capabilities().Remote {
 		return nil
 	}
 	attacher, _ := e.Driver.(machine.Attacher)
 	return attacher
+}
+
+// retireShim ends a shim that an older disco-vm started for a remote
+// instance. The service owns the machine, so the shim only watches it, and
+// its credentials may have expired since it started: left alone, it would
+// poll forever. It is asked for its status first, with its token, so a PID
+// that has since been reused is never signaled. The machine is untouched.
+func (e *Engine) retireShim(ctx context.Context, inst *Instance) {
+	statePath := filepath.Join(e.instanceDir(inst.ID), shimStateName)
+	if shim, err := openShim(statePath); err == nil {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		alive := shim.status(ctx) == nil
+		cancel()
+		if alive {
+			killProcess(shim.state.PID)
+			deadline := time.Now().Add(5 * time.Second)
+			for processAlive(shim.state.PID) && time.Now().Before(deadline) {
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+	}
+	_ = os.Remove(statePath)
 }
 
 // attach finds a remote instance's running machine.
@@ -424,6 +450,7 @@ func (e *Engine) Start(ctx context.Context, inst *Instance, opts StartOptions) e
 		opts.Timeout = 10 * time.Minute
 	}
 	if e.remote() != nil {
+		e.retireShim(ctx, inst)
 		return e.startRemote(ctx, inst, opts)
 	}
 	dir := e.instanceDir(inst.ID)
@@ -482,7 +509,27 @@ func (e *Engine) startRemote(ctx context.Context, inst *Instance, opts StartOpti
 	}
 	client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
 	defer client.Close()
-	if err := client.WaitReady(ctx, nil); err != nil {
+	// A guest that stops while booting ends the wait, as a shim's exit does.
+	// The machine's own Done is not used: its watcher would outlive this
+	// call in a program that embeds the engine.
+	watch, stopWatching := context.WithCancel(ctx)
+	defer stopWatching()
+	stopped := make(chan struct{})
+	attacher := e.remote()
+	go func() {
+		for {
+			select {
+			case <-watch.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+			if _, err := attacher.Attach(watch, spec); errors.Is(err, machine.ErrNotRunning) {
+				close(stopped)
+				return
+			}
+		}
+	}()
+	if err := client.WaitReady(ctx, stopped); err != nil {
 		_ = m.Kill(context.Background())
 		return fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
@@ -516,6 +563,7 @@ func (e *Engine) checkCapacity(ctx context.Context, inst *Instance) error {
 // Stop shuts an instance down in order, forcing it off after timeout.
 func (e *Engine) Stop(ctx context.Context, inst *Instance, timeout time.Duration) error {
 	if attacher := e.remote(); attacher != nil {
+		e.retireShim(ctx, inst)
 		m, err := e.attach(ctx, attacher, inst)
 		if errors.Is(err, machine.ErrNotRunning) {
 			return nil
@@ -545,6 +593,9 @@ func (e *Engine) Remove(ctx context.Context, inst *Instance, force bool) error {
 		if err := e.Stop(ctx, inst, 30*time.Second); err != nil && e.State(ctx, inst) == Running {
 			return err
 		}
+	}
+	if e.remote() != nil {
+		e.retireShim(ctx, inst)
 	}
 	if spec, err := e.machineSpec(inst); err == nil {
 		if err := e.Driver.Destroy(ctx, spec); err != nil {
@@ -669,7 +720,9 @@ func (b *Booted) Shutdown(ctx context.Context, timeout time.Duration) error {
 			err = ctx.Err()
 		}
 	}
-	_ = b.Machine.Kill(context.Background())
+	if killErr := b.Machine.Kill(context.Background()); killErr != nil {
+		return fmt.Errorf("not stopped in order (%w), nor forced off: %w", err, killErr)
+	}
 	return fmt.Errorf("forced off: %w", err)
 }
 

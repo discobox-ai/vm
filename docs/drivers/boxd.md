@@ -45,7 +45,7 @@ use. The parts that matter here:
 | layer | `layer.json`: the snapshot's name, ID, version, and size. `DeleteLayer` deletes the snapshot. |
 | `Prepare` cold | restore the layer's snapshot, power the guest off through the agent, and `StopVm` once the shutdown hook says it halted. The first boot is a cold boot of the layer's disk. A guest that cannot be shut down in order is stopped anyway, and Prepare fails. |
 | `Prepare` resume | restore the stage's snapshot and suspend it. A missing stage or snapshot is `ErrNotWarm`. |
-| `Boot` | `StartVm` (after `ResizeVm` when the boot asks for another size), `ResumeVm`, or `WakeVm`, by state. |
+| `Boot` | `StartVm` (after `ResizeVm` when the boot asks for another size), `ResumeVm`, or `WakeVm`, by state. A machine still `stopping` is waited out first. |
 | `Attach` | (`Capabilities.Remote`: the engine runs no shim for boxd.) `GetVm`: not found, `stopped`, or any state but `running` or `starting` is `ErrNotRunning`. While it is `running`, an Exec reads the shutdown hook's marker: a guest that halted while nothing watched is stopped with `StopVm` and reads as not running, and one that rebooted is started again. |
 | `Machine.Done` | watching starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to dial polls nothing. `GetVm` every 2s: `stopped` is a power-off, and `failed`, `destroying`, or not-found is an error. While it is `running`, an Exec reads the shutdown hook's marker, and a guest that has halted is stopped with `StopVm` (and started again if it rebooted). |
 | `Machine.Kill` | `StopVm`, retried until boxd takes it, then wait for `stopped`. Callers pass no deadline, so Kill has its own (5 minutes). Past it, Kill gives the machine up: `Done` closes, and `Err` says it may still be running. Its instance still names it, so `rm` destroys it later. A guest reboot that the watcher is turning into a stop and start never leaves a machine started after Kill. Kill waits for a start already under way, which is bounded to 30s, and then stops the machine. |
@@ -112,7 +112,10 @@ whose `discobox-access run` hands out a sentinel that lives five minutes, that
 is what makes an instance usable past its `run`. A single build longer than
 that still outlives its sentinel. `ps` shows an instance boxd cannot be asked
 about as `unknown`, and `run --forward` is refused: nothing would hold the
-forwards' listeners.
+forwards' listeners. A shim an older disco-vm started for an instance is ended
+the next time the instance is started, stopped or removed: it is asked for its
+status with its token first, so a reused PID is never signaled, and the
+machine is left as it is.
 
 ## A guest cannot power its machine off
 

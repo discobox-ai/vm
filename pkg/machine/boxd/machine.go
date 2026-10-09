@@ -122,6 +122,13 @@ func (m *vm) afterHalt(ctx context.Context, how string) error {
 	call, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if _, err := m.api.StartVm(call, &boxdapi.StartVmRequest{VmId: m.ref.ID}); err != nil {
+		// Two processes attaching at once both act on the same marker; the
+		// one that starts the machine second finds it already started.
+		if info, getErr := m.api.GetVm(call, &boxdapi.GetVmRequest{VmId: m.ref.ID}); getErr == nil {
+			if state := info.GetStatus(); state == "running" || state == "starting" {
+				return nil
+			}
+		}
 		return fmt.Errorf("boxd: start %s after the guest's reboot: %w", m.ref.Name, err)
 	}
 	return nil

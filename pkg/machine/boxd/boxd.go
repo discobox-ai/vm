@@ -327,6 +327,16 @@ func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 	if err != nil {
 		return nil, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
 	}
+	if info.GetStatus() == "stopping" {
+		// A stop is still settling: one a guest's own poweroff asked for, seen
+		// by an attach a moment ago. Start what it leaves.
+		if _, err := waitVM(ctx, api, ref.ID, "stopped"); err != nil {
+			return nil, err
+		}
+		if info, err = api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: ref.ID}); err != nil {
+			return nil, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
+		}
+	}
 	switch state := info.GetStatus(); state {
 	case "stopped":
 		cpus, memory := uint32(opts.CPUs), opts.Memory
@@ -385,7 +395,12 @@ func (d *Driver) Attach(ctx context.Context, inst machine.InstanceSpec) (machine
 		if how == "" {
 			return m, nil
 		}
-		if err := m.afterHalt(ctx, how); err != nil {
+		// Finishing a halt is not the caller's to cut short: a reboot
+		// stopped and never started again would read as a poweroff. It is
+		// bounded on its own, as the watcher's is.
+		finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Minute)
+		defer cancel()
+		if err := m.afterHalt(finish, how); err != nil {
 			return nil, err
 		}
 		if how == "reboot" {
