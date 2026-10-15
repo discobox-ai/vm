@@ -1,6 +1,6 @@
 # 0003 — A client converges a guest to state files, through exec and copy
 
-- **Status**: Accepted
+- **Status**: Superseded by [26-10-15-703](26-10-15-703-disco-vm-does-not-converge-guests.md)
 - **Date**: 2026-10-13
 
 ## Context
