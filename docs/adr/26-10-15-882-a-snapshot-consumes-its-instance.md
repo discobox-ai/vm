@@ -1,4 +1,4 @@
-# 0006 — A snapshot commits a stopped instance as an image, and consumes the instance
+# 26-10-15-882 — A snapshot commits a stopped instance as an image, and consumes the instance
 
 - **Status**: Proposed
 - **Date**: 2026-10-15

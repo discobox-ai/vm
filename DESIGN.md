@@ -222,7 +222,7 @@ instance's disk committed as a layer on its image's layer, under a random ID,
 since nothing reproducible made it. A snapshot consumes the instance, as a
 build step does, so a layer is always cut the same way, from a stopped guest
 that is then destroyed; to go on from one, create an instance of it (ADR
-0006). Tags name
+26-10-15-882). Tags name
 layers. A layer with no tag
 and no child is an untagged image: `images` lists it as `<none>` (`images -a`
 lists every untagged layer, a chain's intermediate layers too) and `rmi`

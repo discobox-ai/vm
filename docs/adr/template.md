@@ -1,11 +1,12 @@
-# NNNN — The decision, stated as a sentence
+# YY-MM-DD-RRR — The decision, stated as a sentence
 
 - **Status**: Proposed
 - **Date**: YYYY-MM-DD
 
 <!-- Optional header lines:
-- **Supersedes**: NNNN
-- **Superseded by**: set by changing Status to "Superseded by NNNN"
+- **Supersedes**: YY-MM-DD-RRR
+- **Superseded by**: set by changing Status to "Superseded by YY-MM-DD-RRR"
+- Superseded in part: add a note to Status, "Accepted (§2 superseded by YY-MM-DD-RRR)"
 -->
 
 ## Context

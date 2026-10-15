@@ -159,23 +159,68 @@ inside a git repository, `$RC` says so; stop and tell the user.
   - `DESIGN.md` describes current state only, never planned work. Parents
     link to children instead of repeating them. Prefer Mermaid for
     structure and flows. Keep them short, directive and scannable.
-  - `REVIEW.md` is a bullet list of review rules and pitfalls.
+  - `REVIEW.md` is covered next, under Review notes.
 - Every Mermaid block starts with a known diagram type. `docs.mermaid`
 - No plan or task documents in the repo: plans belong in the branch or task.
   `docs.no-plans`
 
+### Review notes (`REVIEW.md`)
+
+- A `REVIEW.md` is review notes, not a reviewer. It is a bullet list of
+  what to check in the code below it and the pitfalls already hit there,
+  for any agent that reviews or changes that code. The reviewers a discobox
+  runs are defined in `.discobox/review/*.md`. Each of them, and the general
+  reviewer above all, reads the notes.
+- A reviewer reads every `REVIEW.md` from the root down to each directory
+  the change touches. A change that breaks a note is a finding, and the
+  finding cites the note.
+- Add a note when:
+  - a review or a fix turns up something a future reviewer of this code
+    should check and would not think to: a constraint the code cannot show,
+    or an invariant that is easy to break from somewhere else;
+  - the same mistake is made a second time;
+  - a regression is fixed. The note says what to check so it does not come
+    back.
+- The author writes the note, in the change that fixes what prompted it. A
+  reviewer edits nothing, so a reviewer that thinks a note is due says so in
+  its comment.
+- A note goes in the `REVIEW.md` of the closest directory that holds the code
+  and has a `DESIGN.md` (`docs.review-design`). The root always has one.
+- A note is one bullet: the rule, stated directively, then why, naming the
+  incident, commit or issue behind it.
+- Where a test or a lint can catch the mistake, add that as well. The note is
+  for what only a reader will see.
+- Delete a note once the code makes the mistake impossible, and fix it when
+  the code it describes changes. When a `REVIEW.md` grows past what is read
+  in one sitting, move its notes down into the directories they are about.
+
 ### ADRs (`docs/adr`)
 
-- Filenames are `NNNN-slug-stating-the-decision.md`: four digits, unique,
-  with a lowercase hyphenated slug. `adr.unique`
+- An ADR's ID is `YY-MM-DD-RRR`: the date it is written plus three random
+  digits (`printf '%03d' $((RANDOM % 1000))`), never the next number in a
+  sequence, so two branches cannot claim the same one. ADRs written as
+  four-digit `NNNN` before this keep their IDs. Never renumber an ADR; if two
+  branches draw the same ID, re-roll the suffix of the unmerged one.
+  `adr.unique`
+- Filenames are `<ID>-slug-stating-the-decision.md`, with a lowercase
+  hyphenated slug.
 - The header is exactly:
 
   ```markdown
-  # NNNN — Title
-  - **Status**: Proposed | Accepted | Rejected | Superseded by NNNN
+  # <ID> — Title
+  - **Status**: Proposed | Accepted | Rejected | Superseded by <ID>
   - **Date**: YYYY-MM-DD
-  - **Supersedes**: NNNN        (optional)
+  - **Supersedes**: <ID>, <ID>  (optional)
   ```
+
+  An `<ID>` after `Superseded by` or `Supersedes` may be a link,
+  `[<ID>](<file>)`. Cite ADRs in prose as `ADR <ID>`. A header value may
+  wrap onto indented lines.
+- When a later ADR replaces only part of an earlier one, the earlier ADR
+  keeps its status and gains a note in parentheses naming the part and the
+  later ADR: `Accepted (§4 superseded by [<ID>](<file>))`. `Superseded by`
+  and `Supersedes` are for a whole ADR. Changing a status or its note is the
+  one edit an accepted ADR takes.
 
 - "Superseded by B" in A and "Supersedes: A" in B always appear together.
   `adr.supersede`

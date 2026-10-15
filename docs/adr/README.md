@@ -20,5 +20,5 @@ Follow `template.md` and the `repostd` skill.
 | [0003](0003-a-client-converges-a-guest-to-state-files.md) | A client converges a guest to state files, through exec and copy | Accepted |
 | [0004](0004-a-project-scopes-every-resource-and-its-name.md) | A project scopes every resource, and is in the name of what a driver makes | Accepted |
 | [0005](0005-every-instance-has-one-http-url-and-the-driver-picks-its-port.md) | Every instance has one HTTP URL, and the driver picks where its service listens | Proposed |
-| [0006](0006-a-snapshot-consumes-its-instance.md) | A snapshot commits a stopped instance as an image, and consumes the instance | Proposed |
+| [26-10-15-882](26-10-15-882-a-snapshot-consumes-its-instance.md) | A snapshot commits a stopped instance as an image, and consumes the instance | Proposed |
 <!-- /repostd:adr-index -->
