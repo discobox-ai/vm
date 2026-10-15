@@ -43,7 +43,6 @@ layers:
         user: admin            # run as this account instead of root or SYSTEM
         timeout: 30m           # default 1h
       - copy: {src: tools, dst: C:\tools}  # context → guest; a dir's contents land in dst
-      - converge: state        # make the guest match a context state file, or a directory of them
       - reboot: true           # orderly restart, for installers that need one
 ```
 
@@ -60,7 +59,6 @@ cutting a layer per step as a Dockerfile does.
 - the driver and guest OS
 - each step's resolved argv, environment, workdir, and user
 - each copy step's destination and a content digest of its source
-- each converge step's state files, and the content of every file they name
 
 Step names, timeouts, and resources are not part of it. An unchanged prefix of
 layers is reused. `--no-cache` builds every layer under fresh IDs and
@@ -96,16 +94,6 @@ failure does not stop the script. Check `$LASTEXITCODE`, or use `Start-Process
 **Copy.** `src` must be inside the build context, which defaults to the spec's
 directory. A directory's contents land in `dst`, and a file lands in `dst` by
 its own name. `dst` is always a directory.
-
-**Converge.** `converge: PATH` makes the layer's guest match
-[state files](state-file.md): PATH is one `NAME.yaml` in the context, or a
-directory of them. The builder reads them, and the files they name, in the
-context, and applies them through the guest's exec and copy. A guest that
-cannot be made to match fails the step with the resource's error. The layer
-is committed with the record of what was applied, so converging an instance
-of the image to the same state files applies nothing, and to changed ones
-only the difference. One state file per layer gives each its own place in
-the cache.
 
 **Environment.** Every run step is a new process. On Windows the agent builds
 its environment from the registry each time, so what an earlier step installed
