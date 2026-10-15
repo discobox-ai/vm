@@ -218,7 +218,7 @@ func (e env) release() {
 		}
 		return first
 	}
-	if ids := rows(e.ok("ps", "-a")); len(ids) > 0 {
+	if ids := rows(e.ok("ls", "-a")); len(ids) > 0 {
 		e.run(append([]string{"rm", "-f"}, ids...)...)
 	}
 	for _, ref := range rows(e.ok("images")) {
@@ -313,6 +313,8 @@ layers:
 
 	// Run an instance and look inside.
 	e.ok("run", "--name", "dev", "test/app:v1")
+	mustContain(t, e.ok("ls"), "dev", "running")
+	// ps is ls by its older name.
 	mustContain(t, e.ok("ps"), "dev", "running")
 	mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("greeting.txt")...)...), "hi")
 	mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("opt/app/tool.txt")...)...), "tool v1")
@@ -348,16 +350,16 @@ layers:
 		t.Fatal("a second instance saw the first one's write")
 	}
 	e.ok("stop", "dev")
-	if strings.Contains(e.ok("ps"), "dev ") {
+	if strings.Contains(e.ok("ls"), "dev ") {
 		t.Fatal("dev is listed as running after stop")
 	}
-	mustContain(t, e.ok("ps", "-a"), "stopped")
+	mustContain(t, e.ok("ls", "-a"), "stopped")
 	e.ok("start", "dev")
 	mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("drop/note.txt")...)...), "from host")
 
 	// An image in use cannot lose its layers; after removal it can.
 	e.ok("rm", "-f", "dev", "dev2")
-	if strings.Contains(e.ok("ps", "-a"), "dev") {
+	if strings.Contains(e.ok("ls", "-a"), "dev") {
 		t.Fatal("removed instances are still listed")
 	}
 	out = e.ok("rmi", "test/app:v1", "test/app:latest")
@@ -520,7 +522,7 @@ layers:
 		}
 		mustContain(t, e.ok(append([]string{"exec", name}, catArgv("greeting.txt")...)...), "warm hello")
 	}
-	mustContain(t, e.ok("ps"), fast)
+	mustContain(t, e.ok("ls"), fast)
 	e.ok("rm", "-f", "one", "two")
 
 	if unlimited {

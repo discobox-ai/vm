@@ -61,7 +61,8 @@ Use Taskfile targets through the Go tool-managed `task` binary:
 
 ```bash
 go tool task --list
-go tool task build      # compile into build/, signed on macOS
+go tool task build      # compile into build/, static off macOS, signed on macOS
+go tool task install    # go install, static off macOS
 go tool task test       # run tests (-race)
 go tool task check      # vet (every OS), golangci-lint, repocheck, shellcheck, actionlint
 go tool task generate   # regenerate generated files

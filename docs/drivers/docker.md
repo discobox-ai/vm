@@ -182,7 +182,7 @@ Linux 7.0.11), 2026-10-09:
   that powered itself off stopped).
 - No shim: after `run`, no `disco-vm shim` process runs and the instance has
   no `shim.json`. `exec`, `start`, `stop`, and `rm` each attach. A guest's own
-  `systemctl poweroff` shows as stopped in the next `ps`.
+  `systemctl poweroff` shows as stopped in the next `ls`.
 - `internal/e2e` passes with `DISCO_VM_DRIVER=docker`, about 40 s, and leaves
   no container or image behind. `TestWarm` skips, because the
   driver lists no fast clone mode. (`TestURL` came after this run.)

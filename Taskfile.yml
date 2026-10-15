@@ -16,6 +16,9 @@ vars:
   # vz is cgo, so darwin lints only on a Mac: cross-linting it elsewhere sees
   # the no-cgo stub. CI's macos job covers it.
   LINT_OSES: '{{if eq OS "darwin"}}darwin {{end}}linux windows'
+  # disco-vm is also the guest agent, which install copies into a guest that
+  # has its own libc or none, so it is built static. vz is cgo, so not on macOS.
+  CGO: '{{if eq OS "darwin"}}1{{else}}0{{end}}'
   VERSION:
     sh: git describe --tags --always --dirty 2>/dev/null || echo dev
   LDFLAGS: -X github.com/discobox-ai/vm/internal/version.Version={{.VERSION}}
@@ -27,19 +30,27 @@ tasks:
       - task --list
 
   build:
-    desc: Compile disco-vm into build/, signed on macOS
+    desc: Compile disco-vm into build/, static off macOS, signed on macOS
+    env:
+      CGO_ENABLED: "{{.CGO}}"
     cmds:
       - mkdir -p build
       - go build -ldflags '{{.LDFLAGS}}' -o {{.BINARY}} {{.MAIN}}
       - cmd: codesign --force --sign - --entitlements {{.ENTITLEMENTS}} {{.BINARY}}
         platforms: [darwin]
 
-  build:linux-agent:
-    desc: Compile a static linux/amd64 disco-vm into build/linux-amd64/, the CLI and the agent a boxd install uploads
+  # A plain `go install` links the host's libc where cgo is on, and a guest
+  # without that libc cannot run the result as its agent.
+  install:
+    desc: Install disco-vm into GOBIN, static off macOS
+    env:
+      CGO_ENABLED: "{{.CGO}}"
     cmds:
-      # Static, because install uploads this very binary as the guest's
-      # agent: one linked against the devShell's /nix/store glibc never
-      # starts on a boxd guest, and install only checks its architecture.
+      - go install -ldflags '{{.LDFLAGS}}' {{.MAIN}}
+
+  build:linux-agent:
+    desc: Cross-compile a static linux/amd64 disco-vm into build/linux-amd64/, the agent `build --agent` takes on any other host
+    cmds:
       - mkdir -p build/linux-amd64
       - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '{{.LDFLAGS}}' -o build/linux-amd64/disco-vm {{.MAIN}}
 

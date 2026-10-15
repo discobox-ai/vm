@@ -281,7 +281,7 @@ disco-vm warm --rm IMAGE
   sized differently from the request (a clone runs at its stage's CPUs and
   memory). A stage that disappears between choosing and taking (`ErrNotWarm`
   from Prepare) also falls back to cold. The instance records the mode it
-  actually got, and `ps` shows it. An explicit `--mode fork|resume` is strict:
+  actually got, and `ls` shows it. An explicit `--mode fork|resume` is strict:
   it fails, and says to run `warm`.
 - **Staging is explicit, never a side effect of `run`.** Making a stage costs
   a full cold boot, so the run that triggered it would gain nothing. A stage
@@ -370,11 +370,11 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | | fake (all OSes, CI) | hcs | vz | boxd | docker |
 |---|---|---|---|---|---|
 | machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ✅ macOS 27 guest | ✅ boxd (by hand, `BOXD_API_KEY`), ✅ fake API (Linux CI); ⬜ `attach` on boxd itself (fake API only) | ✅ Docker 29.8 on Linux 7.0, from debian:trixie and ubuntu:24.04 (by hand, `DISCO_VM_DOCKER_IMAGE`) |
-| no shim: run, then exec/cp/stop/start/rm with a fresh credential each | n/a | n/a | n/a | ✅ by hand in a discobox (2026-10-08): exec and cp 5.5 minutes after `run`, once its sentinel had expired; stop, start, a guest's own `poweroff` found stopped by the next `ps`, rm | ✅ by hand (2026-10-09): no shim process after `run`; exec, a guest's own `systemctl poweroff` found stopped by the next `ps`, start, stop, rm; `machinetest` attach |
+| no shim: run, then exec/cp/stop/start/rm with a fresh credential each | n/a | n/a | n/a | ✅ by hand in a discobox (2026-10-08): exec and cp 5.5 minutes after `run`, once its sentinel had expired; stop, start, a guest's own `poweroff` found stopped by the next `ls`, rm | ✅ by hand (2026-10-09): no shim process after `run`; exec, a guest's own `systemctl poweroff` found stopped by the next `ls`, start, stop, rm; `machinetest` attach |
 | e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ✅ `DISCO_VM_DRIVER=vz` | ⬜ (not run with `DISCO_VM_DRIVER=boxd` yet; the same lifecycle passed by hand with `docs/examples/boxd.yaml`) | ✅ `DISCO_VM_DRIVER=docker` |
 | agent: exec, files, shutdown, info | ✅ | ✅ in-guest | ✅ in-guest (vsock, launchd daemon) | ✅ in-guest | ✅ in-guest (systemd unit, unix socket through `docker exec`) |
 | agent: TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ in-guest (`exec -t`) | ⬜ in-guest | ✅ in-guest (`exec -t`, the guest's own devpts) |
-| agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew | ⬜ in-guest | ✅ in-guest (`useradd`, `exec -u`) |
+| agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew | ⬜ in-guest; ✅ a step with no `user:` has root's HOME, USER, and LOGNAME (by hand, 2026-10-12) | ✅ in-guest (`useradd`, `exec -u`) |
 | a tag recorded where the driver keeps layers (`TagLayer`, `UntagLayer`) | no-op | no-op | no-op | ✅ boxd by hand in a discobox (2026-10-12): `tag` waited for the tag's snapshot to be ready, `run` from the tag, `rmi`; the snapshot was not read back with `boxd snap ls`; ✅ fake API (`TestTagSnapshot`, `machinetest`) | no-op |
 | a build replaces a layer its driver lost, and rebuilds the layers after it (`LayerExists`) | ✅ `internal/e2e` TestLostLayer, `pkg/image` TestReplacedLayer | ⬜ | ⬜ | ✅ boxd by hand in a discobox (2026-10-13): a middle layer pointed at a snapshot name boxd does not have was replaced, the layer after it rebuilt, a third build was all cached, and `run` from the tag read both layers' files; no snapshot was actually deleted with `boxd snap rm`; ✅ fake API (`TestTagSnapshot`: `LayerExists`) | ⬜ |
 | unattended install from media (`docs/examples/<os>.yaml`) | n/a | ✅ `docs/examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap | n/a (boots a boxd image) | n/a (an image from a registry, with systemd and the agent added and its owners shifted: `docs/examples/docker.yaml`) |

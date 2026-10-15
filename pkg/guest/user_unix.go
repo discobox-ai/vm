@@ -6,9 +6,28 @@ import (
 	"fmt"
 	"os/exec"
 	"os/user"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 )
+
+// withLogin adds the HOME, USER, and LOGNAME of the agent's own account to env
+// where it has none. The agent is a boot service (a systemd unit, a launchd
+// daemon), which starts with none of them, and an installer that runs under
+// `set -u` or writes to ~ fails without HOME.
+func withLogin(env []string) []string {
+	u, err := user.Current()
+	if err != nil {
+		return env
+	}
+	for _, kv := range [][2]string{{"HOME", u.HomeDir}, {"USER", u.Username}, {"LOGNAME", u.Username}} {
+		if !slices.ContainsFunc(env, func(e string) bool { return strings.HasPrefix(e, kv[0]+"=") }) {
+			env = append(env, kv[0]+"="+kv[1])
+		}
+	}
+	return env
+}
 
 // runAs makes cmd run as the named account and returns the login environment
 // a tool like Homebrew checks for, and a func to call once the process has

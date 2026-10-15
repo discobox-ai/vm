@@ -11,12 +11,13 @@ import (
 // launchd daemon, whose PATH is only the system's, so PATH is rebuilt for each
 // process the way path_helper builds a login shell's: /etc/paths, then every
 // file in /etc/paths.d, then whatever the agent had. A toolchain one build step
-// adds there (Homebrew's /etc/paths.d/homebrew) is on PATH for the next.
+// adds there (Homebrew's /etc/paths.d/homebrew) is on PATH for the next. The
+// daemon's account's login variables are added where it has none.
 func processEnv() []string {
 	env := os.Environ()
 	path := darwinPath("/etc", os.Getenv("PATH"))
 	env = slices.DeleteFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "PATH=") })
-	return append(env, "PATH="+path)
+	return withLogin(append(env, "PATH="+path))
 }
 
 func darwinPath(etc, current string) string {

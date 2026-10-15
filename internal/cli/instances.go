@@ -169,12 +169,13 @@ func eachInstance(g *globals, refs []string, fn func(*engine.Engine, *engine.Ins
 	return errors.Join(errs...)
 }
 
-func psCommand(g *globals) *cobra.Command {
+func lsCommand(g *globals) *cobra.Command {
 	var all bool
 	cmd := &cobra.Command{
-		Use:   "ps",
-		Short: "List instances",
-		Args:  cobra.NoArgs,
+		Use:     "ls",
+		Aliases: []string{"ps"},
+		Short:   "List instances",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			e, err := g.engine()
 			if err != nil {

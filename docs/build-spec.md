@@ -97,7 +97,9 @@ its own name. `dst` is always a directory.
 
 **Environment.** Every run step is a new process. On Windows the agent builds
 its environment from the registry each time, so what an earlier step installed
-is already on PATH.
+is already on PATH. On Linux and macOS a step with no `user:` runs as root
+with root's `HOME`, `USER`, and `LOGNAME`, which the agent's own environment,
+a boot service's, does not have.
 
 **Clean commits only.** If the guest must be forced off at the end of a layer,
 the build fails. A disk from a hard stop is never cached.

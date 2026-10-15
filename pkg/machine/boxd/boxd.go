@@ -204,6 +204,13 @@ var installScript = `set -e
 sudo mkdir -p ` + filepath.Dir(agentPath) + `
 sudo install -m 0755 /tmp/disco-vm-agent ` + agentPath + `
 rm -f /tmp/disco-vm-agent
+# An agent linked against a libc the guest lacks has the right architecture
+# and never starts. Run it here, where that is an error and not a wait.
+if ! out=$(` + agentPath + ` --version 2>&1); then
+	echo "the agent does not run on this guest: $out"
+	echo "it is probably linked against a libc the guest lacks; build a static one (CGO_ENABLED=0, or go tool task build:linux-agent) and pass --agent"
+	exit 1
+fi
 sudo tee /etc/systemd/system/` + agentUnit + ` >/dev/null <<'UNIT'
 [Unit]
 Description=disco-vm guest agent

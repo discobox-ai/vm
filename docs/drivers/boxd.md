@@ -41,7 +41,7 @@ use. The parts that matter here:
 
 | seam | boxd |
 |---|---|
-| `Install` | `CreateVm` (restart policy `never`, idle timers off), check `uname -m` against the agent's ELF, upload the agent, install `disco-vm-guest.service` and the shutdown hook with sudo, wait for the agent, snapshot. Media must be `latest`; `options.image` picks a boxd image. |
+| `Install` | `CreateVm` (restart policy `never`, idle timers off), check `uname -m` against the agent's ELF, upload the agent, run it once so one that cannot start on the guest (a libc the guest lacks) fails the install, install `disco-vm-guest.service` and the shutdown hook with sudo, wait for the agent, snapshot. Media must be `latest`; `options.image` picks a boxd image. |
 | layer | `layer.json`: the snapshot's name, ID, version, and size. `DeleteLayer` deletes the snapshot. |
 | `LayerExists` | `GetSnapshot` on the layer's snapshot: gone, or `failed`, is a layer the build replaces, along with every layer after it. One call for each cached layer of a build. |
 | `TagLayer`, `UntagLayer` | boxd cannot name or label a snapshot after the fact, and snapshots only a running machine. A tag restores the layer's snapshot into a machine, saves that as `dvm-<project>--<layer id>-tag-<ref>-<hash>`, and destroys the machine; untagging deletes the snapshot. Nothing restores from it: it is there so `boxd snap ls` says what each layer is. Each tag costs a restore and a whole snapshot. A tag made before this existed has none; tag it again to make one. |
@@ -73,9 +73,12 @@ reuses a name.
 From a checkout, on any host:
 
 ```sh
-go build -o disco-vm ./cmd/disco-vm
-# The guest agent is disco-vm for linux/amd64. On a linux/amd64 host the
-# binary you just built is it; anywhere else, build one and pass --agent.
+# Static: on a linux/amd64 host this binary is also the guest agent, and one
+# linked against the host's libc may not run on the guest. Install refuses an
+# agent that does not start. `go tool task build` and `go tool task install`
+# build it this way.
+CGO_ENABLED=0 go build -o disco-vm ./cmd/disco-vm
+# Anywhere else, build the agent for linux/amd64 and pass --agent.
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o disco-vm-linux ./cmd/disco-vm
 
 export BOXD_API_KEY=$(boxd auth keys create disco-vm)   # once; keep it somewhere safe
@@ -116,7 +119,7 @@ boxd instance, so every command authenticates with its own environment, and a
 credential only has to outlive the command it was given to. Inside a discobox,
 whose `discobox-access run` hands out a sentinel that lives five minutes, that
 is what makes an instance usable past its `run`. A single build longer than
-that still outlives its sentinel. `ps` shows an instance boxd cannot be asked
+that still outlives its sentinel. `ls` shows an instance boxd cannot be asked
 about as `unknown`, and an engine `CreateOptions.Forwards` is refused:
 nothing would hold the forwards' listeners. A shim an older disco-vm started for an instance is ended
 the next time the instance is started, stopped or removed: it is asked for its
@@ -204,7 +207,7 @@ cancelled context, and `disco-vm guest` now closes its listener on it.
 When Kill gives a machine up (`stop` or `rm -f` whose orderly shutdown
 failed, and boxd then would not stop it within five minutes), the command
 fails with an error that says the machine may still be running, and billing.
-`ps` asks boxd, so it shows the machine as it is. A later `stop` or `rm -f`
+`ls` asks boxd, so it shows the machine as it is. A later `stop` or `rm -f`
 tries again.
 
 ## Not done
