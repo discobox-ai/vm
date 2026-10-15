@@ -21,5 +21,6 @@ Follow `template.md` and the `repostd` skill.
 | [0004](0004-a-project-scopes-every-resource-and-its-name.md) | A project scopes every resource, and is in the name of what a driver makes | Accepted |
 | [0005](0005-every-instance-has-one-http-url-and-the-driver-picks-its-port.md) | Every instance has one HTTP URL, and the driver picks where its service listens | Proposed |
 | [26-10-15-703](26-10-15-703-disco-vm-does-not-converge-guests.md) | disco-vm does not converge guests; a client above it does, through exec, copy, and snapshot | Accepted |
+| [26-10-15-851](26-10-15-851-images-are-made-by-build-and-snapshot-and-clones-are-cold.md) | Images are made by build and snapshot, and every clone boots cold | Accepted |
 | [26-10-15-882](26-10-15-882-a-snapshot-consumes-its-instance.md) | A snapshot commits a stopped instance as an image, and consumes the instance | Accepted |
 <!-- /repostd:adr-index -->
