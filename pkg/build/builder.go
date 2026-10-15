@@ -314,9 +314,6 @@ func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, parent, key str
 		ID: key, Parent: parent, Driver: e.Driver.Name(), GuestOS: p.GuestOS,
 		Comment: name + ":" + layer.Name,
 	}
-	if layer.Service != 0 {
-		meta.Service = &image.Service{Port: layer.Service}
-	}
 	pending, err := e.Images.Begin(meta)
 	if err != nil {
 		return err

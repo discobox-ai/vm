@@ -54,8 +54,8 @@ use. The parts that matter here:
 | `Destroy` | `DestroyVm`. |
 | `Warm` | at the layer's size, point `stage.json` at the layer's snapshot. At another size, boot a cold clone at that size and snapshot it (`own`, deleted by `Cool`). |
 | `Warmth` | `{resume, -1}` while the stage's snapshot is ready. |
-| `Prepare` with a service | once the machine is restored, `SetBotProtection` off, `SetProxyPort` pins the default proxy (the one `ListProxies` marks `is_default`) to the service port, and its domain is recorded in `vm.json`. |
-| `Endpoint` | `https://<machine>.boxd.sh` from `vm.json`, with no API call. |
+| `Prepare` | once the machine is restored, `SetBotProtection` off, `SetProxyPort` pins the default proxy (the one `ListProxies` marks `is_default`) to 7302, and its domain is recorded in `vm.json`. |
+| `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `https://<machine>.boxd.sh` from `vm.json`, with no API call. |
 
 The agent runs as root under systemd and listens on
 `unix:/run/disco-vm/agent.sock` (mode 0600). Exec runs as boxd's `boxd` user,
@@ -86,7 +86,7 @@ export DISCO_VM_DRIVER=boxd
 ./disco-vm exec dev cat /etc/motd.d/disco-vm
 ./disco-vm exec -it dev bash
 ./disco-vm cp ./README.md dev:/tmp
-./disco-vm endpoint dev                                 # an image with `service: {port: N}` only
+./disco-vm url dev                                      # https://<machine>.boxd.sh
 ./disco-vm stop dev && ./disco-vm start dev
 ./disco-vm warm demo/boxd && ./disco-vm run --name fast demo/boxd   # resumes from the snapshot
 ./disco-vm rm -f dev fast
@@ -114,27 +114,25 @@ credential only has to outlive the command it was given to. Inside a discobox,
 whose `discobox-access run` hands out a sentinel that lives five minutes, that
 is what makes an instance usable past its `run`. A single build longer than
 that still outlives its sentinel. `ps` shows an instance boxd cannot be asked
-about as `unknown`, and `run --forward` is refused: nothing would hold the
-forwards' listeners. A shim an older disco-vm started for an instance is ended
+about as `unknown`, and an engine `CreateOptions.Forwards` is refused:
+nothing would hold the forwards' listeners. A shim an older disco-vm started for an instance is ended
 the next time the instance is started, stopped or removed: it is asked for its
 status with its token first, so a reused PID is never signaled, and the
 machine is left as it is.
 
-## The endpoint
+## The URL
 
 Every boxd machine has a default proxy at `<machine>.boxd.sh`, which
 terminates TLS with a managed certificate and forwards HTTP, websockets
 included, to one port of the machine. Left alone, it forwards to the first of
-80, 443, 8080, 8000, 3000, 5000, and 5173 the guest listens on, else 8000. For
-an instance whose image declares `service: {port: N}`, Prepare pins it to N,
-so the service is the only thing it reaches, and turns bot protection off.
-The URL is recorded with the instance, so `disco-vm endpoint` and
-`Engine.Endpoint` answer without a credential, and it stays the same across
-stop and start. Anyone who has it reaches the service, which authenticates
-its callers itself (discobox ADR 26-10-09-143 §3).
-
-A machine with no service keeps the default, so a guest server on one of
-those ports is public at `<machine>.boxd.sh` all the same.
+80, 443, 8080, 8000, 3000, 5000, and 5173 the guest listens on, else 8000.
+Prepare pins it to 7302, the port every instance's service listens on
+(`tcp:0.0.0.0:7302` in the guest's service file), so the service is the only
+thing it reaches, and turns bot protection off. The URL is recorded with the
+instance, so `disco-vm url` and `Engine.URL` answer without a credential, and
+it stays the same across stop and start. Anyone who has it reaches the
+service, which authenticates its callers itself (discobox ADR 26-10-09-143
+§3).
 
 ## A guest cannot power its machine off
 
@@ -161,7 +159,8 @@ cancelled context, and `disco-vm guest` now closes its listener on it.
 
 ## Confirmed against boxd
 
-- The endpoint (2026-10-09, `TestEndpoint`): `SetProxyPort` pins a restored
+- The URL (2026-10-09, then `TestEndpoint` with an image-declared port; not
+  rerun since the port became a fixed 7302): `SetProxyPort` pins a restored
   machine's default proxy to the service port, a guest's HTTP server listening
   on all interfaces answers at `https://<machine>.boxd.sh` within a few
   retries, and after a stop and a start the proxy is still locked to the port

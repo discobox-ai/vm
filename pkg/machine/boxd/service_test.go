@@ -3,7 +3,6 @@ package boxd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,13 +11,14 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// TestEndpointFakeAPI checks what Prepare sets up for a service: the default
-// proxy pinned to its port, bot protection off, and the URL recorded, for a
-// cold clone and a resumed one. An instance with no service is left alone.
-func TestEndpointFakeAPI(t *testing.T) {
+// TestServiceFakeAPI checks what Prepare sets up for the service: the default
+// proxy pinned to guest.ServicePort, bot protection off, and the URL
+// recorded, for a cold clone and a resumed one.
+func TestServiceFakeAPI(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
@@ -47,21 +47,21 @@ func TestEndpointFakeAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, tc := range []struct {
-		mode    machine.CloneMode
-		service uint32
-	}{{machine.Cold, 8123}, {machine.Resume, 8124}, {machine.Cold, 0}} {
-		name := fmt.Sprintf("%s-%d", tc.mode, tc.service)
-		inst := machine.InstanceSpec{ID: name, Dir: filepath.Join(dir, name), GuestOS: machine.Linux, Chain: []machine.Layer{base}, Mode: tc.mode, Service: tc.service}
-		if tc.mode == machine.Resume {
+	for _, mode := range []machine.CloneMode{machine.Cold, machine.Resume} {
+		name := string(mode)
+		inst := machine.InstanceSpec{ID: name, Dir: filepath.Join(dir, name), GuestOS: machine.Linux, Chain: []machine.Layer{base}, Mode: mode}
+		if mode == machine.Resume {
 			inst.WarmDir = warm.Dir
 		}
 		if err := d.Prepare(ctx, inst); err != nil {
 			t.Fatalf("%s: prepare: %v", name, err)
 		}
-		url, err := d.Endpoint(ctx, inst)
+		service, err := d.Service(ctx, inst)
 		if err != nil {
-			t.Fatalf("%s: endpoint: %v", name, err)
+			t.Fatalf("%s: service: %v", name, err)
+		}
+		if service.Listen != "tcp:0.0.0.0:7302" || service.Port != guest.ServicePort {
+			t.Errorf("%s: service %+v", name, service)
 		}
 		var ref vmRef
 		if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
@@ -71,11 +71,8 @@ func TestEndpointFakeAPI(t *testing.T) {
 		v := fake.vms[ref.ID]
 		port, bots := v.proxyPort, v.botProtection
 		fake.mu.Unlock()
-		switch {
-		case tc.service == 0 && (url != "" || port != 0 || !bots):
-			t.Errorf("%s: no service, yet endpoint %q, proxy port %d, bot protection %v", name, url, port, bots)
-		case tc.service != 0 && (url != "https://"+ref.Name+".boxd.test" || port != tc.service || bots):
-			t.Errorf("%s: endpoint %q, proxy port %d, bot protection %v", name, url, port, bots)
+		if service.URL != "https://"+ref.Name+".boxd.test" || port != guest.ServicePort || bots {
+			t.Errorf("%s: URL %q, proxy port %d, bot protection %v", name, service.URL, port, bots)
 		}
 		if err := d.Destroy(ctx, inst); err != nil {
 			t.Fatal(err)
@@ -87,7 +84,7 @@ func TestEndpointFakeAPI(t *testing.T) {
 	fake.mu.Lock()
 	fake.proxyErr = status.Error(codes.NotFound, "no such proxy")
 	fake.mu.Unlock()
-	inst := machine.InstanceSpec{ID: "noproxy", Dir: filepath.Join(dir, "noproxy"), GuestOS: machine.Linux, Chain: []machine.Layer{base}, Mode: machine.Resume, WarmDir: warm.Dir, Service: 8125}
+	inst := machine.InstanceSpec{ID: "noproxy", Dir: filepath.Join(dir, "noproxy"), GuestOS: machine.Linux, Chain: []machine.Layer{base}, Mode: machine.Resume, WarmDir: warm.Dir}
 	err = d.Prepare(ctx, inst)
 	if err == nil || errors.Is(err, machine.ErrNotWarm) {
 		t.Fatalf("prepare with a proxy that cannot be found: %v", err)

@@ -335,7 +335,11 @@ func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
 		Hostname: name,
 		Cmd:      []string{},
 		Labels:   map[string]string{labelInstance: inst.ID},
+		// The service is published on the host's loopback, on a port the
+		// daemon picks at every start.
+		ExposedPorts: map[string]struct{}{servicePortKey: {}},
 		HostConfig: hostConfig{
+			PortBindings: map[string][]portBinding{servicePortKey: {{HostIP: "127.0.0.1"}}},
 			SecurityOpt: []string{
 				"seccomp=unconfined", "apparmor=unconfined", "label=disable", "writable-cgroups=true",
 			},
@@ -467,9 +471,36 @@ func (d *Driver) DeleteLayer(ctx context.Context, layer machine.Layer) error {
 	return nil
 }
 
-// Endpoint is empty: a container's service is reached by dialing its port
-// through the daemon.
-func (*Driver) Endpoint(context.Context, machine.InstanceSpec) (string, error) { return "", nil }
+// servicePortKey is guest.ServicePort as the daemon's API names a port.
+var servicePortKey = fmt.Sprintf("%d/tcp", guest.ServicePort)
+
+// Service is guest.ServicePort on the container's network, published on the
+// host's loopback at a port the daemon picked when the container started, so
+// its URL lasts only as long as the container runs. The daemon is the
+// host's own: one reached over tcp:// publishes on its own loopback.
+func (d *Driver) Service(ctx context.Context, inst machine.InstanceSpec) (machine.Service, error) {
+	service := machine.Service{Listen: fmt.Sprintf("tcp:0.0.0.0:%d", guest.ServicePort), Port: guest.ServicePort}
+	var ref containerRef
+	if err := fsutil.ReadJSON(filepath.Join(inst.Dir, containerFile), &ref); err != nil {
+		return service, fmt.Errorf("docker: instance %s is not prepared: %w", inst.ID, err)
+	}
+	c, err := d.api.inspectContainer(ctx, ref.ID)
+	switch {
+	case isNotFound(err):
+		return service, fmt.Errorf("docker: container %s is gone: %w", ref.Name, machine.ErrNotRunning)
+	case err != nil:
+		return service, fmt.Errorf("docker: container %s: %w", ref.Name, err)
+	case !c.State.Running:
+		return service, fmt.Errorf("docker: container %s is %s: %w", ref.Name, c.State.Status, machine.ErrNotRunning)
+	}
+	for _, b := range c.NetworkSettings.Ports[servicePortKey] {
+		if b.HostPort != "" {
+			service.URL = "http://" + net.JoinHostPort("127.0.0.1", b.HostPort)
+			return service, nil
+		}
+	}
+	return service, fmt.Errorf("docker: container %s publishes no service port; create the instance again", ref.Name)
+}
 
 // removeContainer is best-effort cleanup of a container the driver made for
 // itself.

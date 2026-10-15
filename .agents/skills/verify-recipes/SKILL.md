@@ -82,7 +82,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
 - `stop`, `ps -a` (stopped), `start`, `exec`.
 - A guest's own `systemctl poweroff` via `exec`, then `ps -a` (stopped), then
   `start` at once (boxd may still say `stopping`).
-- Probes: `start` a running instance, `run --forward` on boxd (refused),
+- Probes: `start` a running instance, `url` of a stopped one,
   `exec`/`stop` a stopped one, `rm -f` twice, two `exec`s at once.
 - An instance started by the old binary: read its `instances/<id>/shim.json`,
   `ps -p <pid>`, then act on it with the new binary.

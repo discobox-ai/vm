@@ -15,10 +15,11 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/discobox-ai/vm/pkg/guest"
 )
 
 var (
@@ -343,13 +346,12 @@ layers:
 	mustContain(t, out, "untagged test/app:v1", "deleted")
 	mustContain(t, e.ok("images"), "test/app:other")
 
-	// run --rm with a command is a one-shot.
-	out, code := e.run(append([]string{"run", "--rm", "test/app:other"}, catArgv("greeting.txt")...)...)
-	if code != 0 || !strings.Contains(out, "other") {
-		t.Fatalf("run --rm: exit %d\n%s", code, out)
+	// run takes an image and nothing else; a command goes through exec.
+	if _, code := e.run(append([]string{"run", "test/app:other"}, catArgv("greeting.txt")...)...); code == 0 {
+		t.Fatal("run took a command")
 	}
-	if ps := e.ok("ps", "-a"); strings.Count(ps, "\n") != 1 {
-		t.Fatalf("run --rm left an instance:\n%s", ps)
+	if _, code := e.run("run", "--rm", "test/app:other"); code == 0 {
+		t.Fatal("run took --rm")
 	}
 }
 
@@ -479,103 +481,69 @@ layers:
 	e.ok("rmi", "test/warm")
 }
 
-// A guest process reaches a host service through a forward: it connects out
-// to the host on a port, and the instance's shim splices that into a Unix
-// socket on the host, in both directions.
-func TestForward(t *testing.T) {
+// Every instance has one service. Its URL is served while it runs, and the
+// guest finds where to listen in its service file. On the fake driver the
+// guest is a host process, so the service is this test's server.
+func TestURL(t *testing.T) {
 	e := newEnv(t)
-	if !strings.Contains(e.ok("info"), `"forward": true`) {
-		t.Skipf("driver %s cannot forward a guest's connections to the host", tg.driver)
-	}
-	contextDir := t.TempDir()
-	specPath := filepath.Join(contextDir, "disco-vm.yaml")
+	specPath := filepath.Join(t.TempDir(), "svc.yaml")
 	if err := os.WriteFile(specPath, []byte("from:\n  install: "+tg.install+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	e.ok("build", "-f", specPath, "-t", "test/fwd")
+	e.ok("build", "-f", specPath, "-t", "test/svc")
+	e.ok("create", "--name", "svc", "test/svc")
+	t.Cleanup(func() { e.run("rm", "-f", "svc") })
+	if out, code := e.run("url", "svc"); code == 0 || !strings.Contains(out, "not running") {
+		t.Fatalf("url of a stopped instance: exit %d\n%s", code, out)
+	}
+	e.ok("start", "svc")
+	url := strings.TrimSpace(e.ok("url", "svc"))
+	if !strings.HasPrefix(url, "http://127.0.0.1:") {
+		t.Fatalf("url svc = %q", url)
+	}
 
-	// A short directory: a Unix socket path is limited to about 100 bytes.
-	dir, err := os.MkdirTemp("", "dvf")
+	var guestOS struct {
+		OS string `json:"guestOS"`
+	}
+	if err := json.Unmarshal([]byte(e.ok("inspect", "svc")), &guestOS); err != nil {
+		t.Fatal(err)
+	}
+	outDir := t.TempDir()
+	e.ok("cp", "svc:"+guest.ServiceFile(guestOS.OS), outDir)
+	data, err := os.ReadFile(filepath.Join(outDir, "service"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socket := filepath.Join(dir, "host.sock")
-	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
-	if err != nil {
-		t.Fatal(err)
+	address := strings.TrimSpace(string(data))
+	want := map[string]string{"vz": "vsock:7302", "hcs": "vsock:7302", "docker": "tcp:0.0.0.0:7302"}[tg.driver]
+	if want != "" && address != want {
+		t.Fatalf("service file says %q, want %q", address, want)
 	}
-	t.Cleanup(func() { _ = l.Close() })
-	fromGuest := make(chan string, 1)
-	go func() {
-		conn, err := l.Accept()
+	if tg.driver == "fake" {
+		l, err := guest.Listen(address)
 		if err != nil {
-			return
+			t.Fatalf("listen on the service file's %q: %v", address, err)
 		}
-		defer conn.Close()
-		fmt.Fprintln(conn, "hello from the host")
-		data, _ := io.ReadAll(conn)
-		fromGuest <- string(data)
-	}()
-
-	e.ok("run", "--name", "fw", "--forward", "7401:"+socket, "test/fwd")
-	t.Cleanup(func() { e.run("rm", "-f", "fw") })
-	// The guest's disco-vm: this build, copied in on a real guest, whose
-	// baked-in agent may predate dial-host.
-	// A guest is Windows on a Windows host (fake, hcs), whose shell is cmd.
-	windows := runtime.GOOS == "windows"
-	agent := binary
-	if tg.driver != "fake" {
-		if windows {
-			e.ok("exec", "fw", "cmd", "/c", "mkdir", strings.ReplaceAll(tg.cmd("dv"), "/", `\`))
-		} else {
-			e.ok("exec", "fw", "mkdir", "-p", tg.cmd("dv"))
+		server := &http.Server{
+			Handler:           http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "hello from the service") }),
+			ReadHeaderTimeout: 10 * time.Second,
 		}
-		e.ok("cp", binary, "fw:"+tg.file("dv"))
-		agent = tg.cmd("dv/" + filepath.Base(binary))
-	}
-	pipe := []string{"/bin/sh", "-c", `echo "hello from the guest" | "$0" dial-host 7401`, agent}
-	if windows {
-		// No space before the pipe: cmd would send it.
-		pipe = []string{"cmd", "/c", "echo hello from the guest| " + strings.ReplaceAll(agent, "/", `\`) + " dial-host 7401"}
-	}
-	out := e.ok(append([]string{"exec", "fw"}, pipe...)...)
-	mustContain(t, out, "hello from the host")
-	select {
-	case got := <-fromGuest:
-		mustContain(t, got, "hello from the guest")
-	case <-time.After(30 * time.Second):
-		t.Fatal("the host socket never heard from the guest")
-	}
-	e.ok("rm", "-f", "fw")
-	e.ok("rmi", "test/fwd")
-}
-
-// An image that declares a service gives its instances an endpoint, and one
-// that does not refuses to print one. The URL is the driver's: http://guest
-// where the service is reached through the engine, a public https URL on boxd.
-func TestEndpoint(t *testing.T) {
-	e := newEnv(t)
-	contextDir := t.TempDir()
-	for tag, service := range map[string]string{"test/svc": "service: {port: 8080}\n", "test/nosvc": ""} {
-		specPath := filepath.Join(contextDir, strings.TrimPrefix(tag, "test/")+".yaml")
-		spec := "from:\n  install: " + tg.install + "\n" + service + "layers:\n  - name: a\n    steps:\n      - run: echo " + tag + "\n"
-		if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
+		go func() { _ = server.Serve(l) }()
+		t.Cleanup(func() { _ = server.Close() })
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+		if err != nil {
 			t.Fatal(err)
 		}
-		e.ok("build", "-f", specPath, "-t", tag)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if string(body) != "hello from the service" {
+			t.Fatalf("GET %s: %s %q", url, resp.Status, body)
+		}
 	}
-	e.ok("create", "--name", "svc", "test/svc")
-	e.ok("create", "--name", "nosvc", "test/nosvc")
-	t.Cleanup(func() { e.run("rm", "-f", "svc", "nosvc") })
-	url := strings.TrimSpace(e.ok("endpoint", "svc"))
-	if url != "http://guest" && !strings.HasPrefix(url, "https://") {
-		t.Fatalf("endpoint svc = %q", url)
-	}
-	mustContain(t, e.ok("inspect", "svc"), `"service": 8080`)
-	if out, code := e.run("endpoint", "nosvc"); code == 0 || !strings.Contains(out, "declares no service") {
-		t.Fatalf("endpoint of an image with no service: exit %d\n%s", code, out)
-	}
-	e.ok("rm", "svc", "nosvc")
-	e.ok("rmi", "test/svc", "test/nosvc")
+	e.ok("rm", "-f", "svc")
+	e.ok("rmi", "test/svc")
 }

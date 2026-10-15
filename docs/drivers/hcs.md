@@ -154,11 +154,11 @@ unusably slow).
 
 List `00001C84-FACB-11E6-BD58-64006A7986D3` (port 7300, via
 `winio.VsockServiceID`) in the HvSocket `ServiceTable`, or the agent's bind is
-refused. Add 7301 when display lands. An instance whose image declares a
-service gets its port listed too, in its cold boot's document and in its fork
-clone's: its endpoint is a transport dialing that port over hvsocket. A
-template's holder echoes the port it listed, and a clone from a holder that
-predates services is refused, with a hint to warm the image again.
+refused. List 7302 (`guest.ServicePort`, `00001C86-…`) too: it is every
+instance's service, which the shim serves on the host's loopback by dialing
+it over hvsocket. Add 7301 when display lands. A template's holder answers a
+clone request with the service port it listed, and a clone from a holder that
+predates the fixed port is refused, with a hint to warm the image again.
 
 `Machine.Dial(port)` is `winio.Dial` of an `HvsockAddr{VMID: <RuntimeId>,
 ServiceID: VsockServiceID(port)}`. `Done` fires from an HCS system-exit

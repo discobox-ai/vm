@@ -24,7 +24,6 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -44,16 +43,16 @@ type Spec struct {
 	User string `yaml:"user,omitempty"`
 	// Resources sizes the build VM; it does not affect the cache.
 	Resources Resources `yaml:"resources,omitempty"`
-	// Service is the image's one service, which an instance exposes as its
-	// endpoint. It is recorded on the last layer the build makes, and
-	// inherited by images built on this one until one declares another.
-	Service *Service `yaml:"service,omitempty"`
-	Layers  []Layer  `yaml:"layers,omitempty"`
+	Layers    []Layer   `yaml:"layers,omitempty"`
 	// LegacyName and LegacyTag are the spec's old name and tag, which `build
 	// -t` replaced, as a Dockerfile has none. They are read only to refuse
 	// them with that message rather than as unknown keys.
 	LegacyName string `yaml:"name,omitempty"`
 	LegacyTag  string `yaml:"tag,omitempty"`
+	// LegacyService is the image's old service port, which the driver now
+	// picks for every instance. It is read only to refuse it with that
+	// message.
+	LegacyService any `yaml:"service,omitempty"`
 }
 
 // From is the build's base: exactly one of Image or Install.
@@ -72,11 +71,6 @@ type Install struct {
 	Disk    string `yaml:"disk,omitempty"`
 	// Options pass through to the driver untouched.
 	Options map[string]string `yaml:"options,omitempty"`
-}
-
-// Service is a guest port an instance exposes as its endpoint.
-type Service struct {
-	Port uint32 `yaml:"port"`
 }
 
 // Resources sizes the build VM.
@@ -195,15 +189,8 @@ func (s *Spec) Validate() error {
 			errs = append(errs, errors.New("from.install.media is required"))
 		}
 	}
-	if s.Service != nil {
-		switch port := s.Service.Port; {
-		case port == 0 || port > 65535:
-			errs = append(errs, fmt.Errorf("service.port %d is not a TCP port", port))
-		case port == guest.AgentPort:
-			errs = append(errs, fmt.Errorf("service.port %d is the disco-vm agent's", port))
-		case port == guest.DisplayPort:
-			errs = append(errs, fmt.Errorf("service.port %d is reserved for the display stream", port))
-		}
+	if s.LegacyService != nil {
+		errs = append(errs, errors.New("service: an image no longer declares its service port; the driver picks it, and a program in the guest reads it from its service file (see disco-vm url --help)"))
 	}
 	names := map[string]bool{}
 	for i, layer := range s.Layers {

@@ -34,6 +34,10 @@ const AgentPort uint32 = 7300
 // DisplayPort is reserved for a framebuffer stream (guestfb on Windows).
 const DisplayPort uint32 = 7301
 
+// ServicePort is the guest port of an instance's one service on the drivers
+// that pick a fixed one (machine.Service).
+const ServicePort uint32 = 7302
+
 // UpgradeExec is the Upgrade token of an exec connection.
 const UpgradeExec = "disco-vm-exec"
 

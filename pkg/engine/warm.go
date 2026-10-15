@@ -371,7 +371,7 @@ func (e *Engine) RunWarmShim(ctx context.Context, layerID string) error {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	state, closeControl, err := serveControl(listener, mux, filepath.Join(e.warmDir(layerID), shimStateName))
+	state, closeControl, err := serveControl(listener, mux, filepath.Join(e.warmDir(layerID), shimStateName), "")
 	if err != nil {
 		_ = closeStage()
 		return err

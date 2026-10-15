@@ -6,31 +6,36 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
 )
 
-// Endpoint is the HTTPS URL Prepare pointed at the instance's service.
-func (*Driver) Endpoint(_ context.Context, inst machine.InstanceSpec) (string, error) {
+// serviceListen is where a boxd guest's service listens: boxd's proxy reaches
+// the machine over its network, at guest.ServicePort.
+var serviceListen = "tcp:0.0.0.0:" + strconv.FormatUint(uint64(guest.ServicePort), 10)
+
+// Service is the guest's TCP port behind the HTTPS URL Prepare pointed at it.
+func (*Driver) Service(_ context.Context, inst machine.InstanceSpec) (machine.Service, error) {
 	var ref vmRef
 	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
-		return "", fmt.Errorf("boxd: instance %s is not prepared: %w", inst.ID, err)
+		return machine.Service{}, fmt.Errorf("boxd: instance %s is not prepared: %w", inst.ID, err)
 	}
-	return ref.Endpoint, nil
+	if ref.Endpoint == "" {
+		return machine.Service{}, fmt.Errorf("boxd: instance %s was prepared without a service; create it again", inst.ID)
+	}
+	return machine.Service{Listen: serviceListen, Port: guest.ServicePort, URL: ref.Endpoint}, nil
 }
 
-// expose points a restored instance's machine at its service, if it has one,
-// and records the URL in vm.json for Endpoint.
+// expose points a restored instance's machine at the service port, and
+// records the URL in vm.json for Service.
 func (d *Driver) expose(ctx context.Context, api boxdapi.BoxdApiClient, inst machine.InstanceSpec) error {
-	if inst.Service == 0 {
-		return nil
-	}
 	path := filepath.Join(inst.Dir, vmFile)
 	var ref vmRef
 	if err := readJSON(path, &ref); err != nil {
 		return err
 	}
-	url, err := pinProxy(ctx, api, ref.ID, inst.Service)
+	url, err := pinProxy(ctx, api, ref.ID, guest.ServicePort)
 	if err != nil {
 		return err
 	}

@@ -18,12 +18,13 @@ import (
 // IntegrationEnv opts into tests that run against boxd itself.
 const IntegrationEnv = "DISCO_VM_INTEGRATION"
 
-// TestEndpoint reaches an HTTP server in a boxd guest through its instance's
-// endpoint, and again after a stop and a start. It makes billable machines,
+// TestService reaches an HTTP server in a boxd guest, listening where the
+// driver says, through its instance's URL, and again after a stop and a
+// start. It makes billable machines,
 // so it runs only when asked for and given an account.
-func TestEndpoint(t *testing.T) {
+func TestService(t *testing.T) {
 	if os.Getenv(IntegrationEnv) != "1" || (os.Getenv(APIKeyEnv) == "" && os.Getenv(tokenEnv) == "") {
-		t.Skipf("set %s=1 and %s to reach an endpoint on boxd, which bills the account", IntegrationEnv, APIKeyEnv)
+		t.Skipf("set %s=1 and %s to reach a service on boxd, which bills the account", IntegrationEnv, APIKeyEnv)
 	}
 	d := New()
 	ctx := context.Background()
@@ -35,17 +36,17 @@ func TestEndpoint(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = d.DeleteLayer(context.Background(), base) })
 	}
-	const port = 8123
-	inst := machine.InstanceSpec{ID: "endpoint", Dir: t.TempDir(), GuestOS: machine.Linux, Chain: []machine.Layer{base}, Mode: machine.Cold, Service: port}
+	inst := machine.InstanceSpec{ID: "service", Dir: t.TempDir(), GuestOS: machine.Linux, Chain: []machine.Layer{base}, Mode: machine.Cold}
 	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
 	if err := d.Prepare(ctx, inst); err != nil {
 		t.Fatal(err)
 	}
-	url, err := d.Endpoint(ctx, inst)
-	if err != nil || !strings.HasPrefix(url, "https://") {
-		t.Fatalf("endpoint %q, %v", url, err)
+	service, err := d.Service(ctx, inst)
+	if err != nil || !strings.HasPrefix(service.URL, "https://") || service.Listen != "tcp:0.0.0.0:7302" {
+		t.Fatalf("service %+v, %v", service, err)
 	}
-	t.Logf("endpoint %s", url)
+	url, port := service.URL, service.Port
+	t.Logf("URL %s", url)
 	var ref vmRef
 	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
 		t.Fatal(err)
@@ -61,7 +62,7 @@ func TestEndpoint(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Under systemd, since what an Exec starts ends with it.
-		marker := fmt.Sprintf("disco-vm endpoint %s boot %d", ref.ID, boot)
+		marker := fmt.Sprintf("disco-vm service %s boot %d", ref.ID, boot)
 		serve := fmt.Sprintf(`set -e
 mkdir -p /tmp/www && echo '%s' > /tmp/www/index.html
 sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, port)
@@ -83,8 +84,8 @@ sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, port)
 		if err := m.Kill(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if again, err := d.Endpoint(ctx, inst); err != nil || again != url {
-			t.Fatalf("endpoint after a stop: %q, %v; want %q", again, err, url)
+		if again, err := d.Service(ctx, inst); err != nil || again.URL != url {
+			t.Fatalf("URL after a stop: %q, %v; want %q", again.URL, err, url)
 		}
 	}
 	list, err := api.ListProxies(ctx, &boxdapi.ListProxiesRequest{Vm: ref.ID})

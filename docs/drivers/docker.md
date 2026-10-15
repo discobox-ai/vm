@@ -123,7 +123,8 @@ The offset is in every layer, so all of an image store's guests share it.
 |---|---|
 | `Install` | pull `options.image` (default `debian:trixie`) if the daemon lacks it; in a container from it, as root: install systemd and dbus if missing (apt-get, dnf, or zypper), install the agent as `disco-vm-guest.service`, mask units a container cannot run, remove Docker's `policy-rc.d`, empty `/etc/machine-id` and make D-Bus's copy a link to it, and shift; commit with `docker-init` as the entrypoint. Media must be `latest`. |
 | layer | `layer.json`: the committed image's ID and the tag (`disco-vm-layer:<id>-<rand>`) that keeps it from being pruned. `DeleteLayer` removes the tag, and the image with it. |
-| `Prepare` | create the container from the parent's image, with the settings above, named `dvm-<instance id>-<rand>`. Cold only. |
+| `Prepare` | create the container from the parent's image, with the settings above, named `dvm-<instance id>-<rand>`, publishing 7302/tcp on `127.0.0.1` at a port the daemon picks at each start. Cold only. |
+| `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `http://127.0.0.1:<published port>` while the container runs. |
 | `Boot` | size the container (`docker update`: CPUs, and memory with no swap) and start it. |
 | `Attach` | (`Capabilities.Remote`: the daemon owns the container, so the engine runs no shim.) Inspect the container: running is a machine, and stopped or gone is `ErrNotRunning`. A guest that powered itself off has already stopped its container, because Init exits with it. |
 | `Machine.Done` | waiting starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to dial leaves nothing running. The daemon's `wait` on the container: exit 0 is a power-off. A failed wait (the daemon restarted) inspects and waits again. |
@@ -183,8 +184,8 @@ Linux 7.0.11), 2026-10-09:
   no `shim.json`. `exec`, `start`, `stop`, and `rm` each attach. A guest's own
   `systemctl poweroff` shows as stopped in the next `ps`.
 - `internal/e2e` passes with `DISCO_VM_DRIVER=docker`, about 40 s, and leaves
-  no container or image behind. `TestWarm` and `TestForward` skip, because the
-  driver lists neither.
+  no container or image behind. `TestWarm` skips, because the
+  driver lists no fast clone mode. (`TestURL` came after this run.)
 - `docs/examples/docker.yaml` builds and runs through `run`, `exec`, `exec -t` (a
   TTY on the guest's own devpts), `exec -u`, `cp`, `stop`, `start`, `rm`, and
   `rmi`. A cold `run` takes 0.6 s, `stop` 0.4 s, and `start` 0.5 s. Writes and

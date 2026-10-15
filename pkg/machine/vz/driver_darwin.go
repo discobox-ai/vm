@@ -3,12 +3,14 @@ package vz
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -52,8 +54,11 @@ func (*Driver) Destroy(_ context.Context, inst machine.InstanceSpec) error {
 
 func (*Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
 
-// Endpoint is empty: a vz guest's service is reached over vsock.
-func (*Driver) Endpoint(context.Context, machine.InstanceSpec) (string, error) { return "", nil }
+// Service is guest.ServicePort over vsock; the engine's shim serves it on the
+// host's loopback.
+func (*Driver) Service(context.Context, machine.InstanceSpec) (machine.Service, error) {
+	return machine.Service{Listen: fmt.Sprintf("vsock:%d", guest.ServicePort), Port: guest.ServicePort}, nil
+}
 
 func (*Driver) Cool(_ context.Context, spec machine.WarmSpec) error {
 	return os.RemoveAll(spec.Dir)

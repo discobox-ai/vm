@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -25,7 +24,6 @@ import (
 type createFlags struct {
 	name, memory, mode string
 	cpus               int
-	forwards           []string
 }
 
 func (f *createFlags) register(cmd *cobra.Command) {
@@ -33,7 +31,6 @@ func (f *createFlags) register(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "vCPUs (default: the driver's)")
 	cmd.Flags().StringVar(&f.memory, "memory", "", "memory, e.g. 8GiB (default: the driver's)")
 	cmd.Flags().StringVar(&f.mode, "mode", string(machine.Auto), "clone mode: auto (what the image is warm for, else cold), cold, resume (vz), or fork (hcs)")
-	cmd.Flags().StringArrayVar(&f.forwards, "forward", nil, "send what the guest opens to the host on PORT to the Unix socket SOCKET: PORT:SOCKET (repeatable)")
 }
 
 func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) (*engine.Instance, error) {
@@ -41,18 +38,8 @@ func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) 
 	if err != nil {
 		return nil, err
 	}
-	var forwards []engine.Forward
-	for _, spec := range f.forwards {
-		port, socket, ok := strings.Cut(spec, ":")
-		n, err := strconv.ParseUint(port, 10, 32)
-		if !ok || err != nil || socket == "" {
-			return nil, fmt.Errorf("--forward %q is not PORT:SOCKET", spec)
-		}
-		forwards = append(forwards, engine.Forward{Port: uint32(n), Socket: socket})
-	}
 	return e.Create(ctx, ref, engine.CreateOptions{
 		Name: f.name, CPUs: f.cpus, Memory: memory, Mode: machine.CloneMode(f.mode),
-		Forwards: forwards,
 	})
 }
 
@@ -81,14 +68,14 @@ func createCommand(g *globals) *cobra.Command {
 
 func runCommand(g *globals) *cobra.Command {
 	var (
-		flags            createFlags
-		remove, tty, gui bool
-		timeout          time.Duration
+		flags   createFlags
+		gui     bool
+		timeout time.Duration
 	)
 	cmd := &cobra.Command{
-		Use:   "run [flags] IMAGE [-- COMMAND...]",
-		Short: "Create and start an instance, and optionally run a command in it",
-		Args:  cobra.MinimumNArgs(1),
+		Use:   "run [flags] IMAGE",
+		Short: "Create and start an instance",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
 			if err != nil {
@@ -100,27 +87,13 @@ func runCommand(g *globals) *cobra.Command {
 				return err
 			}
 			if err := e.Start(ctx, inst, engine.StartOptions{Timeout: timeout, GUI: gui}); err != nil {
-				if remove {
-					_ = e.Remove(context.Background(), inst, true)
-				}
 				return err
 			}
-			if len(args) == 1 {
-				fmt.Println(inst.ID)
-				return nil
-			}
-			runErr := execIn(ctx, e, inst, execOptions{argv: args[1:], tty: tty, stdin: tty})
-			if remove {
-				if err := e.Remove(context.Background(), inst, true); err != nil && runErr == nil {
-					runErr = err
-				}
-			}
-			return runErr
+			fmt.Println(inst.ID)
+			return nil
 		},
 	}
 	flags.register(cmd)
-	cmd.Flags().BoolVar(&remove, "rm", false, "remove the instance when the command exits")
-	cmd.Flags().BoolVarP(&tty, "tty", "t", false, "run the command in a terminal")
 	cmd.Flags().BoolVar(&gui, "gui", false, "show the guest's display in a native window")
 	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "how long to wait for the guest agent")
 	return cmd
@@ -227,14 +200,17 @@ func psCommand(g *globals) *cobra.Command {
 	return cmd
 }
 
-func endpointCommand(g *globals) *cobra.Command {
+func urlCommand(g *globals) *cobra.Command {
 	return &cobra.Command{
-		Use:   "endpoint INSTANCE",
-		Short: "Print the URL of an instance's service",
-		Long: "Print the URL of the service its image declares (service: {port: N}).\n" +
-			"On boxd it is a public HTTPS URL, the same across stop and start, so the\n" +
-			"service must authenticate its callers. Elsewhere it is http://guest, which\n" +
-			"a program embedding the engine reaches through Engine.Endpoint's transport.",
+		Use:   "url INSTANCE",
+		Short: "Print the HTTP URL of an instance's service",
+		Long: "Print the URL of the instance's one service: what a program in the guest\n" +
+			"serves on the address in its service file (/var/lib/disco-vm/service, or\n" +
+			"C:\\ProgramData\\disco-vm\\service), which the driver picks and every start\n" +
+			"writes. On boxd it is a public HTTPS URL, the same across stop and start.\n" +
+			"Elsewhere it is http://127.0.0.1:PORT while the instance runs, a new port at\n" +
+			"each start. Neither needs a credential, so the service must authenticate\n" +
+			"its callers.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
@@ -245,11 +221,11 @@ func endpointCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			endpoint, err := e.Endpoint(cmd.Context(), inst)
+			url, err := e.URL(cmd.Context(), inst)
 			if err != nil {
 				return err
 			}
-			fmt.Println(endpoint.URL)
+			fmt.Println(url)
 			return nil
 		},
 	}

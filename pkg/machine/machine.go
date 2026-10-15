@@ -154,10 +154,25 @@ type InstanceSpec struct {
 	// Prepare and the first Boot after it draw on the stage; a later boot of
 	// the same instance is cold.
 	WarmDir string
-	// Service is the guest port of the image's one service, which the
-	// instance exposes as its endpoint; zero when the image declares none.
-	// Prepare sets up whatever the driver needs to reach it from outside.
-	Service uint32
+}
+
+// Service is an instance's one service: where a program in the guest listens,
+// and where the driver exposes it. The driver picks it, never the caller or
+// the image, and it is the same for every boot of a prepared instance.
+type Service struct {
+	// Listen is the address a guest program listens on, in guest.Listen's
+	// form: vsock:PORT (AF_VSOCK on vz, the hvsocket service ID of the port
+	// on hcs), tcp:ADDR. The engine writes it to the guest's
+	// guest.ServiceFile at every start.
+	Listen string
+	// Port is the guest port Machine.Dial reaches the service on.
+	Port uint32
+	// URL is where any process reaches the service over HTTP with no
+	// credential of the driver's (boxd's https://<machine>.boxd.sh, a
+	// port the Docker daemon publishes on the host's loopback). It is empty
+	// when the engine's shim serves the service on the host's loopback
+	// instead, by dialing Port.
+	URL string
 }
 
 // Parent is the layer the instance is derived from.
@@ -207,13 +222,12 @@ type Driver interface {
 	// DeleteLayer releases anything the driver holds for a layer beyond its
 	// Dir, which the store removes itself.
 	DeleteLayer(ctx context.Context, layer Layer) error
-	// Endpoint is the public URL of a prepared instance's service
-	// (InstanceSpec.Service), which any process can use with no credential
-	// of the driver's: an HTTPS URL whose TLS the provider terminates (boxd).
-	// It is the same across stop and start, and reads nothing but what
-	// Prepare recorded. A driver with no such URL returns empty, and the
-	// service is reached by dialing its port.
-	Endpoint(ctx context.Context, inst InstanceSpec) (string, error)
+	// Service is the prepared instance's service. A URL the driver gives
+	// may exist only while the instance runs (a port the daemon publishes at
+	// each start); asked for one while it is stopped, the driver returns
+	// ErrNotRunning. A URL that outlives a stop (boxd's) is the same across
+	// stop and start.
+	Service(ctx context.Context, inst InstanceSpec) (Service, error)
 }
 
 // ErrNotWarm reports that nothing is staged for the clone mode Prepare was

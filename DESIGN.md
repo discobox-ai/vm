@@ -50,7 +50,7 @@ in `os.Executable()`. A boxd guest is linux/amd64, so from any other host
 ### 2. The driver contract is the intersection, and differences are reported
 
 `machine.Driver` is Install, Prepare (clone), Boot, Commit, Destroy, and
-Endpoint (decision 3b). A running
+Service (decision 3b). A running
 `Machine` offers Dial(port), Kill, and Done. Anything only one hypervisor can do
 is a `Capabilities` field, never a faked method:
 
@@ -107,25 +107,33 @@ the program through `machine.Main`. A driver that shows windows installs a
 first window is asked for, so no other command (and not the guest agent) ever
 touches it.
 
-### 3b. An image has one service, and an instance exposes it as its endpoint
+### 3b. Every instance has one service, at one HTTP URL
 
-A build spec may declare `service: {port: N}`
-([ADR 0001](docs/adr/0001-a-driver-runs-guest-operations-and-exposes-one-service-endpoint.md)
-§2). It is recorded on the last layer the build makes, in that layer's key,
-and inherited by images built on it until one declares another. An instance
-records its image's port when it is created (`Instance.Service`, and
-`InstanceSpec.Service` for the driver), and a build's own instances expose
-nothing. `Engine.Endpoint` returns how a caller reaches it:
+The driver, not the caller or the image, picks where an instance's one
+service listens in the guest (`Driver.Service`, `machine.Service`;
+[ADR 0005](docs/adr/0005-every-instance-has-one-http-url-and-the-driver-picks-its-port.md)):
+`vsock:7302` on vz and hcs (`guest.ServicePort`, listed in every hcs VM's
+ServiceTable), `tcp:0.0.0.0:7302` on boxd and docker, and a loopback port
+picked at Prepare on fake, whose guests share the host's. A build spec
+declares no service.
 
-- **A public URL**, where the driver has one (`Driver.Endpoint`): boxd's HTTPS
-  proxy, set up at Prepare and recorded with the instance, so any process
-  reads it with no credential and it is the same across stop and start. It
-  has no access control, so the service authenticates every request.
-- **`http://guest` and a transport** that dials the port through `Dial`
-  everywhere else (hcs, vz, docker, fake).
+At every start, before it returns, the engine writes that address through the
+agent to the guest's `guest.ServiceFile` (`/var/lib/disco-vm/service`, or
+`C:\ProgramData\disco-vm\service`), on disk so it outlives a reboot in the
+guest. A program the caller copies in reads it, or calls
+`guest.ListenService()`, and listens there.
 
-`disco-vm endpoint INSTANCE` prints the URL. An image with no service has no
-endpoint (`ErrNoService`), and the agent's port is never one.
+`Engine.URL` and `disco-vm url INSTANCE` give the service's URL, always HTTP:
+
+- **The driver's**, where it has one: boxd's `https://<machine>.boxd.sh`,
+  pinned to 7302 at Prepare and the same across stop and start; Docker's
+  `http://127.0.0.1:N`, a port the daemon publishes at each start.
+- **The shim's** everywhere else: `http://127.0.0.1:N`, a loopback port the
+  shim binds at each start and splices, connection by connection, into
+  `Machine.Dial(7302)`. It is in `shim.json`, and there is none while the
+  instance is stopped.
+
+No URL takes a credential, so the service authenticates its callers.
 
 ### 4. HTTP between host and guest
 
@@ -277,13 +285,11 @@ no socket into a guest. The boxd driver maps the seam onto what it has. See
   Dial error, not a conn that reads EOF. boxd authenticates every stream, and
   the agent's socket is root-only, so nothing else in the guest reaches it
   without sudo.
-- **The endpoint is the machine's default proxy.** For an instance with a
-  service, Prepare pins the default proxy at `<machine>.boxd.sh` to its port
-  and turns off bot protection, which would put a browser challenge in front
-  of a request that wakes the machine. Pinning it also stops the proxy
-  forwarding to whichever common port the guest listens on. A machine with
-  no service keeps boxd's default, which forwards to the first of 80, 443,
-  8080, 8000, 3000, 5000, and 5173 the guest listens on.
+- **The URL is the machine's default proxy.** Prepare pins the default proxy
+  at `<machine>.boxd.sh` to 7302 and turns off bot protection, which would
+  put a browser challenge in front of a request that wakes the machine.
+  Pinning it also stops the proxy forwarding to whichever common port the
+  guest listens on (80, 443, 8080, 8000, 3000, 5000, 5173).
 - **A guest cannot power its machine off.** boxd leaves a halted guest
   `running`, so the agent's orderly shutdown ends with the driver stopping the
   machine through the API. A systemd shutdown hook marks the moment the
@@ -327,8 +333,8 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | unattended install from media (`docs/examples/<os>.yaml`) | n/a | ✅ `docs/examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap | n/a (boots a boxd image) | n/a (an image from a registry, with systemd and the agent added and its owners shifted: `docs/examples/docker.yaml`) |
 | warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) | ✅ resume (`machinetest` on boxd) | n/a (cold only) |
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window | refused | refused |
-| forward, guest to host (`internal/e2e` TestForward) | ✅ | ✅ in-guest, both directions | ✅ in-guest, both directions | refused | refused |
-| service endpoint (`Engine.Endpoint`, `disco-vm endpoint`) | ✅ through the transport (`pkg/engine` TestEndpoint, `internal/e2e` TestEndpoint) | ⬜ | ⬜ | ✅ boxd (`TestEndpoint`, by hand, `DISCO_VM_INTEGRATION=1` and `BOXD_API_KEY`): a guest's HTTP server through the URL on two boots, the same URL and a pinned port across stop and start; ✅ fake API (`TestEndpointFakeAPI`) | ⬜ |
+| forward, guest to host (`CreateOptions.Forwards`; `pkg/engine` TestForward) | ✅ | ✅ in-guest, both directions (through the since-removed `run --forward`) | ✅ in-guest, both directions (through the since-removed `run --forward`) | refused | refused |
+| service URL and service file (`Engine.URL`, `disco-vm url`) | ✅ a host server listening at the file's address through the shim's loopback URL, on two starts (`pkg/engine` TestURL, `internal/e2e` TestURL) | ⬜ (7302 in the ServiceTable: `TestDocumentService`) | ⬜ | ⬜ fixed port 7302 not run on boxd itself; earlier, a guest's HTTP server through the URL on two boots with an image-declared port (`TestService`, by hand, `DISCO_VM_INTEGRATION=1` and `BOXD_API_KEY`); ✅ fake API (`TestServiceFakeAPI`) | ✅ by hand (2026-10-15, Docker 29.9, debian:trixie): `url` refused while created, `http://127.0.0.1:N` once started, the service file `tcp:0.0.0.0:7302`; a static Go program copied in and run under `systemd-run`, listening with `guest.ListenService()`, answered through the URL, and again at a new port after stop and start; nothing left behind; ⬜ `internal/e2e` TestURL with `DISCO_VM_DRIVER=docker` |
 | warm with a user (`warm --user`, `--local-user`) | refused | refused | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) | refused | n/a (cold only) |
 
 A platform driver is done when `machinetest.Run` passes against it on real

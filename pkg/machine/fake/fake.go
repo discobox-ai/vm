@@ -85,7 +85,9 @@ const (
 	// hostPortsName is where a running fake guest finds the ports its host
 	// listens on (guest.HostPortsEnv).
 	hostPortsName = "host-ports"
-	markerName    = ".disco-vm-install"
+	// servicePortName holds the loopback port of the instance's service.
+	servicePortName = "service.port"
+	markerName      = ".disco-vm-install"
 )
 
 func rootfs(dir string) string { return filepath.Join(dir, rootfsName) }
@@ -111,6 +113,9 @@ func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
 		return errors.New("fake: instance has no image")
 	}
 	if err := os.MkdirAll(inst.Dir, 0o755); err != nil {
+		return err
+	}
+	if err := pickServicePort(inst.Dir); err != nil {
 		return err
 	}
 	switch inst.Mode {
@@ -270,8 +275,35 @@ func (d *Driver) Destroy(_ context.Context, inst machine.InstanceSpec) error {
 
 func (d *Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
 
-// Endpoint is empty: a fake guest's service listens on the host's loopback.
-func (*Driver) Endpoint(context.Context, machine.InstanceSpec) (string, error) { return "", nil }
+// pickServicePort gives the instance a free port on the host's loopback for
+// its service: a fake guest is a host process, so a port of its own keeps two
+// guests' services apart.
+func pickServicePort(dir string) error {
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	_, port, err := net.SplitHostPort(l.Addr().String())
+	_ = l.Close()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, servicePortName), []byte(port), 0o644) //nolint:gosec // G306: a port number
+}
+
+// Service is the port Prepare picked on the host's loopback, which the
+// engine's shim serves.
+func (*Driver) Service(_ context.Context, inst machine.InstanceSpec) (machine.Service, error) {
+	data, err := os.ReadFile(filepath.Join(inst.Dir, servicePortName))
+	if err != nil {
+		return machine.Service{}, fmt.Errorf("fake: instance %s is not prepared: %w", inst.ID, err)
+	}
+	port, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 16)
+	if err != nil {
+		return machine.Service{}, fmt.Errorf("fake: instance %s service port: %w", inst.ID, err)
+	}
+	return machine.Service{Listen: "tcp:127.0.0.1:" + strconv.FormatUint(port, 10), Port: uint32(port)}, nil
+}
 
 // proc is a running fake guest.
 type proc struct {

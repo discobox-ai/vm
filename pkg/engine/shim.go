@@ -30,6 +30,9 @@ type shimState struct {
 	PID   int    `json:"pid"`
 	Addr  string `json:"addr"`
 	Token string `json:"token"`
+	// Service is the loopback address where the shim serves the instance's
+	// service, with no token: the service authenticates its callers.
+	Service string `json:"service,omitempty"`
 }
 
 // RunShim is the body of `disco-vm shim <id>`: boot the instance, serve its
@@ -50,6 +53,18 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 		return err
 	}
 	defer forwards()
+	service, err := e.announceService(ctx, inst, booted.Guest)
+	if err != nil {
+		_ = booted.Machine.Kill(context.Background())
+		return err
+	}
+	serviceListener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		_ = booted.Machine.Kill(context.Background())
+		return err
+	}
+	defer serviceListener.Close()
+	go serveService(serviceListener, booted.Machine, service.Port)
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = booted.Machine.Kill(context.Background())
@@ -99,7 +114,7 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 		splice(&bufConn{Conn: conn, r: rw.Reader}, upstream)
 	})
 	statePath := filepath.Join(e.instanceDir(id), shimStateName)
-	state, closeControl, err := serveControl(listener, mux, statePath)
+	state, closeControl, err := serveControl(listener, mux, statePath, serviceListener.Addr().String())
 	if err != nil {
 		_ = booted.Machine.Kill(context.Background())
 		return err
@@ -115,6 +130,28 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 	err = booted.Machine.Err()
 	fmt.Fprintf(os.Stderr, "shim: %s stopped (%v)\n", inst.Name, err)
 	return err
+}
+
+// serveService splices every connection to the instance's loopback URL into
+// the service's guest port, until the listener is closed. A guest with nothing
+// listening yet closes the connection.
+func serveService(l net.Listener, m machine.Machine, port uint32) {
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			upstream, err := m.Dial(ctx, port)
+			cancel()
+			if err != nil {
+				_ = conn.Close()
+				return
+			}
+			spliceHalves(conn, upstream)
+		}()
+	}
 }
 
 // serveForwards listens for the guest on each forward's port and splices every
@@ -165,9 +202,10 @@ func serveForwards(m machine.Machine, forwards []Forward) (func(), error) {
 }
 
 // serveControl serves a shim's control API on listener, behind a bearer token,
-// and publishes it at statePath. The returned func unpublishes and stops it.
-func serveControl(listener net.Listener, mux *http.ServeMux, statePath string) (shimState, func(), error) {
-	state := shimState{PID: os.Getpid(), Addr: listener.Addr().String(), Token: fsutil.RandomHex(16)}
+// and publishes it at statePath with the address of the instance's service,
+// if it serves one. The returned func unpublishes and stops it.
+func serveControl(listener net.Listener, mux *http.ServeMux, statePath, service string) (shimState, func(), error) {
+	state := shimState{PID: os.Getpid(), Addr: listener.Addr().String(), Token: fsutil.RandomHex(16), Service: service}
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Authorization") != "Bearer "+state.Token {

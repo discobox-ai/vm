@@ -43,21 +43,15 @@ func (l testLog) Write(p []byte) (int, error) {
 // An instance's service port is in its ServiceTable beside the agent's, or the
 // guest's bind to it is refused.
 func TestDocumentService(t *testing.T) {
-	raw, err := json.Marshal(newDocument(vmConfig{Disk: "d", GuestFile: "g", StateFile: "s", Service: 8080}))
+	raw, err := json.Marshal(newDocument(vmConfig{Disk: "d", GuestFile: "g", StateFile: "s"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"00001C84-FACB-11E6-BD58-64006A7986D3"`, `"00001F90-FACB-11E6-BD58-64006A7986D3"`} {
+	// The agent's port, 7300, and the service's, 7302.
+	for _, want := range []string{`"00001C84-FACB-11E6-BD58-64006A7986D3"`, `"00001C86-FACB-11E6-BD58-64006A7986D3"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("document lacks %s:\n%s", want, raw)
 		}
-	}
-	none, err := json.Marshal(newDocument(vmConfig{Disk: "d"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(none), "00001F90") {
-		t.Errorf("a document with no service lists one:\n%s", none)
 	}
 }
 

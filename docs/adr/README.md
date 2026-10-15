@@ -17,4 +17,5 @@ Follow `template.md` and the `repostd` skill.
 |---|---|---|
 | [0001](0001-a-driver-runs-guest-operations-and-exposes-one-service-endpoint.md) | A driver runs guest operations itself and exposes one service endpoint | Accepted |
 | [0002](0002-docker-guests-make-their-own-user-namespace.md) | Docker guests make their own user namespace, and the base layer is shifted once | Proposed |
+| [0005](0005-every-instance-has-one-http-url-and-the-driver-picks-its-port.md) | Every instance has one HTTP URL, and the driver picks where its service listens | Proposed |
 <!-- /repostd:adr-index -->

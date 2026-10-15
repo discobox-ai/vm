@@ -26,7 +26,6 @@ import (
 	"io"
 	"io/fs"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -141,9 +140,6 @@ type Instance struct {
 	Temporary bool `json:"temporary,omitempty"`
 	// Forwards are served by the instance's shim whenever it runs.
 	Forwards []Forward `json:"forwards,omitempty"`
-	// Service is the guest port of its image's service, exposed as its
-	// endpoint; zero when the image declares none.
-	Service uint32 `json:"service,omitempty"`
 }
 
 // Forward sends the connections a guest process opens to the host on a port
@@ -170,7 +166,6 @@ func (e *Engine) machineSpec(inst *Instance) (machine.InstanceSpec, error) {
 		GuestOS: inst.GuestOS,
 		Chain:   chain,
 		Mode:    inst.Mode,
-		Service: inst.Service,
 	}
 	if inst.Mode != machine.Cold {
 		spec.WarmDir = e.warmMachineDir(inst.Layer)
@@ -226,16 +221,6 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 		CPUs: opts.CPUs, Memory: opts.Memory,
 		Created: time.Now().UTC(), Temporary: opts.Temporary,
 		Forwards: opts.Forwards,
-	}
-	if !opts.Temporary {
-		// A build's own instances expose nothing.
-		service, err := e.Images.Service(layerID)
-		if err != nil {
-			return nil, err
-		}
-		if service != nil {
-			inst.Service = service.Port
-		}
 	}
 	if err := os.MkdirAll(e.instanceDir(id), 0o755); err != nil {
 		return nil, err
@@ -548,6 +533,10 @@ func (e *Engine) startRemote(ctx context.Context, inst *Instance, opts StartOpti
 		_ = m.Kill(context.Background())
 		return fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
+	if _, err := e.announceService(ctx, inst, client); err != nil {
+		_ = m.Kill(context.Background())
+		return err
+	}
 	return nil
 }
 
@@ -666,48 +655,55 @@ func (e *Engine) Dial(ctx context.Context, inst *Instance, port uint32) (net.Con
 	return shim.dial(ctx, port)
 }
 
-// ErrNoService reports an instance whose image declares no service, so it has
-// no endpoint.
-var ErrNoService = errors.New("its image declares no service")
-
-// Endpoint is how a caller reaches an instance's service: a URL, and the
-// transport that reaches it.
-type Endpoint struct {
-	// URL is the service's public URL (https://<machine>.boxd.sh), or
-	// http://guest when the service is reached only through Transport.
-	URL string
-	// Transport is nil for a public URL. Otherwise it dials the service's
-	// port in the guest, whatever host a request names.
-	Transport http.RoundTripper
+// URL is where an instance's one service is reached over HTTP. It is the
+// driver's where the driver has one (machine.Service.URL): boxd's public
+// HTTPS URL, the same across stop and start, or a port the Docker daemon
+// publishes while the container runs. Otherwise it is http://127.0.0.1:PORT,
+// which the instance's shim serves for as long as it runs by splicing each
+// connection into the service's guest port; the port changes at every start.
+// Neither needs a credential, so the service authenticates its callers.
+func (e *Engine) URL(ctx context.Context, inst *Instance) (string, error) {
+	service, err := e.service(ctx, inst)
+	if err != nil {
+		return "", err
+	}
+	if service.URL != "" {
+		return service.URL, nil
+	}
+	if e.remote() != nil {
+		return "", fmt.Errorf("instance %s: the %s driver gave its service no URL", inst.Name, e.Driver.Name())
+	}
+	shim, err := e.shim(inst.ID)
+	if err != nil || shim.state.Service == "" {
+		return "", fmt.Errorf("instance %s is not running", inst.Name)
+	}
+	return "http://" + shim.state.Service, nil
 }
 
-// Endpoint returns an instance's endpoint, for its image's service port. A
-// public URL is the driver's, made when the instance was created and the same
-// across stop and start; reaching it needs no credential, so the service
-// behind it authenticates every request. Without one, the transport dials the
-// port of the running instance.
-func (e *Engine) Endpoint(ctx context.Context, inst *Instance) (Endpoint, error) {
-	if inst.Service == 0 {
-		return Endpoint{}, fmt.Errorf("instance %s has no endpoint: %w", inst.Name, ErrNoService)
-	}
+// service is the driver's view of an instance's service.
+func (e *Engine) service(ctx context.Context, inst *Instance) (machine.Service, error) {
 	spec, err := e.machineSpec(inst)
 	if err != nil {
-		return Endpoint{}, err
+		return machine.Service{}, err
 	}
-	url, err := e.Driver.Endpoint(ctx, spec)
+	service, err := e.Driver.Service(ctx, spec)
+	if errors.Is(err, machine.ErrNotRunning) {
+		return machine.Service{}, fmt.Errorf("instance %s is not running: %w", inst.Name, err)
+	}
+	return service, err
+}
+
+// announceService tells a started guest where its service listens, in its
+// guest.ServiceFile, before the start returns.
+func (e *Engine) announceService(ctx context.Context, inst *Instance, client *guest.Client) (machine.Service, error) {
+	service, err := e.service(ctx, inst)
 	if err != nil {
-		return Endpoint{}, err
+		return machine.Service{}, err
 	}
-	if url != "" {
-		return Endpoint{URL: url}, nil
+	if err := client.SetService(ctx, string(inst.GuestOS), service.Listen); err != nil {
+		return machine.Service{}, fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
-	return Endpoint{URL: "http://guest", Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return e.Dial(ctx, inst, inst.Service)
-		},
-		// A caller that drops the endpoint leaves no guest connection open.
-		IdleConnTimeout: 30 * time.Second,
-	}}, nil
+	return service, nil
 }
 
 // Booted is a machine running in this process, with a client for its agent.

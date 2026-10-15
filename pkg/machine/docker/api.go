@@ -217,7 +217,9 @@ type containerConfig struct {
 	Env        []string          `json:"Env,omitempty"`
 	User       string            `json:"User,omitempty"`
 	Labels     map[string]string `json:"Labels,omitempty"`
-	HostConfig hostConfig        `json:"HostConfig"`
+	// ExposedPorts is keyed by "PORT/tcp".
+	ExposedPorts map[string]struct{} `json:"ExposedPorts,omitempty"`
+	HostConfig   hostConfig          `json:"HostConfig"`
 }
 
 type hostConfig struct {
@@ -232,6 +234,16 @@ type hostConfig struct {
 	NanoCPUs      int64     `json:"NanoCpus,omitempty"`
 	Memory        int64     `json:"Memory,omitempty"`
 	MemorySwap    int64     `json:"MemorySwap,omitempty"`
+	// PortBindings publishes container ports on the daemon's host, keyed as
+	// ExposedPorts is.
+	PortBindings map[string][]portBinding `json:"PortBindings,omitempty"`
+}
+
+// portBinding is one host address a container port is published on. An empty
+// HostPort has the daemon pick a free one at every start.
+type portBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
 }
 
 func (a *api) createContainer(ctx context.Context, name string, cfg containerConfig) (string, error) {
@@ -257,6 +269,11 @@ type containerInfo struct {
 		NanoCPUs int64 `json:"NanoCpus"`
 		Memory   int64 `json:"Memory"`
 	} `json:"HostConfig"`
+	NetworkSettings struct {
+		// Ports are the running container's published ports, keyed as
+		// ExposedPorts is.
+		Ports map[string][]portBinding `json:"Ports"`
+	} `json:"NetworkSettings"`
 }
 
 func (a *api) inspectContainer(ctx context.Context, id string) (containerInfo, error) {

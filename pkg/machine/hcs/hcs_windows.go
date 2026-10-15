@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -241,7 +242,6 @@ func (d *Driver) boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 		Memory:    opts.Memory,
 		NIC:       nic,
 		Console:   consolePipe(id), ConsoleSID: currentUserSID(),
-		Service: inst.Service,
 	})
 }
 
@@ -294,5 +294,8 @@ func removeAll(dir string) error {
 
 func (*Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
 
-// Endpoint is empty: an hcs guest's service is reached over hvsocket.
-func (*Driver) Endpoint(context.Context, machine.InstanceSpec) (string, error) { return "", nil }
+// Service is the hvsocket service ID of guest.ServicePort, which every VM's
+// ServiceTable lists; the engine's shim serves it on the host's loopback.
+func (*Driver) Service(context.Context, machine.InstanceSpec) (machine.Service, error) {
+	return machine.Service{Listen: fmt.Sprintf("vsock:%d", guest.ServicePort), Port: guest.ServicePort}, nil
+}
