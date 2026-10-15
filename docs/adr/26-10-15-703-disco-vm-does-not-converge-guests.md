@@ -1,7 +1,8 @@
 # 26-10-15-703 — disco-vm does not converge guests; a client above it does, through exec, copy, and snapshot
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-10-15
+- **Supersedes**: [0003](0003-a-client-converges-a-guest-to-state-files.md)
 
 ## Context
 
@@ -29,8 +30,7 @@ way it likes, converge included, with nothing in disco-vm knowing how.
 ## Decision
 
 disco-vm has no converge. It offers the operations a client converges with,
-and a client above it, discobox, owns converging. Once accepted, this
-supersedes ADR 0003.
+and a client above it, discobox, owns converging.
 
 - **Removed**: `pkg/converge`, `disco-vm converge`, `Engine.Converge` and
   `Engine.ConvergeStatus`, the build spec's `converge:` step, and the state
