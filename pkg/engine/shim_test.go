@@ -35,10 +35,11 @@ func TestShimCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e, err := engine.Open(root, &fake.Driver{Agent: binary})
+	e, err := engine.Open(root, &fake.Driver{Agent: binary}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = e.Close() })
 	e.ShimCommand = []string{script, "vm-shim"}
 	spec := filepath.Join(dir, "spec.yaml")
 	if err := os.WriteFile(spec, []byte("from:\n  install: {os: "+runtime.GOOS+", media: latest}\n"), 0o644); err != nil {

@@ -28,14 +28,20 @@ func (e exitError) Error() string { return fmt.Sprintf("exit status %d", e.code)
 type globals struct {
 	root   string
 	driver string
+	// opened is the engine a command opened, which Main closes.
+	opened *engine.Engine
 }
 
 func (g *globals) engine() (*engine.Engine, error) {
+	if g.opened != nil {
+		return g.opened, nil
+	}
 	driver, err := machine.New(g.driver)
 	if err != nil {
 		return nil, err
 	}
-	return engine.Open(g.root, driver)
+	g.opened, err = engine.Open(g.root, driver, nil)
+	return g.opened, err
 }
 
 // Main runs the command line and returns the process exit code.
@@ -64,6 +70,9 @@ func Main(args []string) int {
 	)
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
+	if g.opened != nil {
+		_ = g.opened.Close()
+	}
 	var exit exitError
 	switch {
 	case err == nil:

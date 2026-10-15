@@ -4,11 +4,29 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/discobox-ai/vm/internal/statedb"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/fake"
 )
+
+// openStore opens a store at root with a database of its own beside it.
+func openStore(t *testing.T, root string) *Store {
+	t.Helper()
+	db, err := statedb.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	s, err := Open(root, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
 
 func commit(t *testing.T, s *Store, id, parent string) {
 	t.Helper()
@@ -25,10 +43,7 @@ func commit(t *testing.T, s *Store, id, parent string) {
 }
 
 func TestStoreTagsChainsAndRemove(t *testing.T) {
-	s, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := openStore(t, t.TempDir())
 	commit(t, s, "aaaaaaaaaaaa1", "")
 	commit(t, s, "bbbbbbbbbbbb2", "aaaaaaaaaaaa1")
 	commit(t, s, "cccccccccccc3", "bbbbbbbbbbbb2")
@@ -66,7 +81,7 @@ func TestStoreTagsChainsAndRemove(t *testing.T) {
 }
 
 func TestRemoveKeepsLayersInUse(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s := openStore(t, t.TempDir())
 	commit(t, s, "aaaaaaaaaaaa1", "")
 	_ = s.Tag("base", "aaaaaaaaaaaa1")
 	driver, _ := fake.New()
@@ -90,5 +105,62 @@ func TestRefs(t *testing.T) {
 	}
 	if ValidateRef("Bad Name") == nil {
 		t.Error("accepted an invalid ref")
+	}
+}
+
+func TestOpenImportsJSONFiles(t *testing.T) {
+	root := t.TempDir()
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := filepath.Join(root, "layers", "aaaaaaaaaaaa1", "layer.json")
+	write(base, `{"id":"aaaaaaaaaaaa1","driver":"fake","guestOS":"linux","created":"2026-10-01T12:00:00Z","comment":"install linux"}`)
+	write(filepath.Join(root, "layers", "bbbbbbbbbbbb2", "layer.json"),
+		`{"id":"bbbbbbbbbbbb2","parent":"aaaaaaaaaaaa1","driver":"fake","guestOS":"linux","created":"2026-10-02T12:00:00Z","service":{"port":8080}}`)
+	write(filepath.Join(root, "tags.json"), `{"app:latest":"bbbbbbbbbbbb2"}`)
+
+	// Twice: the second open finds the rows and no files.
+	for range 2 {
+		s := openStore(t, root)
+		layer, err := s.Layer("aaaaaaaaaaaa1")
+		if err != nil || layer.Comment != "install linux" || layer.GuestOS != machine.Linux || !layer.Created.Equal(time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)) {
+			t.Fatalf("base = %+v, %v", layer, err)
+		}
+		if id, err := s.Resolve("app"); err != nil || id != "bbbbbbbbbbbb2" {
+			t.Fatalf("resolve app = %q, %v", id, err)
+		}
+		for _, path := range []string{base, filepath.Join(root, "tags.json")} {
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s is still there: %v", path, err)
+			}
+		}
+	}
+}
+
+func TestCommitClearsAStrayDirectory(t *testing.T) {
+	s := openStore(t, t.TempDir())
+	// What a crash between the rename and the row leaves.
+	stray := filepath.Join(s.Root, "layers", "aaaaaaaaaaaa1", "payload")
+	if err := os.MkdirAll(stray, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stray, "old"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s.Has("aaaaaaaaaaaa1") {
+		t.Fatal("a directory with no row is a layer")
+	}
+	commit(t, s, "aaaaaaaaaaaa1", "")
+	if _, err := os.Stat(filepath.Join(stray, "old")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the stray payload survived: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(stray, "data")); err != nil || string(data) != "aaaaaaaaaaaa1" {
+		t.Fatalf("payload = %q, %v", data, err)
 	}
 }

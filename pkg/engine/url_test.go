@@ -115,10 +115,11 @@ func fakeEngine(t *testing.T) (*engine.Engine, string) {
 	if out, err := exec.CommandContext(ctx, "go", "build", "-o", binary, "../../cmd/disco-vm").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	e, err := engine.Open(filepath.Join(dir, "root"), &fake.Driver{Agent: binary})
+	e, err := engine.Open(filepath.Join(dir, "root"), &fake.Driver{Agent: binary}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = e.Close() })
 	e.Exe = binary
 	file := filepath.Join(dir, "app.yaml")
 	spec := "from:\n  install: {os: " + runtime.GOOS + ", media: latest}\nlayers:\n  - name: a\n    steps:\n      - run: echo app\n"

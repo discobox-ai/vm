@@ -29,12 +29,16 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/discobox-ai/x/gormdb"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"github.com/discobox-ai/vm/internal/fsutil"
+	"github.com/discobox-ai/vm/internal/statedb"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/image"
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -53,6 +57,11 @@ type Engine struct {
 	// the engine points it at a subcommand of its own that opens the same root
 	// and driver and calls ShimMain, so it ships no second binary.
 	ShimCommand []string
+
+	// db holds the metadata: the image store's tables, instances, and warm
+	// stages. ownsDB is set when Open opened it, and Close then closes it.
+	db     *gormdb.Pools
+	ownsDB bool
 }
 
 // RootEnv overrides DefaultRoot.
@@ -85,8 +94,12 @@ func DefaultRoot() string {
 	return filepath.Join(os.TempDir(), "disco-vm")
 }
 
-// Open opens (creating) a state root for a driver.
-func Open(root string, driver machine.Driver) (*Engine, error) {
+// Open opens (creating) a state root for a driver. db is the database its
+// metadata is kept in, in tables named disco_vm_*: a program that embeds the
+// engine passes its own, and keeps closing it. A nil db is a SQLite database
+// in the root, which Close closes. The rows describe the files in one root, so
+// a database serves one root.
+func Open(root string, driver machine.Driver, db *gormdb.Pools) (*Engine, error) {
 	if root == "" {
 		root = DefaultRoot()
 	}
@@ -94,21 +107,104 @@ func Open(root string, driver machine.Driver) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err := image.Open(filepath.Join(root, "images"))
+	if _, ok := driver.(machine.Attacher); driver.Capabilities().Remote && !ok {
+		return nil, fmt.Errorf("driver %s lists Capabilities.Remote but is not a machine.Attacher", driver.Name())
+	}
+	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Join(root, "instances"), 0o755); err != nil {
 		return nil, err
 	}
-	exe, err := os.Executable()
-	if err != nil {
+	e := &Engine{Root: root, Driver: driver, Exe: exe, db: db}
+	if db == nil {
+		if e.db, err = statedb.Open(root); err != nil {
+			return nil, err
+		}
+		e.ownsDB = true
+	}
+	if err := e.openState(); err != nil {
+		_ = e.Close()
 		return nil, err
 	}
-	if _, ok := driver.(machine.Attacher); driver.Capabilities().Remote && !ok {
-		return nil, fmt.Errorf("driver %s lists Capabilities.Remote but is not a machine.Attacher", driver.Name())
+	return e, nil
+}
+
+// openState makes the image store and the engine's own tables, and takes in
+// what an older disco-vm left in JSON files.
+func (e *Engine) openState() error {
+	store, err := image.Open(filepath.Join(e.Root, "images"), e.db)
+	if err != nil {
+		return err
 	}
-	return &Engine{Root: root, Driver: driver, Images: store, Exe: exe}, nil
+	e.Images = store
+	err = e.db.Write.Transaction(func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&Instance{}, &warmState{})
+	})
+	if err != nil {
+		return fmt.Errorf("engine: migrate: %w", err)
+	}
+	return e.importFiles()
+}
+
+// Close releases the database Open opened. One the caller passed in stays
+// open.
+func (e *Engine) Close() error {
+	if !e.ownsDB {
+		return nil
+	}
+	return e.db.Close()
+}
+
+// importFiles moves the metadata a disco-vm from before the database kept in
+// JSON files (instances/<id>/instance.json, warm/<layer>/warm.json) into it.
+// A file is removed once its row is in, so each is imported once.
+func (e *Engine) importFiles() error {
+	insert := func(row any) error {
+		return e.db.Write.Clauses(clause.OnConflict{DoNothing: true}).Create(row).Error
+	}
+	entries, err := os.ReadDir(filepath.Join(e.Root, "instances"))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		path := filepath.Join(e.instanceDir(entry.Name()), "instance.json")
+		var inst Instance
+		if err := fsutil.ReadJSON(path, &inst); err != nil || inst.ID != entry.Name() {
+			continue
+		}
+		if err := insert(&inst); err != nil {
+			return fmt.Errorf("engine: import %s: %w", path, err)
+		}
+		// Nothing was inserted for a row that is already there, and also for a
+		// name another instance has: that file stays, so the instance is not
+		// lost with it.
+		if _, err := e.instance(inst.ID); err != nil {
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	entries, err = os.ReadDir(filepath.Join(e.Root, "warm"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	for _, entry := range entries {
+		path := filepath.Join(e.warmDir(entry.Name()), "warm.json")
+		var st warmState
+		if err := fsutil.ReadJSON(path, &st); err != nil || st.Layer != entry.Name() {
+			continue
+		}
+		if err := insert(&st); err != nil {
+			return fmt.Errorf("engine: import %s: %w", path, err)
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ErrNotFound reports an unknown instance.
@@ -126,21 +222,24 @@ const (
 
 // Instance is one VM made from an image.
 type Instance struct {
-	ID      string            `json:"id"`
-	Name    string            `json:"name"`
+	ID      string            `json:"id" gorm:"primaryKey"`
+	Name    string            `json:"name" gorm:"uniqueIndex"`
 	Image   string            `json:"image"`
-	Layer   string            `json:"layer"`
+	Layer   string            `json:"layer" gorm:"index"`
 	Driver  string            `json:"driver"`
-	GuestOS machine.OS        `json:"guestOS"`
+	GuestOS machine.OS        `json:"guestOS" gorm:"column:guest_os"`
 	Mode    machine.CloneMode `json:"mode"`
-	CPUs    int               `json:"cpus,omitempty"`
+	CPUs    int               `json:"cpus,omitempty" gorm:"column:cpus"`
 	Memory  uint64            `json:"memory,omitempty"`
 	Created time.Time         `json:"created"`
 	// Temporary instances belong to a build and are not listed.
 	Temporary bool `json:"temporary,omitempty"`
 	// Forwards are served by the instance's shim whenever it runs.
-	Forwards []Forward `json:"forwards,omitempty"`
+	Forwards []Forward `json:"forwards,omitempty" gorm:"serializer:json;type:text"`
 }
+
+// TableName is the instances' table, named like the image store's.
+func (Instance) TableName() string { return "disco_vm_instances" }
 
 // Forward sends the connections a guest process opens to the host on a port
 // (guest.DialHost: vsock to the host on vz, hvsocket on HCS) to a Unix socket
@@ -237,7 +336,8 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 		err = e.Driver.Prepare(ctx, spec)
 	}
 	if err == nil {
-		err = fsutil.WriteJSON(filepath.Join(e.instanceDir(id), "instance.json"), inst)
+		// The row is the instance: until it is in, nothing lists the machine.
+		err = e.db.Write.WithContext(ctx).Create(inst).Error
 	}
 	if err != nil {
 		if spec.Dir != "" {
@@ -251,9 +351,8 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 
 // Get finds an instance by ID, unique ID prefix, or name.
 func (e *Engine) Get(ref string) (*Instance, error) {
-	var inst Instance
-	if err := fsutil.ReadJSON(filepath.Join(e.instanceDir(ref), "instance.json"), &inst); err == nil {
-		return &inst, nil
+	if inst, err := e.instance(ref); err == nil {
+		return inst, nil
 	}
 	all, err := e.list(true)
 	if err != nil {
@@ -285,23 +384,36 @@ func (e *Engine) Get(ref string) (*Instance, error) {
 func (e *Engine) List() ([]*Instance, error) { return e.list(false) }
 
 func (e *Engine) list(all bool) ([]*Instance, error) {
-	entries, err := os.ReadDir(filepath.Join(e.Root, "instances"))
-	if err != nil {
-		return nil, err
+	query := e.db.Read.Order("created, id")
+	if !all {
+		query = query.Where("temporary = ?", false)
 	}
 	var out []*Instance
-	for _, entry := range entries {
-		var inst Instance
-		if err := fsutil.ReadJSON(filepath.Join(e.Root, "instances", entry.Name(), "instance.json"), &inst); err != nil {
-			continue
-		}
-		if inst.Temporary && !all {
-			continue
-		}
-		out = append(out, &inst)
+	if err := query.Find(&out).Error; err != nil {
+		return nil, err
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })
 	return out, nil
+}
+
+// instance reads one instance by its full ID.
+func (e *Engine) instance(id string) (*Instance, error) {
+	var found []*Instance
+	if err := e.db.Read.Where("id = ?", id).Limit(1).Find(&found).Error; err != nil {
+		return nil, err
+	}
+	if len(found) == 0 {
+		return nil, fmt.Errorf("%q: %w", id, ErrNotFound)
+	}
+	return found[0], nil
+}
+
+// forget removes an instance's directory and then its row, so a removal that
+// fails partway leaves an instance that can be removed again.
+func (e *Engine) forget(ctx context.Context, id string) error {
+	if err := os.RemoveAll(e.instanceDir(id)); err != nil {
+		return err
+	}
+	return e.db.Write.WithContext(ctx).Delete(&Instance{ID: id}).Error
 }
 
 // remote is the driver as an Attacher when its machines are owned by a
@@ -606,7 +718,7 @@ func (e *Engine) Remove(ctx context.Context, inst *Instance, force bool) error {
 			return err
 		}
 	}
-	return os.RemoveAll(e.instanceDir(inst.ID))
+	return e.forget(ctx, inst.ID)
 }
 
 // Guest returns a client for a running instance's agent, reached through its
@@ -796,7 +908,7 @@ func (e *Engine) Commit(ctx context.Context, inst *Instance, pending *image.Pend
 		return image.Layer{}, err
 	}
 	_ = e.Driver.Destroy(ctx, spec)
-	_ = os.RemoveAll(e.instanceDir(inst.ID))
+	_ = e.forget(ctx, inst.ID)
 	return layer, nil
 }
 
@@ -806,7 +918,7 @@ func (e *Engine) Discard(ctx context.Context, inst *Instance) {
 	if spec, err := e.machineSpec(inst); err == nil {
 		_ = e.Driver.Destroy(ctx, spec)
 	}
-	_ = os.RemoveAll(e.instanceDir(inst.ID))
+	_ = e.forget(ctx, inst.ID)
 }
 
 func tail(path string) string {

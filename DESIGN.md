@@ -201,15 +201,41 @@ A layer is an immutable, committed disk state owned by a driver:
 A layer's **ID is its cache key**. The key is a hash of the parent ID, driver,
 guest OS, and the fully resolved steps, including a content digest of every
 copied file. An existing layer is never rebuilt, and `--no-cache` salts the
-keys instead of overwriting. Tags (`tags.json`) name layers. `rmi` untags, then
+keys instead of overwriting. Tags name layers. `rmi` untags, then
 deletes layers that nothing else tags, parents, or runs, as `docker rmi` does.
-A layer is written under a temporary name and renamed into place, so a crash
-never leaves a half-layer under a real ID. Installation media a driver
+A layer is written under a temporary name, then renamed into place and
+recorded in one transaction, so a crash never leaves a half-layer under a
+committed ID. Installation media a driver
 downloads itself (`media: latest`) is not a layer; it is kept in
 `cache/<driver>/` (`InstallSpec.CacheDir`), so it is fetched once per host. A
 driver may hold a layer outside its directory (a boxd snapshot), so the store
 has the driver release a layer whenever it drops one: on `rmi`, on an aborted
 build, and when another build published the same layer first.
+
+### 6a. Metadata is rows in a database, and disks are files
+
+What disco-vm knows about a root is in a database opened with
+`github.com/discobox-ai/x/gormdb`, as every discobox-ai project's is: layers
+and tags (`pkg/image`), instances and warm requests
+(`pkg/engine`). What a driver writes stays in files under the root: a layer's
+`payload/`, an instance's and a stage's `machine/`, and a shim's `shim.json`
+and `shim.log`, which live and die with one process.
+
+- **The default is SQLite**, `<root>/disco-vm.db`. With no daemon, every
+  command and every shim opens it, and SQLite's write lock is what serializes
+  them.
+- **An embedder passes its own database** (`engine.Open(root, driver, db)`),
+  and the engine does not close it. Every table is named `disco_vm_*`, so
+  none collides with the embedder's. The rows describe the files in one root,
+  so one database serves one root.
+- **Each package migrates its own tables** when it opens (`AutoMigrate`).
+- **JSON files from before the database are imported on open** and removed
+  once their rows are in: `layer.json`, `tags.json`,
+  `instance.json`, and `warm.json`.
+- **A row and its directory change in an order that can be repeated.** A
+  layer's row is inserted in the transaction that renames its directory, and
+  deleted before the directory is. An instance's row is inserted after the
+  driver prepared it, and deleted after its directory is.
 
 ### 7. Fast clones come from warm images, and auto falls back to cold
 
@@ -246,7 +272,7 @@ disco-vm warm --rm IMAGE
 - **A stage is not a layer.** A layer is immutable and its ID is a content
   hash. A stage is tied to this host, can go stale (a host OS update
   invalidates vz states), and a pool (fake) is used up by clones. It lives in
-  `warm/<layer>/` (`warm.json` plus the driver's `machine/`), and drivers see
+  `warm/<layer>/` (the driver's `machine/`; what was asked for is a row), and drivers see
   it as `WarmSpec.Dir` and `InstanceSpec.WarmDir`.
 - **Warming runs in a warm shim.** A resident stage must stay in the process
   that made it, so `warm` spawns `disco-vm shim --warm <layer>`. A stage on
@@ -335,6 +361,7 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window | refused | refused |
 | forward, guest to host (`CreateOptions.Forwards`; `pkg/engine` TestForward) | ✅ | ✅ in-guest, both directions (through the since-removed `run --forward`) | ✅ in-guest, both directions (through the since-removed `run --forward`) | refused | refused |
 | service URL and service file (`Engine.URL`, `disco-vm url`) | ✅ a host server listening at the file's address through the shim's loopback URL, on two starts (`pkg/engine` TestURL, `internal/e2e` TestURL) | ⬜ (7302 in the ServiceTable: `TestDocumentService`) | ⬜ | ⬜ fixed port 7302 not run on boxd itself; earlier, a guest's HTTP server through the URL on two boots with an image-declared port (`TestService`, by hand, `DISCO_VM_INTEGRATION=1` and `BOXD_API_KEY`); ✅ fake API (`TestServiceFakeAPI`) | ✅ by hand (2026-10-15, Docker 29.9, debian:trixie): `url` refused while created, `http://127.0.0.1:N` once started, the service file `tcp:0.0.0.0:7302`; a static Go program copied in and run under `systemd-run`, listening with `guest.ListenService()`, answered through the URL, and again at a new port after stop and start; nothing left behind; ⬜ `internal/e2e` TestURL with `DISCO_VM_DRIVER=docker` |
+| metadata in the database: a root's JSON files imported, an embedder's database shared (`pkg/image` TestOpenImportsJSONFiles, `pkg/engine` TestOpenImportsInstanceFiles and TestOpenInACallersDatabase) | ✅ SQLite, Linux; `internal/e2e` passes on it | ⬜ | ⬜ | ✅ fake API (`machinetest`, Linux); ⬜ boxd itself | ⬜ |
 | warm with a user (`warm --user`, `--local-user`) | refused | refused | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) | refused | n/a (cold only) |
 
 A platform driver is done when `machinetest.Run` passes against it on real

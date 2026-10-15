@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -12,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/discobox-ai/vm/internal/fsutil"
+	"gorm.io/gorm/clause"
+
 	"github.com/discobox-ai/vm/internal/units"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
@@ -28,19 +28,22 @@ import (
 // be the command that asked for it. A stage that lives on disk lets the warm
 // shim exit as soon as it is written.
 
-const warmStateName = "warm.json"
-
 // warmState is what was asked of a stage. The warm shim reads it, so the
 // options need no flags of their own.
 type warmState struct {
-	Layer   string        `json:"layer"`
+	Layer   string        `json:"layer" gorm:"primaryKey"`
 	Image   string        `json:"image"`
 	Count   int           `json:"count"`
-	CPUs    int           `json:"cpus,omitempty"`
+	CPUs    int           `json:"cpus,omitempty" gorm:"column:cpus"`
 	Memory  uint64        `json:"memory,omitempty"`
-	User    *machine.User `json:"user,omitempty"`
+	User    *machine.User `json:"user,omitempty" gorm:"column:stage_user;serializer:json;type:text"`
 	Created time.Time     `json:"created"`
 }
+
+func (warmState) TableName() string { return "disco_vm_warm_stages" }
+
+// errNoWarm reports a layer nothing has asked to be warmed.
+var errNoWarm = errors.New("no warm request")
 
 func (e *Engine) warmDir(layer string) string { return filepath.Join(e.Root, "warm", layer) }
 
@@ -57,11 +60,14 @@ func (e *Engine) warmer() (machine.Warmer, error) {
 }
 
 func (e *Engine) readWarm(layer string) (*warmState, error) {
-	var st warmState
-	if err := fsutil.ReadJSON(filepath.Join(e.warmDir(layer), warmStateName), &st); err != nil {
+	var found []*warmState
+	if err := e.db.Read.Where("layer = ?", layer).Limit(1).Find(&found).Error; err != nil {
 		return nil, err
 	}
-	return &st, nil
+	if len(found) == 0 {
+		return nil, errNoWarm
+	}
+	return found[0], nil
 }
 
 func (e *Engine) warmSpec(st *warmState) (machine.WarmSpec, error) {
@@ -247,7 +253,7 @@ func (e *Engine) Warm(ctx context.Context, ref string, opts WarmOptions) (machin
 		return none, err
 	}
 	st := warmState{Layer: layerID, Image: ref, Count: opts.Count, CPUs: opts.CPUs, Memory: opts.Memory, User: opts.User, Created: time.Now().UTC()}
-	if err := fsutil.WriteJSON(filepath.Join(dir, warmStateName), st); err != nil {
+	if err := e.db.Write.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&st).Error; err != nil {
 		return none, err
 	}
 	fail := func(err error) (machine.Warmth, error) {
@@ -322,7 +328,10 @@ func (e *Engine) cool(ctx context.Context, layerID string) error {
 			}
 		}
 	}
-	return os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	return e.db.Write.WithContext(ctx).Delete(&warmState{Layer: layerID}).Error
 }
 
 // RunWarmShim is the body of `disco-vm shim --warm <layer>`: stage the layer,
@@ -334,10 +343,7 @@ func (e *Engine) RunWarmShim(ctx context.Context, layerID string) error {
 	}
 	st, err := e.readWarm(layerID)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("layer %s has no warm request", layerID)
-		}
-		return err
+		return fmt.Errorf("layer %s: %w", layerID, err)
 	}
 	spec, err := e.warmSpec(st)
 	if err != nil {

@@ -33,10 +33,11 @@ func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
 	t.Cleanup(fake.close)
 	ctx := context.Background()
 
-	e, err := engine.Open(t.TempDir(), d)
+	e, err := engine.Open(t.TempDir(), d, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = e.Close() })
 	spec := filepath.Join(t.TempDir(), "disco-vm.yaml")
 	if err := os.WriteFile(spec, []byte("from:\n  install: {os: linux, media: latest}\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -119,7 +120,7 @@ func TestEngineRefusesRemoteWithoutAttacher(t *testing.T) {
 	d, fake := fakeDriver(t, "unused", t.TempDir())
 	t.Cleanup(fake.close)
 	notAttacher := struct{ machine.Driver }{d}
-	if _, err := engine.Open(t.TempDir(), notAttacher); err == nil || !strings.Contains(err.Error(), "Attacher") {
+	if _, err := engine.Open(t.TempDir(), notAttacher, nil); err == nil || !strings.Contains(err.Error(), "Attacher") {
 		t.Fatalf("open: %v", err)
 	}
 }

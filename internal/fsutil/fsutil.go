@@ -6,13 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // CopyTree copies the directory tree src to dst, which must not exist yet.
@@ -102,37 +100,3 @@ func RandomHex(n int) string {
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
-
-// Lock is an exclusive lock held by creating a file. It is advisory and
-// cross-process, and it works the same on every OS. A lock older than
-// staleAfter is taken over, so a crashed holder cannot wedge the store.
-type Lock struct{ path string }
-
-const staleAfter = 2 * time.Minute
-
-// Acquire takes the lock at path, waiting up to timeout.
-func Acquire(path string, timeout time.Duration) (*Lock, error) {
-	deadline := time.Now().Add(timeout)
-	for {
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
-			_ = f.Close()
-			return &Lock{path: path}, nil
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			return nil, err
-		}
-		if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) > staleAfter {
-			_ = os.Remove(path)
-			continue
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("fsutil: %s is held by another disco-vm", path)
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-}
-
-// Release drops the lock.
-func (l *Lock) Release() { _ = os.Remove(l.path) }
