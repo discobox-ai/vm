@@ -421,11 +421,44 @@ function Place-File($owner, $staged, $path) {
   Parent $path; Clear-Way $path; Own $owner $path
   Move-Item -LiteralPath (Join-Path $stage $staged) -Destination $path -Force
 }
+# New-Link makes a link that holds its target as given, as ln -s does.
+# Windows PowerShell's New-Item refuses a target that is not there yet, so
+# the link is made by the call beneath it: .NET's where PowerShell has it,
+# and the Windows API where it does not. Windows asks whether a link is to a
+# directory; that is read from what the target is now.
+$linkType = @'
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+namespace DiscoVm {
+  public static class Link {
+    [DllImport("kernel32.dll", EntryPoint = "CreateSymbolicLinkW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    static extern bool CreateSymbolicLink(string link, string target, int flags);
+    // 1 makes a link to a directory; 2 lets an unelevated process make one
+    // where Windows allows that.
+    public static void Create(string link, string target, bool directory) {
+      if (!CreateSymbolicLink(link, target, (directory ? 1 : 0) | 2)) { throw new Win32Exception(Marshal.GetLastWin32Error()); }
+    }
+  }
+}
+'@
+function New-Link($target, $path) {
+  $at = $target
+  if (-not [IO.Path]::IsPathRooted($at)) { $at = Join-Path (Split-Path -Parent $path) $at }
+  $directory = Test-Path -LiteralPath $at -PathType Container
+  if ($null -ne [IO.File].GetMethod('CreateSymbolicLink')) {
+    if ($directory) { [IO.Directory]::CreateSymbolicLink($path, $target) | Out-Null }
+    else { [IO.File]::CreateSymbolicLink($path, $target) | Out-Null }
+    return
+  }
+  if (-not ('DiscoVm.Link' -as [type])) { Add-Type -TypeDefinition $linkType }
+  [DiscoVm.Link]::Create($path, $target, $directory)
+}
 function Place-Link($owner, $target, $path) {
   Parent $path; Clear-Way $path
   if (IsLink $path) { (Get-Item -LiteralPath $path -Force).Delete() }
   elseif (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
-  New-Item -ItemType SymbolicLink -Path $path -Target $target | Out-Null
+  New-Link $target $path
   Own $owner $path
 }
 function Place-Directory($owner, $path) {

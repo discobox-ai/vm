@@ -338,6 +338,32 @@ func TestConverge(t *testing.T) {
 	}
 }
 
+// A link holds its target as written, relative or not there yet, and one to
+// a directory leads into it: a file placed after it, at a path through it,
+// lands in the directory.
+func TestLinkTargets(t *testing.T) {
+	e := newEnv(t)
+	e.state("10-links.yaml", `
+files:
+  - {path: /opt/agent/1.0, directory: true}
+  - {path: /opt/agent/current, link: "1.0"}
+  - {path: /opt/agent/next, link: "2.0"}
+  - {path: /opt/agent/current/extra.conf, content: x}
+`)
+	e.converged()
+	for path, want := range map[string]string{"/opt/agent/current": "1.0", "/opt/agent/next": "2.0"} {
+		if target, err := os.Readlink(e.path(path)); err != nil || target != want {
+			t.Fatalf("%s points at %q: %v", path, target, err)
+		}
+	}
+	if info, err := os.Stat(e.path("/opt/agent/current")); err != nil || !info.IsDir() {
+		t.Fatalf("a link to a directory: %v %v", info, err)
+	}
+	if got := e.read("/opt/agent/1.0/extra.conf"); got != "x" {
+		t.Fatalf("a file placed through a link holds %q", got)
+	}
+}
+
 // A later state file can need what an earlier one installed: each is applied
 // whole, files to services, before the next, and a provider's packages are
 // one install only within a run of them.
