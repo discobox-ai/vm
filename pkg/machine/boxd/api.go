@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
+	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
 )
 
@@ -89,6 +90,7 @@ func (c *client) API() (boxdapi.BoxdApiClient, error) {
 			grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})),
 			grpc.WithPerRPCCredentials(c),
 		}
+		opts = append(opts, debugOptions()...)
 		dialer, err := socksDialer()
 		if err != nil {
 			c.err = err
@@ -141,7 +143,9 @@ func (c *client) token(ctx context.Context) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	started := time.Now()
 	resp, err := http.DefaultClient.Do(req)
+	machine.DebugCall(started, err, "boxd POST %s", c.tokenURL)
 	if err != nil {
 		return "", fmt.Errorf("boxd: exchange API key: %w", err)
 	}

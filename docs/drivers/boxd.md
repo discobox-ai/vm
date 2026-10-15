@@ -106,6 +106,7 @@ is local, under `DISCO_VM_ROOT`, so use one host for one set of images.
 | `BOXD_GRPC_ADDR` | `boxd.sh:9443` | another cluster |
 | `BOXD_TOKEN_URL` | `https://app.boxd.sh/api/v1/auth/token` | its key exchange |
 | `HTTPS_PROXY` | | gRPC goes through it with HTTP CONNECT, as does the key exchange. A proxy that intercepts TLS has to offer HTTP/2 (ALPN `h2`) for gRPC to work through it. A discobox's egress proxy does, and the conformance suite passes through it (2026-10-08). |
+| `DISCO_VM_DEBUG` | | any value is `disco-vm --debug`: one line on stderr for every API call, when it finished, how long it took, and its request and answer. A stream (Exec, an upload) is one line when it ends. |
 | `ALL_PROXY` | | a `socks5://` or `socks5h://` proxy carries the gRPC connection instead, for an HTTP proxy without HTTP/2. The key exchange still goes through `HTTPS_PROXY`. |
 
 A key is fenced to one org, so the org is the key's. There is no shim for a

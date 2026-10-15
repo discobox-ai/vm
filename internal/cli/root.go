@@ -28,6 +28,7 @@ func (e exitError) Error() string { return fmt.Sprintf("exit status %d", e.code)
 type globals struct {
 	root   string
 	driver string
+	debug  bool
 	// opened is the engine a command opened, which Main closes.
 	opened *engine.Engine
 }
@@ -56,6 +57,12 @@ func Main(args []string) int {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.String(),
+	}
+	root.PersistentFlags().BoolVar(&g.debug, "debug", os.Getenv("DISCO_VM_DEBUG") != "", "print every call to the driver's API (boxd, docker) and how long it took, on stderr (also $DISCO_VM_DEBUG)")
+	root.PersistentPreRun = func(*cobra.Command, []string) {
+		if g.debug {
+			machine.SetDebug(os.Stderr)
+		}
 	}
 	root.PersistentFlags().StringVar(&g.root, "root", "", "state directory (default $"+engine.RootEnv+" or the per-OS data directory)")
 	root.PersistentFlags().StringVar(&g.driver, "driver", os.Getenv("DISCO_VM_DRIVER"), "hypervisor driver (default "+machine.DefaultName()+"; also $DISCO_VM_DRIVER)")

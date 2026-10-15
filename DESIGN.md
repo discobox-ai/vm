@@ -237,6 +237,10 @@ and `shim.log`, which live and die with one process.
   deleted before the directory is. An instance's row is inserted after the
   driver prepared it, and deleted after its directory is.
 
+`--debug` (`machine.SetDebug`) has a driver report every call it makes to a
+service outside the process, boxd's API or the Docker daemon, and how long the
+answer took.
+
 ### 7. Fast clones come from warm images, and auto falls back to cold
 
 Neither fast mode works from a committed layer alone. A resume needs saved

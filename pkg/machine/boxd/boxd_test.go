@@ -230,7 +230,7 @@ func fakeDriver(t *testing.T, agent, dir string) (*Driver, *fakeAPI) {
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
 
-	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(listener.Addr().String(), append(debugOptions(), grpc.WithTransportCredentials(insecure.NewCredentials()))...)
 	if err != nil {
 		t.Fatal(err)
 	}

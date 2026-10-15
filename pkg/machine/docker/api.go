@@ -14,6 +14,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // HostEnv names the Docker daemon, as the docker CLI reads it:
@@ -89,7 +91,9 @@ func (a *api) do(ctx context.Context, method, path string, query url.Values, bod
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
+	started := time.Now()
 	resp, err := a.http.Do(req)
+	machine.DebugCall(started, err, "docker %s %s", method, req.URL.RequestURI())
 	if err != nil {
 		return nil, fmt.Errorf("docker: %s %s: %w", method, path, err)
 	}
