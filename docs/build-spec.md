@@ -111,7 +111,9 @@ the cache.
 its environment from the registry each time, so what an earlier step installed
 is already on PATH. On Linux and macOS a step with no `user:` runs as root
 with root's `HOME`, `USER`, and `LOGNAME`, which the agent's own environment,
-a boot service's, does not have.
+a boot service's, does not have. On boxd, which has no agent, a step runs
+through `sudo -H`, as root or its `user:`, with sudo's `secure_path` and that
+account's `HOME`, `USER`, and `LOGNAME`.
 
 **Clean commits only.** If the guest must be forced off at the end of a layer,
 the build fails. A disk from a hard stop is never cached.

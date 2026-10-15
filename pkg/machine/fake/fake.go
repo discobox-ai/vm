@@ -73,6 +73,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 		GuestOS:    []machine.OS{machine.OS(runtime.GOOS)},
 		CloneModes: []machine.CloneMode{machine.Cold, machine.Resume},
 		Forward:    true,
+		Agent:      true,
 	}
 }
 
@@ -239,10 +240,11 @@ func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 	// The agent picks its own port and writes it down once it is listening.
 	deadline := time.NewTimer(15 * time.Second)
 	defer deadline.Stop()
+listening:
 	for {
 		if data, err := os.ReadFile(addrFile); err == nil && strings.TrimSpace(string(data)) != "" {
 			m.addr = strings.TrimSpace(string(data))
-			return m, nil
+			break listening
 		}
 		select {
 		case <-m.done:
@@ -259,6 +261,12 @@ func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
+	m.Client = guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
+	if err := m.WaitReady(ctx, m.done); err != nil {
+		_ = m.Kill(context.Background())
+		return nil, err
+	}
+	return m, nil
 }
 
 func (d *Driver) Commit(_ context.Context, inst machine.InstanceSpec, dst machine.Layer) error {
@@ -322,8 +330,9 @@ func (*Driver) Service(_ context.Context, inst machine.InstanceSpec) (machine.Se
 	return machine.Service{Listen: "tcp:127.0.0.1:" + strconv.FormatUint(port, 10), Port: uint32(port)}, nil
 }
 
-// proc is a running fake guest.
+// proc is a running fake guest. Its guest operations are its agent's.
 type proc struct {
+	*guest.Client
 	cmd       *exec.Cmd
 	addr      string
 	hostPorts string
@@ -332,6 +341,8 @@ type proc struct {
 	once      sync.Once
 	killed    atomic.Bool
 }
+
+var _ machine.Dialer = (*proc)(nil)
 
 // Dial reaches the agent at its own address. A fake guest is a host process,
 // so any other port is the host's loopback.

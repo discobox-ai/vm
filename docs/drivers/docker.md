@@ -128,11 +128,11 @@ The offset is in every layer, so all of an image store's guests share it.
 | layer | `layer.json`: the committed image's ID and the tag (`disco-vm-layer:<project>--<id>-<rand>`) that keeps it from being pruned. `DeleteLayer` removes the tag, and the image with it. |
 | `Prepare` | create the container from the parent's image, with the settings above, named `dvm-<project>--<instance id>-<rand>`, publishing 7302/tcp on `127.0.0.1` at a port the daemon picks at each start. Cold only. |
 | `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `http://127.0.0.1:<published port>` while the container runs. |
-| `Boot` | size the container (`docker update`: CPUs, and memory with no swap) and start it. |
+| `Boot` | size the container (`docker update`: CPUs, and memory with no swap) and start it, then wait for the agent; a container that stops meanwhile (inspected every 2s) ends the wait. |
 | `Attach` | (`Capabilities.Remote`: the daemon owns the container, so the engine runs no shim.) Inspect the container: running is a machine, and stopped or gone is `ErrNotRunning`. A guest that powered itself off has already stopped its container, because Init exits with it. |
-| `Machine.Done` | waiting starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to dial leaves nothing running. The daemon's `wait` on the container: exit 0 is a power-off. A failed wait (the daemon restarted) inspects and waits again. |
+| `Machine.Done` | waiting starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to run a command leaves nothing running. The daemon's `wait` on the container: exit 0 is a power-off. A failed wait (the daemon restarted) inspects and waits again. |
 | `Machine.Kill` | SIGKILL to the container. |
-| `Machine.Dial(port)` | docker exec `disco-vm pipe`, on the container's side: `unix:/run/disco-vm-relay/guest/run/disco-vm/agent.sock` for the agent, `tcp:127.0.0.1:PORT` otherwise, which the guest shares. |
+| `Machine` guest operations | the agent (`guest.Client`), each connection a docker exec of `disco-vm pipe unix:/run/disco-vm-relay/guest/run/disco-vm/agent.sock`, on the container's side. |
 | `Commit` | empty the stopped container's `/etc/machine-id`, so every instance of the layer makes its own, and `docker commit` it. |
 | `Destroy` | `docker rm -f`. |
 | `Orphans` | every container with the driver's labels and every `disco-vm-layer` image, named for the project, that no instance's `container.json` or layer's `layer.json` names. A name from before projects (no `--`) is the default project's. |
@@ -212,8 +212,8 @@ Linux 7.0.11), 2026-10-09:
 
 - Docker Desktop on macOS and Windows, a remote `tcp://` daemon, and arm64.
 - SELinux hosts (`label=disable` is passed, but not run against).
-- Load: each Dial is a docker exec, and every engine call on an instance
-  inspects its container first.
+- Load: each connection to the agent is a docker exec, and every engine call
+  on an instance inspects its container first.
 
 ## Not done
 

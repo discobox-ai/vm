@@ -47,21 +47,25 @@ func cpCommand(g *globals) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				client := e.Guest(inst)
-				defer client.Close()
+				g, err := e.Guest(cmd.Context(), inst)
+				if err != nil {
+					return err
+				}
 				reader, writer := io.Pipe()
 				// SRC/. is the directory's contents, as it is to docker cp.
 				contents := strings.HasSuffix(filepath.ToSlash(srcPath), "/.")
 				go func() { writer.CloseWithError(guest.Pack(writer, filepath.Clean(srcPath), contents)) }()
-				return client.CopyTo(cmd.Context(), dstPath, reader)
+				return g.CopyTo(cmd.Context(), dstPath, reader)
 			default:
 				inst, err := e.Get(srcInst)
 				if err != nil {
 					return err
 				}
-				client := e.Guest(inst)
-				defer client.Close()
-				stream, err := client.CopyFrom(cmd.Context(), srcPath)
+				g, err := e.Guest(cmd.Context(), inst)
+				if err != nil {
+					return err
+				}
+				stream, err := g.CopyFrom(cmd.Context(), srcPath)
 				if err != nil {
 					return err
 				}

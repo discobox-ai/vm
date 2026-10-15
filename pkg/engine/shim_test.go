@@ -61,7 +61,11 @@ func TestShimCommand(t *testing.T) {
 	if got := strings.TrimSpace(string(called)); got != "vm-shim "+inst.ID {
 		t.Fatalf("the embedder was called with %q, want %q", got, "vm-shim "+inst.ID)
 	}
-	if err := e.Guest(inst).Health(ctx); err != nil {
+	g, err := e.Guest(ctx, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Info(ctx); err != nil {
 		t.Fatalf("the instance its shim runs does not answer: %v", err)
 	}
 }

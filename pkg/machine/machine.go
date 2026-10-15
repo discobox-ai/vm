@@ -89,8 +89,13 @@ type Capabilities struct {
 	// Remote reports that a running machine is owned by a service, not by
 	// the process that booted it (boxd's API), so any process can reach it
 	// again: the driver implements Attacher, and the engine runs no shim for
-	// its instances.
+	// its instances. A driver that does not list it returns machines that
+	// implement Dialer.
 	Remote bool `json:"remote"`
+	// Agent reports that Install bakes the disco-vm agent into the guest
+	// (InstallSpec.Agent), because the driver reaches the guest's operations
+	// through it. boxd reaches them through its own API, and needs none.
+	Agent bool `json:"agent"`
 }
 
 // SupportsOS reports whether the driver can run the given guest OS.
@@ -178,9 +183,10 @@ type InstallSpec struct {
 	DiskBytes int64
 	CPUs      int
 	Memory    uint64
-	// Agent is the disco-vm binary built for GuestOS. The driver bakes it into
-	// the image and arranges for `disco-vm guest` to start at boot, as a
-	// SYSTEM service on Windows and a launchd daemon on macOS.
+	// Agent is the disco-vm binary built for GuestOS, given to a driver that
+	// lists Capabilities.Agent. The driver bakes it into the image and
+	// arranges for `disco-vm guest` to start at boot, as a SYSTEM service on
+	// Windows and a launchd daemon on macOS.
 	Agent string
 	// Options carries driver-specific settings the spec passes through
 	// untouched, such as a product key or a locale.
@@ -222,7 +228,7 @@ type Service struct {
 	// on hcs), tcp:ADDR. The engine writes it to the guest's
 	// guest.ServiceFile at every start.
 	Listen string
-	// Port is the guest port Machine.Dial reaches the service on.
+	// Port is the guest port Dialer.Dial reaches the service on.
 	Port uint32
 	// URL is where any process reaches the service over HTTP with no
 	// credential of the driver's (boxd's https://<machine>.boxd.sh, a
@@ -267,9 +273,9 @@ type Driver interface {
 	Install(ctx context.Context, spec InstallSpec, dst Layer) error
 	// Prepare creates the instance's disk from its chain in inst.Dir.
 	Prepare(ctx context.Context, inst InstanceSpec) error
-	// Boot starts a prepared instance. The returned machine lives until it
-	// powers off or is killed; it is not bound to ctx, which only bounds
-	// starting it.
+	// Boot starts a prepared instance and returns once its guest operations
+	// answer. The returned machine lives until it powers off or is killed; it
+	// is not bound to ctx, which only bounds starting it.
 	Boot(ctx context.Context, inst InstanceSpec, opts BootOptions) (Machine, error)
 	// Commit captures a stopped instance's disk as the new layer dst. The
 	// instance is destroyed afterwards, so a driver may move rather than copy.
@@ -457,8 +463,8 @@ type Attacher interface {
 	// own credentials. A guest that shut itself down while nothing watched
 	// is finished here, as Done would have finished it, and reads as not
 	// running. The machine watches for its own stop only once Done, Err, or
-	// Kill is called, so attaching to dial costs nothing that outlives the
-	// call.
+	// Kill is called, so attaching to run a command costs nothing that
+	// outlives the call.
 	Attach(ctx context.Context, inst InstanceSpec) (Machine, error)
 }
 
@@ -473,13 +479,14 @@ type HostListener interface {
 	Listen(port uint32) (net.Listener, error)
 }
 
-// Machine is a running guest.
+// Machine is a running guest. Boot returns one whose guest operations
+// answer. Attach returns one that is running, which may still be starting
+// (a boxd machine starting, a guest that rebooted), so its operations can
+// fail until it has.
 type Machine interface {
-	// Dial opens a stream to a guest port: vsock on vz, hvsocket on HCS with
-	// the service ID derived from the port by the vsock template.
-	Dial(ctx context.Context, port uint32) (net.Conn, error)
+	Guest
 	// Kill powers the guest off immediately. An orderly shutdown goes through
-	// the guest agent instead; Kill is the fallback.
+	// Shutdown instead; Kill is the fallback.
 	Kill(ctx context.Context) error
 	// Done is closed once the guest has stopped, or once the driver can no
 	// longer tell: a remote driver whose API stops answering gives the

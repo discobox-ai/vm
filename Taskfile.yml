@@ -49,7 +49,7 @@ tasks:
       - go install -ldflags '{{.LDFLAGS}}' {{.MAIN}}
 
   build:linux-agent:
-    desc: Cross-compile a static linux/amd64 disco-vm into build/linux-amd64/, the agent `build --agent` takes on any other host
+    desc: Cross-compile a static linux/amd64 disco-vm into build/linux-amd64/, the agent `build --agent` takes for a docker guest from any other host
     cmds:
       - mkdir -p build/linux-amd64
       - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '{{.LDFLAGS}}' -o build/linux-amd64/disco-vm {{.MAIN}}

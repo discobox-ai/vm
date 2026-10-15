@@ -1,0 +1,16 @@
+# disco-vm review notes
+
+- **A `machine.Guest` handed out holds no connection between calls.**
+  `Engine.Guest` returns one with nothing to release it, so `guest.Client`
+  keeps no connections alive. An idle connection is a hijacked conn and a
+  goroutine in a shim, or a `docker exec` in a guest, for every call an
+  embedder makes.
+- **The boxd fake API reads a command line the way the guest's tools do.**
+  Its Exec parses what `pkg/machine/boxd` sends; a parser written from the
+  driver's own idea of the line agrees with the driver's mistakes. GNU `env`
+  ends its options at the first `NAME=VALUE`, so a `--` after the variables
+  was the command, and the fake passed it until boxd itself refused it.
+- **A change to a shared method in `pkg/guest` or `pkg/machine` needs a
+  search of `pkg/machine/vz` by hand.** Its cgo files, its tests among them,
+  compile only on a Mac, so neither Linux nor `GOOS=windows` vet sees a
+  caller left behind there.

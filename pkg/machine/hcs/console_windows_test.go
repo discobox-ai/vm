@@ -2,7 +2,6 @@ package hcs
 
 import (
 	"context"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/Microsoft/go-winio"
 
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -56,13 +54,6 @@ func TestConsole(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = m.Kill(context.Background()) })
-		c := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
-		defer c.Close()
-		bctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-		defer cancel()
-		if err := c.WaitReady(bctx, m.Done()); err != nil {
-			t.Fatal(err)
-		}
 		return m
 	}
 

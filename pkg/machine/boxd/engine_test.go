@@ -17,7 +17,7 @@ import (
 )
 
 // TestEngineRunsRemoteInstancesWithoutAShim drives the engine's remote paths
-// against the fake boxd API: start, state, the agent through the engine,
+// against the fake boxd API: start, state, the guest through the engine,
 // stop, start again, a guest's own poweroff found by the next state, and
 // remove. No shim is started at any point, and a shim.json an older
 // disco-vm left behind is cleared.
@@ -25,14 +25,12 @@ func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
-	agent := linuxAgent(t)
 	dir, err := os.MkdirTemp("", "boxd")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	d, fake := fakeDriver(t, agent, dir)
-	t.Cleanup(fake.close)
+	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
 	e, err := engine.Open(t.TempDir(), d, nil, "")
@@ -45,7 +43,7 @@ func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
 		t.Fatal(err)
 	}
 	builder := &build.Builder{Engine: e, Out: testLog{t}}
-	if _, err := builder.Build(ctx, build.Options{File: spec, Tags: []string{"t/base"}, Agent: agent}); err != nil {
+	if _, err := builder.Build(ctx, build.Options{File: spec, Tags: []string{"t/base"}}); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	inst, err := e.Create(ctx, "t/base", engine.CreateOptions{Name: "remote"})
@@ -70,10 +68,12 @@ func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
 		if got := e.State(ctx, inst); got != engine.Running {
 			t.Fatalf("state after start = %s", got)
 		}
-		client := e.Guest(inst)
-		defer client.Close()
-		if _, err := client.Info(ctx); err != nil {
-			t.Fatalf("the agent through the engine: %v", err)
+		g, err := e.Guest(ctx, inst)
+		if err != nil {
+			t.Fatalf("the guest through the engine: %v", err)
+		}
+		if _, err := g.Info(ctx); err != nil {
+			t.Fatalf("the guest through the engine: %v", err)
 		}
 	}
 	waitState := func(want engine.State) {
@@ -96,10 +96,11 @@ func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
 	start()
 	// The guest powers itself off and nothing watches it: the next state
 	// finishes the halt.
-	client := e.Guest(inst)
-	err = client.Shutdown(ctx, false)
-	client.Close()
+	g, err := e.Guest(ctx, inst)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Shutdown(ctx, false); err != nil {
 		t.Fatalf("guest shutdown: %v", err)
 	}
 	waitState(engine.Stopped)
@@ -119,8 +120,7 @@ func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
 // A driver that lists Remote without being an Attacher would leave the engine
 // running shims it says it does not need; Open refuses it.
 func TestEngineRefusesRemoteWithoutAttacher(t *testing.T) {
-	d, fake := fakeDriver(t, "unused", t.TempDir())
-	t.Cleanup(fake.close)
+	d, _ := fakeDriver(t, t.TempDir())
 	notAttacher := struct{ machine.Driver }{d}
 	if _, err := engine.Open(t.TempDir(), notAttacher, nil, ""); err == nil || !strings.Contains(err.Error(), "Attacher") {
 		t.Fatalf("open: %v", err)
@@ -135,14 +135,12 @@ func TestEngineListsOrphans(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
-	agent := linuxAgent(t)
 	dir, err := os.MkdirTemp("", "boxd")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	d, fake := fakeDriver(t, agent, dir)
-	t.Cleanup(fake.close)
+	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
 	e, err := engine.Open(t.TempDir(), d, nil, "")
@@ -155,7 +153,7 @@ func TestEngineListsOrphans(t *testing.T) {
 		t.Fatal(err)
 	}
 	builder := &build.Builder{Engine: e, Out: testLog{t}}
-	if _, err := builder.Build(ctx, build.Options{File: spec, Tags: []string{"t/base"}, Agent: agent}); err != nil {
+	if _, err := builder.Build(ctx, build.Options{File: spec, Tags: []string{"t/base"}}); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	inst, err := e.Create(ctx, "t/base", engine.CreateOptions{Name: "kept"})

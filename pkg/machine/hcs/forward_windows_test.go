@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -47,13 +45,6 @@ func TestForward(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = m.Kill(context.Background()) })
-	client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
-	defer client.Close()
-	bctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-	if err := client.WaitReady(bctx, m.Done()); err != nil {
-		t.Fatal(err)
-	}
 	if !d.Capabilities().Forward {
 		t.Fatal("hcs machines listen for the guest but the driver does not list Forward")
 	}
@@ -76,11 +67,11 @@ func TestForward(t *testing.T) {
 		fromGuest <- string(data)
 	}()
 
-	if err := client.CopyTo(ctx, `C:\dv`, tarFile(t, exe)); err != nil {
+	if err := m.CopyTo(ctx, `C:\dv`, tarFile(t, exe)); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	code, err := client.Run(ctx, guest.ExecRequest{Argv: []string{"cmd", "/c", `echo hello from the guest| C:\dv\disco-vm.exe dial-host 7401`}}, nil, &out, &out)
+	code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"cmd", "/c", `echo hello from the guest| C:\dv\disco-vm.exe dial-host 7401`}}, nil, &out, &out)
 	if err != nil || code != 0 {
 		t.Fatalf("dial-host in the guest: exit %d, %v\n%s", code, err, out.String())
 	}

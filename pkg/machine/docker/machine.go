@@ -8,13 +8,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/discobox-ai/vm/pkg/guest"
 )
 
 // container is a running guest. Nothing ties it to this process: the daemon
 // runs it, and any number of processes may hold one for the same container
 // (Attach). It waits on the container only once something asks whether it
-// stopped, so one held only to dial leaves nothing running.
+// stopped, so one held only to run a command leaves nothing running.
 type container struct {
+	// Client is the guest agent through `docker exec`: the container's guest
+	// operations.
+	*guest.Client
 	api      *api
 	ref      containerRef
 	done     chan struct{}
@@ -28,7 +33,9 @@ type container struct {
 
 func newContainer(a *api, ref containerRef) *container {
 	ctx, stop := context.WithCancel(context.Background())
-	return &container{api: a, ref: ref, done: make(chan struct{}), ctx: ctx, stop: stop}
+	m := &container{api: a, ref: ref, done: make(chan struct{}), ctx: ctx, stop: stop}
+	m.Client = guest.NewClient(m.dialAgent)
+	return m
 }
 
 // watched starts the watcher, once, and returns the channel it closes.
@@ -82,13 +89,14 @@ func (m *container) finish(err error) {
 	})
 }
 
-func (m *container) Dial(ctx context.Context, port uint32) (net.Conn, error) {
+// dialAgent reaches the guest agent's socket.
+func (m *container) dialAgent(ctx context.Context) (net.Conn, error) {
 	select {
 	case <-m.done:
 		return nil, errors.New("docker: guest is stopped")
 	default:
 	}
-	return dial(ctx, m.api, m.ref.ID, port)
+	return dialAgent(ctx, m.api, m.ref.ID)
 }
 
 // Kill sends the container SIGKILL and waits for it to stop. Killing the

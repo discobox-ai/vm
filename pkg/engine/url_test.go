@@ -81,12 +81,14 @@ func TestURL(t *testing.T) {
 	}
 }
 
-// serviceAddress reads the guest's service file through its agent.
+// serviceAddress reads the guest's service file.
 func serviceAddress(ctx context.Context, t *testing.T, e *engine.Engine, inst *engine.Instance) string {
 	t.Helper()
-	client := e.Guest(inst)
-	defer client.Close()
-	rc, err := client.CopyFrom(ctx, guest.ServiceFile(string(inst.GuestOS)))
+	g, err := e.Guest(ctx, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := g.CopyFrom(ctx, guest.ServiceFile(string(inst.GuestOS)))
 	if err != nil {
 		t.Fatal(err)
 	}

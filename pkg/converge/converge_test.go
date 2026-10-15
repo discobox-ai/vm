@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/pkg/guest"
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // localGuest is a guest that is a directory on this machine, as the fake
@@ -36,9 +37,33 @@ type localGuest struct {
 	lost bool
 }
 
-func (g *localGuest) Info(context.Context) (guest.Info, error) {
-	return guest.Info{OS: runtime.GOOS, Root: g.root}, nil
+func (g *localGuest) Info(context.Context) (machine.GuestInfo, error) {
+	return machine.GuestInfo{OS: runtime.GOOS, Root: g.root}, nil
 }
+
+func (g *localGuest) CopyFrom(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("a run does not copy out")
+}
+
+func (g *localGuest) Shutdown(context.Context, bool) error {
+	return errors.New("a run does not shut its guest down")
+}
+
+// Exec runs the command once its output is waited for.
+func (g *localGuest) Exec(ctx context.Context, req machine.ExecRequest) (machine.Process, error) {
+	return &localProcess{run: func(stdout, stderr io.Writer) (int, error) { return g.run(ctx, req, stdout, stderr) }}, nil
+}
+
+// localProcess is a command that takes no stdin and runs in Wait.
+type localProcess struct {
+	run func(stdout, stderr io.Writer) (int, error)
+}
+
+func (*localProcess) Write([]byte) (int, error)                    { return 0, errors.New("no stdin") }
+func (*localProcess) CloseStdin() error                            { return nil }
+func (*localProcess) Resize(uint16, uint16) error                  { return nil }
+func (*localProcess) Close() error                                 { return nil }
+func (p *localProcess) Wait(stdout, stderr io.Writer) (int, error) { return p.run(stdout, stderr) }
 
 func (g *localGuest) CopyTo(_ context.Context, dir string, tarStream io.Reader) error {
 	if g.isLost() {
@@ -53,9 +78,9 @@ func (g *localGuest) isLost() bool {
 	return g.lost
 }
 
-// Run runs a run's own scripts for real, and records an exec resource's
+// run runs a run's own scripts for real, and records an exec resource's
 // script instead of running it: its text is the test's, not a program.
-func (g *localGuest) Run(ctx context.Context, req guest.ExecRequest, _ io.Reader, stdout, stderr io.Writer) (int, error) {
+func (g *localGuest) run(ctx context.Context, req machine.ExecRequest, stdout, stderr io.Writer) (int, error) {
 	if g.isLost() {
 		return 0, errors.New("the guest is not answering")
 	}

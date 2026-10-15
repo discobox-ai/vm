@@ -18,7 +18,7 @@ import (
 //	tcp:ADDR     a TCP address, for the fake driver and for tests
 //	unix:PATH    a socket only its owner can open, for a guest reached through
 //	             a relay inside it (`disco-vm pipe`) rather than a hypervisor
-//	             socket, such as a boxd machine
+//	             socket, such as a Docker container
 func Listen(address string) (net.Listener, error) {
 	if address == "" {
 		address = "vsock:" + strconv.FormatUint(uint64(AgentPort), 10)

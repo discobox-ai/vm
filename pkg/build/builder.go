@@ -35,8 +35,9 @@ type Options struct {
 	Tags []string
 	// NoCache rebuilds every layer.
 	NoCache bool
-	// Agent is the disco-vm binary for the guest, baked in at install. It
-	// defaults to this binary, which is right when guest and host OS match.
+	// Agent is the disco-vm binary for the guest, baked in at install by a
+	// driver that lists Capabilities.Agent. It defaults to this binary, which
+	// is right when guest and host OS match.
 	Agent string
 	// GUI shows every build VM's display in a window, in this process.
 	GUI bool
@@ -249,7 +250,7 @@ func (b *Builder) install(ctx context.Context, p *Plan, in Install, contextDir, 
 		}
 		b.logf("==> install %s: %s no longer has %s, installing again as %s", in.OS, driver.Name(), image.Short(lost), image.Short(key))
 	}
-	if agent == "" {
+	if agent == "" && driver.Capabilities().Agent {
 		if in.OS != machine.OS(runtime.GOOS) {
 			return "", fmt.Errorf("installing a %s guest from a %s host needs --agent, the disco-vm binary built for %s", in.OS, runtime.GOOS, in.OS)
 		}
@@ -349,14 +350,14 @@ func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, parent, key str
 		switch step.Kind {
 		case "run":
 			var code int
-			code, err = booted.Guest.Run(stepCtx, guest.ExecRequest{Argv: step.Argv, Env: step.Env, Dir: step.Workdir, User: step.User}, nil, b.Out, b.Out)
+			code, err = machine.Run(stepCtx, booted.Machine, machine.ExecRequest{Argv: step.Argv, Env: step.Env, Dir: step.Workdir, User: step.User}, nil, b.Out, b.Out)
 			if err == nil && code != 0 {
 				err = fmt.Errorf("exited with code %d", code)
 			}
 		case "copy":
-			err = copyIn(stepCtx, booted.Guest, step.CopySrc, step.CopyDst)
+			err = copyIn(stepCtx, booted.Machine, step.CopySrc, step.CopyDst)
 		case "converge":
-			err = converge.Run(stepCtx, booted.Guest, converge.Options{Paths: []string{step.CopySrc}, Out: b.Out})
+			err = converge.Run(stepCtx, booted.Machine, converge.Options{Paths: []string{step.CopySrc}, Out: b.Out})
 		case "reboot":
 			if err = booted.Shutdown(stepCtx, 10*time.Minute); err == nil {
 				booted, err = e.Boot(stepCtx, inst, boot)
@@ -394,13 +395,13 @@ func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, parent, key str
 }
 
 // copyIn streams a context file or directory into a guest directory.
-func copyIn(ctx context.Context, client *guest.Client, src, dst string) error {
+func copyIn(ctx context.Context, g machine.Guest, src, dst string) error {
 	if _, err := os.Stat(src); err != nil {
 		return err
 	}
 	reader, writer := io.Pipe()
 	go func() { writer.CloseWithError(guest.Pack(writer, src, true)) }()
-	err := client.CopyTo(ctx, dst, reader)
+	err := g.CopyTo(ctx, dst, reader)
 	_ = reader.Close()
 	return err
 }

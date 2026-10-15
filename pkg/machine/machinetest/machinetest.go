@@ -2,10 +2,11 @@
 // It is the definition of done for a driver: the fake driver passes it in CI on
 // every OS, and the hcs and vz drivers run it on real hardware.
 //
-// The suite speaks only machine and guest interfaces, so it checks exactly the
+// The suite speaks only the machine interfaces, so it checks exactly the
 // contract the engine relies on: a layer can be installed, cloned, booted, and
-// reached; the guest agent answers on AgentPort; an orderly shutdown through
-// the agent stops the machine; a committed layer carries its writes to clones
+// reached; a booted machine's guest operations answer, and exec carries stdin,
+// stdout, stderr, the environment, the working directory, and the exit code;
+// an orderly shutdown stops the machine; a committed layer carries its writes to clones
 // of it and to no one else; clones run side by side; a warm image serves the
 // fast clone modes the driver lists; Kill always works.
 package machinetest
@@ -18,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,7 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -40,7 +39,7 @@ type Config struct {
 	Base *machine.Layer
 	// Boot is used for every boot.
 	Boot machine.BootOptions
-	// Timeout bounds each boot until the agent answers, and each shutdown.
+	// Timeout bounds each boot until the guest answers, and each shutdown.
 	Timeout time.Duration
 	// ScratchDir is a guest directory the suite may write into.
 	ScratchDir string
@@ -89,7 +88,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	instance := func(id string, chain ...machine.Layer) machine.InstanceSpec {
 		return machine.InstanceSpec{ID: id, Dir: filepath.Join(work, "inst-"+id), GuestOS: guestOS, Chain: chain, Mode: machine.Cold}
 	}
-	boot := func(t *testing.T, inst machine.InstanceSpec) (machine.Machine, *guest.Client) {
+	boot := func(t *testing.T, inst machine.InstanceSpec) machine.Machine {
 		t.Helper()
 		bootCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
@@ -98,16 +97,16 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("boot %s: %v", inst.ID, err)
 		}
 		t.Cleanup(func() { _ = m.Kill(context.Background()) })
-		client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
-		t.Cleanup(client.Close)
-		if err := client.WaitReady(bootCtx, m.Done()); err != nil {
-			t.Fatalf("agent on %s: %v", inst.ID, err)
+		if !caps.Remote {
+			if _, ok := m.(machine.Dialer); !ok {
+				t.Fatal("the driver is not Remote, but its machine is not a machine.Dialer for the shim")
+			}
 		}
-		return m, client
+		return m
 	}
-	shutdown := func(t *testing.T, m machine.Machine, client *guest.Client) {
+	shutdown := func(t *testing.T, m machine.Machine) {
 		t.Helper()
-		if err := client.Shutdown(ctx, false); err != nil {
+		if err := m.Shutdown(ctx, false); err != nil {
 			t.Fatalf("shutdown request: %v", err)
 		}
 		select {
@@ -131,18 +130,19 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		// Destroyed below once committed; this covers a step that fails
 		// first, which on a cloud driver would leave a billed machine.
 		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
-		m, client := boot(t, inst)
-		info, err := client.Info(ctx)
+		m := boot(t, inst)
+		info, err := m.Info(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if info.OS != string(guestOS) {
 			t.Fatalf("guest reports OS %q, want %q", info.OS, guestOS)
 		}
-		if err := client.CopyTo(ctx, marker, tarOf(t, "proof.txt", "committed")); err != nil {
+		if err := m.CopyTo(ctx, marker, tarOf(t, "proof.txt", "committed")); err != nil {
 			t.Fatalf("write marker: %v", err)
 		}
-		shutdown(t, m, client)
+		checkExec(t, m, guestOS, marker)
+		shutdown(t, m)
 		committed = machine.Layer{ID: "committed", Dir: filepath.Join(work, "layer-committed")}
 		if err := os.MkdirAll(committed.Dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -242,18 +242,18 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
 		}
 		limit := caps.MaxRunning[guestOS]
-		childM, childC := boot(t, child)
+		childM := boot(t, child)
 		if limit == 1 {
-			shutdown(t, childM, childC)
+			shutdown(t, childM)
 		}
-		_, siblingC := boot(t, sibling)
+		siblingM := boot(t, sibling)
 
 		if limit != 1 {
-			if got := readMarker(t, childC, marker+"/proof.txt"); got != "committed" {
+			if got := readMarker(t, childM, marker+"/proof.txt"); got != "committed" {
 				t.Fatalf("the committed layer's clone reads %q", got)
 			}
 		}
-		if _, err := siblingC.CopyFrom(ctx, marker+"/proof.txt"); err == nil {
+		if _, err := siblingM.CopyFrom(ctx, marker+"/proof.txt"); err == nil {
 			t.Fatal("a clone of the base saw a write committed to another layer")
 		}
 	})
@@ -299,8 +299,8 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("prepare %s: %v", w.Mode, err)
 		}
 		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
-		m, client := boot(t, inst)
-		if got := readMarker(t, client, marker+"/proof.txt"); got != "committed" {
+		m := boot(t, inst)
+		if got := readMarker(t, m, marker+"/proof.txt"); got != "committed" {
 			t.Fatalf("a %s clone of the committed layer reads %q", w.Mode, got)
 		}
 		_ = m.Kill(ctx)
@@ -345,7 +345,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("prepare: %v", err)
 		}
 		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
-		m, _ := boot(t, inst)
+		m := boot(t, inst)
 		if err := m.Kill(ctx); err != nil {
 			t.Fatalf("kill: %v", err)
 		}
@@ -378,15 +378,8 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			// nothing ever waits on this machine's Done.
 			bootCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 			defer cancel()
-			booted, err := driver.Boot(bootCtx, inst, cfg.Boot)
-			if err != nil {
+			if _, err := driver.Boot(bootCtx, inst, cfg.Boot); err != nil {
 				t.Fatalf("boot: %v", err)
-			}
-			first := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return booted.Dial(ctx, guest.AgentPort) })
-			err = first.WaitReady(bootCtx, nil)
-			first.Close()
-			if err != nil {
-				t.Fatalf("agent: %v", err)
 			}
 
 			m, err := attacher.Attach(ctx, inst)
@@ -394,13 +387,11 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 				t.Fatalf("attach to a running instance: %v", err)
 			}
 			t.Cleanup(func() { _ = m.Kill(context.Background()) })
-			client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
-			t.Cleanup(client.Close)
-			if err := client.WaitReady(bootCtx, nil); err != nil {
-				t.Fatalf("agent through an attached machine: %v", err)
+			if info, err := m.Info(ctx); err != nil || info.OS != string(guestOS) {
+				t.Fatalf("info through an attached machine: %+v, %v", info, err)
 			}
 
-			if err := client.Shutdown(ctx, false); err != nil {
+			if err := m.Shutdown(ctx, false); err != nil {
 				t.Fatalf("shutdown request: %v", err)
 			}
 			deadline := time.Now().Add(cfg.Timeout)
@@ -430,9 +421,9 @@ func tarOf(t *testing.T, name, content string) io.Reader {
 	return &buf
 }
 
-func readMarker(t *testing.T, client *guest.Client, path string) string {
+func readMarker(t *testing.T, g machine.Guest, path string) string {
 	t.Helper()
-	stream, err := client.CopyFrom(context.Background(), path)
+	stream, err := g.CopyFrom(context.Background(), path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
@@ -446,4 +437,25 @@ func readMarker(t *testing.T, client *guest.Client, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// checkExec runs a process in dir with an added variable and stdin, and
+// checks that its stdout, stderr, and exit code come back apart.
+func checkExec(t *testing.T, g machine.Guest, guestOS machine.OS, dir string) {
+	t.Helper()
+	argv := []string{"/bin/sh", "-c", `echo "$GREETING"; echo oops >&2; cat proof.txt; echo; cat; exit 3`}
+	if guestOS == machine.Windows {
+		argv = []string{"cmd", "/c", `echo %GREETING%& echo oops 1>&2& type proof.txt& echo.& findstr x*& exit 3`}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	code, err := machine.Run(ctx, g, machine.ExecRequest{Argv: argv, Env: []string{"GREETING=hello"}, Dir: dir}, strings.NewReader("piped\n"), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	lines := strings.Fields(strings.ReplaceAll(stdout.String(), "\r", ""))
+	if code != 3 || !slices.Equal(lines, []string{"hello", "committed", "piped"}) || strings.TrimSpace(stderr.String()) != "oops" {
+		t.Fatalf("exec: exit %d, stdout %q, stderr %q; want exit 3, hello, committed, and piped, and oops", code, stdout.String(), stderr.String())
+	}
 }

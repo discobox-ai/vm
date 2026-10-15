@@ -14,11 +14,9 @@ driver is CI's (`go tool task test`), not evidence that a guest behaves.
 go tool task build:linux-agent     # build/linux-amd64/disco-vm, static
 ```
 
-Build static: install uploads the CLI binary itself as the guest's agent, and
-a plain `go build` or `go install` in the devShell links a `/nix/store` glibc
-that a boxd guest lacks. Install runs the agent once on the guest and refuses
-one that does not start. `go tool task build` and `go tool task install` are
-static too, off macOS.
+boxd puts nothing of disco-vm's in its guests, so any build drives it. Docker
+needs this static one (below). `go tool task build` and `go tool task
+install` are static too, off macOS.
 
 Keep the file named `disco-vm`. Inside a discobox, the credential judge reads
 the command literally, and a binary called anything else is refused.
@@ -95,8 +93,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   unquoted `$CMD` holding spaces is one word. Use `${VAR}` and functions.
 - `pgrep -f '<pattern>'` matches the wrapper shell whose command line contains
   the pattern. Check a PID with `ps -p` instead.
-- A build longer than five minutes can outlive its sentinel, and the builder's
-  boot wait has no deadline: it hangs rather than fails. Run long builds with a
+- A build longer than five minutes can outlive its sentinel, and a wait on a
+  guest that cannot be asked can hang rather than fail. Run long builds with a
   watchdog that kills a build whose log has been quiet for six minutes, and
   re-run: cached layers make the retry cheap.
 - Clean up: `ls -a` should be empty at the end. A boxd machine left running is

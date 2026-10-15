@@ -22,21 +22,19 @@ func TestServiceFakeAPI(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
-	agent := linuxAgent(t)
 	dir, err := os.MkdirTemp("", "boxd")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	d, fake := fakeDriver(t, agent, dir)
-	t.Cleanup(fake.close)
+	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
 	base := machine.Layer{ID: "base", Dir: filepath.Join(dir, "layer")}
 	if err := os.MkdirAll(base.Dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux, Agent: agent}, base); err != nil {
+	if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, base); err != nil {
 		t.Fatal(err)
 	}
 	warm := machine.WarmSpec{GuestOS: machine.Linux, Chain: []machine.Layer{base}, Dir: filepath.Join(dir, "warm")}

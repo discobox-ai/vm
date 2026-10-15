@@ -38,6 +38,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 		SharedDirectories: true,
 		Display:           true,
 		Forward:           true,
+		Agent:             true,
 	}
 }
 

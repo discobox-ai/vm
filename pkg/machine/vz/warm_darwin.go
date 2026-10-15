@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -96,24 +95,24 @@ func stage(ctx context.Context, parent, dst bundle, cpus uint, memory uint64) er
 	defer func() { _ = vm.Kill(context.Background()) }()
 
 	ready, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	agent := vm.agent()
+	agent := vm.Client
 	err = agent.WaitReady(ready, vm.Done())
 	if err == nil {
 		if m, merr := parent.readMeta(); merr == nil && m.Login != nil {
 			err = waitLoggedIn(ready, agent, m.Login.Name)
 			// A template saved in Setup Assistant resumes every clone into it.
 			if err == nil {
-				check := guest.ExecRequest{Argv: []string{"pgrep", "-qx", "Setup Assistant"}}
-				if code, rerr := agent.Run(ready, check, nil, io.Discard, io.Discard); rerr == nil && code == 0 {
+				check := machine.ExecRequest{Argv: []string{"pgrep", "-qx", "Setup Assistant"}}
+				if code, rerr := machine.Run(ready, agent, check, nil, io.Discard, io.Discard); rerr == nil && code == 0 {
 					err = fmt.Errorf("vz: %s logged in to Setup Assistant; `disco-vm warm --rm` and warm again", m.Login.Name)
 				}
 			}
 		}
 	}
 	cancel()
-	// Nothing of the host's may be connected when memory is saved: a restored
-	// guest would hold connections to nobody.
-	agent.Close()
+	// Nothing of the host's is connected when memory is saved, which a
+	// restored guest would hold to nobody: the agent client keeps no
+	// connection between calls.
 	if err != nil {
 		return fmt.Errorf("vz: stage: %w", err)
 	}

@@ -27,7 +27,8 @@
 // The daemon owns a running guest, so the driver is remote: the engine runs no
 // shim, and every command attaches to the container (Attach).
 //
-// The agent listens on a root-only unix socket in the guest. Dial runs
+// The agent listens on a root-only unix socket in the guest, and is the
+// container's guest operations (guest.Client). Each connection to it runs
 // `disco-vm pipe` through docker exec, on the container's side of the user
 // namespace, and reaches the socket through the guest's root directory, which
 // Init links at relayDir.
@@ -111,6 +112,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 		GuestOS:    []machine.OS{machine.Linux},
 		CloneModes: []machine.CloneMode{machine.Cold},
 		Remote:     true,
+		Agent:      true,
 	}
 }
 
@@ -395,7 +397,35 @@ func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 	if opts.Console != nil {
 		fmt.Fprintf(opts.Console, "docker: %s (%s) is running\n", ref.Name, ref.ID[:12])
 	}
-	return newContainer(d.api, ref), nil
+	m := newContainer(d.api, ref)
+	watch, stopWatching := context.WithCancel(ctx)
+	defer stopWatching()
+	if err := m.WaitReady(ctx, d.stopped(watch, ref.ID)); err != nil {
+		_ = m.Kill(context.Background())
+		return nil, fmt.Errorf("docker: %s: %w", ref.Name, err)
+	}
+	return m, nil
+}
+
+// stopped is closed if the container stops before ctx ends. It is not the
+// machine's Done, whose watcher would outlive Boot in a program that embeds
+// the engine: Boot ends ctx when it returns.
+func (d *Driver) stopped(ctx context.Context, id string) <-chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+			if c, err := d.api.inspectContainer(ctx, id); isNotFound(err) || (err == nil && !c.State.Running) {
+				close(ch)
+				return
+			}
+		}
+	}()
+	return ch
 }
 
 // Attach finds the instance's container through the daemon, as any process
@@ -534,15 +564,10 @@ func (d *Driver) removeContainer(id string) {
 	_ = d.api.removeContainer(ctx, id)
 }
 
-// dial reaches a guest port: the agent's port is its unix socket, through the
-// guest's root directory, and any other is a TCP port on the loopback, which
-// the guest shares with the container.
-func dial(ctx context.Context, a *api, container string, port uint32) (net.Conn, error) {
-	target := fmt.Sprintf("tcp:127.0.0.1:%d", port)
-	if port == guest.AgentPort {
-		target = "unix:" + relayDir + "/guest" + agentSocket
-	}
-	return dialExec(ctx, a, container, []string{agentPath, "pipe", target}, guestAddr{container: container, port: port})
+// dialAgent reaches the guest agent's unix socket, through the guest's root
+// directory.
+func dialAgent(ctx context.Context, a *api, container string) (net.Conn, error) {
+	return dialExec(ctx, a, container, []string{agentPath, "pipe", "unix:" + relayDir + "/guest" + agentSocket}, guestAddr{container: container, port: guest.AgentPort})
 }
 
 // checkArch refuses an agent built for another CPU than the daemon's, which

@@ -20,9 +20,11 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
 - **The driver is remote.** The daemon owns a running guest, so the engine
   runs no shim, and every command attaches by inspecting the container. A
   machine waits on the container only once something asks whether it stopped.
-- **Dial is a docker exec of `disco-vm pipe`**, on the container's side of
-  the namespace, which reaches the agent's root-only socket through the
-  guest's root directory, as boxd's relay does through its Exec.
+- **The guest's operations are the agent's**, reached by a docker exec of
+  `disco-vm pipe` for each connection, on the container's side of the
+  namespace, which reaches the agent's root-only socket through the guest's
+  root directory. No other guest port is dialed: the service's URL is a port
+  the daemon publishes.
 - **It is not a VM.** The kernel is the host's, `/proc` shows the host's
   resources, and the network namespace is Docker's, which the guest cannot
   reconfigure. The driver lists cold clones only, because a cold boot takes

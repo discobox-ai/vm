@@ -151,8 +151,7 @@ func installAgent(ctx context.Context, vm *vmMachine, mac string, binary []byte,
 		return fmt.Errorf("vz: install the agent in the guest: %w\n%s", err, out)
 	}
 
-	guest := vm.agent()
-	defer guest.Close()
+	guest := vm.Client
 	if err := guest.WaitReady(ctx, vm.Done()); err != nil {
 		return fmt.Errorf("vz: the agent was installed but does not answer on vsock: %w", err)
 	}

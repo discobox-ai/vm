@@ -12,6 +12,7 @@ import (
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
 
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -19,6 +20,9 @@ import (
 // ShouldTerminateOnLastHandleClosed, so the VM lives exactly as long as the
 // handle here: a shim that crashes takes its VM with it and cannot orphan it.
 type vm struct {
+	// Client is the guest agent over hvsocket: the machine's guest
+	// operations.
+	*guest.Client
 	sys       *system
 	runtimeID guid.GUID
 	// nic is deleted once the VM is gone.
@@ -34,6 +38,7 @@ type vm struct {
 var (
 	_ machine.Machine      = (*vm)(nil)
 	_ machine.HostListener = (*vm)(nil)
+	_ machine.Dialer       = (*vm)(nil)
 )
 
 // startVM creates and starts a compute system from c. Its files must already
@@ -65,6 +70,7 @@ func startVM(id string, c vmConfig) (*vm, error) {
 // here on, including on error.
 func watch(sys *system, nic *endpoint) (*vm, error) {
 	m := &vm{sys: sys, nic: nic, done: make(chan struct{})}
+	m.Client = guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
 	unregister, err := sys.onEvent(m.event)
 	if err != nil {
 		m.exited(err)

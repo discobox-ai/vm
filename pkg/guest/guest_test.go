@@ -6,12 +6,15 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // shell runs a one-line script with the host's shell.
@@ -36,7 +39,6 @@ func startAgent(t *testing.T) (*Client, string) {
 		var d net.Dialer
 		return d.DialContext(ctx, "tcp", l.Addr().String())
 	})
-	t.Cleanup(client.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.WaitReady(ctx, nil); err != nil {
@@ -50,7 +52,7 @@ func TestExecOutputExitCodeAndStdin(t *testing.T) {
 	ctx := context.Background()
 
 	var stdout, stderr bytes.Buffer
-	code, err := client.Run(ctx, ExecRequest{Argv: shell("echo out&& echo err 1>&2&& exit 3")}, nil, &stdout, &stderr)
+	code, err := machine.Run(ctx, client, machine.ExecRequest{Argv: shell("echo out&& echo err 1>&2&& exit 3")}, nil, &stdout, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +65,12 @@ func TestExecOutputExitCodeAndStdin(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		cat = []string{"findstr", "^"}
 	}
-	code, err = client.Run(ctx, ExecRequest{Argv: cat}, strings.NewReader("piped\n"), &stdout, nil)
+	code, err = machine.Run(ctx, client, machine.ExecRequest{Argv: cat}, strings.NewReader("piped\n"), &stdout, nil)
 	if err != nil || code != 0 || strings.TrimSpace(stdout.String()) != "piped" {
 		t.Fatalf("stdin: code=%d err=%v stdout=%q", code, err, stdout.String())
 	}
 
-	if _, err := client.Run(ctx, ExecRequest{Argv: []string{"definitely-not-a-program-xyz"}}, nil, nil, nil); err == nil {
+	if _, err := machine.Run(ctx, client, machine.ExecRequest{Argv: []string{"definitely-not-a-program-xyz"}}, nil, nil, nil); err == nil {
 		t.Fatal("running a missing program did not fail")
 	}
 }
@@ -83,7 +85,7 @@ func TestExecEnvAndWorkdir(t *testing.T) {
 		script = "echo %GREETING%&& cd"
 	}
 	var out bytes.Buffer
-	code, err := client.Run(context.Background(), ExecRequest{Argv: shell(script), Env: []string{"GREETING=hi"}, Dir: "work"}, nil, &out, &out)
+	code, err := machine.Run(context.Background(), client, machine.ExecRequest{Argv: shell(script), Env: []string{"GREETING=hi"}, Dir: "work"}, nil, &out, &out)
 	if err != nil || code != 0 {
 		t.Fatalf("code=%d err=%v out=%q", code, err, out.String())
 	}
@@ -177,11 +179,72 @@ func TestExecTTY(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var out bytes.Buffer
-	code, err := client.Run(ctx, ExecRequest{Argv: shell("echo tty-hello&& exit 5"), TTY: true, Rows: 30, Cols: 100}, nil, &out, nil)
+	code, err := machine.Run(ctx, client, machine.ExecRequest{Argv: shell("echo tty-hello&& exit 5"), TTY: true, Rows: 30, Cols: 100}, nil, &out, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if code != 5 || !strings.Contains(out.String(), "tty-hello") {
 		t.Fatalf("code=%d output=%q", code, out.String())
+	}
+}
+
+// Relay serves a machine's guest operations to a client in another process
+// as the agent would: exec with stdin, output, and exit code, files both
+// ways, a missing path refused, and info.
+func TestRelay(t *testing.T) {
+	agent, root := startAgent(t)
+	l, err := Listen("tcp:127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: Relay(agent), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = server.Serve(l) }()
+	t.Cleanup(func() { _ = server.Close() })
+	client := NewClient(func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp", l.Addr().String())
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cat := []string{"cat"}
+	if runtime.GOOS == "windows" {
+		cat = []string{"findstr", "x*"}
+	}
+	var stdout, stderr bytes.Buffer
+	code, err := machine.Run(ctx, client, machine.ExecRequest{Argv: shell("echo out&& echo err 1>&2&& exit 3")}, nil, &stdout, &stderr)
+	if err != nil || code != 3 || strings.TrimSpace(stdout.String()) != "out" || strings.TrimSpace(stderr.String()) != "err" {
+		t.Fatalf("code=%d err=%v stdout=%q stderr=%q", code, err, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	if code, err := machine.Run(ctx, client, machine.ExecRequest{Argv: cat}, strings.NewReader("piped\n"), &stdout, nil); err != nil || code != 0 || strings.TrimSpace(stdout.String()) != "piped" {
+		t.Fatalf("stdin: code=%d err=%v stdout=%q", code, err, stdout.String())
+	}
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "relayed.txt", Mode: 0o644, Size: 2, Typeflag: tar.TypeReg})
+	_, _ = tw.Write([]byte("hi"))
+	_ = tw.Close()
+	if err := client.CopyTo(ctx, "in", &buf); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "in", "relayed.txt")); err != nil || string(data) != "hi" {
+		t.Fatalf("copied in: %q, %v", data, err)
+	}
+	stream, err := client.CopyFrom(ctx, "in/relayed.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, err := tar.NewReader(stream).Next()
+	_ = stream.Close()
+	if err != nil || header.Name != "relayed.txt" {
+		t.Fatalf("copied out: %v, %v", header, err)
+	}
+	if _, err := client.CopyFrom(ctx, "missing"); err == nil {
+		t.Fatal("a missing path was not refused")
+	}
+	if info, err := client.Info(ctx); err != nil || !info.Fake || info.Root != root {
+		t.Fatalf("info = %+v, %v", info, err)
 	}
 }
