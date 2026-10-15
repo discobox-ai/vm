@@ -97,11 +97,17 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 
 	driver := b.Engine.Driver
 	store := b.Engine.Images
+	// A project other than the default is part of every layer's key, so no
+	// two projects ever share a layer ID; the default's keys are those from
+	// before projects, so its cache stays valid.
 	salt := ""
+	if project := b.Engine.Project; project != machine.DefaultProject {
+		salt = "project " + project + "|"
+	}
 	if opts.NoCache {
 		// A fresh salt gives every layer a fresh ID, so nothing already in the
 		// store is reused or overwritten.
-		salt = fsutil.RandomHex(8)
+		salt += fsutil.RandomHex(8)
 	}
 
 	// The base decides the guest OS, which decides which layers and steps apply.

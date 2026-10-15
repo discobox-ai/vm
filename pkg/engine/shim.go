@@ -305,7 +305,7 @@ func (e *Engine) ShimMain(ctx context.Context, args []string) error {
 func (e *Engine) spawnShim(args []string, log *os.File) (<-chan error, error) {
 	argv := e.ShimCommand
 	if len(argv) == 0 {
-		argv = []string{e.Exe, "--root", e.Root, "--driver", e.Driver.Name(), "shim"}
+		argv = []string{e.Exe, "--root", e.Root, "--driver", e.Driver.Name(), "--project", e.Project, "shim"}
 	}
 	// Not tied to a ctx: the shim outlives the command that spawned it.
 	cmd := exec.CommandContext(context.Background(), argv[0], append(slices.Clone(argv[1:]), args...)...) //nolint:gosec // G204: argv is the engine's own executable or its configured ShimCommand

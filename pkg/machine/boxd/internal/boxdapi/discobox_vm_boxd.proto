@@ -22,6 +22,8 @@ service BoxdApi {
   // NOT_FOUND for an id/name with no matching machine, including a destroyed
   // one.
   rpc GetVm(GetVmRequest)                   returns (GetVmResponse);
+  // Every machine in the caller's context, with no paging.
+  rpc ListVms(ListVmsRequest)               returns (ListVmsResponse);
   // The first request chunk carries vm_id/command; later chunks carry stdin.
   // The stream ends with a final chunk carrying exit_code. Cancelling the
   // call kills the remote command.
@@ -38,6 +40,8 @@ service BoxdApi {
   rpc CreateSnapshot(CreateSnapshotRequest)   returns (CreateSnapshotResponse);
   rpc GetSnapshot(GetSnapshotRequest)         returns (GetSnapshotResponse);
   rpc DeleteSnapshot(DeleteSnapshotRequest)   returns (DeleteSnapshotResponse);
+  // Every snapshot in the caller's context, with no paging.
+  rpc ListSnapshots(ListSnapshotsRequest)     returns (ListSnapshotsResponse);
   rpc CreateVmFromSnapshot(CreateVmFromSnapshotRequest) returns (CreateVmResponse);
   rpc ResizeVm(ResizeVmRequest) returns (ResizeVmResponse);
   // Every machine has a default proxy at <machine>.<zone>: an HTTPS domain
@@ -113,7 +117,13 @@ message GetVmResponse {
   string restart_policy = 6;
   uint32 vcpu           = 15;
   uint64 memory_bytes   = 16;
+  int64  created_at     = 17;  // epoch seconds
 }
+
+message ListVmsRequest {
+  string org = 1;  // empty = the caller's own machines
+}
+message ListVmsResponse { repeated GetVmResponse vms = 1; }
 
 message ExecChunk {
   bytes  data      = 1;
@@ -160,7 +170,13 @@ message SnapshotInfo {
   uint64 size_bytes   = 7;
   uint32 vcpu         = 9;
   uint64 memory_bytes = 10;
+  int64  created_at   = 12;  // epoch milliseconds
 }
+
+message ListSnapshotsRequest {
+  string org = 1;  // empty = the caller's active context
+}
+message ListSnapshotsResponse { repeated SnapshotInfo snapshots = 1; }
 
 message GetSnapshotRequest {
   string name = 1;

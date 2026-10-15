@@ -36,6 +36,7 @@ const (
 	BoxdApi_StartVm_FullMethodName                 = "/boxd.api.v1.BoxdApi/StartVm"
 	BoxdApi_StopVm_FullMethodName                  = "/boxd.api.v1.BoxdApi/StopVm"
 	BoxdApi_GetVm_FullMethodName                   = "/boxd.api.v1.BoxdApi/GetVm"
+	BoxdApi_ListVms_FullMethodName                 = "/boxd.api.v1.BoxdApi/ListVms"
 	BoxdApi_Exec_FullMethodName                    = "/boxd.api.v1.BoxdApi/Exec"
 	BoxdApi_Whoami_FullMethodName                  = "/boxd.api.v1.BoxdApi/Whoami"
 	BoxdApi_UploadFileStream_FullMethodName        = "/boxd.api.v1.BoxdApi/UploadFileStream"
@@ -47,6 +48,7 @@ const (
 	BoxdApi_CreateSnapshot_FullMethodName          = "/boxd.api.v1.BoxdApi/CreateSnapshot"
 	BoxdApi_GetSnapshot_FullMethodName             = "/boxd.api.v1.BoxdApi/GetSnapshot"
 	BoxdApi_DeleteSnapshot_FullMethodName          = "/boxd.api.v1.BoxdApi/DeleteSnapshot"
+	BoxdApi_ListSnapshots_FullMethodName           = "/boxd.api.v1.BoxdApi/ListSnapshots"
 	BoxdApi_CreateVmFromSnapshot_FullMethodName    = "/boxd.api.v1.BoxdApi/CreateVmFromSnapshot"
 	BoxdApi_ResizeVm_FullMethodName                = "/boxd.api.v1.BoxdApi/ResizeVm"
 	BoxdApi_ListProxies_FullMethodName             = "/boxd.api.v1.BoxdApi/ListProxies"
@@ -65,6 +67,8 @@ type BoxdApiClient interface {
 	// NOT_FOUND for an id/name with no matching machine, including a destroyed
 	// one.
 	GetVm(ctx context.Context, in *GetVmRequest, opts ...grpc.CallOption) (*GetVmResponse, error)
+	// Every machine in the caller's context, with no paging.
+	ListVms(ctx context.Context, in *ListVmsRequest, opts ...grpc.CallOption) (*ListVmsResponse, error)
 	// The first request chunk carries vm_id/command; later chunks carry stdin.
 	// The stream ends with a final chunk carrying exit_code. Cancelling the
 	// call kills the remote command.
@@ -81,6 +85,8 @@ type BoxdApiClient interface {
 	CreateSnapshot(ctx context.Context, in *CreateSnapshotRequest, opts ...grpc.CallOption) (*CreateSnapshotResponse, error)
 	GetSnapshot(ctx context.Context, in *GetSnapshotRequest, opts ...grpc.CallOption) (*GetSnapshotResponse, error)
 	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
+	// Every snapshot in the caller's context, with no paging.
+	ListSnapshots(ctx context.Context, in *ListSnapshotsRequest, opts ...grpc.CallOption) (*ListSnapshotsResponse, error)
 	CreateVmFromSnapshot(ctx context.Context, in *CreateVmFromSnapshotRequest, opts ...grpc.CallOption) (*CreateVmResponse, error)
 	ResizeVm(ctx context.Context, in *ResizeVmRequest, opts ...grpc.CallOption) (*ResizeVmResponse, error)
 	// Every machine has a default proxy at <machine>.<zone>: an HTTPS domain
@@ -144,6 +150,16 @@ func (c *boxdApiClient) GetVm(ctx context.Context, in *GetVmRequest, opts ...grp
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetVmResponse)
 	err := c.cc.Invoke(ctx, BoxdApi_GetVm_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *boxdApiClient) ListVms(ctx context.Context, in *ListVmsRequest, opts ...grpc.CallOption) (*ListVmsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListVmsResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_ListVms_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -266,6 +282,16 @@ func (c *boxdApiClient) DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRe
 	return out, nil
 }
 
+func (c *boxdApiClient) ListSnapshots(ctx context.Context, in *ListSnapshotsRequest, opts ...grpc.CallOption) (*ListSnapshotsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSnapshotsResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_ListSnapshots_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *boxdApiClient) CreateVmFromSnapshot(ctx context.Context, in *CreateVmFromSnapshotRequest, opts ...grpc.CallOption) (*CreateVmResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateVmResponse)
@@ -327,6 +353,8 @@ type BoxdApiServer interface {
 	// NOT_FOUND for an id/name with no matching machine, including a destroyed
 	// one.
 	GetVm(context.Context, *GetVmRequest) (*GetVmResponse, error)
+	// Every machine in the caller's context, with no paging.
+	ListVms(context.Context, *ListVmsRequest) (*ListVmsResponse, error)
 	// The first request chunk carries vm_id/command; later chunks carry stdin.
 	// The stream ends with a final chunk carrying exit_code. Cancelling the
 	// call kills the remote command.
@@ -343,6 +371,8 @@ type BoxdApiServer interface {
 	CreateSnapshot(context.Context, *CreateSnapshotRequest) (*CreateSnapshotResponse, error)
 	GetSnapshot(context.Context, *GetSnapshotRequest) (*GetSnapshotResponse, error)
 	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
+	// Every snapshot in the caller's context, with no paging.
+	ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error)
 	CreateVmFromSnapshot(context.Context, *CreateVmFromSnapshotRequest) (*CreateVmResponse, error)
 	ResizeVm(context.Context, *ResizeVmRequest) (*ResizeVmResponse, error)
 	// Every machine has a default proxy at <machine>.<zone>: an HTTPS domain
@@ -377,6 +407,9 @@ func (UnimplementedBoxdApiServer) StopVm(context.Context, *StopVmRequest) (*Stop
 func (UnimplementedBoxdApiServer) GetVm(context.Context, *GetVmRequest) (*GetVmResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetVm not implemented")
 }
+func (UnimplementedBoxdApiServer) ListVms(context.Context, *ListVmsRequest) (*ListVmsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListVms not implemented")
+}
 func (UnimplementedBoxdApiServer) Exec(grpc.BidiStreamingServer[ExecChunk, ExecChunk]) error {
 	return status.Error(codes.Unimplemented, "method Exec not implemented")
 }
@@ -409,6 +442,9 @@ func (UnimplementedBoxdApiServer) GetSnapshot(context.Context, *GetSnapshotReque
 }
 func (UnimplementedBoxdApiServer) DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteSnapshot not implemented")
+}
+func (UnimplementedBoxdApiServer) ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSnapshots not implemented")
 }
 func (UnimplementedBoxdApiServer) CreateVmFromSnapshot(context.Context, *CreateVmFromSnapshotRequest) (*CreateVmResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateVmFromSnapshot not implemented")
@@ -532,6 +568,24 @@ func _BoxdApi_GetVm_Handler(srv interface{}, ctx context.Context, dec func(inter
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(BoxdApiServer).GetVm(ctx, req.(*GetVmRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BoxdApi_ListVms_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListVmsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).ListVms(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_ListVms_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).ListVms(ctx, req.(*ListVmsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -712,6 +766,24 @@ func _BoxdApi_DeleteSnapshot_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BoxdApi_ListSnapshots_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSnapshotsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).ListSnapshots(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_ListSnapshots_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).ListSnapshots(ctx, req.(*ListSnapshotsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _BoxdApi_CreateVmFromSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateVmFromSnapshotRequest)
 	if err := dec(in); err != nil {
@@ -830,6 +902,10 @@ var BoxdApi_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _BoxdApi_GetVm_Handler,
 		},
 		{
+			MethodName: "ListVms",
+			Handler:    _BoxdApi_ListVms_Handler,
+		},
+		{
 			MethodName: "Whoami",
 			Handler:    _BoxdApi_Whoami_Handler,
 		},
@@ -864,6 +940,10 @@ var BoxdApi_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteSnapshot",
 			Handler:    _BoxdApi_DeleteSnapshot_Handler,
+		},
+		{
+			MethodName: "ListSnapshots",
+			Handler:    _BoxdApi_ListSnapshots_Handler,
 		},
 		{
 			MethodName: "CreateVmFromSnapshot",

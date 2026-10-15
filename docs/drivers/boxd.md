@@ -54,6 +54,8 @@ use. The parts that matter here:
 | `Machine.Dial(port)` | Exec `sudo -n /usr/local/libexec/disco-vm pipe ADDR`: the agent's unix socket for port 7300, `tcp:127.0.0.1:PORT` otherwise. |
 | `Commit` | the guest is stopped after an orderly shutdown. Start it, wait for the agent, and snapshot. |
 | `Destroy` | `DestroyVm`. |
+| `Orphans` | `ListVms` and `ListSnapshots` in the caller's context, keeping the names of the project (`dvm-<project>--`) that no instance's `vm.json`, layer's `layer.json`, stage's `stage.json`, or tag names. Two calls on every `ls` and `images`. |
+| `RemoveOrphan` | `DestroyVm` a machine, `DeleteSnapshot` a snapshot (`disco-vm rm` / `rmi` with an orphan's name). |
 | `Warm` | at the layer's size, point `stage.json` at the layer's snapshot. At another size, boot a cold clone at that size and snapshot it (`own`, deleted by `Cool`). |
 | `Warmth` | `{resume, -1}` while the stage's snapshot is ready. |
 | `Prepare` | once the machine is restored, `SetBotProtection` off, `SetProxyPort` pins the default proxy (the one `ListProxies` marks `is_default`) to 7302, and its domain is recorded in `vm.json`. |
@@ -64,9 +66,16 @@ The agent runs as root under systemd and listens on
 who has passwordless sudo, so the relay reaches the socket through
 `sudo -n`.
 
-Machine names are `dvm-<instance id>-<random>`, and snapshot names are
-`dvm-<layer id>-<random>`. A `--no-cache` rebuild or a failed commit never
-reuses a name.
+Machine names are `dvm-<project>--<instance id>-<random>`, at most 59
+characters so that a name is a DNS label in its proxy's domain, and snapshot
+names are `dvm-<project>--<layer id>-<random>`. A `--no-cache` rebuild or a
+failed commit never reuses a name. A tag's snapshot is
+`dvm-<project>--<layer id>-tag-<ref>-<hash>`, which sorts beside its layer's:
+the ref with its punctuation as `-`, cut to keep the name within 66
+characters, and four hex digits of the ref's SHA-256 to tell apart refs that
+then read the same. A name from before projects (`dvm-<id>-<random>`, no `--`)
+is the default project's. A tag snapshot made before projects is named
+otherwise, so `images` lists it as an orphan; `rmi` with its name deletes it.
 
 ## Try it
 
@@ -98,10 +107,13 @@ export DISCO_VM_DRIVER=boxd
 ./disco-vm warm --rm demo/boxd && ./disco-vm rmi demo/boxd
 ```
 
-Each instance is a machine named `dvm-...` in `boxd ls`, and each layer is a
-snapshot named `dvm-...` in `boxd snap ls`. `rm` destroys the machine, and
-`rmi` deletes the snapshots. disco-vm's own state (the image store, instances)
-is local, under `DISCO_VM_ROOT`, so use one host for one set of images.
+Each instance is a machine named `dvm-default--...` in `boxd ls`, and each
+layer is a snapshot named `dvm-default--...` in `boxd snap ls` (`--project`
+names the project). `rm` destroys the machine, and `rmi` deletes the
+snapshots, a tag's with the tag. disco-vm's own state (the image store,
+instances) is local, under `DISCO_VM_ROOT`, so use one host for one set of
+images. Whatever of the project's is in boxd and not in that state, a store
+deleted or another host's, is listed by `ls` and `images` as `<orphan>`.
 
 ## Configuration
 

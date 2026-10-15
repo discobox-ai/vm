@@ -115,7 +115,7 @@ func fakeEngine(t *testing.T) (*engine.Engine, string) {
 	if out, err := exec.CommandContext(ctx, "go", "build", "-o", binary, "../../cmd/disco-vm").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	e, err := engine.Open(filepath.Join(dir, "root"), &fake.Driver{Agent: binary}, nil)
+	e, err := engine.Open(filepath.Join(dir, "root"), &fake.Driver{Agent: binary}, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

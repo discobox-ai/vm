@@ -176,7 +176,7 @@ func TestTagSnapshot(t *testing.T) {
 	machine.SetDebug(&calls)
 	t.Cleanup(func() { machine.SetDebug(nil) })
 	defer func() {
-		for _, want := range []string{"boxd CreateVmFromSnapshot {snapshot:", "boxd GetSnapshot {name:\"dvm-0123456789ab-tag-", "status:\"ready\"", "boxd DeleteSnapshot {name:"} {
+		for _, want := range []string{"boxd CreateVmFromSnapshot {snapshot:", "boxd GetSnapshot {name:\"dvm-default--0123456789ab-tag-", "status:\"ready\"", "boxd DeleteSnapshot {name:"} {
 			if !strings.Contains(calls.String(), want) {
 				t.Errorf("debug output lacks %q:\n%s", want, calls.String())
 			}
@@ -192,7 +192,7 @@ func TestTagSnapshot(t *testing.T) {
 		t.Fatalf("snapshots %v, want the layer's %v and one for each of two tags", got, layer)
 	}
 	for _, name := range got {
-		if name != layer[0] && !strings.HasPrefix(name, "dvm-0123456789ab-tag-discobox-base-latest-") {
+		if name != layer[0] && !strings.HasPrefix(name, "dvm-default--0123456789ab-tag-discobox-base-latest-") {
 			t.Fatalf("a tag's snapshot is named %s", name)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func openStore(t *testing.T, root string) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	s, err := Open(root, db)
+	s, err := Open(root, db, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,9 +91,26 @@ func TestUntaggedImages(t *testing.T) {
 	_ = s.Tag(context.Background(), "app", "bbbbbbbbbbbb2", driver)
 
 	// The untagged head is an image; the shared parent is not.
-	images, err := s.Images()
+	images, err := s.Images(false)
 	if err != nil || len(images) != 2 || images[0].Ref != "app:latest" || images[1].Ref != "" || images[1].Layer.ID != "cccccccccccc3" {
 		t.Fatalf("images = %+v, %v", images, err)
+	}
+	// With all, the shared parent is listed too, untagged; a tagged layer
+	// is still listed once, by its tag.
+	all, err := s.Images(true)
+	if err != nil || len(all) != 3 || all[0].Ref != "app:latest" {
+		t.Fatalf("all images = %+v, %v", all, err)
+	}
+	var untaggedIDs []string
+	for _, img := range all[1:] {
+		if img.Ref != "" {
+			t.Fatalf("all images = %+v", all)
+		}
+		untaggedIDs = append(untaggedIDs, img.Layer.ID)
+	}
+	slices.Sort(untaggedIDs)
+	if !slices.Equal(untaggedIDs, []string{"aaaaaaaaaaaa1", "cccccccccccc3"}) {
+		t.Fatalf("untagged layers with all = %v", untaggedIDs)
 	}
 	// By ID, only an untagged head goes.
 	for _, id := range []string{"aaaaaaaaaaaa1", "bbbbbbbbbbbb2"} {

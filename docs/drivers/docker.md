@@ -125,8 +125,8 @@ The offset is in every layer, so all of an image store's guests share it.
 | seam | docker |
 |---|---|
 | `Install` | pull `options.image` (default `debian:trixie`) if the daemon lacks it; in a container from it, as root: install systemd and dbus if missing (apt-get, dnf, or zypper), install the agent as `disco-vm-guest.service`, mask units a container cannot run, remove Docker's `policy-rc.d`, empty `/etc/machine-id` and make D-Bus's copy a link to it, and shift; commit with `docker-init` as the entrypoint. Media must be `latest`. |
-| layer | `layer.json`: the committed image's ID and the tag (`disco-vm-layer:<id>-<rand>`) that keeps it from being pruned. `DeleteLayer` removes the tag, and the image with it. |
-| `Prepare` | create the container from the parent's image, with the settings above, named `dvm-<instance id>-<rand>`, publishing 7302/tcp on `127.0.0.1` at a port the daemon picks at each start. Cold only. |
+| layer | `layer.json`: the committed image's ID and the tag (`disco-vm-layer:<project>--<id>-<rand>`) that keeps it from being pruned. `DeleteLayer` removes the tag, and the image with it. |
+| `Prepare` | create the container from the parent's image, with the settings above, named `dvm-<project>--<instance id>-<rand>`, publishing 7302/tcp on `127.0.0.1` at a port the daemon picks at each start. Cold only. |
 | `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `http://127.0.0.1:<published port>` while the container runs. |
 | `Boot` | size the container (`docker update`: CPUs, and memory with no swap) and start it. |
 | `Attach` | (`Capabilities.Remote`: the daemon owns the container, so the engine runs no shim.) Inspect the container: running is a machine, and stopped or gone is `ErrNotRunning`. A guest that powered itself off has already stopped its container, because Init exits with it. |
@@ -135,6 +135,8 @@ The offset is in every layer, so all of an image store's guests share it.
 | `Machine.Dial(port)` | docker exec `disco-vm pipe`, on the container's side: `unix:/run/disco-vm-relay/guest/run/disco-vm/agent.sock` for the agent, `tcp:127.0.0.1:PORT` otherwise, which the guest shares. |
 | `Commit` | empty the stopped container's `/etc/machine-id`, so every instance of the layer makes its own, and `docker commit` it. |
 | `Destroy` | `docker rm -f`. |
+| `Orphans` | every container with the driver's labels and every `disco-vm-layer` image, named for the project, that no instance's `container.json` or layer's `layer.json` names. A name from before projects (no `--`) is the default project's. |
+| `RemoveOrphan` | `docker rm -f` a container, and remove an image's tag, and the image with it (`disco-vm rm` / `rmi` with an orphan's name). |
 
 The driver talks to the Docker Engine API over `DOCKER_HOST` itself, not
 through the docker CLI or SDK, as boxd's does.

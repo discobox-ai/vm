@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -163,6 +164,52 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			if ok, err := driver.LayerExists(ctx, layer); err != nil || !ok {
 				t.Fatalf("layer %s exists = %v, %v", layer.ID, ok, err)
 			}
+		}
+	})
+
+	// What the store knows is never an orphan, and what a remote driver
+	// holds for it is one the moment the store forgets it: a prepared
+	// instance's machine and the two layers'.
+	t.Run("what-the-store-forgets-is-an-orphan", func(t *testing.T) {
+		inst := instance("known", *base, committed)
+		if err := driver.Prepare(ctx, inst); err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+		orphans := func(known machine.Known) map[string]machine.OrphanKind {
+			t.Helper()
+			list, err := driver.Orphans(ctx, known)
+			if err != nil {
+				t.Fatalf("orphans: %v", err)
+			}
+			out := map[string]machine.OrphanKind{}
+			for _, o := range list {
+				if o.Name == "" || o.Kind != machine.OrphanMachine && o.Kind != machine.OrphanLayer {
+					t.Fatalf("orphan %+v has no name or no kind", o)
+				}
+				out[o.Name] = o.Kind
+			}
+			return out
+		}
+		known := orphans(machine.Known{Instances: []machine.InstanceSpec{inst}, Layers: []machine.Layer{*base, committed}})
+		forgotten := orphans(machine.Known{})
+		gained := map[machine.OrphanKind]int{}
+		for name, kind := range forgotten {
+			if _, ok := known[name]; !ok {
+				gained[kind]++
+			}
+		}
+		for name := range known {
+			if _, ok := forgotten[name]; !ok {
+				t.Fatalf("%s is an orphan only while the store knows more", name)
+			}
+		}
+		want := map[machine.OrphanKind]int{}
+		if caps.Remote {
+			want = map[machine.OrphanKind]int{machine.OrphanMachine: 1, machine.OrphanLayer: 2}
+		}
+		if !maps.Equal(gained, want) {
+			t.Fatalf("forgetting an instance and two layers made orphans of %v, want %v", gained, want)
 		}
 	})
 

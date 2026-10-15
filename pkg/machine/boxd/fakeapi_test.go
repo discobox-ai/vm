@@ -183,6 +183,16 @@ func (f *fakeAPI) GetVm(_ context.Context, req *boxdapi.GetVmRequest) (*boxdapi.
 	return &boxdapi.GetVmResponse{VmId: v.id, Name: v.name, Status: v.status, Vcpu: v.vcpu, MemoryBytes: v.memory}, nil
 }
 
+func (f *fakeAPI) ListVms(context.Context, *boxdapi.ListVmsRequest) (*boxdapi.ListVmsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := &boxdapi.ListVmsResponse{}
+	for _, v := range f.vms {
+		out.Vms = append(out.Vms, &boxdapi.GetVmResponse{VmId: v.id, Name: v.name, Status: v.status, Vcpu: v.vcpu, MemoryBytes: v.memory})
+	}
+	return out, nil
+}
+
 func (f *fakeAPI) DestroyVm(_ context.Context, req *boxdapi.DestroyVmRequest) (*boxdapi.DestroyVmResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -344,6 +354,18 @@ func (f *fakeAPI) GetSnapshot(_ context.Context, req *boxdapi.GetSnapshotRequest
 	return &boxdapi.GetSnapshotResponse{Snapshot: &boxdapi.SnapshotInfo{
 		SnapshotId: snap.id, Name: snap.name, Version: 1, Status: "ready", Vcpu: snap.vcpu, MemoryBytes: snap.memory,
 	}}, nil
+}
+
+func (f *fakeAPI) ListSnapshots(context.Context, *boxdapi.ListSnapshotsRequest) (*boxdapi.ListSnapshotsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := &boxdapi.ListSnapshotsResponse{}
+	for _, snap := range f.snapshots {
+		out.Snapshots = append(out.Snapshots, &boxdapi.SnapshotInfo{
+			SnapshotId: snap.id, Name: snap.name, Version: 1, Status: "ready", Vcpu: snap.vcpu, MemoryBytes: snap.memory,
+		})
+	}
+	return out, nil
 }
 
 func (f *fakeAPI) DeleteSnapshot(_ context.Context, req *boxdapi.DeleteSnapshotRequest) (*boxdapi.DeleteSnapshotResponse, error) {

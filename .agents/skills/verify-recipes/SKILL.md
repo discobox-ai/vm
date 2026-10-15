@@ -37,7 +37,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   `discobox-access` for `BOXD_TOKEN` (host `boxd.sh`) with a use naming
   disco-vm and boxd broadly, and run every command as
   `discobox-access run --use <id> -- disco-vm ...`. Each run gets a sentinel
-  that lives five minutes.
+  that lives five minutes. Spell commands as the use names them: `ps`, not
+  its alias `ls`, and no `--debug`, or the judge may refuse the run.
 - Isolate state: `export DISCO_VM_ROOT=<a scratch directory>/dvm
   DISCO_VM_DRIVER=boxd`. The image index lives there; the layers are boxd
   snapshots.
@@ -55,8 +56,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   dynamically (the devShell's from `/nix/store`), and it fails at install or
   boot on an image without that libc.
 - Isolate state: `export DISCO_VM_ROOT=<a scratch directory>/dvm
-  DISCO_VM_DRIVER=docker`. Layers are images named `disco-vm-layer:*`, and
-  instances are containers named `dvm-*`.
+  DISCO_VM_DRIVER=docker`. Layers are images named `disco-vm-layer:<project>--*`, and
+  instances are containers named `dvm-<project>--*` (`--project`, default
+  `default`).
 - Base image: `docs/examples/docker.yaml`. Install takes 30s to 2 minutes
   (apt installs systemd); a layer costs a shutdown and a `docker commit`.
 - Inside a discobox, build steps that use the network need the proxy in the
@@ -70,8 +72,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   processes at uid 16777216 and up), `cat /etc/machine-id` in two instances
   (different), a guest's own `systemctl reboot` (back, still `running`), and
   `docker kill` or `docker rm -f` on the container behind disco-vm's back,
-  then `ps -a`, `start`, `rm -f`. No `disco-vm shim` process should exist.
-- Clean up: `ps -a` empty, and no `dvm-*` containers or `disco-vm-layer`
+  then `ls -a`, `start`, `rm -f`. No `disco-vm shim` process should exist.
+- Clean up: `ls -a` and `images` list no `<orphan>` rows, and no `dvm-*` containers or `disco-vm-layer`
   images left (`docker ps -a`, `docker images`). `rmi` keeps an image's
   layers while an instance uses them; tag and `rmi` a leftover layer by ID.
 

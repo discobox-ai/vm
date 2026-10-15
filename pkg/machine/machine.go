@@ -18,9 +18,12 @@ package machine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"slices"
+	"strings"
+	"time"
 )
 
 // ErrUnsupported reports that a driver does not offer a capability at all, on
@@ -110,6 +113,58 @@ func (c Capabilities) SupportsMode(mode CloneMode) bool {
 type Layer struct {
 	ID  string
 	Dir string
+	// Project is the layer's project, which a driver puts in the name of
+	// whatever it keeps for the layer outside Dir.
+	Project string
+}
+
+// DefaultProject is the project of everything made without one named, and of
+// everything made before there were projects.
+const DefaultProject = "default"
+
+// ValidateProject checks a project name: 1 to 32 lowercase letters, digits,
+// and single hyphens, starting and ending with a letter or digit. That fits
+// in a DNS label beside the rest of a resource's name, as a boxd machine's
+// name must, and a driver can end it with "--" and split it back off.
+func ValidateProject(project string) error {
+	ok := len(project) >= 1 && len(project) <= 32 &&
+		!strings.HasPrefix(project, "-") && !strings.HasSuffix(project, "-") && !strings.Contains(project, "--")
+	for _, r := range project {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			ok = false
+		}
+	}
+	if !ok {
+		return fmt.Errorf("machine: project %q is not 1 to 32 lowercase letters, digits, and single hyphens, starting and ending with a letter or digit", project)
+	}
+	return nil
+}
+
+// ResourcePrefix is how a driver starts the name of everything it makes for
+// a project, after its own prefix (boxd's "dvm-"): the project and "--". The
+// default project's names before projects had no project in them, so
+// ResourceProject reads such a name as the default project's.
+// An empty project is the default.
+func ResourcePrefix(prefix, project string) string {
+	if project == "" {
+		project = DefaultProject
+	}
+	return prefix + project + "--"
+}
+
+// ResourceProject is the project a name made with ResourcePrefix belongs to:
+// the default project for a name under prefix with no "--" in it, and "" for
+// a name that is not under prefix at all.
+func ResourceProject(prefix, name string) string {
+	rest, ok := strings.CutPrefix(name, prefix)
+	if !ok {
+		return ""
+	}
+	project, _, ok := strings.Cut(rest, "--")
+	if !ok {
+		return DefaultProject
+	}
+	return project
 }
 
 // InstallSpec creates a base layer from installation media.
@@ -144,6 +199,8 @@ type InstallSpec struct {
 // InstanceSpec is one instance as a driver sees it.
 type InstanceSpec struct {
 	ID string
+	// Project is the instance's project, as Layer.Project.
+	Project string
 	// Dir is private to the driver for this instance, and empty on Prepare.
 	Dir     string
 	GuestOS OS
@@ -237,12 +294,72 @@ type Driver interface {
 	// UntagLayer drops what TagLayer recorded for ref on layer. A tag it
 	// never recorded is not an error.
 	UntagLayer(ctx context.Context, layer Layer, ref string) error
+	// Orphans lists what the driver holds outside the store, under the names
+	// it gives what it makes (boxd's dvm- machines and snapshots, the daemon's
+	// labeled containers and disco-vm-layer images), that nothing in known
+	// accounts for: what a deleted store, a crash between making something
+	// and recording it, or another host's store left there. Something being
+	// made right now (an install's machine, a tag's snapshot) is one until it
+	// is recorded or released. It reads the service on every call, never a
+	// cache. A driver whose layers and instances live only in their Dirs
+	// returns none.
+	Orphans(ctx context.Context, known Known) ([]Orphan, error)
+	// RemoveOrphan deletes one resource Orphans listed: destroys the machine,
+	// or deletes the snapshot or image. The caller passes only what Orphans
+	// returned for its project just before. Something already gone is not an
+	// error.
+	RemoveOrphan(ctx context.Context, orphan Orphan) error
 	// Service is the prepared instance's service. A URL the driver gives
 	// may exist only while the instance runs (a port the daemon publishes at
 	// each start); asked for one while it is stopped, the driver returns
 	// ErrNotRunning. A URL that outlives a stop (boxd's) is the same across
 	// stop and start.
 	Service(ctx context.Context, inst InstanceSpec) (Service, error)
+}
+
+// Known is everything a store holds metadata for: what Orphans leaves out. A
+// driver reads what it recorded in each Dir to learn which of its resources
+// these are.
+type Known struct {
+	// Project is the project Orphans lists: what the driver made for others
+	// is theirs, not an orphan of this one.
+	Project string
+	// Instances carry ID and Dir, the build's temporary instances included.
+	Instances []InstanceSpec
+	Layers    []Layer
+	// Tags are the store's tags, each on its layer, as TagLayer was given
+	// them.
+	Tags []Tag
+	// Stages are the Dirs of every warm stage (WarmSpec.Dir).
+	Stages []string
+}
+
+// Tag is one tag a layer carries in the store.
+type Tag struct {
+	Layer Layer
+	Ref   string
+}
+
+// OrphanKind says which list an orphan belongs in.
+type OrphanKind string
+
+const (
+	// OrphanMachine is a machine or container, listed beside instances.
+	OrphanMachine OrphanKind = "machine"
+	// OrphanLayer is a snapshot or image, listed beside images.
+	OrphanLayer OrphanKind = "layer"
+)
+
+// Orphan is one resource a driver holds that the store does not know.
+type Orphan struct {
+	Kind OrphanKind `json:"kind"`
+	// Name is what the service calls it, and what `disco-vm rm` and `rmi`
+	// take to remove it.
+	Name string `json:"name"`
+	ID   string `json:"id"`
+	// Status is the service's word for its state: running, stopped, ready.
+	Status  string    `json:"status,omitempty"`
+	Created time.Time `json:"created,omitzero"`
 }
 
 // ErrNotWarm reports that nothing is staged for the clone mode Prepare was

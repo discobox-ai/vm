@@ -31,7 +31,9 @@ import (
 // warmState is what was asked of a stage. The warm shim reads it, so the
 // options need no flags of their own.
 type warmState struct {
-	Layer   string        `json:"layer" gorm:"primaryKey"`
+	Layer string `json:"layer" gorm:"primaryKey"`
+	// Project is the layer's.
+	Project string        `json:"project,omitempty" gorm:"not null;default:'default';index"`
 	Image   string        `json:"image"`
 	Count   int           `json:"count"`
 	CPUs    int           `json:"cpus,omitempty" gorm:"column:cpus"`
@@ -61,7 +63,7 @@ func (e *Engine) warmer() (machine.Warmer, error) {
 
 func (e *Engine) readWarm(layer string) (*warmState, error) {
 	var found []*warmState
-	if err := e.db.Read.Where("layer = ?", layer).Limit(1).Find(&found).Error; err != nil {
+	if err := e.db.Read.Where("project = ? AND layer = ?", e.Project, layer).Limit(1).Find(&found).Error; err != nil {
 		return nil, err
 	}
 	if len(found) == 0 {
@@ -252,7 +254,7 @@ func (e *Engine) Warm(ctx context.Context, ref string, opts WarmOptions) (machin
 	if err := os.MkdirAll(e.warmMachineDir(layerID), 0o755); err != nil {
 		return none, err
 	}
-	st := warmState{Layer: layerID, Image: ref, Count: opts.Count, CPUs: opts.CPUs, Memory: opts.Memory, User: opts.User, Created: time.Now().UTC()}
+	st := warmState{Layer: layerID, Project: e.Project, Image: ref, Count: opts.Count, CPUs: opts.CPUs, Memory: opts.Memory, User: opts.User, Created: time.Now().UTC()}
 	if err := e.db.Write.WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&st).Error; err != nil {
 		return none, err
 	}

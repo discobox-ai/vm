@@ -77,8 +77,11 @@ const (
 
 	// defaultImage is the image installed when options.image is not given.
 	defaultImage = "debian:trixie"
-	// layerRepo names the images the driver commits.
+	// layerRepo names the images the driver commits, each tagged
+	// `<project>--<layer id>-<random>`.
 	layerRepo = "disco-vm-layer"
+	// namePrefix starts every container's name, before the project.
+	namePrefix = "dvm-"
 
 	layerFile     = "layer.json"
 	containerFile = "container.json"
@@ -183,7 +186,7 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 	}
 
 	log("docker: installing systemd and the agent in %s", image)
-	id, err := d.api.createContainer(ctx, containerName("install"), containerConfig{
+	id, err := d.api.createContainer(ctx, containerName(dst.Project, "install"), containerConfig{
 		Image:      image,
 		Entrypoint: []string{"/bin/sh", "-c", installScript},
 		Cmd:        []string{},
@@ -301,7 +304,7 @@ func agentTar(agent string) (io.Reader, error) {
 
 // commit commits a stopped container as the layer dst.
 func (d *Driver) commit(ctx context.Context, container string, dst machine.Layer, changes []string) error {
-	tag := label(dst.ID, 24) + "-" + fsutil.RandomHex(3)
+	tag := machine.ResourcePrefix("", dst.Project) + label(dst.ID, 24) + "-" + fsutil.RandomHex(3)
 	image, err := d.api.commit(ctx, container, layerRepo, tag, changes)
 	if err != nil {
 		return fmt.Errorf("docker: commit: %w", err)
@@ -329,7 +332,7 @@ func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
 		return err
 	}
 	none := []string{}
-	name := containerName(inst.ID)
+	name := containerName(inst.Project, inst.ID)
 	id, err := d.api.createContainer(ctx, name, containerConfig{
 		Image:    layer.Image,
 		Hostname: name,
@@ -558,7 +561,11 @@ func checkArch(agent, arch string) error {
 }
 
 // containerName is a fresh container name that says where it came from.
-func containerName(id string) string { return "dvm-" + label(id, 16) + "-" + fsutil.RandomHex(2) }
+// It is `dvm-<project>--<id>-<random>`, at most 59 characters, so it is also
+// a hostname.
+func containerName(project, id string) string {
+	return machine.ResourcePrefix(namePrefix, project) + label(id, 16) + "-" + fsutil.RandomHex(2)
+}
 
 // label keeps the characters of s that a name allows, up to n of them.
 func label(s string, n int) string {

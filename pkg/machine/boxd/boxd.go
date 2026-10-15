@@ -157,7 +157,7 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 	log := logger(spec.Log)
 
 	created, err := api.CreateVm(ctx, &boxdapi.CreateVmRequest{
-		Name:          vmName("install"),
+		Name:          vmName(dst.Project, "install"),
 		ImageRef:      spec.Options["image"],
 		RestartPolicy: "never",
 		Config:        &boxdapi.VmConfig{Vcpu: uint32(spec.CPUs), MemoryBytes: spec.Memory},
@@ -192,7 +192,7 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 	}
 
 	log("boxd: snapshotting the base layer")
-	snap, err := d.snapshot(ctx, api, vm, dst.ID)
+	snap, err := d.snapshot(ctx, api, vm, dst)
 	if err != nil {
 		return err
 	}
@@ -299,7 +299,7 @@ func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
 func (d *Driver) restore(ctx context.Context, api boxdapi.BoxdApiClient, inst machine.InstanceSpec, snapshot string) (string, error) {
 	created, err := api.CreateVmFromSnapshot(ctx, &boxdapi.CreateVmFromSnapshotRequest{
 		Snapshot: snapshot,
-		Name:     vmName(inst.ID),
+		Name:     vmName(inst.Project, inst.ID),
 	})
 	if err != nil {
 		return "", fmt.Errorf("boxd: restore %s: %w", snapshot, err)
@@ -458,7 +458,7 @@ func (d *Driver) Commit(ctx context.Context, inst machine.InstanceSpec, dst mach
 	if err := d.waitAgent(ctx, api, ref.ID); err != nil {
 		return err
 	}
-	snap, err := d.snapshot(ctx, api, ref.ID, dst.ID)
+	snap, err := d.snapshot(ctx, api, ref.ID, dst)
 	if err != nil {
 		return err
 	}
@@ -522,7 +522,7 @@ func (d *Driver) TagLayer(ctx context.Context, layer machine.Layer, ref string) 
 	if err != nil {
 		return err
 	}
-	created, err := api.CreateVmFromSnapshot(ctx, &boxdapi.CreateVmFromSnapshotRequest{Snapshot: snap.Name, Name: vmName("tag")})
+	created, err := api.CreateVmFromSnapshot(ctx, &boxdapi.CreateVmFromSnapshotRequest{Snapshot: snap.Name, Name: vmName(layer.Project, "tag")})
 	if err != nil {
 		return fmt.Errorf("boxd: tag %s: restore %s: %w", ref, snap.Name, err)
 	}
@@ -531,7 +531,7 @@ func (d *Driver) TagLayer(ctx context.Context, layer machine.Layer, ref string) 
 	if _, err := waitVM(ctx, api, vm, "running"); err != nil {
 		return err
 	}
-	name := tagSnapshot(layer.ID, ref)
+	name := tagSnapshot(layer, ref)
 	saved, err := api.CreateSnapshot(ctx, &boxdapi.CreateSnapshotRequest{Vm: vm, Name: name})
 	if err != nil {
 		return fmt.Errorf("boxd: tag %s: snapshot %s: %w", ref, name, err)
@@ -545,17 +545,23 @@ func (d *Driver) TagLayer(ctx context.Context, layer machine.Layer, ref string) 
 
 // UntagLayer deletes the tag's snapshot.
 func (d *Driver) UntagLayer(ctx context.Context, layer machine.Layer, ref string) error {
-	return d.deleteSnapshot(ctx, tagSnapshot(layer.ID, ref))
+	return d.deleteSnapshot(ctx, tagSnapshot(layer, ref))
 }
 
-// tagSnapshot names a tag's snapshot `dvm-<layer id>-tag-<ref>-<hash>`: beside
-// its layer's `dvm-<layer id>-<random>` in a sorted listing, readable, and,
+// tagSnapshot names a tag's snapshot
+// `dvm-<project>--<layer id>-tag-<ref>-<hash>`: beside its layer's
+// `dvm-<project>--<layer id>-<random>` in a sorted listing, readable, and,
 // since a boxd name has no room for a ref's punctuation, told apart from
-// another ref that reads the same by a hash of the ref.
-func tagSnapshot(layerID, ref string) string {
+// another ref that reads the same by a hash of the ref. The ref is cut short
+// to keep the name within 66 characters.
+func tagSnapshot(layer machine.Layer, ref string) string {
+	sum := sha256.Sum256([]byte(ref))
+	head := machine.ResourcePrefix(namePrefix, layer.Project) + label(layer.ID, 12) + "-tag-"
+	tail := "-" + hex.EncodeToString(sum[:2])
+	room := max(66-len(head)-len(tail), 0)
 	var b strings.Builder
 	for _, r := range strings.ToLower(ref) {
-		if b.Len() == 40 {
+		if b.Len() >= room {
 			break
 		}
 		switch {
@@ -565,8 +571,7 @@ func tagSnapshot(layerID, ref string) string {
 			b.WriteByte('-')
 		}
 	}
-	sum := sha256.Sum256([]byte(ref))
-	return "dvm-" + label(layerID, 12) + "-tag-" + strings.TrimSuffix(b.String(), "-") + "-" + hex.EncodeToString(sum[:2])
+	return head + strings.Trim(b.String(), "-") + tail
 }
 
 // Warm points the stage at a snapshot to resume clones from. At the layer's
@@ -611,7 +616,7 @@ func (d *Driver) Warm(ctx context.Context, spec machine.WarmSpec) (machine.Stage
 		return nil, err
 	}
 	log("boxd: snapshotting the image at %d CPUs, %d bytes", cpus, memory)
-	inst := machine.InstanceSpec{ID: "warm", Dir: filepath.Join(spec.Dir, "tmp-"+fsutil.RandomHex(6)), Chain: spec.Chain, Mode: machine.Cold}
+	inst := machine.InstanceSpec{ID: "warm", Project: spec.Chain[len(spec.Chain)-1].Project, Dir: filepath.Join(spec.Dir, "tmp-"+fsutil.RandomHex(6)), Chain: spec.Chain, Mode: machine.Cold}
 	defer func() { _ = d.Destroy(context.Background(), inst) }()
 	if err := d.Prepare(ctx, inst); err != nil {
 		return nil, err
@@ -628,7 +633,7 @@ func (d *Driver) Warm(ctx context.Context, spec machine.WarmSpec) (machine.Stage
 	if err := d.waitAgent(ctx, api, ref.ID); err != nil {
 		return nil, err
 	}
-	snap, err := d.snapshot(ctx, api, ref.ID, spec.Chain[len(spec.Chain)-1].ID)
+	snap, err := d.snapshot(ctx, api, ref.ID, spec.Chain[len(spec.Chain)-1])
 	if err != nil {
 		return nil, err
 	}
@@ -665,10 +670,11 @@ func (d *Driver) Cool(ctx context.Context, spec machine.WarmSpec) error {
 	return os.RemoveAll(spec.Dir)
 }
 
-// snapshot captures a running machine under a new name and waits until the
-// snapshot can be restored.
-func (d *Driver) snapshot(ctx context.Context, api boxdapi.BoxdApiClient, vm, layerID string) (snapshotRef, error) {
-	name := "dvm-" + label(layerID, 12) + "-" + fsutil.RandomHex(3)
+// snapshot captures a running machine under a new name for layer,
+// `dvm-<project>--<layer id>-<random>`, and waits until the snapshot can be
+// restored.
+func (d *Driver) snapshot(ctx context.Context, api boxdapi.BoxdApiClient, vm string, layer machine.Layer) (snapshotRef, error) {
+	name := machine.ResourcePrefix(namePrefix, layer.Project) + label(layer.ID, 12) + "-" + fsutil.RandomHex(3)
 	created, err := api.CreateSnapshot(ctx, &boxdapi.CreateSnapshotRequest{Vm: vm, Name: name})
 	if err != nil {
 		return snapshotRef{}, fmt.Errorf("boxd: snapshot %s: %w", vm, err)
@@ -937,8 +943,12 @@ func checkArch(ctx context.Context, api boxdapi.BoxdApiClient, vm, agent string)
 	return nil
 }
 
-// vmName is a fresh machine name that says where it came from.
-func vmName(id string) string { return "dvm-" + label(id, 16) + "-" + fsutil.RandomHex(2) }
+// vmName is a fresh machine name that says which project it is in and where
+// it came from: `dvm-<project>--<id>-<random>`, at most 59 characters, so it
+// is a DNS label in its proxy's domain.
+func vmName(project, id string) string {
+	return machine.ResourcePrefix(namePrefix, project) + label(id, 16) + "-" + fsutil.RandomHex(2)
+}
 
 // label keeps the characters of s that a boxd name allows, up to n of them.
 func label(s string, n int) string {

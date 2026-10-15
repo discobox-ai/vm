@@ -26,6 +26,14 @@ vz and libkrun providers become a thin `dockerworker.Driver` over
 - **As a library.** The discobox server imports `pkg/engine` (and
   `pkg/machine/drivers` for the drivers its OS can run), opens a state root,
   and calls the engine the way the CLI does. No disco-vm binary is shipped.
+- **In discobox's own database** (**built**):
+  `engine.Open(root, driver, db, project)` takes the server's `gormdb.Pools`,
+  and keeps its metadata there in tables named `disco_vm_*`. The `vm-shim`
+  subcommand opens the same database. Each discobox project is a disco-vm
+  project (ADR 0004): an engine per project, all in one database and one
+  root, and the project in the name of every boxd machine and snapshot. The
+  `vm-shim` subcommand opens the engine's project, which discobox puts in
+  `ShimCommand`.
 - **The shim is a hidden subcommand of the discobox binary** (**built**:
   `engine.Engine.ShimCommand` and `engine.ShimMain`). A running VM is owned by
   a supervisor process, one per VM, because a Virtualization.framework VM dies

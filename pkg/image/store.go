@@ -34,7 +34,11 @@ var ErrNotFound = errors.New("image: not found")
 
 // Layer is one committed layer's metadata.
 type Layer struct {
-	ID      string     `json:"id" gorm:"primaryKey"`
+	ID string `json:"id" gorm:"primaryKey"`
+	// Project is the project the layer belongs to. Its ID is unique across
+	// projects, because a project other than the default is part of every
+	// layer's cache key.
+	Project string     `json:"project,omitempty" gorm:"not null;default:'default';index"`
 	Parent  string     `json:"parent,omitempty" gorm:"index"`
 	Driver  string     `json:"driver"`
 	GuestOS machine.OS `json:"guestOS" gorm:"column:guest_os"`
@@ -48,13 +52,24 @@ type Layer struct {
 // engine.
 func (Layer) TableName() string { return "disco_vm_layers" }
 
-// tag is one name:tag and the layer it names.
+// tag is one name:tag in a project and the layer it names.
 type tag struct {
+	Project string `gorm:"primaryKey"`
 	Ref     string `gorm:"primaryKey"`
 	LayerID string `gorm:"index"`
 }
 
-func (tag) TableName() string { return "disco_vm_tags" }
+// TableName is the tags' table since projects. disco_vm_tags, keyed by ref
+// alone, is copied into it once, into the default project, and dropped.
+func (tag) TableName() string { return "disco_vm_image_tags" }
+
+// legacyTag is a row of disco_vm_tags.
+type legacyTag struct {
+	Ref     string
+	LayerID string
+}
+
+func (legacyTag) TableName() string { return "disco_vm_tags" }
 
 // replacement records the layer built in place of one its driver lost.
 type replacement struct {
@@ -70,27 +85,53 @@ type Image struct {
 	Layer Layer  `json:"layer"`
 }
 
-// Store is an image store. Its metadata (layers, tags, and which layer
-// replaced which) is rows in a database, and each layer's disk is the
-// driver's files under a directory:
+// Store is one project's view of an image store. Its metadata (layers, tags,
+// and which layer replaced which) is rows in a database, and each layer's
+// disk is the driver's files under a directory:
 //
 //	layers/<id>/payload/     the driver's files (machine.Layer.Dir)
+//
+// Every project's layers share the directory, and their IDs never collide.
 type Store struct {
 	Root string
-	db   *gormdb.Pools
+	// Project scopes every layer and tag the store reads and writes.
+	Project string
+	db      *gormdb.Pools
 }
 
-// Open creates the store's directories and tables if needed. The store does
-// not close db.
-func Open(root string, db *gormdb.Pools) (*Store, error) {
+// Open creates the store's directories and tables if needed, for one project
+// (machine.DefaultProject when empty). The store does not close db.
+func Open(root string, db *gormdb.Pools, project string) (*Store, error) {
+	if project == "" {
+		project = machine.DefaultProject
+	}
+	if err := machine.ValidateProject(project); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Join(root, "layers"), 0o755); err != nil {
 		return nil, err
 	}
-	s := &Store{Root: root, db: db}
+	s := &Store{Root: root, Project: project, db: db}
 	// In a transaction, so two commands starting on a new root do not both
 	// create the tables.
 	err := db.Write.Transaction(func(tx *gorm.DB) error {
-		return tx.AutoMigrate(&Layer{}, &tag{}, &replacement{})
+		if err := tx.AutoMigrate(&Layer{}, &tag{}, &replacement{}); err != nil {
+			return err
+		}
+		if !tx.Migrator().HasTable(&legacyTag{}) {
+			return nil
+		}
+		var old []legacyTag
+		if err := tx.Find(&old).Error; err != nil {
+			return err
+		}
+		for _, t := range old {
+			row := tag{Project: machine.DefaultProject, Ref: t.Ref, LayerID: t.LayerID}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Migrator().DropTable(&legacyTag{})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("image: migrate: %w", err)
@@ -102,6 +143,9 @@ func Open(root string, db *gormdb.Pools) (*Store, error) {
 }
 
 func (s *Store) layerDir(id string) string { return filepath.Join(s.Root, "layers", id) }
+
+// read is a query of the store's project's rows.
+func (s *Store) read() *gorm.DB { return s.db.Read.Where("project = ?", s.Project) }
 
 // importFiles moves the metadata a disco-vm from before the database kept in
 // JSON files (layers/<id>/layer.json, tags.json, replaced.json) into it. A
@@ -126,6 +170,8 @@ func (s *Store) importFiles() error {
 			// parse was never listed either, and stays for someone to read.
 			continue
 		}
+		// Projects came after the files.
+		layer.Project = machine.DefaultProject
 		if err := insert(&layer); err != nil {
 			return fmt.Errorf("image: import %s: %w", path, err)
 		}
@@ -138,7 +184,7 @@ func (s *Store) importFiles() error {
 	switch err := fsutil.ReadJSON(tagsPath, &tags); {
 	case err == nil:
 		for ref, id := range tags {
-			if err := insert(&tag{Ref: ref, LayerID: id}); err != nil {
+			if err := insert(&tag{Project: machine.DefaultProject, Ref: ref, LayerID: id}); err != nil {
 				return fmt.Errorf("image: import %s: %w", tagsPath, err)
 			}
 		}
@@ -170,13 +216,13 @@ func (s *Store) importFiles() error {
 
 // MachineLayer is the driver's view of a committed layer.
 func (s *Store) MachineLayer(id string) machine.Layer {
-	return machine.Layer{ID: id, Dir: filepath.Join(s.layerDir(id), "payload")}
+	return machine.Layer{ID: id, Dir: filepath.Join(s.layerDir(id), "payload"), Project: s.Project}
 }
 
 // Layer reads a layer's metadata.
 func (s *Store) Layer(id string) (Layer, error) {
 	var layers []Layer
-	if err := s.db.Read.Where("id = ?", id).Limit(1).Find(&layers).Error; err != nil {
+	if err := s.read().Where("id = ?", id).Limit(1).Find(&layers).Error; err != nil {
 		return Layer{}, err
 	}
 	if len(layers) == 0 {
@@ -236,7 +282,7 @@ func (s *Store) Replace(id, to string) error {
 // Layers lists every committed layer.
 func (s *Store) Layers() ([]Layer, error) {
 	var layers []Layer
-	if err := s.db.Read.Order("id").Find(&layers).Error; err != nil {
+	if err := s.read().Order("id").Find(&layers).Error; err != nil {
 		return nil, err
 	}
 	return layers, nil
@@ -283,8 +329,9 @@ type Pending struct {
 	tmp   string
 }
 
-// Begin starts writing the layer described by meta.
+// Begin starts writing the layer described by meta, in the store's project.
 func (s *Store) Begin(meta Layer) (*Pending, error) {
+	meta.Project = s.Project
 	if s.Has(meta.ID) {
 		return nil, fmt.Errorf("image: layer %s already exists", short(meta.ID))
 	}
@@ -297,7 +344,7 @@ func (s *Store) Begin(meta Layer) (*Pending, error) {
 
 // MachineLayer is where the driver writes the layer.
 func (p *Pending) MachineLayer() machine.Layer {
-	return machine.Layer{ID: p.meta.ID, Dir: filepath.Join(p.tmp, "payload")}
+	return machine.Layer{ID: p.meta.ID, Dir: filepath.Join(p.tmp, "payload"), Project: p.meta.Project}
 }
 
 // Commit publishes the layer. driver is the one that wrote it, which releases
@@ -374,10 +421,11 @@ func ValidateRef(ref string) error {
 	return nil
 }
 
-// tagged is the layer a normalized ref names, or empty when it names none.
-func tagged(db *gorm.DB, normalized string) (string, error) {
+// tagged is the layer a normalized ref names in a project, or empty when it
+// names none.
+func tagged(db *gorm.DB, project, normalized string) (string, error) {
 	var tags []tag
-	if err := db.Where("ref = ?", normalized).Limit(1).Find(&tags).Error; err != nil || len(tags) == 0 {
+	if err := db.Where("project = ? AND ref = ?", project, normalized).Limit(1).Find(&tags).Error; err != nil || len(tags) == 0 {
 		return "", err
 	}
 	return tags[0].LayerID, nil
@@ -402,10 +450,10 @@ func (s *Store) Tag(ctx context.Context, ref, id string, driver machine.Driver) 
 	var old string
 	err = s.db.Write.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var err error
-		if old, err = tagged(tx, normalized); err != nil {
+		if old, err = tagged(tx, s.Project, normalized); err != nil {
 			return err
 		}
-		return tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&tag{Ref: normalized, LayerID: id}).Error
+		return tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&tag{Project: s.Project, Ref: normalized, LayerID: id}).Error
 	})
 	if err != nil || old == "" || old == id {
 		return err
@@ -425,7 +473,7 @@ func (s *Store) untagLayer(ctx context.Context, id, normalized string, driver ma
 // (meaning :latest), a full layer ID, or an unambiguous layer ID prefix of at
 // least six characters.
 func (s *Store) Resolve(ref string) (string, error) {
-	if id, err := tagged(s.db.Read, NormalizeRef(ref)); err != nil || id != "" {
+	if id, err := tagged(s.db.Read, s.Project, NormalizeRef(ref)); err != nil || id != "" {
 		return id, err
 	}
 	if len(ref) >= 6 && !strings.ContainsAny(ref, ":/") {
@@ -452,10 +500,12 @@ func (s *Store) Resolve(ref string) (string, error) {
 
 // Images lists every tag, then every untagged image: a layer that has no tag
 // and is no other layer's parent, which is what a build without -t leaves. An
-// untagged image has an empty Ref and is named by its layer ID.
-func (s *Store) Images() ([]Image, error) {
+// untagged image has an empty Ref and is named by its layer ID. all lists
+// every untagged layer, the intermediate layers of a chain too, as
+// `docker images -a` does.
+func (s *Store) Images(all bool) ([]Image, error) {
 	var tags []tag
-	if err := s.db.Read.Find(&tags).Error; err != nil {
+	if err := s.read().Find(&tags).Error; err != nil {
 		return nil, err
 	}
 	layers, err := s.Layers()
@@ -466,7 +516,9 @@ func (s *Store) Images() ([]Image, error) {
 	named := map[string]bool{}
 	for _, layer := range layers {
 		byID[layer.ID] = layer
-		named[layer.Parent] = true
+		if !all {
+			named[layer.Parent] = true
+		}
 	}
 	images := make([]Image, 0, len(tags))
 	for _, t := range tags {
@@ -497,7 +549,7 @@ func (s *Store) Remove(ctx context.Context, ref string, driver machine.Driver, i
 	// The driver's record of the tag goes first: if that fails the tag is
 	// still here, and removing it again tries again.
 	normalized := NormalizeRef(ref)
-	id, err := tagged(s.db.Read, normalized)
+	id, err := tagged(s.db.Read, s.Project, normalized)
 	if err != nil {
 		return "", nil, err
 	}
@@ -509,11 +561,11 @@ func (s *Store) Remove(ctx context.Context, ref string, driver machine.Driver, i
 	err = s.db.Write.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Read again: the tag may have moved or gone since the driver was told.
 		var err error
-		if id, err = tagged(tx, normalized); err != nil || id == "" {
+		if id, err = tagged(tx, s.Project, normalized); err != nil || id == "" {
 			return err
 		}
 		untagged = normalized
-		return tx.Delete(&tag{Ref: normalized}).Error
+		return tx.Delete(&tag{Project: s.Project, Ref: normalized}).Error
 	})
 	if err != nil {
 		return "", nil, err

@@ -26,9 +26,10 @@ type exitError struct{ code int }
 func (e exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
 type globals struct {
-	root   string
-	driver string
-	debug  bool
+	root    string
+	driver  string
+	project string
+	debug   bool
 	// opened is the engine a command opened, which Main closes.
 	opened *engine.Engine
 }
@@ -41,7 +42,7 @@ func (g *globals) engine() (*engine.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	g.opened, err = engine.Open(g.root, driver, nil)
+	g.opened, err = engine.Open(g.root, driver, nil, g.project)
 	return g.opened, err
 }
 
@@ -65,6 +66,7 @@ func Main(args []string) int {
 		}
 	}
 	root.PersistentFlags().StringVar(&g.root, "root", "", "state directory (default $"+engine.RootEnv+" or the per-OS data directory)")
+	root.PersistentFlags().StringVar(&g.project, "project", envOr("DISCO_VM_PROJECT", machine.DefaultProject), "project that scopes every image, instance, and driver resource (also $DISCO_VM_PROJECT)")
 	root.PersistentFlags().StringVar(&g.driver, "driver", os.Getenv("DISCO_VM_DRIVER"), "hypervisor driver (default "+machine.DefaultName()+"; also $DISCO_VM_DRIVER)")
 	root.AddCommand(
 		buildCommand(g),
@@ -91,4 +93,12 @@ func Main(args []string) int {
 		fmt.Fprintln(os.Stderr, "disco-vm:", err)
 		return 1
 	}
+}
+
+// envOr is $name, or def when it is empty.
+func envOr(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
 }

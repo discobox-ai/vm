@@ -35,7 +35,7 @@ func TestShimCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e, err := engine.Open(root, &fake.Driver{Agent: binary}, nil)
+	e, err := engine.Open(root, &fake.Driver{Agent: binary}, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

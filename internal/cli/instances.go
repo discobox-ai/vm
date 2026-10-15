@@ -137,15 +137,40 @@ func rmCommand(g *globals) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "rm INSTANCE...",
-		Short: "Remove instances",
+		Short: "Remove instances, or orphaned machines by the name ls shows",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return eachInstance(g, args, func(e *engine.Engine, inst *engine.Instance) error {
-				return e.Remove(cmd.Context(), inst, force)
-			})
+			e, err := g.engine()
+			if err != nil {
+				return err
+			}
+			var errs []error
+			for _, ref := range args {
+				inst, err := e.Get(ref)
+				switch {
+				case err == nil:
+					err = e.Remove(cmd.Context(), inst, force)
+				case errors.Is(err, engine.ErrNotFound):
+					// Not an instance: an orphaned machine of the project.
+					var o machine.Orphan
+					if o, err = e.RemoveOrphan(cmd.Context(), machine.OrphanMachine, ref, force); err == nil {
+						fmt.Printf("destroyed orphan %s\n", o.Name)
+						continue
+					}
+					if errors.Is(err, engine.ErrNotOrphan) {
+						err = fmt.Errorf("no instance or orphaned machine %q", ref)
+					}
+				}
+				if err != nil {
+					errs = append(errs, fmt.Errorf("%s: %w", ref, err))
+					continue
+				}
+				fmt.Println(inst.Name)
+			}
+			return errors.Join(errs...)
 		},
 	}
-	cmd.Flags().BoolVarP(&force, "force", "f", false, "stop a running instance first")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "stop a running instance, or destroy a running orphan, first")
 	return cmd
 }
 
@@ -193,6 +218,11 @@ func lsCommand(g *globals) *cobra.Command {
 					continue
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", inst.ID, inst.Name, inst.Image, inst.GuestOS, inst.Mode, state, ago(inst.Created))
+			}
+			// Machines the driver holds that no instance names are listed
+			// stopped or not, so nothing billed goes unseen.
+			for _, o := range orphans(cmd.Context(), e, machine.OrphanMachine) {
+				fmt.Fprintf(w, "<orphan>\t%s\t-\t-\t-\t%s\t%s\n", o.Name, o.Status, ago(o.Created))
 			}
 			return w.Flush()
 		},

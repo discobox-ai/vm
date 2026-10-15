@@ -44,18 +44,22 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Engine is one disco-vm state root and driver.
+// Engine is one project of a disco-vm state root, and a driver.
 type Engine struct {
 	Root   string
 	Driver machine.Driver
-	Images *image.Store
+	// Project scopes every image, instance, and stage the engine reads and
+	// makes, and the driver names what it makes for them after it.
+	Project string
+	Images  *image.Store
 	// Exe is the disco-vm binary, started as each instance's shim.
 	Exe string
 	// ShimCommand is how a shim is started: a program and its leading
 	// arguments, to which the shim's own ([--gui] INSTANCE, or --warm LAYER)
 	// are appended. Empty means Exe's `shim` subcommand. A program that embeds
-	// the engine points it at a subcommand of its own that opens the same root
-	// and driver and calls ShimMain, so it ships no second binary.
+	// the engine points it at a subcommand of its own that opens the same
+	// root, driver, and project and calls ShimMain, so it ships no second
+	// binary.
 	ShimCommand []string
 
 	// db holds the metadata: the image store's tables, instances, and warm
@@ -94,14 +98,21 @@ func DefaultRoot() string {
 	return filepath.Join(os.TempDir(), "disco-vm")
 }
 
-// Open opens (creating) a state root for a driver. db is the database its
-// metadata is kept in, in tables named disco_vm_*: a program that embeds the
-// engine passes its own, and keeps closing it. A nil db is a SQLite database
-// in the root, which Close closes. The rows describe the files in one root, so
-// a database serves one root.
-func Open(root string, driver machine.Driver, db *gormdb.Pools) (*Engine, error) {
+// Open opens (creating) one project of a state root for a driver. db is the
+// database its metadata is kept in, in tables named disco_vm_*: a program that
+// embeds the engine passes its own, and keeps closing it. A nil db is a SQLite
+// database in the root, which Close closes. The rows describe the files in one
+// root, so a database serves one root, and any number of its projects. An
+// empty project is machine.DefaultProject.
+func Open(root string, driver machine.Driver, db *gormdb.Pools, project string) (*Engine, error) {
 	if root == "" {
 		root = DefaultRoot()
+	}
+	if project == "" {
+		project = machine.DefaultProject
+	}
+	if err := machine.ValidateProject(project); err != nil {
+		return nil, err
 	}
 	root, err := filepath.Abs(root)
 	if err != nil {
@@ -117,7 +128,7 @@ func Open(root string, driver machine.Driver, db *gormdb.Pools) (*Engine, error)
 	if err := os.MkdirAll(filepath.Join(root, "instances"), 0o755); err != nil {
 		return nil, err
 	}
-	e := &Engine{Root: root, Driver: driver, Exe: exe, db: db}
+	e := &Engine{Root: root, Driver: driver, Project: project, Exe: exe, db: db}
 	if db == nil {
 		if e.db, err = statedb.Open(root); err != nil {
 			return nil, err
@@ -134,13 +145,20 @@ func Open(root string, driver machine.Driver, db *gormdb.Pools) (*Engine, error)
 // openState makes the image store and the engine's own tables, and takes in
 // what an older disco-vm left in JSON files.
 func (e *Engine) openState() error {
-	store, err := image.Open(filepath.Join(e.Root, "images"), e.db)
+	store, err := image.Open(filepath.Join(e.Root, "images"), e.db, e.Project)
 	if err != nil {
 		return err
 	}
 	e.Images = store
 	err = e.db.Write.Transaction(func(tx *gorm.DB) error {
-		return tx.AutoMigrate(&Instance{}, &warmState{})
+		if err := tx.AutoMigrate(&Instance{}, &warmState{}); err != nil {
+			return err
+		}
+		// Before projects an instance's name was unique on its own.
+		if tx.Migrator().HasIndex(&Instance{}, legacyNameIndex) {
+			return tx.Migrator().DropIndex(&Instance{}, legacyNameIndex)
+		}
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("engine: migrate: %w", err)
@@ -174,6 +192,8 @@ func (e *Engine) importFiles() error {
 		if err := fsutil.ReadJSON(path, &inst); err != nil || inst.ID != entry.Name() {
 			continue
 		}
+		// Projects came after the files.
+		inst.Project = machine.DefaultProject
 		if err := insert(&inst); err != nil {
 			return fmt.Errorf("engine: import %s: %w", path, err)
 		}
@@ -197,6 +217,7 @@ func (e *Engine) importFiles() error {
 		if err := fsutil.ReadJSON(path, &st); err != nil || st.Layer != entry.Name() {
 			continue
 		}
+		st.Project = machine.DefaultProject
 		if err := insert(&st); err != nil {
 			return fmt.Errorf("engine: import %s: %w", path, err)
 		}
@@ -222,8 +243,10 @@ const (
 
 // Instance is one VM made from an image.
 type Instance struct {
-	ID      string            `json:"id" gorm:"primaryKey"`
-	Name    string            `json:"name" gorm:"uniqueIndex"`
+	ID string `json:"id" gorm:"primaryKey"`
+	// Project is the instance's project; its name is unique within it.
+	Project string            `json:"project,omitempty" gorm:"not null;default:'default';uniqueIndex:idx_disco_vm_instances_project_name"`
+	Name    string            `json:"name" gorm:"uniqueIndex:idx_disco_vm_instances_project_name"`
 	Image   string            `json:"image"`
 	Layer   string            `json:"layer" gorm:"index"`
 	Driver  string            `json:"driver"`
@@ -240,6 +263,9 @@ type Instance struct {
 
 // TableName is the instances' table, named like the image store's.
 func (Instance) TableName() string { return "disco_vm_instances" }
+
+// legacyNameIndex made an instance's name unique across projects.
+const legacyNameIndex = "idx_disco_vm_instances_name"
 
 // Forward sends the connections a guest process opens to the host on a port
 // (guest.DialHost: vsock to the host on vz, hvsocket on HCS) to a Unix socket
@@ -261,6 +287,7 @@ func (e *Engine) machineSpec(inst *Instance) (machine.InstanceSpec, error) {
 	}
 	spec := machine.InstanceSpec{
 		ID:      inst.ID,
+		Project: inst.Project,
 		Dir:     filepath.Join(e.instanceDir(inst.ID), "machine"),
 		GuestOS: inst.GuestOS,
 		Chain:   chain,
@@ -315,7 +342,7 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 		return nil, fmt.Errorf("an instance named %q already exists", name)
 	}
 	inst := &Instance{
-		ID: id, Name: name, Image: ref, Layer: layerID,
+		ID: id, Project: e.Project, Name: name, Image: ref, Layer: layerID,
 		Driver: e.Driver.Name(), GuestOS: layer.GuestOS, Mode: mode,
 		CPUs: opts.CPUs, Memory: opts.Memory,
 		Created: time.Now().UTC(), Temporary: opts.Temporary,
@@ -384,7 +411,7 @@ func (e *Engine) Get(ref string) (*Instance, error) {
 func (e *Engine) List() ([]*Instance, error) { return e.list(false) }
 
 func (e *Engine) list(all bool) ([]*Instance, error) {
-	query := e.db.Read.Order("created, id")
+	query := e.db.Read.Where("project = ?", e.Project).Order("created, id")
 	if !all {
 		query = query.Where("temporary = ?", false)
 	}
@@ -398,7 +425,7 @@ func (e *Engine) list(all bool) ([]*Instance, error) {
 // instance reads one instance by its full ID.
 func (e *Engine) instance(id string) (*Instance, error) {
 	var found []*Instance
-	if err := e.db.Read.Where("id = ?", id).Limit(1).Find(&found).Error; err != nil {
+	if err := e.db.Read.Where("project = ? AND id = ?", e.Project, id).Limit(1).Find(&found).Error; err != nil {
 		return nil, err
 	}
 	if len(found) == 0 {

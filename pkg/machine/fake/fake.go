@@ -286,6 +286,12 @@ func (d *Driver) LayerExists(_ context.Context, layer machine.Layer) (bool, erro
 func (d *Driver) TagLayer(context.Context, machine.Layer, string) error   { return nil }
 func (d *Driver) UntagLayer(context.Context, machine.Layer, string) error { return nil }
 
+// Orphans is empty: nothing the driver makes lives outside the store.
+func (*Driver) Orphans(context.Context, machine.Known) ([]machine.Orphan, error) { return nil, nil }
+
+// RemoveOrphan is never asked of a driver that lists no orphans.
+func (*Driver) RemoveOrphan(context.Context, machine.Orphan) error { return machine.ErrUnsupported }
+
 // pickServicePort gives the instance a free port on the host's loopback for
 // its service: a fake guest is a host process, so a port of its own keeps two
 // guests' services apart.

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/discobox-ai/x/gormdb"
 	"gorm.io/gorm/logger"
@@ -29,7 +30,7 @@ func TestOpenImportsInstanceFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		e, err := engine.Open(root, &fake.Driver{}, nil)
+		e, err := engine.Open(root, &fake.Driver{}, nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,7 +73,7 @@ func TestOpenInACallersDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(dir, "root")
-	e, err := engine.Open(root, &fake.Driver{}, db)
+	e, err := engine.Open(root, &fake.Driver{}, db, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,5 +98,121 @@ func TestOpenInACallersDatabase(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "disco-vm.db")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the engine made a database of its own: %v", err)
+	}
+}
+
+// A database from before projects (tags keyed by ref alone, instance names
+// unique on their own) opens as the default project's, and another project
+// can then use the same names.
+func TestOpenUpgradesADatabaseFromBeforeProjects(t *testing.T) {
+	dir := t.TempDir()
+	db, err := gormdb.Open(gormdb.Config{DSN: filepath.Join(dir, "old.db"), Logger: logger.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	type oldLayer struct {
+		ID      string `gorm:"primaryKey"`
+		Parent  string `gorm:"index"`
+		Driver  string
+		GuestOS string `gorm:"column:guest_os"`
+		Created time.Time
+	}
+	type oldTag struct {
+		Ref     string `gorm:"primaryKey"`
+		LayerID string `gorm:"index"`
+	}
+	type oldInstance struct {
+		ID      string `gorm:"primaryKey"`
+		Name    string `gorm:"uniqueIndex"`
+		Image   string
+		Layer   string `gorm:"index"`
+		Driver  string
+		GuestOS string `gorm:"column:guest_os"`
+		Mode    string
+		Created time.Time
+	}
+	w := db.Write
+	if err := w.Table("disco_vm_layers").AutoMigrate(&oldLayer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Table("disco_vm_tags").AutoMigrate(&oldTag{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Table("disco_vm_instances").AutoMigrate(&oldInstance{}); err != nil {
+		t.Fatal(err)
+	}
+	if !w.Migrator().HasIndex("disco_vm_instances", "idx_disco_vm_instances_name") {
+		t.Fatal("the old schema's name index is not where the upgrade looks for it")
+	}
+	root := filepath.Join(dir, "root")
+	layerDir := filepath.Join(root, "images", "layers", "aaaaaaaaaaaa1", "payload", "rootfs")
+	if err := os.MkdirAll(layerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "instances", "0123456789ab", "machine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := w.Table("disco_vm_layers").Create(&oldLayer{ID: "aaaaaaaaaaaa1", Driver: "fake", GuestOS: "linux", Created: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Table("disco_vm_tags").Create(&oldTag{Ref: "app:latest", LayerID: "aaaaaaaaaaaa1"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Table("disco_vm_instances").Create(&oldInstance{ID: "0123456789ab", Name: "web", Image: "app", Layer: "aaaaaaaaaaaa1", Driver: "fake", GuestOS: "linux", Mode: "cold", Created: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		e, err := engine.Open(root, &fake.Driver{}, db, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id, err := e.Images.Resolve("app"); err != nil || id != "aaaaaaaaaaaa1" {
+			t.Fatalf("the old tag resolves to %q, %v", id, err)
+		}
+		if inst, err := e.Get("web"); err != nil || inst.ID != "0123456789ab" || inst.Project != machine.DefaultProject {
+			t.Fatalf("the old instance = %+v, %v", inst, err)
+		}
+		if err := e.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w.Migrator().HasTable("disco_vm_tags") {
+		t.Fatal("the old tags table is still there")
+	}
+
+	// Another project sees none of it, and may use its names.
+	other, err := engine.Open(root, &fake.Driver{}, db, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	if _, err := other.Images.Resolve("app"); err == nil {
+		t.Fatal("another project resolves the default's tag")
+	}
+	if _, err := other.Images.Resolve("aaaaaaaaaaaa1"); err == nil {
+		t.Fatal("another project resolves the default's layer by ID")
+	}
+	if _, err := other.Get("web"); err == nil {
+		t.Fatal("another project finds the default's instance")
+	}
+	if list, err := other.List(); err != nil || len(list) != 0 {
+		t.Fatalf("another project lists %v, %v", list, err)
+	}
+	if err := db.Write.Table("disco_vm_instances").Create(map[string]any{"id": "fedcba987654", "project": "other", "name": "web"}).Error; err != nil {
+		t.Fatalf("another project cannot name an instance web: %v", err)
+	}
+	if err := db.Write.Table("disco_vm_instances").Create(map[string]any{"id": "fedcba987655", "project": "other", "name": "web"}).Error; err == nil {
+		t.Fatal("two instances in one project share a name")
+	}
+}
+
+func TestOpenRefusesABadProject(t *testing.T) {
+	for _, project := range []string{"Foo", "a--b", "-a", "a-", "a_b", strings.Repeat("a", 33)} {
+		if _, err := engine.Open(t.TempDir(), &fake.Driver{}, nil, project); err == nil {
+			t.Errorf("project %q was accepted", project)
+		}
 	}
 }

@@ -203,7 +203,8 @@ A layer's **ID is its cache key**. The key is a hash of the parent ID, driver,
 guest OS, and the fully resolved steps, including a content digest of every
 copied file. An existing layer is never rebuilt, and `--no-cache` salts the
 keys instead of overwriting. Tags name layers. A layer with no tag
-and no child is an untagged image: `images` lists it as `<none>` and `rmi`
+and no child is an untagged image: `images` lists it as `<none>` (`images -a`
+lists every untagged layer, a chain's intermediate layers too) and `rmi`
 takes its ID. `rmi` untags, then
 deletes layers that nothing else tags, parents, or runs, as `docker rmi` does.
 A layer is written under a temporary name, then renamed into place and
@@ -240,14 +241,18 @@ and `shim.log`, which live and die with one process.
 - **The default is SQLite**, `<root>/disco-vm.db`. With no daemon, every
   command and every shim opens it, and SQLite's write lock is what serializes
   them.
-- **An embedder passes its own database** (`engine.Open(root, driver, db)`),
-  and the engine does not close it. Every table is named `disco_vm_*`, so
-  none collides with the embedder's. The rows describe the files in one root,
-  so one database serves one root.
+- **An embedder passes its own database**
+  (`engine.Open(root, driver, db, project)`), and the engine does not close
+  it. Every table is named `disco_vm_*`, so none collides with the
+  embedder's. The rows describe the files in one root, so one database serves
+  one root, and every project in it.
 - **Each package migrates its own tables** when it opens (`AutoMigrate`).
 - **JSON files from before the database are imported on open** and removed
   once their rows are in: `layer.json`, `tags.json`, `replaced.json`,
-  `instance.json`, and `warm.json`.
+  `instance.json`, and `warm.json`, into the default project. A database
+  from before projects is upgraded the same way: `disco_vm_tags` is copied
+  into `disco_vm_image_tags` and dropped, and the unique index on an
+  instance's name alone is dropped.
 - **A row and its directory change in an order that can be repeated.** A
   layer's row is inserted in the transaction that renames its directory, and
   deleted before the directory is. An instance's row is inserted after the
@@ -256,6 +261,37 @@ and `shim.log`, which live and die with one process.
 `--debug` (`machine.SetDebug`) has a driver report every call it makes to a
 service outside the process, boxd's API or the Docker daemon, and how long the
 answer took.
+
+### 6b. A project scopes everything, and the driver's leftovers are listed
+
+`--project` (`$DISCO_VM_PROJECT`, `Engine.Project`; `default` when not given; ADR 0004)
+names the project a command works in. A project is 1 to 32 lowercase letters,
+digits, and single hyphens. Every row has one: a project's `images`, `ls`,
+names, and tags are its own, and an instance's name is unique within it.
+Projects share a root's directories, so a project other than the default is
+part of every layer's cache key, and two projects never share a layer ID. The
+default project's keys are those from before projects, so its cache stays
+valid. A shim is started with the engine's project.
+
+The driver puts the project in the name of everything it makes outside the
+store (`machine.ResourcePrefix`): boxd's machines and snapshots and docker's
+containers are `dvm-<project>--...`, and docker's layer images are tagged
+`disco-vm-layer:<project>--...`. `--` cannot occur in a project, so a name
+belongs to exactly one project. A name from before projects, with no `--`,
+is the default project's.
+
+`ls` and `images` ask the driver every time for what it holds under the
+project's names that the store has no record of (`Driver.Orphans`, given
+`machine.Known`): a store that was deleted, a crash between making something
+and recording it, another host's store, or something being made right now,
+such as an install's machine. They are listed as `<orphan>` rows, stopped or
+not, so nothing billed is out of sight. `rmi NAME` deletes an orphaned layer
+and `rm NAME` an orphaned machine (`Engine.RemoveOrphan`,
+`Driver.RemoveOrphan`), each only after asking the driver again that NAME is
+an orphan of the project now, so nothing the store records and nothing of
+another project's is deleted this way; a running machine takes `-f`. A
+driver whose resources
+live only in the store's directories (hcs, vz, fake) has none.
 
 ### 7. Fast clones come from warm images, and auto falls back to cold
 
@@ -408,6 +444,7 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew | ⬜ in-guest; ✅ a step with no `user:` has root's HOME, USER, and LOGNAME (by hand, 2026-10-12) | ✅ in-guest (`useradd`, `exec -u`) |
 | a tag recorded where the driver keeps layers (`TagLayer`, `UntagLayer`) | no-op | no-op | no-op | ✅ boxd by hand in a discobox (2026-10-12): `tag` waited for the tag's snapshot to be ready, `run` from the tag, `rmi`; the snapshot was not read back with `boxd snap ls`; ✅ fake API (`TestTagSnapshot`, `machinetest`) | no-op |
 | a build replaces a layer its driver lost, and rebuilds the layers after it (`LayerExists`) | ✅ `internal/e2e` TestLostLayer, `pkg/image` TestReplacedLayer | ⬜ | ⬜ | ✅ boxd by hand in a discobox (2026-10-13): a middle layer pointed at a snapshot name boxd does not have was replaced, the layer after it rebuilt, a third build was all cached, and `run` from the tag read both layers' files; no snapshot was actually deleted with `boxd snap rm`; ✅ fake API (`TestTagSnapshot`: `LayerExists`) | ⬜ |
+| projects, and the driver's resources the store has no record of listed as `<orphan>` and removed by name (`Driver.Orphans`, `RemoveOrphan`; `pkg/engine` TestOpenUpgradesADatabaseFromBeforeProjects, `machinetest`) | ✅ projects kept apart in one database, and a database from before projects upgraded; none to list | ⬜ (none to list) | ⬜ (none to list) | ✅ boxd by hand in a discobox (2026-10-15): a build and an instance in project `vtest` made `dvm-vtest--` machines and snapshots, a tag's included; an empty root listed all three as orphans in `vtest` and none in `default`; `rm` and `rmi` left none; a snapshot a deleted default store left behind was listed; from an empty root, `rm` destroyed the stopped orphan machine and `rmi` both orphan snapshots by name, which the default project could not; ✅ fake API (`TestEngineListsOrphans`, `machinetest`): machines and snapshots under other names, and other projects', are not listed or removed, nor is the store's own snapshot; a second store lists every one of the first's | ✅ by hand (2026-10-15, Docker on Linux 7.0): a project's container and images named for it, invisible to `default` and to a project whose name is a prefix of it, and listed as orphans from an empty root; a container named before projects is the default's orphan, and an unlabeled `dvm-` container is not one; `rm` refused the running orphan container without `-f` and removed it with it, `rmi` removed both orphan images, and another project could not; `images -a` listed the intermediate layer; ✅ `machinetest` (`DISCO_VM_DOCKER_IMAGE=debian:trixie`) |
 | unattended install from media (`docs/examples/<os>.yaml`) | n/a | ✅ `docs/examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap | n/a (boots a boxd image) | n/a (an image from a registry, with systemd and the agent added and its owners shifted: `docs/examples/docker.yaml`) |
 | warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) | ✅ resume (`machinetest` on boxd) | n/a (cold only) |
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window | refused | refused |
