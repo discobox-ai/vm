@@ -31,7 +31,7 @@ func TestService(t *testing.T) {
 	base := machine.Layer{ID: "base", Dir: os.Getenv(BaseEnv)}
 	if base.Dir == "" {
 		base.Dir = t.TempDir()
-		if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Agent: linuxAgent(t), Log: testLog{t}}, base); err != nil {
+		if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Log: testLog{t}}, base); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = d.DeleteLayer(context.Background(), base) })
@@ -56,9 +56,6 @@ func TestService(t *testing.T) {
 	for boot := 1; boot <= 2; boot++ {
 		m, err := d.Boot(ctx, inst, machine.BootOptions{})
 		if err != nil {
-			t.Fatal(err)
-		}
-		if err := d.waitAgent(ctx, api, ref.ID); err != nil {
 			t.Fatal(err)
 		}
 		// Under systemd, since what an Exec starts ends with it.

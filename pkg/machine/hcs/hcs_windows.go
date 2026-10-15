@@ -42,6 +42,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 		CloneModes: []machine.CloneMode{machine.Cold, machine.Fork},
 		Display:    true,
 		Forward:    true,
+		Agent:      true,
 	}
 }
 
@@ -180,14 +181,26 @@ func terminateStale(id string) {
 	}
 }
 
-// Boot starts the instance and, with opts.GUI, opens a window on its video
-// console that closes when the VM stops. Closing the window leaves the VM
-// running.
+// Boot starts the instance and waits for its agent. With opts.GUI it opens a
+// window on the VM's video console that closes when the VM stops. Closing the
+// window leaves the VM running.
 func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
 	m, err := d.boot(ctx, inst, opts)
-	if err != nil || !opts.GUI {
-		return m, err
+	if err != nil {
+		return nil, err
 	}
+	if opts.GUI {
+		d.view(m, inst, opts)
+	}
+	if err := m.WaitReady(ctx, m.done); err != nil {
+		m.shutdown()
+		return nil, err
+	}
+	return m, nil
+}
+
+// view opens a window on the VM's video console.
+func (d *Driver) view(m *vm, inst machine.InstanceSpec, opts machine.BootOptions) {
 	title := opts.Title
 	if title == "" {
 		title = inst.ID
@@ -198,13 +211,12 @@ func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 		if opts.Console != nil {
 			fmt.Fprintf(opts.Console, "hcs: %v\n", err)
 		}
-		return m, nil
+		return
 	}
 	go func() {
 		<-m.Done()
 		v.Close()
 	}()
-	return m, nil
 }
 
 func (d *Driver) boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (*vm, error) {

@@ -9,6 +9,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // serviceName is the ServiceFile's name in its directory.
@@ -35,7 +37,7 @@ func ServiceFile(goos string) string {
 }
 
 // SetService writes the ServiceFile of a guest of an OS.
-func (c *Client) SetService(ctx context.Context, goos, address string) error {
+func SetService(ctx context.Context, g machine.Guest, goos, address string) error {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	data := []byte(address + "\n")
@@ -48,7 +50,7 @@ func (c *Client) SetService(ctx context.Context, goos, address string) error {
 	if err := tw.Close(); err != nil {
 		return err
 	}
-	if err := c.CopyTo(ctx, serviceDir(goos), &buf); err != nil {
+	if err := g.CopyTo(ctx, serviceDir(goos), &buf); err != nil {
 		return fmt.Errorf("guest: write %s: %w", ServiceFile(goos), err)
 	}
 	return nil

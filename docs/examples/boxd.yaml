@@ -1,6 +1,6 @@
 # A Linux image on boxd (https://boxd.sh): a cloud microVM from boxd's own
-# Ubuntu image, with the disco-vm agent installed as a systemd service by the
-# boxd driver. Each layer is a boxd snapshot.
+# Ubuntu image, reached through boxd's API with nothing of disco-vm's in the
+# guest but a shutdown hook. Each layer is a boxd snapshot.
 #
 #   export BOXD_API_KEY=$(boxd auth keys create disco-vm)
 #   disco-vm --driver boxd build -f docs/examples/boxd.yaml -t demo/boxd
@@ -10,8 +10,6 @@
 # boxd has no install media: media is always "latest", and options.image picks
 # one of boxd's images instead of the default. Every machine has a 100 GiB
 # disk, and resources must name a boxd size (1/4GiB, 2/8GiB, 4/16GiB, 8/32GiB).
-# From a host that is not linux/amd64, pass --agent, a disco-vm built with
-# GOOS=linux GOARCH=amd64.
 from:
   install:
     os: linux

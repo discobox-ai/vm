@@ -2,9 +2,7 @@ package boxd
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,9 +20,10 @@ var pollEvery = 2 * time.Second
 var killLimit = 5 * time.Minute
 
 // vm is a running boxd machine. Nothing ties it to this process, and any
-// number of processes may hold one for the same machine (Attach). It watches
-// the machine only once something waits for it to stop, so one held only to
-// dial polls nothing.
+// number of processes may hold one for the same machine (Attach). Its guest
+// operations are boxd's Exec (guest.go). It watches the machine only once
+// something waits for it to stop, so one held only to run a command polls
+// nothing.
 type vm struct {
 	api      boxdapi.BoxdApiClient
 	ref      vmRef
@@ -152,15 +151,6 @@ func (m *vm) abandon(err error) {
 		m.stop()
 		close(m.done)
 	})
-}
-
-func (m *vm) Dial(ctx context.Context, port uint32) (net.Conn, error) {
-	select {
-	case <-m.done:
-		return nil, errors.New("boxd: guest is stopped")
-	default:
-	}
-	return dial(ctx, m.api, m.ref.ID, port)
 }
 
 // Kill stops the machine through the API, retrying until boxd takes the

@@ -12,12 +12,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -53,7 +53,7 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 		return err
 	}
 	defer forwards()
-	service, err := e.announceService(ctx, inst, booted.Guest)
+	service, err := e.announceService(ctx, inst, booted.Machine)
 	if err != nil {
 		_ = booted.Machine.Kill(context.Background())
 		return err
@@ -64,7 +64,12 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 		return err
 	}
 	defer serviceListener.Close()
-	go serveService(serviceListener, booted.Machine, service.Port)
+	dialer, ok := booted.Machine.(machine.Dialer)
+	if !ok {
+		_ = booted.Machine.Kill(context.Background())
+		return fmt.Errorf("the %s driver's machine cannot be dialed, so its shim cannot serve the instance's URL", e.Driver.Name())
+	}
+	go serveService(serviceListener, dialer, service.Port)
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		_ = booted.Machine.Kill(context.Background())
@@ -93,25 +98,23 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("GET /dial", func(w http.ResponseWriter, r *http.Request) {
-		port, err := strconv.ParseUint(r.URL.Query().Get("port"), 10, 32)
-		if err != nil {
-			http.Error(w, "port is required", http.StatusBadRequest)
-			return
-		}
-		upstream, err := booted.Machine.Dial(r.Context(), uint32(port))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
+	// Other processes reach the machine's guest operations here, on
+	// connections the relay serves once they are upgraded.
+	relay := newConnListener(listener.Addr())
+	relayServer := &http.Server{Handler: guest.Relay(booted.Machine), ReadHeaderTimeout: 30 * time.Second}
+	go func() { _ = relayServer.Serve(relay) }()
+	defer relayServer.Close()
+	mux.HandleFunc("GET /guest", func(w http.ResponseWriter, _ *http.Request) {
 		conn, rw, err := http.NewResponseController(w).Hijack()
 		if err != nil {
-			_ = upstream.Close()
 			return
 		}
-		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: disco-vm-dial\r\n\r\n")
-		_ = rw.Flush()
-		splice(&bufConn{Conn: conn, r: rw.Reader}, upstream)
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + guestUpgrade + "\r\n\r\n")
+		if err := rw.Flush(); err != nil {
+			_ = conn.Close()
+			return
+		}
+		relay.hand(&bufConn{Conn: conn, r: rw.Reader})
 	})
 	statePath := filepath.Join(e.instanceDir(id), shimStateName)
 	state, closeControl, err := serveControl(listener, mux, statePath, serviceListener.Addr().String())
@@ -135,7 +138,7 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 // serveService splices every connection to the instance's loopback URL into
 // the service's guest port, until the listener is closed. A guest with nothing
 // listening yet closes the connection.
-func serveService(l net.Listener, m machine.Machine, port uint32) {
+func serveService(l net.Listener, m machine.Dialer, port uint32) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -227,21 +230,6 @@ func serveControl(listener net.Listener, mux *http.ServeMux, statePath, service 
 		defer cancel()
 		_ = server.Shutdown(ctx)
 	}, nil
-}
-
-// splice copies both ways until either side is done, then closes both.
-func splice(a, b net.Conn) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-	copyHalf := func(dst, src net.Conn) {
-		defer wg.Done()
-		_, _ = io.Copy(dst, src)
-		_ = dst.Close()
-		_ = src.Close()
-	}
-	go copyHalf(a, b)
-	go copyHalf(b, a)
-	wg.Wait()
 }
 
 // spliceHalves copies both ways and passes each end's EOF on as a half-close,
@@ -384,20 +372,22 @@ func (c *shimClient) stop(ctx context.Context, timeout time.Duration) error {
 	return nil
 }
 
-func (c *shimClient) dial(ctx context.Context, port uint32) (net.Conn, error) {
+// dialGuest opens a connection to the shim's relay of its machine's guest
+// operations, which speaks the agent's protocol (guest.Client).
+func (c *shimClient) dialGuest(ctx context.Context) (net.Conn, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", c.state.Addr)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://shim/dial?port="+strconv.FormatUint(uint64(port), 10), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://shim/guest", nil)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.state.Token)
 	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "disco-vm-dial")
+	req.Header.Set("Upgrade", guestUpgrade)
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
@@ -414,8 +404,49 @@ func (c *shimClient) dial(ctx context.Context, port uint32) (net.Conn, error) {
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = conn.Close()
-		return nil, fmt.Errorf("dial port %d: %s", port, strings.TrimSpace(string(msg)))
+		return nil, fmt.Errorf("shim: guest: %s", strings.TrimSpace(string(msg)))
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return &bufConn{Conn: conn, r: reader}, nil
 }
+
+// guestUpgrade is the Upgrade token of a connection to a shim's relay.
+const guestUpgrade = "disco-vm-guest"
+
+// connListener is a net.Listener whose connections are handed to it: those a
+// shim's control API upgraded for its relay.
+type connListener struct {
+	addr   net.Addr
+	conns  chan net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newConnListener(addr net.Addr) *connListener {
+	return &connListener{addr: addr, conns: make(chan net.Conn), closed: make(chan struct{})}
+}
+
+// hand gives the listener a connection, or closes it once the listener is.
+func (l *connListener) hand(conn net.Conn) {
+	select {
+	case l.conns <- conn:
+	case <-l.closed:
+		_ = conn.Close()
+	}
+}
+
+func (l *connListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.conns:
+		return conn, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *connListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *connListener) Addr() net.Addr { return l.addr }

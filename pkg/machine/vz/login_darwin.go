@@ -174,17 +174,16 @@ func makeLogin(ctx context.Context, parent, dst bundle, m meta, u *machine.User)
 // loggedInSetup waits for the user's session and reports whether Setup
 // Assistant came up in it, which it does within seconds of the desktop.
 func loggedInSetup(ctx context.Context, vm *vmMachine, name string) (bool, error) {
-	agent := vm.agent()
-	defer agent.Close()
+	agent := vm.Client
 	if err := agent.WaitReady(ctx, vm.Done()); err != nil {
 		return false, err
 	}
 	if err := waitLoggedIn(ctx, agent, name); err != nil {
 		return false, err
 	}
-	check := guest.ExecRequest{Argv: []string{"pgrep", "-qx", "Setup Assistant"}}
+	check := machine.ExecRequest{Argv: []string{"pgrep", "-qx", "Setup Assistant"}}
 	for range 5 {
-		if code, err := agent.Run(ctx, check, nil, io.Discard, io.Discard); err == nil && code == 0 {
+		if code, err := machine.Run(ctx, agent, check, nil, io.Discard, io.Discard); err == nil && code == 0 {
 			return true, nil
 		}
 		time.Sleep(2 * time.Second)
@@ -194,16 +193,15 @@ func loggedInSetup(ctx context.Context, vm *vmMachine, name string) (bool, error
 
 // clearSetup quits Setup Assistant and clears the user's mark for it.
 func clearSetup(ctx context.Context, vm *vmMachine, name string) error {
-	agent := vm.agent()
-	defer agent.Close()
-	req := guest.ExecRequest{Argv: []string{"/bin/sh", "-c", `pkill -x "Setup Assistant" || true
+	agent := vm.Client
+	req := machine.ExecRequest{Argv: []string{"/bin/sh", "-c", `pkill -x "Setup Assistant" || true
 sleep 2
 lw="/Users/$1/Library/Preferences/com.apple.loginwindow"
 defaults delete "$lw" MiniBuddyLaunch 2>/dev/null || true
 defaults delete "$lw" MiniBuddyLaunchCount 2>/dev/null || true
 chown "$1:staff" "$lw.plist"`, "sh", name}}
 	var out strings.Builder
-	code, err := agent.Run(ctx, req, nil, &out, &out)
+	code, err := machine.Run(ctx, agent, req, nil, &out, &out)
 	if err != nil {
 		return fmt.Errorf("vz: clear %s's first-login setup: %w: %s", name, err, out.String())
 	}
@@ -227,8 +225,7 @@ func finishLogin(ctx context.Context, vm *vmMachine, dst bundle, m meta, u *mach
 
 // powerOff shuts a guest down through its agent and waits for it to stop.
 func powerOff(ctx context.Context, vm *vmMachine) error {
-	agent := vm.agent()
-	defer agent.Close()
+	agent := vm.Client
 	if err := agent.WaitReady(ctx, vm.Done()); err != nil {
 		return err
 	}
@@ -248,10 +245,10 @@ func powerOff(ctx context.Context, vm *vmMachine) error {
 func waitLoggedIn(ctx context.Context, agent *guest.Client, name string) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	check := guest.ExecRequest{Argv: []string{"/bin/sh", "-c",
+	check := machine.ExecRequest{Argv: []string{"/bin/sh", "-c",
 		`[ "$(stat -f %Su /dev/console)" = "$1" ] && pgrep -qxu "$1" Finder`, "sh", name}}
 	for {
-		if code, err := agent.Run(ctx, check, nil, io.Discard, io.Discard); err == nil && code == 0 {
+		if code, err := machine.Run(ctx, agent, check, nil, io.Discard, io.Discard); err == nil && code == 0 {
 			// The desktop is up; give it a moment to finish drawing.
 			select {
 			case <-time.After(5 * time.Second):

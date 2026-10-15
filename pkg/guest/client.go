@@ -14,30 +14,33 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Dialer opens a new stream to the agent. Every driver's Machine.Dial, bound to
-// AgentPort, is one; so is the engine's dial through a running instance's shim.
+// Dialer opens a new stream to the agent: a driver's private channel to the
+// guest's AgentPort, or the engine's dial into a running instance's shim,
+// which relays to its machine (Relay).
 type Dialer func(ctx context.Context) (net.Conn, error)
 
-// Client talks to one guest's agent.
+// Client talks to one guest's agent. It is the machine.Guest of every driver
+// that reaches its guest through the agent.
 type Client struct {
 	dial Dialer
 	http *http.Client
 }
 
-// NewClient returns a client that opens its connections with dial.
+// NewClient returns a client that opens its connections with dial. It keeps
+// none between calls: a connection can be a hypervisor socket, a docker exec,
+// or a shim's relay, and a client is handed out (machine.Guest) with nothing
+// to release it, so every call dials and closes its own.
 func NewClient(dial Dialer) *Client {
 	transport := &http.Transport{
-		DialContext:     func(ctx context.Context, _, _ string) (net.Conn, error) { return dial(ctx) },
-		MaxIdleConns:    2,
-		IdleConnTimeout: 30 * time.Second,
+		DialContext:       func(ctx context.Context, _, _ string) (net.Conn, error) { return dial(ctx) },
+		DisableKeepAlives: true,
 	}
 	return &Client{dial: dial, http: &http.Client{Transport: transport}}
 }
-
-// Close drops idle connections.
-func (c *Client) Close() { c.http.CloseIdleConnections() }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body io.Reader) (*http.Response, error) {
 	u := "http://guest" + path
@@ -91,14 +94,16 @@ func (c *Client) WaitReady(ctx context.Context, stopped <-chan struct{}) error {
 	}
 }
 
+var _ machine.Guest = (*Client)(nil)
+
 // Info describes the guest.
-func (c *Client) Info(ctx context.Context) (Info, error) {
+func (c *Client) Info(ctx context.Context) (machine.GuestInfo, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/v1/info", nil, nil)
 	if err != nil {
-		return Info{}, err
+		return machine.GuestInfo{}, err
 	}
 	defer resp.Body.Close()
-	var info Info
+	var info machine.GuestInfo
 	return info, json.NewDecoder(resp.Body).Decode(&info)
 }
 
@@ -134,8 +139,8 @@ func (c *Client) CopyFrom(ctx context.Context, path string) (io.ReadCloser, erro
 	return resp.Body, nil
 }
 
-// Process is a running exec.
-type Process struct {
+// process is a running exec.
+type process struct {
 	conn net.Conn
 	in   *bufio.Reader
 	mu   sync.Mutex
@@ -143,7 +148,7 @@ type Process struct {
 
 // Exec starts a process. The connection is the process: closing it kills the
 // process in the guest.
-func (c *Client) Exec(ctx context.Context, req ExecRequest) (*Process, error) {
+func (c *Client) Exec(ctx context.Context, req machine.ExecRequest) (machine.Process, error) {
 	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
@@ -180,17 +185,17 @@ func (c *Client) Exec(ctx context.Context, req ExecRequest) (*Process, error) {
 		return nil, fmt.Errorf("guest: exec: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &Process{conn: conn, in: in}, nil
+	return &process{conn: conn, in: in}, nil
 }
 
-func (p *Process) send(typ byte, payload []byte) error {
+func (p *process) send(typ byte, payload []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return WriteFrame(p.conn, typ, payload)
 }
 
 // Write sends bytes to the process's stdin.
-func (p *Process) Write(b []byte) (int, error) {
+func (p *process) Write(b []byte) (int, error) {
 	written := 0
 	for written < len(b) {
 		n := min(len(b)-written, maxFrame)
@@ -203,15 +208,15 @@ func (p *Process) Write(b []byte) (int, error) {
 }
 
 // CloseStdin closes the process's stdin.
-func (p *Process) CloseStdin() error { return p.send(FrameStdinEOF, nil) }
+func (p *process) CloseStdin() error { return p.send(FrameStdinEOF, nil) }
 
 // Resize sets the process's terminal size.
-func (p *Process) Resize(rows, cols uint16) error {
+func (p *process) Resize(rows, cols uint16) error {
 	return p.send(FrameResize, resizePayload(rows, cols))
 }
 
 // Wait copies the process's output until it exits and returns its exit code.
-func (p *Process) Wait(stdout, stderr io.Writer) (int, error) {
+func (p *process) Wait(stdout, stderr io.Writer) (int, error) {
 	for {
 		typ, payload, err := ReadFrame(p.in)
 		if err != nil {
@@ -240,29 +245,4 @@ func (p *Process) Wait(stdout, stderr io.Writer) (int, error) {
 }
 
 // Close ends the session; a running process is killed.
-func (p *Process) Close() error { return p.conn.Close() }
-
-// Run executes a process to completion: stdin is copied in and closed, output
-// copied out, and the exit code returned. Canceling ctx kills the process.
-func (c *Client) Run(ctx context.Context, req ExecRequest, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	p, err := c.Exec(ctx, req)
-	if err != nil {
-		return -1, err
-	}
-	defer p.Close()
-	stop := context.AfterFunc(ctx, func() { _ = p.Close() })
-	defer stop()
-	if stdin != nil {
-		go func() {
-			_, _ = io.Copy(p, stdin)
-			_ = p.CloseStdin()
-		}()
-	} else {
-		_ = p.CloseStdin()
-	}
-	code, err := p.Wait(stdout, stderr)
-	if err != nil && ctx.Err() != nil {
-		return -1, ctx.Err()
-	}
-	return code, err
-}
+func (p *process) Close() error { return p.conn.Close() }

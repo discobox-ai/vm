@@ -57,12 +57,13 @@ vz and libkrun providers become a thin `dockerworker.Driver` over
 discobox talks to processes in its VMs over vsock in both directions (ADR 0013,
 ADR 0062), and never opens a TCP listener for it.
 
-- **Host to guest** (**built**): `engine.Dial(inst, port)` returns a
-  `net.Conn` to any guest process listening on that vsock port (hvsocket
-  service ID on Windows). It goes through the instance's shim, which holds the
-  VM: loopback TCP to the shim, then `/dial?port=N`, which splices to the
-  framework's `Connect(N)`. discobox's Docker and pool-agent leases dial this
-  way.
+- **Host to guest** (**built**): one port, the instance's service.
+  `engine.URL(inst)` is `http://127.0.0.1:N`, a loopback port the instance's
+  shim splices into the guest's vsock port 7302 (hvsocket service ID on
+  Windows), and the guest listens where its `guest.ServiceFile` says (ADR
+  0005). Raw guest ports are not reachable from above the seam (ADR 0001
+  §3): what discobox needs inside the guest, its sandbox agent serves at that
+  URL.
 - **Guest to host** (**built**): a guest process connects out to the host on a
   vsock port (CID 2 on vz), and the shim forwards it to a Unix socket on the
   host that discobox serves: `engine.CreateOptions.Forwards`, a port to a
@@ -86,10 +87,10 @@ environment per sandbox**. disco-vm is that provider, one VM per sandbox:
 |---|---|
 | create | `engine.Create(image, {Name: sandboxID, Forwards: …})`, then `Start`. The default mode is auto, so a warm image resumes in about 4 s and falls back to a cold boot |
 | inspect / list | `engine.Get` / `List` and `State`; the name carries the sandbox ID, so a lost create is recovered by name, never duplicated |
-| start / stop | `engine.Start` / `Stop` (an orderly shutdown through the guest agent) |
+| start / stop | `engine.Start` / `Stop` (an orderly shutdown through the guest) |
 | delete | `engine.Remove(force)` |
-| transfer | `guest.Client.CopyTo` / `CopyFrom` (tar) |
-| connection | `engine.Dial(inst, port)`, and `Forwards` for the guest's side |
+| transfer | `engine.Guest(inst)`'s `CopyTo` / `CopyFrom` (tar), and `Exec` |
+| connection | `engine.URL(inst)`, and `Forwards` for the guest's side |
 
 The pool agent runs inside the Linux pool VM and cannot call
 Virtualization.framework or HCS, so the backend runs on the host side, in the
@@ -105,8 +106,10 @@ discobox must add:
 2. **sandbox-agent on darwin and windows.** Its exec, PTY, services, and meta
    APIs are what the server and CLI already speak; the Linux-only PID 1 work
    moves behind build tags. disco-vm's own agent stays the lifecycle and
-   bootstrap channel: it shuts the guest down, copies files, and installs
-   sandbox-agent. sandbox-agent is reached over vsock like any guest process.
+   bootstrap channel, behind `engine.Guest`: it shuts the guest down, copies
+   files, and installs sandbox-agent. sandbox-agent listens where the
+   guest's service file says (`guest.ListenService`) and is reached at the
+   instance's URL.
 3. **Capacity in placement.** `Capabilities.MaxRunning` (two macOS guests per
    Mac, a framework limit) has to reach scheduling, or a third macOS sandbox
    fails at start.

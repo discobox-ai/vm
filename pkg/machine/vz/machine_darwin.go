@@ -86,11 +86,23 @@ func coldClone(inst machine.InstanceSpec) error {
 	return dst.newIdentifier()
 }
 
-// Boot starts a prepared instance. A resume clone's first boot restores a
-// template, and falls back to a cold boot of the image when none is free or
-// the framework refuses the restore (a locked screen, a host update). Every
-// other boot is cold.
-func (*Driver) Boot(_ context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
+// Boot starts a prepared instance and waits for its agent. A resume clone's
+// first boot restores a template, and falls back to a cold boot of the image
+// when none is free or the framework refuses the restore (a locked screen, a
+// host update). Every other boot is cold.
+func (*Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
+	vm, err := bootInstance(inst, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := vm.WaitReady(ctx, vm.done); err != nil {
+		_ = vm.Kill(context.Background())
+		return nil, err
+	}
+	return vm, nil
+}
+
+func bootInstance(inst machine.InstanceSpec, opts machine.BootOptions) (*vmMachine, error) {
 	b := bundle(inst.Dir)
 	console := opts.Console
 	if console == nil {
@@ -289,6 +301,8 @@ func newVM(b bundle, cpus uint, memory uint64, shares []machine.Share) (*vz.Virt
 // is always a shim or the builder: a Virtualization.framework VM dies with its
 // process.
 type vmMachine struct {
+	// Client is the guest agent over vsock: the machine's guest operations.
+	*guest.Client
 	vm     *vz.VirtualMachine
 	socket *vz.VirtioSocketDevice
 	done   chan struct{}
@@ -305,6 +319,7 @@ func watch(vm *vz.VirtualMachine) *vmMachine {
 	if devices := vm.SocketDevices(); len(devices) > 0 {
 		m.socket = devices[0]
 	}
+	m.Client = guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
 	go func() {
 		defer close(m.done)
 		for state := range vm.StateChangedNotify() {
@@ -359,7 +374,10 @@ func (m *vmMachine) Dial(ctx context.Context, port uint32) (net.Conn, error) {
 	}
 }
 
-var _ machine.HostListener = (*vmMachine)(nil)
+var (
+	_ machine.HostListener = (*vmMachine)(nil)
+	_ machine.Dialer       = (*vmMachine)(nil)
+)
 
 // Listen accepts what guest processes open to the host (CID 2) on a vsock
 // port.
@@ -405,8 +423,8 @@ func (c vsockConn) CloseWrite() error {
 }
 
 // Kill powers the guest off at once. A macOS guest answers the framework's
-// stop request by sleeping, so an orderly shutdown goes through the agent and
-// this is only the fallback.
+// stop request by sleeping, so an orderly shutdown goes through the agent
+// (Shutdown) and this is only the fallback.
 func (m *vmMachine) Kill(context.Context) error {
 	var err error
 	m.kill.Do(func() {
@@ -426,9 +444,4 @@ func (m *vmMachine) Done() <-chan struct{} { return m.done }
 func (m *vmMachine) Err() error {
 	<-m.done
 	return m.err
-}
-
-// agent is a client for the guest agent on this machine.
-func (m *vmMachine) agent() *guest.Client {
-	return guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
 }

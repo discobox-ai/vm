@@ -39,7 +39,6 @@ const (
 	BoxdApi_ListVms_FullMethodName                 = "/boxd.api.v1.BoxdApi/ListVms"
 	BoxdApi_Exec_FullMethodName                    = "/boxd.api.v1.BoxdApi/Exec"
 	BoxdApi_Whoami_FullMethodName                  = "/boxd.api.v1.BoxdApi/Whoami"
-	BoxdApi_UploadFileStream_FullMethodName        = "/boxd.api.v1.BoxdApi/UploadFileStream"
 	BoxdApi_SuspendVm_FullMethodName               = "/boxd.api.v1.BoxdApi/SuspendVm"
 	BoxdApi_ResumeVm_FullMethodName                = "/boxd.api.v1.BoxdApi/ResumeVm"
 	BoxdApi_WakeVm_FullMethodName                  = "/boxd.api.v1.BoxdApi/WakeVm"
@@ -74,8 +73,6 @@ type BoxdApiClient interface {
 	// call kills the remote command.
 	Exec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ExecChunk, ExecChunk], error)
 	Whoami(ctx context.Context, in *WhoamiRequest, opts ...grpc.CallOption) (*WhoamiResponse, error)
-	// The first chunk carries vm_id/path/total_size; later chunks carry bytes.
-	UploadFileStream(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadFileChunk, UploadFileResponse], error)
 	SuspendVm(ctx context.Context, in *SuspendVmRequest, opts ...grpc.CallOption) (*SuspendVmResponse, error)
 	ResumeVm(ctx context.Context, in *ResumeVmRequest, opts ...grpc.CallOption) (*ResumeVmResponse, error)
 	WakeVm(ctx context.Context, in *WakeVmRequest, opts ...grpc.CallOption) (*WakeVmResponse, error)
@@ -188,19 +185,6 @@ func (c *boxdApiClient) Whoami(ctx context.Context, in *WhoamiRequest, opts ...g
 	}
 	return out, nil
 }
-
-func (c *boxdApiClient) UploadFileStream(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadFileChunk, UploadFileResponse], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &BoxdApi_ServiceDesc.Streams[1], BoxdApi_UploadFileStream_FullMethodName, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &grpc.GenericClientStream[UploadFileChunk, UploadFileResponse]{ClientStream: stream}
-	return x, nil
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type BoxdApi_UploadFileStreamClient = grpc.ClientStreamingClient[UploadFileChunk, UploadFileResponse]
 
 func (c *boxdApiClient) SuspendVm(ctx context.Context, in *SuspendVmRequest, opts ...grpc.CallOption) (*SuspendVmResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -360,8 +344,6 @@ type BoxdApiServer interface {
 	// call kills the remote command.
 	Exec(grpc.BidiStreamingServer[ExecChunk, ExecChunk]) error
 	Whoami(context.Context, *WhoamiRequest) (*WhoamiResponse, error)
-	// The first chunk carries vm_id/path/total_size; later chunks carry bytes.
-	UploadFileStream(grpc.ClientStreamingServer[UploadFileChunk, UploadFileResponse]) error
 	SuspendVm(context.Context, *SuspendVmRequest) (*SuspendVmResponse, error)
 	ResumeVm(context.Context, *ResumeVmRequest) (*ResumeVmResponse, error)
 	WakeVm(context.Context, *WakeVmRequest) (*WakeVmResponse, error)
@@ -415,9 +397,6 @@ func (UnimplementedBoxdApiServer) Exec(grpc.BidiStreamingServer[ExecChunk, ExecC
 }
 func (UnimplementedBoxdApiServer) Whoami(context.Context, *WhoamiRequest) (*WhoamiResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Whoami not implemented")
-}
-func (UnimplementedBoxdApiServer) UploadFileStream(grpc.ClientStreamingServer[UploadFileChunk, UploadFileResponse]) error {
-	return status.Error(codes.Unimplemented, "method UploadFileStream not implemented")
 }
 func (UnimplementedBoxdApiServer) SuspendVm(context.Context, *SuspendVmRequest) (*SuspendVmResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SuspendVm not implemented")
@@ -614,13 +593,6 @@ func _BoxdApi_Whoami_Handler(srv interface{}, ctx context.Context, dec func(inte
 	}
 	return interceptor(ctx, in, info, handler)
 }
-
-func _BoxdApi_UploadFileStream_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(BoxdApiServer).UploadFileStream(&grpc.GenericServerStream[UploadFileChunk, UploadFileResponse]{ServerStream: stream})
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type BoxdApi_UploadFileStreamServer = grpc.ClientStreamingServer[UploadFileChunk, UploadFileResponse]
 
 func _BoxdApi_SuspendVm_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SuspendVmRequest)
@@ -971,11 +943,6 @@ var BoxdApi_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "Exec",
 			Handler:       _BoxdApi_Exec_Handler,
 			ServerStreams: true,
-			ClientStreams: true,
-		},
-		{
-			StreamName:    "UploadFileStream",
-			Handler:       _BoxdApi_UploadFileStream_Handler,
 			ClientStreams: true,
 		},
 	},

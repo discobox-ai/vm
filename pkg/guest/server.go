@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // Server is the guest agent.
@@ -53,7 +55,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 	hostname, _ := os.Hostname()
-	writeJSON(w, http.StatusOK, Info{
+	writeJSON(w, http.StatusOK, machine.GuestInfo{
 		Root:     s.Root,
 		OS:       runtime.GOOS,
 		Arch:     runtime.GOARCH,
@@ -137,7 +139,7 @@ func (s *Server) shutdown(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
-	var req ExecRequest
+	var req machine.ExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -194,7 +196,7 @@ func (f frameWriter) Write(p []byte) (int, error) {
 	return written, nil
 }
 
-func (s *Server) runSession(conn net.Conn, in *bufio.Reader, req ExecRequest) {
+func (s *Server) runSession(conn net.Conn, in *bufio.Reader, req machine.ExecRequest) {
 	out := &session{conn: conn}
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...) //nolint:gosec,noctx // G204: running the host's command is the agent's job; the session, not a ctx, bounds the process
 	cmd.Dir = s.resolve(req.Dir)

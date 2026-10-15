@@ -214,7 +214,6 @@ func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, disk string, 
 		}
 	}
 	client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
-	defer client.Close()
 
 	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
 	defer cancel()
@@ -245,7 +244,7 @@ func waitSetup(ctx context.Context, client *guest.Client, m *vm, started time.Ti
 		var out bytes.Buffer
 		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		_, _ = client.Run(pctx, guest.ExecRequest{Argv: argv}, nil, &out, io.Discard)
+		_, _ = machine.Run(pctx, client, machine.ExecRequest{Argv: argv}, nil, &out, io.Discard)
 		return out.String()
 	}
 	report := time.Now().Add(time.Minute)

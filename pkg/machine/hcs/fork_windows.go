@@ -155,8 +155,8 @@ func (d *Driver) Warm(ctx context.Context, spec machine.WarmSpec) (machine.Stage
 	}
 	client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
 	err = client.WaitReady(ctx, m.Done())
-	// Nothing of ours may be connected into the memory clones inherit.
-	client.Close()
+	// Nothing of ours is connected into the memory clones inherit: the
+	// agent client keeps no connection between calls.
 	if err != nil {
 		return fail(fmt.Errorf("hcs: warm: the template's agent: %w", err))
 	}

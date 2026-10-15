@@ -17,7 +17,6 @@ import (
 	"github.com/discobox-ai/vm/internal/units"
 	"github.com/discobox-ai/vm/internal/version"
 	"github.com/discobox-ai/vm/pkg/engine"
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -278,14 +277,14 @@ func inspectCommand(g *globals) *cobra.Command {
 			}
 			out := struct {
 				*engine.Instance
-				State engine.State `json:"state"`
-				Guest *guest.Info  `json:"guest,omitempty"`
+				State engine.State       `json:"state"`
+				Guest *machine.GuestInfo `json:"guest,omitempty"`
 			}{Instance: inst, State: e.State(cmd.Context(), inst)}
 			if out.State == engine.Running {
-				client := e.Guest(inst)
-				defer client.Close()
-				if info, err := client.Info(cmd.Context()); err == nil {
-					out.Guest = &info
+				if g, err := e.Guest(cmd.Context(), inst); err == nil {
+					if info, err := g.Info(cmd.Context()); err == nil {
+						out.Guest = &info
+					}
 				}
 			}
 			enc := json.NewEncoder(os.Stdout)
@@ -333,16 +332,18 @@ func execCommand(g *globals) *cobra.Command {
 
 // execIn runs a command in an instance and turns its exit code into ours.
 func execIn(ctx context.Context, e *engine.Engine, inst *engine.Instance, opts execOptions) error {
-	client := e.Guest(inst)
-	defer client.Close()
-	req := guest.ExecRequest{Argv: opts.argv, Env: opts.env, Dir: opts.dir, User: opts.user, TTY: opts.tty}
+	g, err := e.Guest(ctx, inst)
+	if err != nil {
+		return err
+	}
+	req := machine.ExecRequest{Argv: opts.argv, Env: opts.env, Dir: opts.dir, User: opts.user, TTY: opts.tty}
 
 	if !opts.tty {
 		var stdin io.Reader
 		if opts.stdin {
 			stdin = os.Stdin
 		}
-		code, err := client.Run(ctx, req, stdin, os.Stdout, os.Stderr)
+		code, err := machine.Run(ctx, g, req, stdin, os.Stdout, os.Stderr)
 		if err != nil {
 			return err
 		}
@@ -356,7 +357,7 @@ func execIn(ctx context.Context, e *engine.Engine, inst *engine.Instance, opts e
 	if cols, rows, err := term.GetSize(outFD); err == nil {
 		req.Rows, req.Cols = uint16(rows), uint16(cols)
 	}
-	proc, err := client.Exec(ctx, req)
+	proc, err := g.Exec(ctx, req)
 	if err != nil {
 		return err
 	}

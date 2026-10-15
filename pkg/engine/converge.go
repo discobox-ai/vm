@@ -11,15 +11,19 @@ import (
 // as long as it runs, so a second caller is refused with
 // converge.ErrLeaseHeld. See docs/state-file.md.
 func (e *Engine) Converge(ctx context.Context, inst *Instance, opts converge.Options) error {
-	client := e.Guest(inst)
-	defer client.Close()
-	return converge.Run(ctx, client, opts)
+	g, err := e.Guest(ctx, inst)
+	if err != nil {
+		return err
+	}
+	return converge.Run(ctx, g, opts)
 }
 
 // ConvergeStatus is how an instance's last Converge left it. An instance that
 // was never converged has a status with no State.
 func (e *Engine) ConvergeStatus(ctx context.Context, inst *Instance) (converge.Status, error) {
-	client := e.Guest(inst)
-	defer client.Close()
-	return converge.ReadStatus(ctx, client)
+	g, err := e.Guest(ctx, inst)
+	if err != nil {
+		return converge.Status{}, err
+	}
+	return converge.ReadStatus(ctx, g)
 }

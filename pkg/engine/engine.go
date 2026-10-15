@@ -30,7 +30,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/discobox-ai/x/gormdb"
@@ -622,19 +621,12 @@ func (e *Engine) Start(ctx context.Context, inst *Instance, opts StartOptions) e
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	client := e.Guest(inst)
-	defer client.Close()
-	stopped := make(chan struct{})
-	go func() {
-		<-exited
-		close(stopped)
-	}()
-	return client.WaitReady(ctx, stopped)
+	return nil
 }
 
-// startRemote boots a remote instance and waits for its agent. Nothing waits
-// on the machine's Done, so it is not watched, and nothing of it outlives this
-// call but the machine itself.
+// startRemote boots a remote instance, which the driver returns once its
+// guest answers. Nothing waits on the machine's Done, so it is not watched,
+// and nothing of it outlives this call but the machine itself.
 func (e *Engine) startRemote(ctx context.Context, inst *Instance, opts StartOptions) error {
 	spec, err := e.machineSpec(inst)
 	if err != nil {
@@ -646,33 +638,7 @@ func (e *Engine) startRemote(ctx context.Context, inst *Instance, opts StartOpti
 	if err != nil {
 		return fmt.Errorf("instance %s failed to start: %w", inst.Name, err)
 	}
-	client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
-	defer client.Close()
-	// A guest that stops while booting ends the wait, as a shim's exit does.
-	// The machine's own Done is not used: its watcher would outlive this
-	// call in a program that embeds the engine.
-	watch, stopWatching := context.WithCancel(ctx)
-	defer stopWatching()
-	stopped := make(chan struct{})
-	attacher := e.remote()
-	go func() {
-		for {
-			select {
-			case <-watch.Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
-			if _, err := attacher.Attach(watch, spec); errors.Is(err, machine.ErrNotRunning) {
-				close(stopped)
-				return
-			}
-		}
-	}()
-	if err := client.WaitReady(ctx, stopped); err != nil {
-		_ = m.Kill(context.Background())
-		return fmt.Errorf("instance %s: %w", inst.Name, err)
-	}
-	if _, err := e.announceService(ctx, inst, client); err != nil {
+	if _, err := e.announceService(ctx, inst, m); err != nil {
 		_ = m.Kill(context.Background())
 		return err
 	}
@@ -714,7 +680,7 @@ func (e *Engine) Stop(ctx context.Context, inst *Instance, timeout time.Duration
 		if err != nil {
 			return err
 		}
-		booted := &Booted{Machine: m, Guest: guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })}
+		booted := &Booted{Machine: m}
 		return booted.Shutdown(ctx, timeout)
 	}
 	shim, err := e.shim(inst.ID)
@@ -748,50 +714,27 @@ func (e *Engine) Remove(ctx context.Context, inst *Instance, force bool) error {
 	return e.forget(ctx, inst.ID)
 }
 
-// Guest returns a client for a running instance's agent, reached through its
-// shim, or for a remote driver, through a machine attached on first use.
-func (e *Engine) Guest(inst *Instance) *guest.Client {
-	if attacher := e.remote(); attacher != nil {
-		var mu sync.Mutex
-		var m machine.Machine
-		return guest.NewClient(func(ctx context.Context) (net.Conn, error) {
-			mu.Lock()
-			if m == nil {
-				attached, err := e.attach(ctx, attacher, inst)
-				if err != nil {
-					mu.Unlock()
-					return nil, err
-				}
-				m = attached
-			}
-			attached := m
-			mu.Unlock()
-			return attached.Dial(ctx, guest.AgentPort)
-		})
-	}
-	return guest.NewClient(func(ctx context.Context) (net.Conn, error) {
-		shim, err := e.shim(inst.ID)
-		if err != nil {
-			return nil, err
-		}
-		return shim.dial(ctx, guest.AgentPort)
-	})
-}
-
-// Dial opens a stream to any port of a running instance.
-func (e *Engine) Dial(ctx context.Context, inst *Instance, port uint32) (net.Conn, error) {
+// Guest is a running instance's guest operations: the machine itself, for a
+// remote driver, attached with this process's credentials; otherwise its
+// shim's, relayed to the machine the shim holds.
+func (e *Engine) Guest(ctx context.Context, inst *Instance) (machine.Guest, error) {
 	if attacher := e.remote(); attacher != nil {
 		m, err := e.attach(ctx, attacher, inst)
 		if err != nil {
 			return nil, fmt.Errorf("instance %s: %w", inst.Name, err)
 		}
-		return m.Dial(ctx, port)
+		return m, nil
 	}
-	shim, err := e.shim(inst.ID)
-	if err != nil {
+	if _, err := e.shim(inst.ID); err != nil {
 		return nil, fmt.Errorf("instance %s is not running", inst.Name)
 	}
-	return shim.dial(ctx, port)
+	return guest.NewClient(func(ctx context.Context) (net.Conn, error) {
+		shim, err := e.shim(inst.ID)
+		if err != nil {
+			return nil, fmt.Errorf("instance %s is not running", inst.Name)
+		}
+		return shim.dialGuest(ctx)
+	}), nil
 }
 
 // URL is where an instance's one service is reached over HTTP. It is the
@@ -834,22 +777,21 @@ func (e *Engine) service(ctx context.Context, inst *Instance) (machine.Service, 
 
 // announceService tells a started guest where its service listens, in its
 // guest.ServiceFile, before the start returns.
-func (e *Engine) announceService(ctx context.Context, inst *Instance, client *guest.Client) (machine.Service, error) {
+func (e *Engine) announceService(ctx context.Context, inst *Instance, g machine.Guest) (machine.Service, error) {
 	service, err := e.service(ctx, inst)
 	if err != nil {
 		return machine.Service{}, err
 	}
-	if err := client.SetService(ctx, string(inst.GuestOS), service.Listen); err != nil {
+	if err := guest.SetService(ctx, g, string(inst.GuestOS), service.Listen); err != nil {
 		return machine.Service{}, fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
 	return service, nil
 }
 
-// Booted is a machine running in this process, with a client for its agent.
-// The builder boots this way; the shim is the same thing in its own process.
+// Booted is a machine running in this process. The builder boots this way;
+// the shim is the same thing in its own process.
 type Booted struct {
 	Machine machine.Machine
-	Guest   *guest.Client
 }
 
 // BootOptions is one boot in this process.
@@ -862,7 +804,8 @@ type BootOptions struct {
 	Title string
 }
 
-// Boot starts an instance in this process and waits for its agent.
+// Boot starts an instance in this process, and returns once its guest
+// answers.
 func (e *Engine) Boot(ctx context.Context, inst *Instance, opts BootOptions) (*Booted, error) {
 	spec, err := e.machineSpec(inst)
 	if err != nil {
@@ -882,27 +825,21 @@ func (e *Engine) Boot(ctx context.Context, inst *Instance, opts BootOptions) (*B
 	if err != nil {
 		return nil, err
 	}
-	client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
-	if err := client.WaitReady(ctx, m.Done()); err != nil {
-		_ = m.Kill(context.Background())
-		return nil, err
-	}
-	return &Booted{Machine: m, Guest: client}, nil
+	return &Booted{Machine: m}, nil
 }
 
-// Shutdown powers a booted machine off in order: the agent is asked, and the
+// Shutdown powers a booted machine off in order: the guest is asked, and the
 // machine is killed only if it will not answer or will not stop in time. A
 // hard stop is a dirty unmount of the guest's disk, and a layer cut from one
 // is not trustworthy, so the builder always comes through here.
 func (b *Booted) Shutdown(ctx context.Context, timeout time.Duration) error {
-	defer b.Guest.Close()
 	select {
 	case <-b.Machine.Done():
 		return b.Machine.Err()
 	default:
 	}
 	askCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	err := b.Guest.Shutdown(askCtx, false)
+	err := b.Machine.Shutdown(askCtx, false)
 	cancel()
 	if err == nil {
 		select {

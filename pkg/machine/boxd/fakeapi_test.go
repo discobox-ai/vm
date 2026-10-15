@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,22 +21,21 @@ import (
 
 	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/pkg/guest"
+	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
 )
 
 // fakeAPI is boxd's API with no cloud behind it. A machine is a directory
-// standing in for its disk, and a guest agent process (`disco-vm guest
-// --fake`) while it runs; a snapshot is a copy of that directory. Memory is not
-// modeled: a restored machine's agent starts fresh. Exec understands exactly
-// the commands the driver sends.
+// standing in for its disk, and a snapshot is a copy of that directory.
+// Memory is not modeled. Exec understands the command lines the driver sends:
+// a request's argv runs on this host, in the machine's directory, and the
+// driver's own scripts (copies, info, systemd's) are done here instead.
 //
-// As on boxd, a guest that shuts itself down leaves its machine "running": the
-// agent exiting stands in for the guest halting, and sets the marker the real
-// shutdown hook writes.
+// As on boxd, a guest that shuts itself down leaves its machine "running":
+// a power-off sets the marker the real shutdown hook writes, and nothing more.
 type fakeAPI struct {
 	boxdapi.UnimplementedBoxdApiServer
-	agent string
-	dir   string
+	dir string
 
 	mu        sync.Mutex
 	vms       map[string]*fakeVM
@@ -48,14 +48,12 @@ type fakeAPI struct {
 }
 
 type fakeVM struct {
-	id, name  string
-	dir       string
-	status    string
-	installed bool
-	vcpu      uint32
-	memory    uint64
-	agent     *exec.Cmd
-	halted    string
+	id, name string
+	dir      string
+	status   string
+	vcpu     uint32
+	memory   uint64
+	halted   string
 	// proxyPort is the port the default proxy is pinned to, zero for auto;
 	// botProtection is on for a new machine, as on boxd.
 	proxyPort     uint32
@@ -63,19 +61,17 @@ type fakeVM struct {
 }
 
 type fakeSnapshot struct {
-	id, name  string
-	dir       string
-	installed bool
-	vcpu      uint32
-	memory    uint64
+	id, name string
+	dir      string
+	vcpu     uint32
+	memory   uint64
 }
 
-func newFakeAPI(agent, dir string) *fakeAPI {
-	return &fakeAPI{agent: agent, dir: dir, vms: map[string]*fakeVM{}, snapshots: map[string]*fakeSnapshot{}}
+func newFakeAPI(dir string) *fakeAPI {
+	return &fakeAPI{dir: dir, vms: map[string]*fakeVM{}, snapshots: map[string]*fakeSnapshot{}}
 }
 
-func (f *fakeAPI) root(v *fakeVM) string   { return filepath.Join(v.dir, "root") }
-func (f *fakeAPI) socket(v *fakeVM) string { return filepath.Join(v.dir, "agent.sock") }
+func (f *fakeAPI) root(v *fakeVM) string { return filepath.Join(v.dir, "root") }
 
 func (f *fakeAPI) vm(id string) (*fakeVM, error) {
 	for _, v := range f.vms {
@@ -99,43 +95,13 @@ func (f *fakeAPI) newVM(name string, vcpu uint32, memory uint64) *fakeVM {
 	return v
 }
 
-// boot starts the guest's agent, if it has one, and marks the machine stopped
-// when the agent exits: with --fake, an orderly shutdown exits the agent.
-func (f *fakeAPI) boot(v *fakeVM) error {
+// boot starts the guest, which clears the shutdown hook's marker.
+func (f *fakeAPI) boot(v *fakeVM) {
 	v.status, v.halted = "running", ""
-	if !v.installed {
-		return nil
-	}
-	cmd := exec.Command(f.agent, "guest", "--listen", "unix:"+f.socket(v), "--root", f.root(v), "--fake") //nolint:gosec,noctx // G204: the test's own disco-vm binary; noctx: the agent outlives the RPC that boots it and is killed on stop
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	v.agent = cmd
-	go func() {
-		_ = cmd.Wait()
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		if v.agent == cmd {
-			v.agent, v.halted = nil, "poweroff"
-		}
-	}()
-	return nil
 }
 
 func (f *fakeAPI) halt(v *fakeVM) {
-	if cmd := v.agent; cmd != nil {
-		v.agent = nil
-		_ = cmd.Process.Kill()
-	}
 	v.status, v.halted = "stopped", ""
-}
-
-func (f *fakeAPI) close() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, v := range f.vms {
-		f.halt(v)
-	}
 }
 
 func (f *fakeAPI) Whoami(context.Context, *boxdapi.WhoamiRequest) (*boxdapi.WhoamiResponse, error) {
@@ -160,13 +126,10 @@ func (f *fakeAPI) CreateVmFromSnapshot(_ context.Context, req *boxdapi.CreateVmF
 		return nil, status.Errorf(codes.NotFound, "no snapshot %q", req.GetSnapshot())
 	}
 	v := f.newVM(req.GetName(), snap.vcpu, snap.memory)
-	v.installed = snap.installed
 	if err := fsutil.CopyTree(snap.dir, f.root(v)); err != nil {
 		return nil, err
 	}
-	if err := f.boot(v); err != nil {
-		return nil, err
-	}
+	f.boot(v)
 	return &boxdapi.CreateVmResponse{VmId: v.id, Name: v.name, Status: v.status}, nil
 }
 
@@ -215,7 +178,8 @@ func (f *fakeAPI) StartVm(_ context.Context, req *boxdapi.StartVmRequest) (*boxd
 	if v.status != "stopped" {
 		return nil, status.Errorf(codes.FailedPrecondition, "%s is %s", v.name, v.status)
 	}
-	return &boxdapi.StartVmResponse{}, f.boot(v)
+	f.boot(v)
+	return &boxdapi.StartVmResponse{}, nil
 }
 
 func (f *fakeAPI) StopVm(_ context.Context, req *boxdapi.StopVmRequest) (*boxdapi.StopVmResponse, error) {
@@ -334,7 +298,7 @@ func (f *fakeAPI) CreateSnapshot(_ context.Context, req *boxdapi.CreateSnapshotR
 		return nil, status.Errorf(codes.FailedPrecondition, "%s is %s, not running", v.name, v.status)
 	}
 	snap := &fakeSnapshot{
-		id: "snap_" + fsutil.RandomHex(4), name: req.GetName(), installed: v.installed, vcpu: v.vcpu, memory: v.memory,
+		id: "snap_" + fsutil.RandomHex(4), name: req.GetName(), vcpu: v.vcpu, memory: v.memory,
 	}
 	snap.dir = filepath.Join(f.dir, snap.id)
 	if err := fsutil.CopyTree(f.root(v), snap.dir); err != nil {
@@ -379,38 +343,6 @@ func (f *fakeAPI) DeleteSnapshot(_ context.Context, req *boxdapi.DeleteSnapshotR
 	return &boxdapi.DeleteSnapshotResponse{}, os.RemoveAll(snap.dir)
 }
 
-func (f *fakeAPI) UploadFileStream(stream grpc.ClientStreamingServer[boxdapi.UploadFileChunk, boxdapi.UploadFileResponse]) error {
-	first, err := stream.Recv()
-	if err != nil {
-		return err
-	}
-	f.mu.Lock()
-	v, err := f.vm(first.GetVmId())
-	f.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	// The fake keeps uploads beside the root, not in it: they are guest
-	// paths outside anything a test reads back.
-	out, err := os.Create(filepath.Join(v.dir, "upload-"+filepath.Base(first.GetPath())))
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	written, _ := out.Write(first.GetData())
-	for {
-		chunk, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			return stream.SendAndClose(&boxdapi.UploadFileResponse{BytesWritten: uint64(written)})
-		}
-		if err != nil {
-			return err
-		}
-		n, _ := out.Write(chunk.GetData())
-		written += n
-	}
-}
-
 func (f *fakeAPI) Exec(stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdapi.ExecChunk]) error {
 	first, err := stream.Recv()
 	if err != nil {
@@ -429,9 +361,11 @@ func (f *fakeAPI) Exec(stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdap
 	if !running {
 		return status.Errorf(codes.FailedPrecondition, "%s is not running", v.name)
 	}
-	exit := func(code int32, stderr string) error {
-		if stderr != "" {
-			if err := stream.Send(&boxdapi.ExecChunk{Data: []byte(stderr), IsStderr: true}); err != nil {
+	stdout := execWriter{stream: stream}
+	stderr := execWriter{stream: stream, stderr: true}
+	exit := func(code int32, msg string) error {
+		if msg != "" {
+			if _, err := stderr.Write([]byte(msg)); err != nil {
 				return err
 			}
 		}
@@ -439,70 +373,158 @@ func (f *fakeAPI) Exec(stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdap
 	}
 
 	command := first.GetCommand()
-	pipePrefix := "sudo -n " + agentPath + " pipe "
-	switch {
-	case command == "uname -m":
-		arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
-		if err := stream.Send(&boxdapi.ExecChunk{Data: []byte(arch + "\n")}); err != nil {
-			return err
-		}
-		return exit(0, "")
-	case command == "cat "+haltedMarker+" 2>/dev/null":
+	switch command {
+	case "cat " + haltedMarker + " 2>/dev/null":
 		f.mu.Lock()
 		how := v.halted
 		f.mu.Unlock()
 		if how == "" {
 			return exit(1, "")
 		}
-		if err := stream.Send(&boxdapi.ExecChunk{Data: []byte(how + "\n")}); err != nil {
-			return err
-		}
+		_, _ = stdout.Write([]byte(how + "\n"))
 		return exit(0, "")
-	case command == installScript:
-		f.mu.Lock()
-		v.installed = true
-		err := f.boot(v)
-		f.mu.Unlock()
-		if err != nil {
-			return exit(1, err.Error())
-		}
+	case installScript:
 		return exit(0, "")
-	case strings.HasPrefix(command, pipePrefix):
-		target := strings.TrimPrefix(command, pipePrefix)
-		if target == "unix:"+agentSocket {
-			target = "unix:" + f.socket(v)
-		}
-		stdin, feed := io.Pipe()
-		go func() {
-			for {
-				chunk, err := stream.Recv()
-				if err != nil {
-					// The client half-closed (EOF) or went away.
-					_ = feed.Close()
-					return
-				}
+	}
+	req, err := parseCommand(command)
+	if err != nil {
+		return exit(127, fmt.Sprintf("fake boxd: %v", err))
+	}
+	stdin, feed := io.Pipe()
+	defer stdin.Close()
+	go func() {
+		for {
+			chunk, err := stream.Recv()
+			if err != nil {
+				// The client half-closed (EOF) or went away.
+				_ = feed.Close()
+				return
+			}
+			if chunk.GetStdin() {
 				if _, err := feed.Write(chunk.GetData()); err != nil {
 					return
 				}
 			}
-		}()
-		err := guest.Pipe(stream.Context(), target, stdin, execWriter{stream})
-		_ = stdin.Close()
-		if err != nil {
-			return exit(1, err.Error())
+		}
+	}()
+
+	root := f.root(v)
+	arg := func() string { return guest.Resolve(root, req.Argv[len(req.Argv)-1]) }
+	switch {
+	case slices.Equal(req.Argv, readyCommand.Argv):
+		_, _ = stdout.Write([]byte("running\n"))
+		return exit(0, "")
+	case len(req.Argv) == 3 && req.Argv[0] == "systemctl" && req.Argv[1] == "--no-block":
+		f.mu.Lock()
+		v.halted = req.Argv[2]
+		f.mu.Unlock()
+		return exit(0, "")
+	case isScript(req, infoScript):
+		arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
+		_, _ = stdout.Write([]byte(arch + "\n" + v.name + "\n"))
+		return exit(0, "")
+	case isScript(req, copyInScript):
+		if err := guest.Unpack(stdin, arg()); err != nil {
+			return exit(2, err.Error())
 		}
 		return exit(0, "")
-	default:
-		return exit(127, fmt.Sprintf("fake boxd: unknown command %q", command))
+	case isScript(req, copyOutScript):
+		path := arg()
+		if _, err := os.Lstat(path); err != nil {
+			return exit(1, err.Error())
+		}
+		_, _ = stdout.Write([]byte{copyOutReady})
+		if err := guest.Pack(stdout, path, false); err != nil {
+			return exit(2, err.Error())
+		}
+		return exit(0, "")
 	}
+	cmd := exec.CommandContext(stream.Context(), req.Argv[0], req.Argv[1:]...) //nolint:gosec // G204: the test's own commands
+	cmd.Dir = guest.Resolve(root, req.Dir)
+	cmd.Env = append(append(os.Environ(), guest.RootEnv+"="+root), req.Env...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	err = cmd.Run()
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		return exit(int32(exitErr.ExitCode()), "")
+	}
+	if err != nil {
+		return exit(127, err.Error())
+	}
+	return exit(0, "")
+}
+
+// isScript reports whether req runs the driver's script text.
+func isScript(req machine.ExecRequest, text string) bool {
+	return len(req.Argv) >= 4 && req.Argv[0] == "sh" && req.Argv[1] == "-c" && req.Argv[2] == text
+}
+
+// parseCommand reads back a line command made, which is all the driver sends
+// through sudo.
+func parseCommand(line string) (machine.ExecRequest, error) {
+	words, err := shellWords(line)
+	if err != nil {
+		return machine.ExecRequest{}, err
+	}
+	if len(words) < 11 || !slices.Equal(words[:4], []string{"sudo", "-n", "-H", "-u"}) || !slices.Equal(words[5:8], []string{"--", "env", "-C"}) || words[9] != "--" {
+		return machine.ExecRequest{}, fmt.Errorf("unknown command %q", line)
+	}
+	req := machine.ExecRequest{User: words[4], Dir: words[8]}
+	rest := words[10:]
+	// As env reads them: a word with "=" is a variable, until the first
+	// that is not.
+	for len(rest) > 0 && strings.Contains(rest[0], "=") {
+		req.Env, rest = append(req.Env, rest[0]), rest[1:]
+	}
+	if len(rest) == 0 {
+		return machine.ExecRequest{}, fmt.Errorf("no argv in %q", line)
+	}
+	req.Argv = rest
+	return req, nil
+}
+
+// shellWords splits a line the way sh does for words that are single-quoted
+// or backslash-escaped, which is how quote writes them.
+func shellWords(line string) ([]string, error) {
+	var words []string
+	var word strings.Builder
+	inWord := false
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; {
+		case c == ' ':
+			if inWord {
+				words, inWord = append(words, word.String()), false
+				word.Reset()
+			}
+		case c == '\'':
+			end := strings.IndexByte(line[i+1:], '\'')
+			if end < 0 {
+				return nil, fmt.Errorf("unterminated quote in %q", line)
+			}
+			word.WriteString(line[i+1 : i+1+end])
+			i += end + 1
+			inWord = true
+		case c == '\\' && i+1 < len(line):
+			word.WriteByte(line[i+1])
+			i++
+			inWord = true
+		default:
+			word.WriteByte(c)
+			inWord = true
+		}
+	}
+	if inWord {
+		words = append(words, word.String())
+	}
+	return words, nil
 }
 
 type execWriter struct {
 	stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdapi.ExecChunk]
+	stderr bool
 }
 
 func (w execWriter) Write(p []byte) (int, error) {
-	if err := w.stream.Send(&boxdapi.ExecChunk{Data: p}); err != nil {
+	if err := w.stream.Send(&boxdapi.ExecChunk{Data: p, IsStderr: w.stderr}); err != nil {
 		return 0, err
 	}
 	return len(p), nil

@@ -19,15 +19,8 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/pkg/guest"
+	"github.com/discobox-ai/vm/pkg/machine"
 )
-
-// Guest is what a run needs of a guest, which every machine offers: exec and
-// copy. *guest.Client is one.
-type Guest interface {
-	Info(ctx context.Context) (guest.Info, error)
-	Run(ctx context.Context, req guest.ExecRequest, stdin io.Reader, stdout, stderr io.Writer) (int, error)
-	CopyTo(ctx context.Context, dir string, tarStream io.Reader) error
-}
 
 // Options is one run.
 type Options struct {
@@ -98,7 +91,7 @@ const (
 
 // session is one client's hold on one guest.
 type session struct {
-	guest Guest
+	guest machine.Guest
 	shell dialect
 	// root is the directory a guest that is a directory lives under.
 	root string
@@ -110,7 +103,7 @@ type session struct {
 	lease  time.Duration
 }
 
-func open(ctx context.Context, g Guest, out io.Writer) (*session, error) {
+func open(ctx context.Context, g machine.Guest, out io.Writer) (*session, error) {
 	info, err := g.Info(ctx)
 	if err != nil {
 		return nil, err
@@ -138,7 +131,7 @@ func (s *session) ledger() string {
 
 // ReadStatus reads a guest's status. A guest no run has touched has none,
 // and its State is empty.
-func ReadStatus(ctx context.Context, g Guest) (Status, error) {
+func ReadStatus(ctx context.Context, g machine.Guest) (Status, error) {
 	var status Status
 	s, err := open(ctx, g, nil)
 	if err != nil {
@@ -152,7 +145,7 @@ func ReadStatus(ctx context.Context, g Guest) (Status, error) {
 // applies, through exec and copy, each resource whose digest is not the one
 // the guest's record holds. It returns the first failure, which the guest's
 // status holds too.
-func Run(ctx context.Context, g Guest, opts Options) error {
+func Run(ctx context.Context, g machine.Guest, opts Options) error {
 	// Before the guest is touched: state files that do not parse change
 	// nothing.
 	desired, err := Load(opts.Paths...)
@@ -416,7 +409,7 @@ func (s *session) apply(ctx context.Context, b batch) ([]Resource, error) {
 		}
 		tail := &tailWriter{}
 		out := io.MultiWriter(s.out, tail)
-		code, err := s.guest.Run(ctx, guest.ExecRequest{Argv: append(slices.Clone(argv), script)}, nil, out, out)
+		code, err := machine.Run(ctx, s.guest, machine.ExecRequest{Argv: append(slices.Clone(argv), script)}, nil, out, out)
 		if err != nil {
 			return nil, err
 		}
@@ -553,7 +546,7 @@ func (s *session) script(ctx context.Context, body string, files []payload, stdo
 		return err
 	}
 	tail := &tailWriter{}
-	code, err := s.guest.Run(ctx, guest.ExecRequest{Argv: s.shell.argv(s.shell.join(s.host(stage), name))}, nil,
+	code, err := machine.Run(ctx, s.guest, machine.ExecRequest{Argv: s.shell.argv(s.shell.join(s.host(stage), name))}, nil,
 		io.MultiWriter(stdout, tail), io.MultiWriter(stderr, tail))
 	switch {
 	case err != nil:

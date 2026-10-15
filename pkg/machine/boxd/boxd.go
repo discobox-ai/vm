@@ -9,16 +9,18 @@
 //     committed disk, named in the layer's layer.json. Deleting the layer
 //     deletes the snapshot.
 //   - An instance is a boxd machine restored from its parent layer's snapshot,
-//     named in the instance's vm.json. A cold clone is powered off through the
-//     agent once restored, so its first boot is a cold boot of the layer's disk.
+//     named in the instance's vm.json. A cold clone is powered off in order
+//     once restored, so its first boot is a cold boot of the layer's disk.
 //     A resume clone is suspended once restored, and its first boot resumes it.
 //   - A warm stage points at a snapshot to resume from: the layer's own, or one
 //     taken at another size. A snapshot restores any number of times, so a warm
 //     image never runs out (Warmth.Clones is -1).
 //
-// There is no hypervisor socket to the guest. The agent listens on a root-only
-// unix socket, and Dial reaches a guest port by running `disco-vm pipe` in the
-// guest over boxd's authenticated Exec stream.
+// There is no hypervisor socket to the guest, and no disco-vm agent in it.
+// The guest's operations (machine.Guest) are boxd's authenticated Exec stream:
+// a command through sudo, tar over its stdin and stdout for copies, and
+// systemd's own power-off (guest.go). The engine reaches the instance's
+// service at its public URL, and no guest port is dialed.
 //
 // A guest cannot power its boxd machine off. systemd shuts everything down and
 // asks the kernel to power off, and the machine stays "running" with nothing in
@@ -31,13 +33,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -45,7 +45,6 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
 )
@@ -55,10 +54,6 @@ func init() {
 }
 
 const (
-	// agentPath and agentSocket are where Install puts the agent in the guest.
-	agentPath   = "/usr/local/libexec/disco-vm"
-	agentSocket = "/run/disco-vm/agent.sock"
-	agentUnit   = "disco-vm-guest.service"
 	// haltedMarker is written by the shutdown hook (shutdownHook) and read by
 	// the driver. It is on tmpfs, so a cold boot starts without one.
 	haltedMarker = "/run/disco-vm/halted"
@@ -133,8 +128,9 @@ type vmRef struct {
 	Endpoint string `json:"endpoint,omitempty"`
 }
 
-// Install creates a machine from one of boxd's own images, installs the agent
-// as a systemd service, and snapshots it as the base layer.
+// Install creates a machine from one of boxd's own images, adds the shutdown
+// hook, and snapshots it as the base layer. It puts no agent in the guest, so
+// spec.Agent is not used.
 func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst machine.Layer) error {
 	if spec.GuestOS != machine.Linux {
 		return fmt.Errorf("boxd: guests are linux, not %s", spec.GuestOS)
@@ -174,21 +170,15 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 	if _, err := waitVM(ctx, api, vm, "running"); err != nil {
 		return err
 	}
-	if err := checkArch(ctx, api, vm, spec.Agent); err != nil {
+	if err := waitGuest(ctx, api, vm, nil); err != nil {
 		return err
 	}
 
-	log("boxd: installing the agent")
-	if err := upload(ctx, api, vm, spec.Agent, "/tmp/disco-vm-agent"); err != nil {
-		return fmt.Errorf("boxd: upload agent: %w", err)
-	}
+	log("boxd: installing the shutdown hook")
 	if out, code, err := run(ctx, api, vm, installScript); err != nil {
-		return fmt.Errorf("boxd: install agent: %w: %s", err, out)
+		return fmt.Errorf("boxd: install the shutdown hook: %w: %s", err, out)
 	} else if code != 0 {
-		return fmt.Errorf("boxd: install agent: exit %d: %s", code, out)
-	}
-	if err := d.waitAgent(ctx, api, vm); err != nil {
-		return err
+		return fmt.Errorf("boxd: install the shutdown hook: exit %d: %s", code, out)
 	}
 
 	log("boxd: snapshotting the base layer")
@@ -201,29 +191,6 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 
 // installScript runs as boxd's default user, who has passwordless sudo.
 var installScript = `set -e
-sudo mkdir -p ` + filepath.Dir(agentPath) + `
-sudo install -m 0755 /tmp/disco-vm-agent ` + agentPath + `
-rm -f /tmp/disco-vm-agent
-# An agent linked against a libc the guest lacks has the right architecture
-# and never starts. Run it here, where that is an error and not a wait.
-if ! out=$(` + agentPath + ` --version 2>&1); then
-	echo "the agent does not run on this guest: $out"
-	echo "it is probably linked against a libc the guest lacks; build a static one (CGO_ENABLED=0, or go tool task build:linux-agent) and pass --agent"
-	exit 1
-fi
-sudo tee /etc/systemd/system/` + agentUnit + ` >/dev/null <<'UNIT'
-[Unit]
-Description=disco-vm guest agent
-After=local-fs.target
-
-[Service]
-ExecStart=` + agentPath + ` guest --listen unix:` + agentSocket + `
-Restart=always
-RestartSec=1
-
-[Install]
-WantedBy=multi-user.target
-UNIT
 sudo mkdir -p ` + filepath.Dir(shutdownHook) + `
 sudo tee ` + shutdownHook + ` >/dev/null <<'HOOK'
 #!/bin/sh
@@ -234,8 +201,6 @@ mkdir -p ` + filepath.Dir(haltedMarker) + `
 echo "$1" > ` + haltedMarker + `
 HOOK
 sudo chmod 0755 ` + shutdownHook + `
-sudo systemctl daemon-reload
-sudo systemctl enable --now ` + agentUnit + `
 # The base layer is snapshotted without a shutdown, and a cold clone boots
 # its disk: what is installed must be on it.
 sync
@@ -378,10 +343,39 @@ func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 	if _, err := waitVM(ctx, api, ref.ID, "running"); err != nil {
 		return nil, err
 	}
+	m := newVM(api, ref)
+	watch, stopWatching := context.WithCancel(ctx)
+	defer stopWatching()
+	if err := waitGuest(ctx, api, ref.ID, stopped(watch, api, ref.ID)); err != nil {
+		_ = m.Kill(context.Background())
+		return nil, err
+	}
 	if opts.Console != nil {
 		fmt.Fprintf(opts.Console, "boxd: %s (%s) is running\n", ref.Name, ref.ID)
 	}
-	return newVM(api, ref), nil
+	return m, nil
+}
+
+// stopped is closed if the machine stops, or is gone, before ctx ends. It is
+// not the machine's Done, whose watcher would outlive Boot in a program that
+// embeds the engine: Boot ends ctx when it returns.
+func stopped(ctx context.Context, api boxdapi.BoxdApiClient, vm string) <-chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(pollEvery):
+			}
+			info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: vm})
+			if isNotFound(err) || (err == nil && info.GetStatus() != "running" && info.GetStatus() != "starting") {
+				close(ch)
+				return
+			}
+		}
+	}()
+	return ch
 }
 
 // Attach finds the instance's machine through the API, as any process can. A
@@ -455,7 +449,7 @@ func (d *Driver) Commit(ctx context.Context, inst machine.InstanceSpec, dst mach
 	if _, err := waitVM(ctx, api, ref.ID, "running"); err != nil {
 		return err
 	}
-	if err := d.waitAgent(ctx, api, ref.ID); err != nil {
+	if err := waitGuest(ctx, api, ref.ID, nil); err != nil {
 		return err
 	}
 	snap, err := d.snapshot(ctx, api, ref.ID, dst)
@@ -630,9 +624,6 @@ func (d *Driver) Warm(ctx context.Context, spec machine.WarmSpec) (machine.Stage
 	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
 		return nil, err
 	}
-	if err := d.waitAgent(ctx, api, ref.ID); err != nil {
-		return nil, err
-	}
 	snap, err := d.snapshot(ctx, api, ref.ID, spec.Chain[len(spec.Chain)-1])
 	if err != nil {
 		return nil, err
@@ -727,13 +718,13 @@ func (d *Driver) deleteSnapshot(ctx context.Context, name string) error {
 	return nil
 }
 
-// powerOff shuts a running guest down through its agent, as the engine does,
-// and stops the machine once the guest has halted. A guest that cannot be shut
+// powerOff shuts a running guest down in order, as the engine does, and stops
+// the machine once the guest has halted. A guest that cannot be shut
 // down in order is still stopped, so it costs nothing, but powerOff fails: a
 // disk cut off mid-write is not one to boot clones from, which is the rule a
 // layer commit follows too.
 func (d *Driver) powerOff(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
-	orderly := d.shutdown(ctx, api, vm)
+	orderly := halt(ctx, api, vm)
 	if _, err := api.StopVm(ctx, &boxdapi.StopVmRequest{VmId: vm}); err != nil && !isNotFound(err) {
 		return errors.Join(orderly, fmt.Errorf("boxd: stop %s: %w", vm, err))
 	}
@@ -743,18 +734,16 @@ func (d *Driver) powerOff(ctx context.Context, api boxdapi.BoxdApiClient, vm str
 	return orderly
 }
 
-// shutdown asks the agent for a power-off and waits for the shutdown hook to
-// say the guest has halted.
-func (d *Driver) shutdown(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
-	client := agentClient(api, vm)
-	defer client.Close()
+// halt asks systemd for a power-off once the guest has booted, and waits for
+// the shutdown hook to say the guest has halted.
+func halt(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 	ready, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	if err := client.WaitReady(ready, nil); err != nil {
+	if err := waitGuest(ready, api, vm, nil); err != nil {
 		return fmt.Errorf("boxd: power off %s: %w", vm, err)
 	}
-	if err := client.Shutdown(ready, false); err != nil {
-		return fmt.Errorf("boxd: power off %s: %w", vm, err)
+	if err := shutdown(ready, api, vm, false); err != nil {
+		return err
 	}
 	halt, cancel := context.WithTimeout(ctx, waitLimit)
 	defer cancel()
@@ -779,17 +768,6 @@ func halted(ctx context.Context, api boxdapi.BoxdApiClient, vm string) string {
 	return strings.TrimSpace(out)
 }
 
-func (d *Driver) waitAgent(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
-	client := agentClient(api, vm)
-	defer client.Close()
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-	if err := client.WaitReady(ctx, nil); err != nil {
-		return fmt.Errorf("boxd: agent on %s: %w", vm, err)
-	}
-	return nil
-}
-
 // destroyVM is best-effort cleanup of a machine the driver made for itself.
 func (d *Driver) destroyVM(vm string) {
 	api, err := d.api.API()
@@ -799,20 +777,6 @@ func (d *Driver) destroyVM(vm string) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	_, _ = api.DestroyVm(ctx, &boxdapi.DestroyVmRequest{VmId: vm})
-}
-
-func agentClient(api boxdapi.BoxdApiClient, vm string) *guest.Client {
-	return guest.NewClient(func(ctx context.Context) (net.Conn, error) { return dial(ctx, api, vm, guest.AgentPort) })
-}
-
-// dial reaches a guest port: the agent's port is its unix socket, and any
-// other is a TCP port on the guest's loopback.
-func dial(ctx context.Context, api boxdapi.BoxdApiClient, vm string, port uint32) (net.Conn, error) {
-	target := fmt.Sprintf("tcp:127.0.0.1:%d", port)
-	if port == guest.AgentPort {
-		target = "unix:" + agentSocket
-	}
-	return dialExec(ctx, api, vm, "sudo -n "+agentPath+" pipe "+target, vmAddr{vm: vm, port: port})
 }
 
 // waitVM polls until the machine reaches one of the given states, and fails
@@ -843,7 +807,8 @@ func waitVM(ctx context.Context, api boxdapi.BoxdApiClient, vm string, want ...s
 	}
 }
 
-// run runs a shell command in the machine and returns its combined output.
+// run runs a shell command in the machine, as boxd's own user, and returns its
+// combined output.
 func run(ctx context.Context, api boxdapi.BoxdApiClient, vm, command string) (string, int32, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -872,75 +837,6 @@ func run(ctx context.Context, api boxdapi.BoxdApiClient, vm, command string) (st
 			code = msg.GetExitCode()
 		}
 	}
-}
-
-// upload streams a local file to a path in the machine.
-func upload(ctx context.Context, api boxdapi.BoxdApiClient, vm, src, dst string) error {
-	f, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	stream, err := api.UploadFileStream(ctx)
-	if err != nil {
-		return err
-	}
-	first := &boxdapi.UploadFileChunk{VmId: vm, Path: dst, TotalSize: uint64(info.Size())}
-	buf := make([]byte, 1<<20)
-	for {
-		n, err := f.Read(buf)
-		if n > 0 || first != nil {
-			chunk := first
-			if chunk == nil {
-				chunk = &boxdapi.UploadFileChunk{}
-			}
-			first = nil
-			chunk.Data = buf[:n]
-			if serr := stream.Send(chunk); serr != nil {
-				return serr
-			}
-		}
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-	}
-	resp, err := stream.CloseAndRecv()
-	if err != nil {
-		return err
-	}
-	if written := resp.GetBytesWritten(); written != 0 && written != uint64(info.Size()) {
-		return fmt.Errorf("wrote %d of %d bytes", written, info.Size())
-	}
-	return nil
-}
-
-// checkArch refuses an agent built for another CPU than the machine's, which
-// would otherwise fail later as a service that never starts.
-func checkArch(ctx context.Context, api boxdapi.BoxdApiClient, vm, agent string) error {
-	f, err := elf.Open(agent)
-	if err != nil {
-		return fmt.Errorf("boxd: the agent %s is not a linux binary (build disco-vm with GOOS=linux and pass --agent): %w", agent, err)
-	}
-	defer f.Close()
-	want := map[elf.Machine]string{elf.EM_X86_64: "x86_64", elf.EM_AARCH64: "aarch64"}[f.Machine]
-	out, code, err := run(ctx, api, vm, "uname -m")
-	if err != nil {
-		return fmt.Errorf("boxd: uname -m: %w: %s", err, out)
-	}
-	if code != 0 {
-		return fmt.Errorf("boxd: uname -m: exit %d: %s", code, out)
-	}
-	if got := strings.TrimSpace(out); got != want {
-		return fmt.Errorf("boxd: the machine is %s but the agent %s is built for %s", got, agent, f.Machine)
-	}
-	return nil
 }
 
 // vmName is a fresh machine name that says which project it is in and where

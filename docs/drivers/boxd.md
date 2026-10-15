@@ -1,8 +1,8 @@
 # boxd driver (any host, Linux guest in boxd's cloud)
 
-**Scope:** `pkg/machine/boxd`, plus two OS-neutral pieces of `pkg/guest`: the
-`unix:` listen address and `guest.Pipe` (`disco-vm pipe`). Nothing above the
-`machine.Driver` seam changed.
+**Scope:** `pkg/machine/boxd`. Nothing of disco-vm's runs in a boxd guest: its
+operations (`machine.Guest`) are command lines over boxd's Exec stream, and
+Install adds only a systemd shutdown hook (ADR 0001).
 
 **Done means:**
 
@@ -11,13 +11,18 @@
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=boxd`.
 3. `docs/examples/boxd.yaml` builds.
 
-Status, 2026-10-07: criteria 1 and 3 hold. `TestConformance` passes against
+Status, 2026-10-07, with an agent in the guest: criteria 1 and 3 held. On
+2026-10-15, with no agent (ADR 0001), criterion 3 held again, and the CLI ran
+the image through the same commands, `exec -t` included; `TestConformance`
+has not been run against boxd since, because a discobox's five-minute
+credential does not outlive it. `TestConformance` passes against
 boxd. `docs/examples/boxd.yaml` builds, and the CLI runs it through `run`, `exec`,
 `cp`, `stop`, `start`, `warm`, a resumed `run`, `rm`, and `rmi` with nothing
 left on boxd. Criterion 2 waits on `internal/e2e`, which is written for the
 fake driver. `TestConformanceFakeAPI` runs the same suite in CI against an
-in-process fake of boxd's API (`fakeapi_test.go`), whose "machines" are agent
-processes over directory roots.
+in-process fake of boxd's API (`fakeapi_test.go`), whose "machines" are
+directory roots: its Exec reads back the driver's command lines and runs them
+on the host.
 
 ## What boxd is
 
@@ -41,18 +46,22 @@ use. The parts that matter here:
 
 | seam | boxd |
 |---|---|
-| `Install` | `CreateVm` (restart policy `never`, idle timers off), check `uname -m` against the agent's ELF, upload the agent, run it once so one that cannot start on the guest (a libc the guest lacks) fails the install, install `disco-vm-guest.service` and the shutdown hook with sudo, wait for the agent, snapshot. Media must be `latest`; `options.image` picks a boxd image. |
+| `Install` | `CreateVm` (restart policy `never`, idle timers off), wait for the guest, install the shutdown hook with sudo, snapshot. Media must be `latest`; `options.image` picks a boxd image. No agent: `InstallSpec.Agent` is not used, and `Capabilities.Agent` is off, so `build` asks for no `--agent`. |
 | layer | `layer.json`: the snapshot's name, ID, version, and size. `DeleteLayer` deletes the snapshot. |
 | `LayerExists` | `GetSnapshot` on the layer's snapshot: gone, or `failed`, is a layer the build replaces, along with every layer after it. One call for each cached layer of a build. |
 | `TagLayer`, `UntagLayer` | boxd cannot name or label a snapshot after the fact, and snapshots only a running machine. A tag restores the layer's snapshot into a machine, saves that as `dvm-<project>--<layer id>-tag-<ref>-<hash>`, and destroys the machine; untagging deletes the snapshot. Nothing restores from it: it is there so `boxd snap ls` says what each layer is. Each tag costs a restore and a whole snapshot. A tag made before this existed has none; tag it again to make one. |
-| `Prepare` cold | restore the layer's snapshot, power the guest off through the agent, and `StopVm` once the shutdown hook says it halted. The first boot is a cold boot of the layer's disk. A guest that cannot be shut down in order is stopped anyway, and Prepare fails. |
+| `Prepare` cold | restore the layer's snapshot, power the guest off (`systemctl --no-block poweroff`), and `StopVm` once the shutdown hook says it halted. The first boot is a cold boot of the layer's disk. A guest that cannot be shut down in order is stopped anyway, and Prepare fails. |
 | `Prepare` resume | restore the stage's snapshot and suspend it. A missing stage or snapshot is `ErrNotWarm`. |
-| `Boot` | `StartVm` (after `ResizeVm` when the boot asks for another size), `ResumeVm`, or `WakeVm`, by state. A machine still `stopping` is waited out first. |
+| `Boot` | `StartVm` (after `ResizeVm` when the boot asks for another size), `ResumeVm`, or `WakeVm`, by state. A machine still `stopping` is waited out first. Returns once the guest answers: an Exec of `sudo -n systemctl is-system-running --wait` returns, once a second, for up to 5 minutes. A machine that stops meanwhile (`GetVm` every 2s) ends the wait. |
 | `Attach` | (`Capabilities.Remote`: the engine runs no shim for boxd.) `GetVm`: not found, `stopped`, or any state but `running` or `starting` is `ErrNotRunning`. While it is `running`, an Exec reads the shutdown hook's marker: a guest that halted while nothing watched is stopped with `StopVm` and reads as not running, and one that rebooted is started again. |
-| `Machine.Done` | watching starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to dial polls nothing. `GetVm` every 2s: `stopped` is a power-off, and `failed`, `destroying`, or not-found is an error. While it is `running`, an Exec reads the shutdown hook's marker, and a guest that has halted is stopped with `StopVm` (and started again if it rebooted). |
+| `Machine.Done` | watching starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to run a command polls nothing. `GetVm` every 2s: `stopped` is a power-off, and `failed`, `destroying`, or not-found is an error. While it is `running`, an Exec reads the shutdown hook's marker, and a guest that has halted is stopped with `StopVm` (and started again if it rebooted). |
 | `Machine.Kill` | `StopVm`, retried until boxd takes it, then wait for `stopped`. Callers pass no deadline, so Kill has its own (5 minutes). Past it, Kill gives the machine up: `Done` closes, and `Err` says it may still be running. Its instance still names it, so `rm` destroys it later. A guest reboot that the watcher is turning into a stop and start never leaves a machine started after Kill. Kill waits for a start already under way, which is bounded to 30s, and then stops the machine. |
-| `Machine.Dial(port)` | Exec `sudo -n /usr/local/libexec/disco-vm pipe ADDR`: the agent's unix socket for port 7300, `tcp:127.0.0.1:PORT` otherwise. |
-| `Commit` | the guest is stopped after an orderly shutdown. Start it, wait for the agent, and snapshot. |
+| `Machine.Exec` | one Exec stream: `sudo -n -H -u USER -- env -C DIR -- K=V... ARGV...`, every word single-quoted (a program whose path has an `=` in it would be read by `env` as a variable). The user is root unless the request names one, and the directory `/` unless it names one. sudo gives the account's HOME, USER, LOGNAME, and `secure_path`; the request's variables are added to them. Stdin chunks, a half-close for EOF, stdout and stderr apart, and the exit code in the last chunk. A TTY sets `tty` with `rows` and `cols`, and a resize is a chunk with `window_change`. Closing the process cancels the call, which kills the command. |
+| `Machine.CopyTo` | Exec of `tar -x --no-same-owner --no-overwrite-dir` as root into the directory, made first, with the tar as stdin: what it unpacks is root's, and a directory already there keeps its mode, as with an agent. |
+| `Machine.CopyFrom` | Exec of a script that fails on a missing path, else writes one ready byte, then `tar -c` of the path rooted at its base name. |
+| `Machine.Info` | Exec of `uname -m; hostname`: linux, the GOARCH of the machine, its hostname. No version: there is no agent. |
+| `Machine.Shutdown` | Exec of `systemctl --no-block poweroff` (or `reboot`) as root. The shutdown hook marks the halt, and the watcher or the next attach stops the machine. |
+| `Commit` | the guest is stopped after an orderly shutdown. Start it, wait for the guest, and snapshot. |
 | `Destroy` | `DestroyVm`. |
 | `Orphans` | `ListVms` and `ListSnapshots` in the caller's context, keeping the names of the project (`dvm-<project>--`) that no instance's `vm.json`, layer's `layer.json`, stage's `stage.json`, or tag names. Two calls on every `ls` and `images`. |
 | `RemoveOrphan` | `DestroyVm` a machine, `DeleteSnapshot` a snapshot (`disco-vm rm` / `rmi` with an orphan's name). |
@@ -61,10 +70,12 @@ use. The parts that matter here:
 | `Prepare` | once the machine is restored, `SetBotProtection` off, `SetProxyPort` pins the default proxy (the one `ListProxies` marks `is_default`) to 7302, and its domain is recorded in `vm.json`. |
 | `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `https://<machine>.boxd.sh` from `vm.json`, with no API call. |
 
-The agent runs as root under systemd and listens on
-`unix:/run/disco-vm/agent.sock` (mode 0600). Exec runs as boxd's `boxd` user,
-who has passwordless sudo, so the relay reaches the socket through
-`sudo -n`.
+Exec runs as boxd's `boxd` user, who has passwordless sudo, so every guest
+operation goes through `sudo -n`, as root by default. An image installed
+before the driver stopped carrying an agent still has
+`disco-vm-guest.service`, which nothing reaches any more; it does no harm. A
+rebuild keeps it, because the install layer's cache key does not change; one
+with `--no-cache` leaves it out.
 
 Machine names are `dvm-<project>--<instance id>-<random>`, at most 59
 characters so that a name is a DNS label in its proxy's domain, and snapshot
@@ -82,19 +93,13 @@ otherwise, so `images` lists it as an orphan; `rmi` with its name deletes it.
 From a checkout, on any host:
 
 ```sh
-# Static: on a linux/amd64 host this binary is also the guest agent, and one
-# linked against the host's libc may not run on the guest. Install refuses an
-# agent that does not start. `go tool task build` and `go tool task install`
-# build it this way.
-CGO_ENABLED=0 go build -o disco-vm ./cmd/disco-vm
-# Anywhere else, build the agent for linux/amd64 and pass --agent.
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o disco-vm-linux ./cmd/disco-vm
+go tool task build                                      # or go build -o disco-vm ./cmd/disco-vm, on any host
 
 export BOXD_API_KEY=$(boxd auth keys create disco-vm)   # once; keep it somewhere safe
 export DISCO_VM_DRIVER=boxd
 
 ./disco-vm info                                         # check: ok means the key works
-./disco-vm build -f docs/examples/boxd.yaml -t demo/boxd     # add --agent ./disco-vm-linux off linux/amd64
+./disco-vm build -f docs/examples/boxd.yaml -t demo/boxd
 ./disco-vm images
 ./disco-vm run --name dev demo/boxd
 ./disco-vm exec dev cat /etc/motd.d/disco-vm
@@ -161,21 +166,29 @@ nothing left in it but boxd's own exec path. A machine restored from a snapshot
 also comes back with `restart_policy: always`, whatever its source had, and a
 restore cannot set one.
 
-So the agent's orderly shutdown ends in a halted guest that only the API can
-stop. Install drops a hook into `/usr/lib/systemd/system-shutdown/`, which
+So an orderly shutdown ends in a halted guest that only the API can stop. Install drops a hook into `/usr/lib/systemd/system-shutdown/`, which
 systemd runs once disks are synced, just before its final power-off call. The
 hook writes `poweroff`, `halt`, or `reboot` to `/run/disco-vm/halted`. The
 driver reads that marker through Exec (in `Machine.Done`'s watcher, and in a
 cold Prepare), then calls `StopVm`, and for a reboot `StartVm` as well. Verified
 on boxd: the marker survives the halt, `StopVm` leaves the machine `stopped`
 despite `restart_policy: always`, and `StartVm` then cold boots the disk, with
-the agent up in about 10 seconds.
+the guest answering again in about 10 seconds.
 
-The same run found the agent ignoring SIGTERM, so systemd waited out its
-90-second stop timeout on every shutdown. The CLI turns SIGTERM into a
-cancelled context, and `disco-vm guest` now closes its listener on it.
+The same run found the agent, which boxd guests then carried, ignoring
+SIGTERM, so systemd waited out its 90-second stop timeout on every shutdown.
+The CLI turns SIGTERM into a cancelled context, and `disco-vm guest` closes
+its listener on it.
 
 ## Confirmed against boxd
+
+- With no agent (2026-10-15): every guest operation as a command line
+  through sudo. `systemctl --no-block poweroff`'s Exec returns exit 0 before
+  the shutdown takes the exec path down, so an orderly stop and a build's
+  commits go through. Exec's `rows` and `cols` (fields 8 and 7) size the pty.
+  GNU `env` ends its options at the first `NAME=VALUE`, so its `--` comes
+  before the variables. The first build of `docs/examples/boxd.yaml` with no
+  agent took 2.5 minutes, a cold `run` 23 s, and a resumed one 8 s.
 
 - The URL (2026-10-09, then `TestEndpoint` with an image-declared port; not
   rerun since the port became a fixed 7302): `SetProxyPort` pins a restored
@@ -185,19 +198,19 @@ cancelled context, and `disco-vm guest` now closes its listener on it.
   and answers again. The default proxy is not named `default`: `SetProxyPort`
   with that name is NotFound, so the driver uses the name `ListProxies` gives
   the proxy it marks `is_default`.
-- Exec carries the agent's HTTP, tar streams, and exit codes through
-  `disco-vm pipe` unmodified, without a TTY. A half-close reaches the command
-  as EOF. `command` runs through a shell as the `boxd` user, who has
-  passwordless sudo.
+- Exec carries tar streams and exit codes unmodified, without a TTY. A
+  half-close reaches the command as EOF. `command` runs through a shell as
+  the `boxd` user, who has passwordless sudo.
 - Exec runs in its own process namespace: `ps` there shows only the exec'd
   command, and systemd is reachable only through `sudo systemctl`.
 - `GetVm` reports `running` and `stopped`, and `CreateSnapshot` reaches `ready`
   through `GetSnapshot` within seconds.
 - A restore gets its own name and hostname (`dvm-<id>-<rand>`), even resumed
   from memory.
-- Timings for a 2 vCPU/8 GiB machine: a cold `run` takes 15s, which includes
-  the restore and power-off in Prepare. `stop` takes 4s and `start` 3s. `warm`
-  at the layer's size takes 1s, and a resumed `run` 4s.
+- Timings for a 2 vCPU/8 GiB machine, measured with the agent: a cold `run`
+  takes 15s, which includes the restore and power-off in Prepare. `stop`
+  takes 4s and `start` 3s. `warm` at the layer's size takes 1s, and a resumed
+  `run` 4s.
 
 ## Not verified yet
 
@@ -208,11 +221,12 @@ cancelled context, and `disco-vm guest` now closes its listener on it.
   these show up only when something else suspends one.
 - A guest reboot (`Shutdown(reboot=true)`), which the driver turns into a stop
   and a start. Nothing in disco-vm sends one today.
-- `exec -t`, the TTY path, through the relay.
-- Load. Each Dial is a new Exec call, `WaitReady` dials every 250ms, and a
-  watched machine (a build's, or one being stopped) makes one Exec and one
-  `GetVm` call every 2s. Every engine call on an instance attaches first: one
-  `GetVm` and one Exec for the shutdown marker.
+- That cancelling an Exec kills what sudo started in the guest, and a TTY
+  resize (`window_change`), which the CLI does not send yet.
+- Load. Each guest operation is one Exec call, waiting for a guest makes one
+  a second, and a watched machine (a build's, or one being stopped) makes one
+  Exec and one `GetVm` call every 2s. Every engine call on an instance
+  attaches first: one `GetVm` and one Exec for the shutdown marker.
 
 ## A machine given up
 

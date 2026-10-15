@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -15,7 +14,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
@@ -40,31 +38,29 @@ func TestConformance(t *testing.T) {
 	if dir := os.Getenv(BaseEnv); dir != "" {
 		cfg.Base = &machine.Layer{ID: "base", Dir: dir}
 	} else {
-		cfg.Install = machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Agent: linuxAgent(t), Log: testLog{t}}
+		cfg.Install = machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Log: testLog{t}}
 	}
 	machinetest.Run(t, New(), cfg)
 }
 
 // TestConformanceFakeAPI runs the conformance suite against an in-process fake
-// of boxd's API, which proves the driver's use of the API and the relay, not
-// boxd. Its guests are agent processes on this host, and the suite checks that
-// a guest reports linux, so it runs on Linux.
+// of boxd's API, which proves the driver's use of the API and the command
+// lines it sends, not boxd. Its guests' commands run on this host, and the
+// suite checks that a guest reports linux, so it runs on Linux.
 func TestConformanceFakeAPI(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
-	agent := linuxAgent(t)
 	// A short directory: unix socket paths are limited to about 100 bytes.
 	dir, err := os.MkdirTemp("", "boxd")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	d, fake := fakeDriver(t, agent, dir)
-	t.Cleanup(fake.close)
+	d, fake := fakeDriver(t, dir)
 
 	machinetest.Run(t, d, machinetest.Config{
-		Install: machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Agent: agent, Log: testLog{t}},
+		Install: machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Log: testLog{t}},
 		// Not the fake's default size, so every cold boot resizes.
 		Boot:       machine.BootOptions{CPUs: 4, Memory: 16 << 30},
 		Timeout:    30 * time.Second,
@@ -86,21 +82,19 @@ func TestWarmAtAnotherSize(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
-	agent := linuxAgent(t)
 	dir, err := os.MkdirTemp("", "boxd")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	d, fake := fakeDriver(t, agent, dir)
-	t.Cleanup(fake.close)
+	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
 	base := machine.Layer{ID: "base", Dir: filepath.Join(dir, "layer")}
 	if err := os.MkdirAll(base.Dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux, Agent: agent}, base); err != nil {
+	if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, base); err != nil {
 		t.Fatal(err)
 	}
 	spec := machine.WarmSpec{GuestOS: machine.Linux, Chain: []machine.Layer{base}, Dir: filepath.Join(dir, "warm"), CPUs: 8, Memory: 32 << 30}
@@ -140,21 +134,19 @@ func TestTagSnapshot(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
-	agent := linuxAgent(t)
 	dir, err := os.MkdirTemp("", "boxd")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	d, fake := fakeDriver(t, agent, dir)
-	t.Cleanup(fake.close)
+	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
 	base := machine.Layer{ID: "0123456789abcdef", Dir: filepath.Join(dir, "layer")}
 	if err := os.MkdirAll(base.Dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux, Agent: agent}, base); err != nil {
+	if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, base); err != nil {
 		t.Fatal(err)
 	}
 	names := func() []string {
@@ -215,16 +207,14 @@ func TestTagSnapshot(t *testing.T) {
 	}
 }
 
-// TestDialFailure checks that a relay that cannot reach its port is an error
-// from Dial, carrying the relay's own message, not a conn that reads EOF.
-func TestDialFailure(t *testing.T) {
-	dir, err := os.MkdirTemp("", "boxd")
-	if err != nil {
-		t.Fatal(err)
+// TestCopyFromMissing checks that copying out a path the guest does not have
+// is an error from CopyFrom itself, carrying the guest's message, not an
+// empty tar.
+func TestCopyFromMissing(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	d, fake := fakeDriver(t, "unused", dir)
-	t.Cleanup(fake.close)
+	d, _ := fakeDriver(t, t.TempDir())
 	api, _ := d.api.API()
 	ctx := context.Background()
 	created, err := api.CreateVm(ctx, &boxdapi.CreateVmRequest{})
@@ -232,10 +222,27 @@ func TestDialFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := newVM(api, vmRef{ID: created.GetVmId(), Name: created.GetName()})
-	defer func() { _ = m.Kill(ctx) }()
-	_, err = m.Dial(ctx, guest.AgentPort)
-	if err == nil || !strings.Contains(err.Error(), "agent.sock") {
-		t.Fatalf("dial with no agent listening: %v", err)
+	defer m.stop()
+	if _, err := m.CopyFrom(ctx, "/no/such/file"); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("copy from a missing path: %v", err)
+	}
+}
+
+// TestCommand checks that a request becomes one line the guest's shell reads
+// back word for word, quotes and all, run through sudo as root by default.
+func TestCommand(t *testing.T) {
+	req := machine.ExecRequest{Argv: []string{"sh", "-c", `echo "it's $HOME"`, "a b"}, Env: []string{"K=it's"}, Dir: "/tmp/a dir", User: "alice"}
+	got := command(req)
+	want := `'sudo' '-n' '-H' '-u' 'alice' '--' 'env' '-C' '/tmp/a dir' '--' 'K=it'\''s' 'sh' '-c' 'echo "it'\''s $HOME"' 'a b'`
+	if got != want {
+		t.Fatalf("command:\n got %s\nwant %s", got, want)
+	}
+	back, err := parseCommand(got)
+	if err != nil || !slices.Equal(back.Argv, req.Argv) || !slices.Equal(back.Env, req.Env) || back.Dir != req.Dir || back.User != req.User {
+		t.Fatalf("read back %+v, %v", back, err)
+	}
+	if def := command(machine.ExecRequest{Argv: []string{"true"}}); def != `'sudo' '-n' '-H' '-u' 'root' '--' 'env' '-C' '/' '--' 'true'` {
+		t.Fatalf("default command: %s", def)
 	}
 }
 
@@ -245,7 +252,7 @@ func TestDialFailure(t *testing.T) {
 func TestKillGivesUp(t *testing.T) {
 	defer func(poll, limit time.Duration) { pollEvery, killLimit = poll, limit }(pollEvery, killLimit)
 	pollEvery, killLimit = 100*time.Millisecond, time.Second
-	d, fake := fakeDriver(t, "unused", t.TempDir())
+	d, fake := fakeDriver(t, t.TempDir())
 	api, _ := d.api.API()
 	created, err := api.CreateVm(context.Background(), &boxdapi.CreateVmRequest{})
 	if err != nil {
@@ -279,7 +286,7 @@ func TestKillGivesUp(t *testing.T) {
 func TestKillDuringReboot(t *testing.T) {
 	defer func(poll time.Duration) { pollEvery = poll }(pollEvery)
 	pollEvery = time.Hour // the test drives afterHalt itself
-	d, fake := fakeDriver(t, "unused", t.TempDir())
+	d, fake := fakeDriver(t, t.TempDir())
 	api, _ := d.api.API()
 	ctx := context.Background()
 	created, err := api.CreateVm(ctx, &boxdapi.CreateVmRequest{})
@@ -301,9 +308,9 @@ func TestKillDuringReboot(t *testing.T) {
 
 // fakeDriver serves a fake boxd API on loopback and returns a driver bound to
 // it.
-func fakeDriver(t *testing.T, agent, dir string) (*Driver, *fakeAPI) {
+func fakeDriver(t *testing.T, dir string) (*Driver, *fakeAPI) {
 	t.Helper()
-	fake := newFakeAPI(agent, dir)
+	fake := newFakeAPI(dir)
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -321,28 +328,6 @@ func fakeDriver(t *testing.T, agent, dir string) (*Driver, *fakeAPI) {
 	d := &Driver{api: &client{}}
 	d.api.once.Do(func() { d.api.api = boxdapi.NewBoxdApiClient(conn) })
 	return d, fake
-}
-
-// linuxAgent is the disco-vm binary for a linux/amd64 guest, which is every
-// boxd machine today: $DISCO_VM_TEST_BINARY, or built.
-func linuxAgent(t *testing.T) string {
-	t.Helper()
-	if agent := os.Getenv("DISCO_VM_TEST_BINARY"); agent != "" {
-		return agent
-	}
-	agent := filepath.Join(t.TempDir(), "disco-vm")
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", agent, "../../../cmd/disco-vm")
-	build.Env = append(os.Environ(), "GOOS=linux", "CGO_ENABLED=0")
-	if runtime.GOOS == "linux" {
-		build.Env = append(build.Env, "GOARCH="+runtime.GOARCH)
-	} else {
-		build.Env = append(build.Env, "GOARCH=amd64")
-	}
-	build.Stdout, build.Stderr = os.Stdout, os.Stderr
-	if err := build.Run(); err != nil {
-		t.Fatal(err)
-	}
-	return agent
 }
 
 type testLog struct{ t *testing.T }

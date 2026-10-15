@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/pkg/engine"
-	"github.com/discobox-ai/vm/pkg/guest"
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // A guest process reaches a host service through a forward: it connects out
@@ -62,10 +62,12 @@ func TestForward(t *testing.T) {
 		// No space before the pipe: cmd would send it.
 		argv = []string{"cmd", "/c", "echo hello from the guest| " + binary + " dial-host 7401"}
 	}
-	client := e.Guest(inst)
-	defer client.Close()
+	g, err := e.Guest(ctx, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
-	if code, err := client.Run(ctx, guest.ExecRequest{Argv: argv}, nil, &out, &out); err != nil || code != 0 {
+	if code, err := machine.Run(ctx, g, machine.ExecRequest{Argv: argv}, nil, &out, &out); err != nil || code != 0 {
 		t.Fatalf("dial-host: exit %d, %v\n%s", code, err, out.String())
 	}
 	if !strings.Contains(out.String(), "hello from the host") {

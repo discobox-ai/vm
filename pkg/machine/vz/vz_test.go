@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
@@ -78,8 +77,7 @@ func TestResumeOrFallBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = m.Kill(ctx) }()
-	c := m.(*vmMachine).agent()
-	defer c.Close()
+	c := m.(*vmMachine).Client
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	if err := c.WaitReady(wctx, m.Done()); err != nil {
@@ -182,24 +180,23 @@ func TestWarmUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = m.Kill(ctx) }()
-	c := m.(*vmMachine).agent()
-	defer c.Close()
+	c := m.(*vmMachine).Client
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	if err := c.WaitReady(wctx, m.Done()); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	check := guest.ExecRequest{Argv: []string{"/bin/sh", "-c", `echo "$(id -u tester) $(stat -f %Su /dev/console) $(pgrep -qx 'Setup Assistant' && echo setup || echo desktop)"`}}
-	if code, err := c.Run(wctx, check, nil, &out, &out); err != nil || code != 0 {
+	check := machine.ExecRequest{Argv: []string{"/bin/sh", "-c", `echo "$(id -u tester) $(stat -f %Su /dev/console) $(pgrep -qx 'Setup Assistant' && echo setup || echo desktop)"`}}
+	if code, err := machine.Run(wctx, c, check, nil, &out, &out); err != nil || code != 0 {
 		t.Fatalf("check: %v (exit %d): %s", err, code, out.String())
 	}
 	if got := strings.TrimSpace(out.String()); got != "777 tester desktop" {
 		t.Fatalf("uid, console user, and screen = %q, want \"777 tester desktop\" (screen locked: %v)", got, screenLocked())
 	}
 	out.Reset()
-	sudo := guest.ExecRequest{Argv: []string{"sudo", "-n", "id", "-u"}, User: "tester"}
-	if code, err := c.Run(wctx, sudo, nil, &out, &out); err != nil || code != 0 || strings.TrimSpace(out.String()) != "0" {
+	sudo := machine.ExecRequest{Argv: []string{"sudo", "-n", "id", "-u"}, User: "tester"}
+	if code, err := machine.Run(wctx, c, sudo, nil, &out, &out); err != nil || code != 0 || strings.TrimSpace(out.String()) != "0" {
 		t.Fatalf("passwordless sudo as tester: %v (exit %d): %s", err, code, out.String())
 	}
 }
@@ -244,8 +241,7 @@ func TestTemplates(t *testing.T) {
 		if !strings.Contains(console.String(), "resumed a template") {
 			t.Fatalf("%s did not resume: %s", id, console.String())
 		}
-		c := m.(*vmMachine).agent()
-		defer c.Close()
+		c := m.(*vmMachine).Client
 		wctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		if err := c.WaitReady(wctx, m.Done()); err != nil {

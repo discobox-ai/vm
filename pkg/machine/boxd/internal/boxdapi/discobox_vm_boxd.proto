@@ -29,8 +29,6 @@ service BoxdApi {
   // call kills the remote command.
   rpc Exec(stream ExecChunk)                returns (stream ExecChunk);
   rpc Whoami(WhoamiRequest)                 returns (WhoamiResponse);
-  // The first chunk carries vm_id/path/total_size; later chunks carry bytes.
-  rpc UploadFileStream(stream UploadFileChunk) returns (UploadFileResponse);
   rpc SuspendVm(SuspendVmRequest)           returns (SuspendVmResponse);
   rpc ResumeVm(ResumeVmRequest)             returns (ResumeVmResponse);
   rpc WakeVm(WakeVmRequest)                 returns (WakeVmResponse);
@@ -132,7 +130,14 @@ message ExecChunk {
   string command   = 4;
   string vm_id     = 5;
   int32  exit_code = 6;
-  bool   is_stderr = 10;
+  // The PTY's size: on the first chunk with tty, its initial geometry; on a
+  // later chunk with window_change, a resize. Zero is 80x24.
+  uint32 cols          = 7;
+  uint32 rows          = 8;
+  bool   window_change = 9;
+  // Server to client: data is the command's stderr. A PTY merges stderr into
+  // stdout.
+  bool   is_stderr     = 10;
 }
 
 message WhoamiRequest {}
@@ -140,15 +145,6 @@ message WhoamiResponse {
   string user_id      = 1;
   string display_name = 5;
 }
-
-message UploadFileChunk {
-  string vm_id      = 1;
-  string path       = 2;
-  uint64 total_size = 3;
-  bytes  data       = 4;
-}
-
-message UploadFileResponse { uint64 bytes_written = 1; }
 
 message CreateSnapshotRequest {
   string vm   = 1;  // must be running
