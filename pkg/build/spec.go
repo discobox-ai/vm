@@ -86,7 +86,8 @@ type Layer struct {
 	Steps []Step `yaml:"steps"`
 }
 
-// Step is one action in a booted guest: exactly one of Run, Copy, or Reboot.
+// Step is one action in a booted guest: exactly one of Run, Copy, Converge, or
+// Reboot.
 type Step struct {
 	Name string `yaml:"name,omitempty"`
 	When *When  `yaml:"when,omitempty"`
@@ -99,6 +100,9 @@ type Step struct {
 	User    string            `yaml:"user,omitempty"`
 	// Copy puts context files into the guest.
 	Copy *Copy `yaml:"copy,omitempty"`
+	// Converge is a state file in the context, or a directory of them
+	// (docs/state-file.md). The step makes the guest match them.
+	Converge string `yaml:"converge,omitempty"`
 	// Reboot restarts the guest, for installers that need one.
 	Reboot bool `yaml:"reboot,omitempty"`
 	// Timeout bounds the step; the default is an hour.
@@ -235,11 +239,14 @@ func (s Step) validate(where string) error {
 			return fmt.Errorf("%s: copy needs src and dst", where)
 		}
 	}
+	if s.Converge != "" {
+		kinds++
+	}
 	if s.Reboot {
 		kinds++
 	}
 	if kinds != 1 {
-		return fmt.Errorf("%s: a step is exactly one of run, copy, or reboot", where)
+		return fmt.Errorf("%s: a step is exactly one of run, copy, converge, or reboot", where)
 	}
 	if s.Timeout != "" {
 		if _, err := time.ParseDuration(s.Timeout); err != nil {

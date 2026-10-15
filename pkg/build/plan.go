@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/internal/units"
+	"github.com/discobox-ai/vm/pkg/converge"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -52,7 +53,9 @@ type PlannedStep struct {
 	Env     []string `json:"env,omitempty"`
 	Workdir string   `json:"workdir,omitempty"`
 	User    string   `json:"user,omitempty"`
-	// CopySrc is the host path; CopyDigest is what the cache sees of it.
+	// CopySrc is the host path; CopyDigest is what the cache sees of it. A
+	// converge step has them too: its state files, and a digest of what
+	// they declare.
 	CopySrc    string        `json:"-"`
 	CopyDigest string        `json:"copyDigest,omitempty"`
 	CopyDst    string        `json:"copyDst,omitempty"`
@@ -75,6 +78,8 @@ func (s PlannedStep) Describe() string {
 		return "run: " + first
 	case "copy":
 		return fmt.Sprintf("copy: %s -> %s", s.CopySrc, s.CopyDst)
+	case "converge":
+		return "converge: " + s.CopySrc
 	default:
 		return s.Kind
 	}
@@ -155,6 +160,20 @@ func plan(spec *Spec, args map[string]string, contextDir string, guestOS machine
 					return nil, fmt.Errorf("layer %s: copy: %w", layer.Name, err)
 				}
 				ps.CopySrc, ps.CopyDigest, ps.CopyDst = src, digest, expand(step.Copy.Dst, args)
+			case step.Converge != "":
+				ps.Kind = "converge"
+				src, err := resolveContext(contextDir, expand(step.Converge, args))
+				if err != nil {
+					return nil, fmt.Errorf("layer %s: converge: %w", layer.Name, err)
+				}
+				// What the cache sees of a converge step is what it declares:
+				// the state files, and the content of every file they name,
+				// wherever in the context that is.
+				desired, err := converge.Load(src)
+				if err != nil {
+					return nil, fmt.Errorf("layer %s: converge: %w", layer.Name, err)
+				}
+				ps.CopySrc, ps.CopyDigest = src, desired.Digest()
 			case step.Reboot:
 				ps.Kind = "reboot"
 			}

@@ -29,6 +29,7 @@ func cpCommand(g *globals) *cobra.Command {
 		Long: `Copy files between the host and a running instance, as docker cp does.
 
   disco-vm cp ./tools dev:C:\tools     host -> guest: tools lands inside C:\tools
+  disco-vm cp ./tools/. dev:C:\tools   host -> guest: what tools holds lands in C:\tools
   disco-vm cp dev:/Users/admin/out .   guest -> host`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -49,7 +50,9 @@ func cpCommand(g *globals) *cobra.Command {
 				client := e.Guest(inst)
 				defer client.Close()
 				reader, writer := io.Pipe()
-				go func() { writer.CloseWithError(guest.Pack(writer, filepath.Clean(srcPath), false)) }()
+				// SRC/. is the directory's contents, as it is to docker cp.
+				contents := strings.HasSuffix(filepath.ToSlash(srcPath), "/.")
+				go func() { writer.CloseWithError(guest.Pack(writer, filepath.Clean(srcPath), contents)) }()
 				return client.CopyTo(cmd.Context(), dstPath, reader)
 			default:
 				inst, err := e.Get(srcInst)

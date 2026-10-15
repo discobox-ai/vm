@@ -45,6 +45,13 @@ func Init() error {
 	if err := delegateCgroup(); err != nil {
 		return fmt.Errorf("docker-init: delegate the cgroup: %w", err)
 	}
+	// Docker makes each container's root directory itself, as the host's
+	// root, whatever the image's was, so Shift's chown of it does not outlive
+	// the install container. The guest's root owns it like everything under
+	// it, or it could not make a directory there (/nix, /workspace).
+	if err := os.Lchown("/", UIDBase, UIDBase); err != nil {
+		return fmt.Errorf("docker-init: give the guest its root directory: %w", err)
+	}
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	for {

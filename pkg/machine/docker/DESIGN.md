@@ -15,6 +15,8 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
 - **The base layer is shifted once.** Install chowns the base image's files
   into the guest's uids and commits it. Every later layer is written by the
   guest, in its uids already, so `docker commit` is the layer commit.
+  The container's root directory is the exception: Docker makes it for each
+  container, as the host's root, so docker-init chowns it at every start.
 - **The driver is remote.** The daemon owns a running guest, so the engine
   runs no shim, and every command attaches by inspecting the container. A
   machine waits on the container only once something asks whether it stopped.

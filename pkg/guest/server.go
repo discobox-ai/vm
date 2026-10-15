@@ -54,6 +54,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 	hostname, _ := os.Hostname()
 	writeJSON(w, http.StatusOK, Info{
+		Root:     s.Root,
 		OS:       runtime.GOOS,
 		Arch:     runtime.GOARCH,
 		Hostname: hostname,
@@ -66,20 +67,27 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 // the identity. With one, a relative path is under Root and an absolute path is
 // re-rooted there, its drive letter becoming a directory, so specs can be
 // written with the guest's real paths and still run against the fake driver.
-func (s *Server) resolve(path string) string {
-	if s.Root == "" {
+func (s *Server) resolve(path string) string { return Resolve(s.Root, path) }
+
+// RootEnv names a fake guest's root to the processes it runs.
+const RootEnv = "DISCO_VM_GUEST_ROOT"
+
+// Resolve is where a guest path is on the filesystem of an agent confined to
+// root, and the path itself when there is no root.
+func Resolve(root, path string) string {
+	if root == "" {
 		if path == "" {
 			return "."
 		}
 		return path
 	}
 	if path == "" {
-		return s.Root
+		return root
 	}
 	if volume := filepath.VolumeName(path); volume != "" {
 		path = filepath.Join(strings.TrimSuffix(volume, ":"), path[len(volume):])
 	}
-	return filepath.Join(s.Root, filepath.Clean(string(filepath.Separator)+path))
+	return filepath.Join(root, filepath.Clean(string(filepath.Separator)+path))
 }
 
 func (s *Server) getFiles(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +212,9 @@ func (s *Server) runSession(conn net.Conn, in *bufio.Reader, req ExecRequest) {
 	base := os.Environ()
 	if !s.Fake {
 		base = processEnv()
+	}
+	if s.Root != "" {
+		base = append(base, RootEnv+"="+s.Root)
 	}
 	cmd.Env = append(append(base, login...), req.Env...)
 

@@ -62,6 +62,11 @@ type Info struct {
 	Arch     string `json:"arch"`
 	Hostname string `json:"hostname"`
 	Version  string `json:"version"`
+	// Root is the directory a guest that is a directory (the fake driver)
+	// lives under, where its files API puts absolute paths. A process in it
+	// sees the host's paths, so what runs a command there on a file it
+	// copied in needs to know. A real guest has none.
+	Root string `json:"root,omitempty"`
 	// Fake is set when the agent is serving the fake driver, whose "guest" is
 	// a directory on the host.
 	Fake bool `json:"fake,omitempty"`

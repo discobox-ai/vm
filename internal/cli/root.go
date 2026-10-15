@@ -72,6 +72,7 @@ func Main(args []string) int {
 		warmCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
 		lsCommand(g), inspectCommand(g), urlCommand(g), execCommand(g), cpCommand(g),
+		convergeCommand(g),
 		infoCommand(g),
 		guestCommand(), pipeCommand(), shimCommand(g), dialHostCommand(), dockerInitCommand(),
 	)

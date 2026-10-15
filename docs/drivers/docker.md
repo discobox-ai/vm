@@ -61,7 +61,10 @@ root (host root, with Docker's default capabilities) and:
 
 1. **Delegates the cgroup.** It moves itself into a leaf (`/init`), enables
    every controller below the container's cgroup, and chowns `/guest` to the
-   guest's root, for systemd.
+   guest's root, for systemd. It also chowns the container's root
+   directory to the guest's root: Docker makes that directory itself for
+   every container, as the host's root, so the base layer's shift does not
+   reach it, and without it the guest's root cannot make `/nix`.
 2. **Starts the guest.** It re-runs itself in new user, mount, pid, cgroup,
    uts, and ipc namespaces, mapping guest uids 0-65535 to 16777216 and up, as
    uid 0 of that namespace. That side mounts a new `/proc`, the guest's

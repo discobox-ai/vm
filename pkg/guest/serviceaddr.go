@@ -56,7 +56,7 @@ func (c *Client) SetService(ctx context.Context, goos, address string) error {
 
 // ServiceAddress reads this guest's ServiceFile.
 func ServiceAddress() (string, error) {
-	data, err := os.ReadFile(ServiceFile(runtime.GOOS))
+	data, err := os.ReadFile(Resolve(os.Getenv(RootEnv), ServiceFile(runtime.GOOS)))
 	if err != nil {
 		return "", fmt.Errorf("guest: the instance's service address: %w", err)
 	}

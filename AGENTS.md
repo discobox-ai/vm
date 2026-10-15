@@ -36,6 +36,9 @@ brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
 - `pkg/machine`: the driver seam; `pkg/machine/<driver>` holds each
   hypervisor, and `machinetest` its conformance suite.
 - `pkg/guest`: the guest agent.
+- `pkg/converge`: state files, and the client-side run that makes a guest
+  match them through exec and copy. Its scripts for each guest OS are text
+  here, chosen by the OS a guest reports, never by `runtime.GOOS`.
 - `internal/cli`: the command line. `internal/e2e`: the CLI lifecycle test.
 - `scripts/codesign-exec`: the `go test -exec` wrapper vz tests need.
 - `docs`: driver briefs (`docs/drivers`), the build spec, example specs

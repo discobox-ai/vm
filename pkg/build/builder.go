@@ -14,6 +14,7 @@ import (
 
 	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/internal/units"
+	"github.com/discobox-ai/vm/pkg/converge"
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/image"
@@ -348,6 +349,8 @@ func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, parent, key str
 			}
 		case "copy":
 			err = copyIn(stepCtx, booted.Guest, step.CopySrc, step.CopyDst)
+		case "converge":
+			err = converge.Run(stepCtx, booted.Guest, converge.Options{Paths: []string{step.CopySrc}, Out: b.Out})
 		case "reboot":
 			if err = booted.Shutdown(stepCtx, 10*time.Minute); err == nil {
 				booted, err = e.Boot(stepCtx, inst, boot)
