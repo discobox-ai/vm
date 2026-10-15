@@ -160,6 +160,37 @@ func tagCommand(g *globals) *cobra.Command {
 	}
 }
 
+func snapshotCommand(g *globals) *cobra.Command {
+	return &cobra.Command{
+		Use:   "snapshot INSTANCE [NAME[:TAG]]",
+		Short: "Commit a stopped instance as an image, and remove the instance",
+		Long: `Commit a stopped instance's disk as a new image layer on its image, and
+remove the instance. To go on from the snapshot, create an instance of it.
+Without NAME the image is known by the layer ID it prints.`,
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := g.engine()
+			if err != nil {
+				return err
+			}
+			inst, err := e.Get(args[0])
+			if err != nil {
+				return err
+			}
+			ref := ""
+			if len(args) == 2 {
+				ref = args[1]
+			}
+			layer, err := e.Snapshot(cmd.Context(), inst, ref)
+			if err != nil {
+				return err
+			}
+			fmt.Println(layer.ID)
+			return nil
+		},
+	}
+}
+
 func ago(t time.Time) string {
 	if t.IsZero() {
 		return "-"

@@ -70,7 +70,7 @@ func Main(args []string) int {
 	root.PersistentFlags().StringVar(&g.driver, "driver", os.Getenv("DISCO_VM_DRIVER"), "hypervisor driver (default "+machine.DefaultName()+"; also $DISCO_VM_DRIVER)")
 	root.AddCommand(
 		buildCommand(g),
-		imagesCommand(g), rmiCommand(g), tagCommand(g),
+		imagesCommand(g), rmiCommand(g), tagCommand(g), snapshotCommand(g),
 		warmCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
 		lsCommand(g), inspectCommand(g), urlCommand(g), execCommand(g), cpCommand(g),

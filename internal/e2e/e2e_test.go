@@ -1,5 +1,6 @@
 // Package e2e drives the real disco-vm binary through its whole lifecycle: build
-// (install, layers, cache), images, run, exec, cp, stop, start, rm, rmi, warm.
+// (install, layers, cache), images, run, exec, cp, stop, start, snapshot, rm,
+// rmi, warm.
 // On the fake driver it is the neutral proof of everything above the driver
 // seam, and it runs on every OS.
 //
@@ -194,9 +195,9 @@ func newEnv(t *testing.T) env {
 	}
 	e := env{t: t, root: tg.root}
 	// Whatever a failed run left, so that this one builds its layers anew.
-	e.run("rm", "-f", "dev", "dev2", "before", "one", "two", "after", "fw", "svc", "nosvc")
+	e.run("rm", "-f", "dev", "dev2", "before", "one", "two", "after", "fw", "svc", "nosvc", "snap", "snap2")
 	e.run("warm", "--rm", "test/warm")
-	for _, ref := range []string{"test/app:v1", "test/app:latest", "test/app:other", "test/warm", "test/fwd", "test/svc", "test/nosvc"} {
+	for _, ref := range []string{"test/app:v1", "test/app:latest", "test/app:other", "test/warm", "test/fwd", "test/svc", "test/nosvc", "test/snap:v2", "test/snap:v1", "test/snap:base"} {
 		e.run("rmi", ref)
 	}
 	spec := filepath.Join(t.TempDir(), "base.yaml")
@@ -436,6 +437,73 @@ func TestLostLayer(t *testing.T) {
 	mustContain(t, e.ok("images"), "test/lost:latest", "<none>", first[2])
 	e.ok("rmi", first[2])
 	e.ok("rmi", "test/lost")
+}
+
+// TestSnapshot commits a stopped instance as an image, which consumes the
+// instance, then snapshots an instance of that image in turn: each snapshot
+// keeps what the instance wrote, on top of the image it came from.
+func TestSnapshot(t *testing.T) {
+	e := newEnv(t)
+	base := filepath.Join(t.TempDir(), "base.yaml")
+	if err := os.WriteFile(base, []byte("from:\n  install: "+tg.install+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.ok("build", "-f", base, "-t", "test/snap:base")
+	dir := t.TempDir()
+	// write copies a file named name into the instance's snap directory.
+	write := func(inst, name string) {
+		t.Helper()
+		local := filepath.Join(dir, name)
+		if err := os.WriteFile(local, []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		e.ok("cp", local, inst+":"+tg.file("snap"))
+	}
+	read := func(inst, name string) {
+		t.Helper()
+		mustContain(t, e.ok(append([]string{"exec", inst}, catArgv("snap/"+name)...)...), name)
+	}
+
+	e.ok("run", "--name", "snap", "test/snap:base")
+	write("snap", "first")
+	if out, code := e.run("snapshot", "snap", "test/snap:v1"); code == 0 || !strings.Contains(out, "stop it first") {
+		t.Fatalf("a running instance was snapshotted (exit %d):\n%s", code, out)
+	}
+	e.ok("stop", "snap")
+	if out, code := e.run("snapshot", "snap", "Not A Tag"); code == 0 {
+		t.Fatalf("an invalid tag was accepted:\n%s", out)
+	}
+	mustContain(t, e.ok("ls", "-a"), "snap")
+	first := strings.TrimSpace(e.ok("snapshot", "snap", "test/snap:v1"))
+	if strings.Contains(e.ok("ls", "-a"), "snap") {
+		t.Fatal("a snapshotted instance is still listed")
+	}
+	mustContain(t, e.ok("images"), "test/snap:v1", first[:12])
+	if _, code := e.run("snapshot", "snap"); code == 0 {
+		t.Fatal("a consumed instance was snapshotted again")
+	}
+
+	e.ok("run", "--name", "snap2", "test/snap:v1")
+	read("snap2", "first")
+	write("snap2", "second")
+	e.ok("stop", "snap2")
+	// Untagged, it is known by the ID it prints.
+	second := strings.TrimSpace(e.ok("snapshot", "snap2"))
+	if second == first {
+		t.Fatal("two snapshots share a layer")
+	}
+	mustContain(t, e.ok("images"), "<none>", second[:12])
+	e.ok("tag", second, "test/snap:v2")
+	e.ok("run", "--name", "snap", "test/snap:v2")
+	read("snap", "first")
+	read("snap", "second")
+
+	// The snapshots are layers like any other: kept while in use, then removed.
+	e.ok("rm", "-f", "snap")
+	e.ok("rmi", "test/snap:v2", "test/snap:v1", "test/snap:base")
+	if out := e.ok("images", "-a"); strings.Contains(out, first[:12]) || strings.Contains(out, second[:12]) {
+		t.Fatalf("a removed snapshot is still listed:\n%s", out)
+	}
 }
 
 func TestInfo(t *testing.T) {

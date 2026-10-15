@@ -216,7 +216,14 @@ A layer is an immutable, committed disk state owned by a driver:
 A layer's **ID is its cache key**. The key is a hash of the parent ID, driver,
 guest OS, and the fully resolved steps, including a content digest of every
 copied file. An existing layer is never rebuilt, and `--no-cache` salts the
-keys instead of overwriting. Tags name layers. A layer with no tag
+keys instead of overwriting. The one exception is a snapshot
+(`Engine.Snapshot`, `disco-vm snapshot INSTANCE [NAME[:TAG]]`): a stopped
+instance's disk committed as a layer on its image's layer, under a random ID,
+since nothing reproducible made it. A snapshot consumes the instance, as a
+build step does, so a layer is always cut the same way, from a stopped guest
+that is then destroyed; to go on from one, create an instance of it (ADR
+0006). Tags name
+layers. A layer with no tag
 and no child is an untagged image: `images` lists it as `<none>` (`images -a`
 lists every untagged layer, a chain's intermediate layers too) and `rmi`
 takes its ID. `rmi` untags, then
@@ -466,6 +473,7 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | a tag recorded where the driver keeps layers (`TagLayer`, `UntagLayer`) | no-op | no-op | no-op | ✅ boxd by hand in a discobox (2026-10-12): `tag` waited for the tag's snapshot to be ready, `run` from the tag, `rmi`; the snapshot was not read back with `boxd snap ls`; ✅ fake API (`TestTagSnapshot`, `machinetest`) | no-op |
 | a build replaces a layer its driver lost, and rebuilds the layers after it (`LayerExists`) | ✅ `internal/e2e` TestLostLayer, `pkg/image` TestReplacedLayer | ⬜ | ⬜ | ✅ boxd by hand in a discobox (2026-10-13): a middle layer pointed at a snapshot name boxd does not have was replaced, the layer after it rebuilt, a third build was all cached, and `run` from the tag read both layers' files; no snapshot was actually deleted with `boxd snap rm`; ✅ fake API (`TestTagSnapshot`: `LayerExists`) | ⬜ |
 | projects, and the driver's resources the store has no record of listed as `<orphan>` and removed by name (`Driver.Orphans`, `RemoveOrphan`; `pkg/engine` TestOpenUpgradesADatabaseFromBeforeProjects, `machinetest`) | ✅ projects kept apart in one database, and a database from before projects upgraded; none to list | ⬜ (none to list) | ⬜ (none to list) | ✅ boxd by hand in a discobox (2026-10-15): a build and an instance in project `vtest` made `dvm-vtest--` machines and snapshots, a tag's included; an empty root listed all three as orphans in `vtest` and none in `default`; `rm` and `rmi` left none; a snapshot a deleted default store left behind was listed; from an empty root, `rm` destroyed the stopped orphan machine and `rmi` both orphan snapshots by name, which the default project could not; ✅ fake API (`TestEngineListsOrphans`, `machinetest`): machines and snapshots under other names, and other projects', are not listed or removed, nor is the store's own snapshot; a second store lists every one of the first's | ✅ by hand (2026-10-15, Docker on Linux 7.0): a project's container and images named for it, invisible to `default` and to a project whose name is a prefix of it, and listed as orphans from an empty root; a container named before projects is the default's orphan, and an unlabeled `dvm-` container is not one; `rm` refused the running orphan container without `-f` and removed it with it, `rmi` removed both orphan images, and another project could not; `images -a` listed the intermediate layer; ✅ `machinetest` (`DISCO_VM_DOCKER_IMAGE=debian:trixie`) |
+| a stopped instance snapshotted as an image, consuming the instance; a running one, or a bad tag, refused with the instance kept; an instance of the snapshot snapshotted in turn (`Engine.Snapshot`, `internal/e2e` TestSnapshot) | ✅ | ⬜ | ⬜ | ⬜ | ✅ `DISCO_VM_DRIVER=docker` (2026-10-15, Docker 29.9 on Linux 7.0, debian:trixie): two generations of snapshots, each instance's files read back from the next |
 | unattended install from media (`docs/examples/<os>.yaml`) | n/a | ✅ `docs/examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap | n/a (boots a boxd image) | n/a (an image from a registry, with systemd and the agent added and its owners shifted: `docs/examples/docker.yaml`) |
 | warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) | ✅ resume (`machinetest` on boxd) | n/a (cold only) |
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window | refused | refused |

@@ -857,8 +857,7 @@ func (b *Booted) Shutdown(ctx context.Context, timeout time.Duration) error {
 	return fmt.Errorf("forced off: %w", err)
 }
 
-// Commit captures a stopped temporary instance as a new layer and removes the
-// instance.
+// Commit captures a stopped instance as a new layer and removes the instance.
 func (e *Engine) Commit(ctx context.Context, inst *Instance, pending *image.Pending) (image.Layer, error) {
 	spec, err := e.machineSpec(inst)
 	if err != nil {
@@ -873,6 +872,46 @@ func (e *Engine) Commit(ctx context.Context, inst *Instance, pending *image.Pend
 	}
 	_ = e.Driver.Destroy(ctx, spec)
 	_ = e.forget(ctx, inst.ID)
+	return layer, nil
+}
+
+// Snapshot commits a stopped instance's disk as a new layer on its image's
+// layer, removes the instance, and tags the layer ref when ref is not empty.
+// The instance is consumed, as a build's is, so there is one way a layer is
+// cut; to go on from a snapshot, create an instance of it. The layer's ID is
+// random: nothing reproducible made it, so it is never a cache hit.
+func (e *Engine) Snapshot(ctx context.Context, inst *Instance, ref string) (image.Layer, error) {
+	if inst.Temporary {
+		return image.Layer{}, fmt.Errorf("instance %s belongs to a build", inst.Name)
+	}
+	if ref != "" {
+		if err := image.ValidateRef(ref); err != nil {
+			return image.Layer{}, err
+		}
+	}
+	if state := e.State(ctx, inst); state != Stopped {
+		return image.Layer{}, fmt.Errorf("instance %s is %s; stop it first", inst.Name, state)
+	}
+	if e.remote() != nil {
+		e.retireShim(ctx, inst)
+	}
+	pending, err := e.Images.Begin(image.Layer{
+		ID: fsutil.RandomHex(32), Parent: inst.Layer, Driver: e.Driver.Name(), GuestOS: inst.GuestOS,
+		Comment: "snapshot " + inst.Name,
+	})
+	if err != nil {
+		return image.Layer{}, err
+	}
+	layer, err := e.Commit(ctx, inst, pending)
+	if err != nil {
+		pending.Abort(context.Background(), e.Driver)
+		return image.Layer{}, fmt.Errorf("snapshot %s: %w", inst.Name, err)
+	}
+	if ref != "" {
+		if err := e.Images.Tag(ctx, ref, layer.ID, e.Driver); err != nil {
+			return layer, fmt.Errorf("snapshot %s is layer %s, but tag %s: %w", inst.Name, image.Short(layer.ID), ref, err)
+		}
+	}
 	return layer, nil
 }
 
