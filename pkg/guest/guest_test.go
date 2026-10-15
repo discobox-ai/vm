@@ -244,7 +244,7 @@ func TestRelay(t *testing.T) {
 	if _, err := client.CopyFrom(ctx, "missing"); err == nil {
 		t.Fatal("a missing path was not refused")
 	}
-	if info, err := client.Info(ctx); err != nil || !info.Fake || info.Root != root {
+	if info, err := client.Info(ctx); err != nil || !info.Fake {
 		t.Fatalf("info = %+v, %v", info, err)
 	}
 }

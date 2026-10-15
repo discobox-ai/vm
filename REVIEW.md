@@ -15,10 +15,3 @@
   search of `pkg/machine/vz` by hand.** Its cgo files, its tests among them,
   compile only on a Mac, so neither Linux nor `GOOS=windows` vet sees a
   caller left behind there. (Commit 335ed4b.)
-- **A Windows link's kind is fixed when it is made.** `CreateSymbolicLinkW`
-  makes a file link or a directory link, and a file link to what is later a
-  directory cannot be walked through, while `os.Readlink` still reads right
-  and the record calls it applied. `pkg/converge` places files in declaration
-  order, so a file can be placed through a link declared before it; do not
-  reorder links to fix a Windows link's kind, which breaks that on every OS.
-  (Issue #11, PR #12; `TestLinkTargets` covers what a test can.)

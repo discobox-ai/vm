@@ -18,7 +18,6 @@ own. There is one codebase, one binary per host OS, and one command line. It is 
                   pkg/engine  ── instances, lifecycle, per-VM shim
                   pkg/build   ── YAML spec → layers, cached by inputs
                   pkg/image   ── layer store + name:tag
-                  pkg/converge ── state files → a guest's packages, files, services, by exec and copy
   ─────────────── machine.Driver seam: Machine is the guest's operations (machine.Guest) ───────────────
    machine/hcs (windows)  machine/vz (darwin)  machine/docker (any)  machine/fake  machine/boxd (any)
           │                     │                     │                   │              │
@@ -155,7 +154,7 @@ protocol from its machine (`guest.Relay`) to other processes:
 
 | endpoint | purpose |
 |---|---|
-| `GET /v1/health`, `GET /v1/info` | readiness, OS/arch/hostname, the root of a guest that is a directory |
+| `GET /v1/health`, `GET /v1/info` | readiness, OS/arch/hostname |
 | `POST /v1/exec` | upgrades to a framed stream: stdin, resize, stdout, stderr, exit |
 | `GET`/`PUT /v1/files` | tar out of and into the guest |
 | `POST /v1/shutdown` | orderly power-off or reboot |
@@ -414,35 +413,14 @@ A Linux guest can be a container whose init is systemd, in a user namespace
 the driver makes per container, since Docker offers one only daemon-wide. See
 [pkg/machine/docker/DESIGN.md](pkg/machine/docker/DESIGN.md).
 
-### 10. A client converges a guest to state files
+### 10. disco-vm does not converge guests
 
-State files declare packages, files, services, and guarded scripts
-([docs/state-file.md](docs/state-file.md),
-[ADR 0003](docs/adr/0003-a-client-converges-a-guest-to-state-files.md)).
-`pkg/converge` reads them on the client and makes a running guest match them
-through exec and copy alone (`Engine.Converge`, `disco-vm converge`, and a
-build's `converge:` step).
-
-- **Nothing is installed in the guest for it.** The logic is the client's
-  version, whatever the age of the guest. A script is copied in as a file and
-  run with the shell the guest OS has: sh, or PowerShell on Windows. The
-  scripts are text in `pkg/converge`, chosen by the OS the guest reports.
-- **It applies a difference, from a record the guest holds.** Each resource
-  has a digest, and the guest keeps the digests applied and the state file
-  each came from. A resource whose digest is recorded is not looked at.
-- **Runs add up.** A run applies the state files it is given, in name order,
-  each one whole: files, packages, `exec`, services. A later state file's
-  declaration of a resource replaces an earlier one's, as a later image
-  layer's file does.
-- **An image is a guest that was booted, converged, and snapshotted.** The
-  layer is committed with the record in it, so converging an instance to its
-  image's state files applies nothing.
-- **A run holds a lease on the guest**, a minute long and renewed every
-  thirty seconds, so two clients cannot converge one guest. A run that finds
-  it held fails at once; one that loses it, or its guest, stops.
-- **A guest that is a directory** (the fake driver) reports its root, and a
-  run in it writes packages, services, and owners to a ledger instead of
-  changing the host.
+Deciding what an image holds beyond a build spec is a client's, above
+disco-vm ([ADR 26-10-15-703](docs/adr/26-10-15-703-disco-vm-does-not-converge-guests.md)).
+disco-vm offers what a client converges with: exec and copy
+(`Engine.Guest`), `Engine.Stop`, and `Engine.Snapshot`. A converged image is
+an instance that was created, changed through exec and copy, stopped, and
+snapshotted.
 
 ## The build spec
 
@@ -480,7 +458,6 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | forward, guest to host (`CreateOptions.Forwards`; `pkg/engine` TestForward) | ✅ | ✅ in-guest, both directions (through the since-removed `run --forward`) | ✅ in-guest, both directions (through the since-removed `run --forward`) | refused | refused |
 | service URL and service file (`Engine.URL`, `disco-vm url`) | ✅ a host server listening at the file's address through the shim's loopback URL, on two starts (`pkg/engine` TestURL, `internal/e2e` TestURL) | ⬜ (7302 in the ServiceTable: `TestDocumentService`) | ⬜ | ⬜ fixed port 7302 not run on boxd itself; earlier, a guest's HTTP server through the URL on two boots with an image-declared port (`TestService`, by hand, `DISCO_VM_INTEGRATION=1` and `BOXD_API_KEY`); ✅ fake API (`TestServiceFakeAPI`) | ✅ by hand (2026-10-15, Docker 29.9, debian:trixie): `url` refused while created, `http://127.0.0.1:N` once started, the service file `tcp:0.0.0.0:7302`; a static Go program copied in and run under `systemd-run`, listening with `guest.ListenService()`, answered through the URL, and again at a new port after stop and start; nothing left behind; ⬜ `internal/e2e` TestURL with `DISCO_VM_DRIVER=docker` |
 | metadata in the database: a root's JSON files imported, an embedder's database shared (`pkg/image` TestOpenImportsJSONFiles, `pkg/engine` TestOpenImportsInstanceFiles and TestOpenInACallersDatabase) | ✅ SQLite, Linux; `internal/e2e` passes on it | ⬜ | ⬜ | ✅ fake API (`machinetest`, Linux); ⬜ boxd itself | ⬜ |
-| converge, from the client through exec and copy: a build's `converge` step, a no-op against an image's own state files, a changed state file, removal, a failing run, the lease (`internal/e2e` TestConverge, `pkg/converge`) | ✅ files, exec; packages and services in a ledger; sh on Linux, the `pkg/converge` scripts under Windows PowerShell 5.1 on the windows CI runner (not in a guest), and the PowerShell scripts under pwsh 7 on Linux by hand (`DISCO_VM_TEST_PWSH`) | ⬜ | ⬜ | ⬜ | ✅ by hand (2026-10-13, debian:13-slim): discobox's base, sandbox, and claude-code images built from their state files (300 resources: apt from four third-party repositories, npm, 72 masked units, source directories, `exec` with a `shell`, a harness's file replacing the base's) in 10.5 minutes, with nothing of converge's in the guest but its record; the image matched the one its Dockerfiles build in package names and in the hash of every file the image places; an instance booted `running`; converging it to its image's state files applied nothing in 0.4 s; a running sandbox-base guest became the claude-code harness in 4 s; a second client was refused while the first held the lease, still refused after the first had renewed past a minute, and had the guest a minute after the first was killed |
 | warm with a user (`warm --user`, `--local-user`) | refused | refused | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) | refused | n/a (cold only) |
 
 A platform driver is done when `machinetest.Run` passes against it on real

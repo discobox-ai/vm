@@ -56,7 +56,6 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 	hostname, _ := os.Hostname()
 	writeJSON(w, http.StatusOK, machine.GuestInfo{
-		Root:     s.Root,
 		OS:       runtime.GOOS,
 		Arch:     runtime.GOARCH,
 		Hostname: hostname,

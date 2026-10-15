@@ -72,11 +72,6 @@ type GuestInfo struct {
 	Hostname string `json:"hostname"`
 	// Version is the disco-vm agent's, in a guest that has one.
 	Version string `json:"version"`
-	// Root is the directory a guest that is a directory (the fake driver)
-	// lives under, where its files API puts absolute paths. A process in it
-	// sees the host's paths, so what runs a command there on a file it
-	// copied in needs to know. A real guest has none.
-	Root string `json:"root,omitempty"`
 	// Fake is set when the guest is the fake driver's, a directory on the
 	// host.
 	Fake bool `json:"fake,omitempty"`
