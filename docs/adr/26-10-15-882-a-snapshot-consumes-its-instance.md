@@ -1,6 +1,6 @@
 # 26-10-15-882 — A snapshot commits a stopped instance as an image, and consumes the instance
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-10-15
 
 ## Context
