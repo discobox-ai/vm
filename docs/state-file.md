@@ -79,7 +79,10 @@ that is removed.
 0644, or 0755 for a directory. `owner` is `USER` or `USER:GROUP`, by name or
 number; without one a path is root's. A managed path is replaced whatever was
 there, except a directory with something in it. A file is copied into the
-guest and moved to its path.
+guest and moved to its path. Files are placed in the order they are
+declared. A `link` holds its target as written, which need not exist yet; on
+a Windows guest a link is to a file or to a directory as its target is when
+the link is made, so a directory is declared before a link to it.
 
 `source` is a path on the client, relative to the state file's directory,
 and may be anywhere (`../../assets/brand`). One that is a directory is every
