@@ -125,6 +125,11 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 		if layer.Driver != driver.Name() {
 			return nil, fmt.Errorf("from.image %s was built with driver %s, not %s", ref, layer.Driver, driver.Name())
 		}
+		if intact, err := store.Intact(ctx, parent, driver); err != nil {
+			return nil, fmt.Errorf("from.image: %w", err)
+		} else if !intact {
+			return nil, fmt.Errorf("from.image %s: %s no longer has its layer %s; build that image again", ref, driver.Name(), image.Short(parent))
+		}
 		guestOS = layer.GuestOS
 	}
 	if !driver.Capabilities().SupportsOS(guestOS) {
@@ -146,17 +151,34 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 		b.logf("==> %s: skipped, nothing in it applies to %s", name, guestOS)
 	}
 	for i, layer := range p.Layers {
-		key := layerKey(parent, driver.Name(), guestOS, layer, salt)
 		prefix := fmt.Sprintf("[%d/%d] %s", i+1, len(p.Layers), layer.Name)
-		if store.Has(key) {
+		inputs := layerKey(parent, driver.Name(), guestOS, layer, salt)
+		key, lost, err := b.cached(ctx, inputs)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", prefix, err)
+		}
+		if key != "" {
 			b.logf("==> %s: CACHED %s", prefix, image.Short(key))
 			parent = key
 			continue
 		}
-		b.logf("==> %s", prefix)
+		key = inputs
+		if lost != "" {
+			// Under a new ID, so that every layer after this one is built
+			// again too: theirs were made from the disk that is gone.
+			key = layerKey(parent, driver.Name(), guestOS, layer, salt+"|replaces "+lost+"|"+fsutil.RandomHex(8))
+			b.logf("==> %s: %s no longer has %s, building it again as %s", prefix, driver.Name(), image.Short(lost), image.Short(key))
+		} else {
+			b.logf("==> %s", prefix)
+		}
 		started := time.Now()
 		if err := b.buildLayer(ctx, p, buildName(opts), parent, key, layer); err != nil {
 			return nil, fmt.Errorf("%s: %w", prefix, err)
+		}
+		if lost != "" {
+			if err := store.Replace(inputs, key); err != nil {
+				return nil, err
+			}
 		}
 		b.logf("==> %s: committed %s in %s", prefix, image.Short(key), time.Since(started).Round(time.Second))
 		parent = key
@@ -164,7 +186,7 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 
 	result := &Result{Layer: parent}
 	for _, ref := range opts.Tags {
-		if err := store.Tag(ref, parent); err != nil {
+		if err := store.Tag(ctx, ref, parent, b.Engine.Driver); err != nil {
 			return nil, err
 		}
 		b.logf("==> tagged %s", image.NormalizeRef(ref))
@@ -201,13 +223,24 @@ func (b *Builder) install(ctx context.Context, p *Plan, in Install, contextDir, 
 			mediaPath = resolved
 		}
 	}
-	key, err := installKey(driver.Name(), in, mediaPath, salt)
+	inputs, err := installKey(driver.Name(), in, mediaPath, salt)
 	if err != nil {
 		return "", err
 	}
-	if store.Has(key) {
+	key, lost, err := b.cached(ctx, inputs)
+	if err != nil {
+		return "", err
+	}
+	if key != "" {
 		b.logf("==> install %s: CACHED %s", in.OS, image.Short(key))
 		return key, nil
+	}
+	key = inputs
+	if lost != "" {
+		if key, err = installKey(driver.Name(), in, mediaPath, salt+"|replaces "+lost+"|"+fsutil.RandomHex(8)); err != nil {
+			return "", err
+		}
+		b.logf("==> install %s: %s no longer has %s, installing again as %s", in.OS, driver.Name(), image.Short(lost), image.Short(key))
 	}
 	if agent == "" {
 		if in.OS != machine.OS(runtime.GOOS) {
@@ -249,7 +282,33 @@ func (b *Builder) install(ctx context.Context, p *Plan, in Install, contextDir, 
 		pending.Abort(context.Background(), driver)
 		return "", err
 	}
+	if lost != "" {
+		if err := store.Replace(inputs, key); err != nil {
+			return "", err
+		}
+	}
 	return key, nil
+}
+
+// cached looks a layer up by the ID its inputs give it. It returns the layer
+// to use: that one, or the one built in its place. When the driver no longer
+// holds the layer (a boxd snapshot deleted behind the store's back), there is
+// nothing to use, and lost names it: the caller builds it again under a new
+// ID and records the replacement.
+func (b *Builder) cached(ctx context.Context, inputs string) (key, lost string, err error) {
+	store := b.Engine.Images
+	current, err := store.Current(inputs)
+	if err != nil || !store.Has(current) {
+		return "", "", err
+	}
+	intact, err := store.Intact(ctx, current, b.Engine.Driver)
+	if err != nil {
+		return "", "", err
+	}
+	if !intact {
+		return "", current, nil
+	}
+	return current, "", nil
 }
 
 // buildLayer boots the parent, runs the layer's steps, shuts the guest down in

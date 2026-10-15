@@ -158,6 +158,31 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	}
 	t.Cleanup(func() { _ = driver.DeleteLayer(context.Background(), committed) })
 
+	t.Run("a-committed-layer-exists", func(t *testing.T) {
+		for _, layer := range []machine.Layer{*base, committed} {
+			if ok, err := driver.LayerExists(ctx, layer); err != nil || !ok {
+				t.Fatalf("layer %s exists = %v, %v", layer.ID, ok, err)
+			}
+		}
+	})
+
+	// A tag is recorded and dropped any number of times, and a tag never
+	// recorded is dropped without complaint.
+	t.Run("tag-and-untag-a-layer", func(t *testing.T) {
+		const ref = "conformance/app:latest"
+		t.Cleanup(func() { _ = driver.UntagLayer(context.Background(), committed, ref) })
+		for range 2 {
+			if err := driver.TagLayer(ctx, committed, ref); err != nil {
+				t.Fatalf("tag: %v", err)
+			}
+		}
+		for range 2 {
+			if err := driver.UntagLayer(ctx, committed, ref); err != nil {
+				t.Fatalf("untag: %v", err)
+			}
+		}
+	})
+
 	// A clone of the committed layer sees the marker; a clone of the base does
 	// not; both run at once.
 	t.Run("clones-are-isolated-and-concurrent", func(t *testing.T) {

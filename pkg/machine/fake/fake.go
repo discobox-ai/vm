@@ -275,6 +275,17 @@ func (d *Driver) Destroy(_ context.Context, inst machine.InstanceSpec) error {
 
 func (d *Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
 
+// LayerExists reports whether the layer's root is there, so that a test can
+// lose a layer by removing it.
+func (d *Driver) LayerExists(_ context.Context, layer machine.Layer) (bool, error) {
+	_, err := os.Stat(rootfs(layer.Dir))
+	return err == nil, nil
+}
+
+// TagLayer and UntagLayer do nothing: a layer lives only in the store.
+func (d *Driver) TagLayer(context.Context, machine.Layer, string) error   { return nil }
+func (d *Driver) UntagLayer(context.Context, machine.Layer, string) error { return nil }
+
 // pickServicePort gives the instance a free port on the host's loopback for
 // its service: a fake guest is a host process, so a port of its own keeps two
 // guests' services apart.

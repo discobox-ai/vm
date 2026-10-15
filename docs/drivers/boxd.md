@@ -43,6 +43,8 @@ use. The parts that matter here:
 |---|---|
 | `Install` | `CreateVm` (restart policy `never`, idle timers off), check `uname -m` against the agent's ELF, upload the agent, install `disco-vm-guest.service` and the shutdown hook with sudo, wait for the agent, snapshot. Media must be `latest`; `options.image` picks a boxd image. |
 | layer | `layer.json`: the snapshot's name, ID, version, and size. `DeleteLayer` deletes the snapshot. |
+| `LayerExists` | `GetSnapshot` on the layer's snapshot: gone, or `failed`, is a layer the build replaces, along with every layer after it. One call for each cached layer of a build. |
+| `TagLayer`, `UntagLayer` | boxd cannot name or label a snapshot after the fact, and snapshots only a running machine. A tag restores the layer's snapshot into a machine, saves that as `dvm-<project>--<layer id>-tag-<ref>-<hash>`, and destroys the machine; untagging deletes the snapshot. Nothing restores from it: it is there so `boxd snap ls` says what each layer is. Each tag costs a restore and a whole snapshot. A tag made before this existed has none; tag it again to make one. |
 | `Prepare` cold | restore the layer's snapshot, power the guest off through the agent, and `StopVm` once the shutdown hook says it halted. The first boot is a cold boot of the layer's disk. A guest that cannot be shut down in order is stopped anyway, and Prepare fails. |
 | `Prepare` resume | restore the stage's snapshot and suspend it. A missing stage or snapshot is `ErrNotWarm`. |
 | `Boot` | `StartVm` (after `ResizeVm` when the boot asks for another size), `ResumeVm`, or `WakeVm`, by state. A machine still `stopping` is waited out first. |

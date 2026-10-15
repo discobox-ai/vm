@@ -225,6 +225,12 @@ func (e env) release() {
 		e.run("warm", "--rm", ref)
 		e.run("rmi", ref)
 	}
+	// What is left is untagged, and named by its layer.
+	for _, line := range strings.Split(strings.TrimSpace(e.ok("images")), "\n")[1:] {
+		if f := strings.Fields(line); len(f) > 1 {
+			e.run("rmi", f[1])
+		}
+	}
 }
 
 // catArgv reads a guest file under the target's directory.
@@ -292,6 +298,18 @@ layers:
 		t.Fatal("an undeclared build arg was accepted")
 	}
 	mustContain(t, e.ok("images"), "test/app:latest", "test/app:v1", "test/app:other")
+	// A build without -t is still an image: listed, and removed by its ID.
+	out = e.ok("build", "-f", specPath, "--build-arg", "MSG=solo")
+	fields := strings.Fields(out)
+	solo := fields[len(fields)-1]
+	mustContain(t, e.ok("images"), "<none>", solo[:12])
+	mustContain(t, e.ok("rmi", solo), "deleted "+solo[:12])
+	if out := e.ok("images"); strings.Contains(out, "<none>") {
+		t.Fatalf("an untagged image survived rmi:\n%s", out)
+	}
+	if _, code := e.run("rmi", solo); code == 0 {
+		t.Fatal("rmi removed an image twice")
+	}
 
 	// Run an instance and look inside.
 	e.ok("run", "--name", "dev", "test/app:v1")
@@ -353,6 +371,69 @@ layers:
 	if _, code := e.run("run", "--rm", "test/app:other"); code == 0 {
 		t.Fatal("run took --rm")
 	}
+}
+
+// TestLostLayer loses a layer in the middle of a chain, as deleting a boxd
+// snapshot does, and checks that the next build makes it again under a new ID
+// and so makes every layer after it again too, while the layer before it and
+// the images already built stay as they were.
+func TestLostLayer(t *testing.T) {
+	if tg.driver != "fake" {
+		t.Skip("only the fake driver keeps a layer where a test can lose it")
+	}
+	e := newEnv(t)
+	shell := `["/bin/sh", "-c"]`
+	if runtime.GOOS == "windows" {
+		shell = `["cmd", "/c"]`
+	}
+	specPath := filepath.Join(t.TempDir(), "disco-vm.yaml")
+	spec := fmt.Sprintf("from:\n  install: %s\nshell: %s\nlayers:\n", tg.install, shell)
+	for _, name := range []string{"one", "two", "three"} {
+		spec += fmt.Sprintf("  - name: %s\n    steps:\n      - run: echo %s> %s\n", name, name, tg.cmd(name+".txt"))
+	}
+	if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ids are the layers a build's log names, in order: install, one, two, three.
+	ids := func(out string) []string {
+		var ids []string
+		for line := range strings.SplitSeq(out, "\n") {
+			for _, mark := range []string{": CACHED ", ": committed "} {
+				if _, after, ok := strings.Cut(line, mark); ok && strings.HasPrefix(line, "==> [") {
+					ids = append(ids, strings.Fields(after)[0])
+				}
+			}
+		}
+		if len(ids) != 3 {
+			t.Fatalf("a build of three layers named %v:\n%s", ids, out)
+		}
+		return ids
+	}
+	first := ids(e.ok("build", "-f", specPath, "-t", "test/lost"))
+
+	dirs, err := filepath.Glob(filepath.Join(e.root, "images", "layers", first[1]+"*", "payload", "*"))
+	if err != nil || len(dirs) == 0 {
+		t.Fatalf("layer %s holds %v, %v", first[1], dirs, err)
+	}
+	for _, dir := range dirs {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := e.ok("build", "-f", specPath, "-t", "test/lost")
+	mustContain(t, out, "[1/3] one: CACHED "+first[0], "[2/3] two: fake no longer has "+first[1], "[3/3] three: committed")
+	second := ids(out)
+	if second[0] != first[0] || second[1] == first[1] || second[2] == first[2] {
+		t.Fatalf("layers %v became %v: want the first kept and the two after it new", first, second)
+	}
+	// The replacements are the cache from here on.
+	out = e.ok("build", "-f", specPath, "-t", "test/lost")
+	mustContain(t, out, "two: CACHED "+second[1], "three: CACHED "+second[2])
+	// The image built on the lost layer is still there, untagged, to remove.
+	mustContain(t, e.ok("images"), "test/lost:latest", "<none>", first[2])
+	e.ok("rmi", first[2])
+	e.ok("rmi", "test/lost")
 }
 
 func TestInfo(t *testing.T) {

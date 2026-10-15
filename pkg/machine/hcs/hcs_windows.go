@@ -294,6 +294,13 @@ func removeAll(dir string) error {
 
 func (*Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
 
+// LayerExists is true: a layer lives only in the store.
+func (*Driver) LayerExists(context.Context, machine.Layer) (bool, error) { return true, nil }
+
+// TagLayer and UntagLayer do nothing: a layer lives only in the store.
+func (*Driver) TagLayer(context.Context, machine.Layer, string) error   { return nil }
+func (*Driver) UntagLayer(context.Context, machine.Layer, string) error { return nil }
+
 // Service is the hvsocket service ID of guest.ServicePort, which every VM's
 // ServiceTable lists; the engine's shim serves it on the host's loopback.
 func (*Driver) Service(context.Context, machine.InstanceSpec) (machine.Service, error) {

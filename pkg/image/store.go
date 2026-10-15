@@ -56,14 +56,22 @@ type tag struct {
 
 func (tag) TableName() string { return "disco_vm_tags" }
 
+// replacement records the layer built in place of one its driver lost.
+type replacement struct {
+	ID          string `gorm:"primaryKey"`
+	Replacement string
+}
+
+func (replacement) TableName() string { return "disco_vm_replaced_layers" }
+
 // Image is a tag and the layer it names.
 type Image struct {
 	Ref   string `json:"ref"`
 	Layer Layer  `json:"layer"`
 }
 
-// Store is an image store. Its metadata (layers and tags) is rows in a
-// database, and each layer's disk is the
+// Store is an image store. Its metadata (layers, tags, and which layer
+// replaced which) is rows in a database, and each layer's disk is the
 // driver's files under a directory:
 //
 //	layers/<id>/payload/     the driver's files (machine.Layer.Dir)
@@ -82,7 +90,7 @@ func Open(root string, db *gormdb.Pools) (*Store, error) {
 	// In a transaction, so two commands starting on a new root do not both
 	// create the tables.
 	err := db.Write.Transaction(func(tx *gorm.DB) error {
-		return tx.AutoMigrate(&Layer{}, &tag{})
+		return tx.AutoMigrate(&Layer{}, &tag{}, &replacement{})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("image: migrate: %w", err)
@@ -96,7 +104,7 @@ func Open(root string, db *gormdb.Pools) (*Store, error) {
 func (s *Store) layerDir(id string) string { return filepath.Join(s.Root, "layers", id) }
 
 // importFiles moves the metadata a disco-vm from before the database kept in
-// JSON files (layers/<id>/layer.json and tags.json) into it. A
+// JSON files (layers/<id>/layer.json, tags.json, replaced.json) into it. A
 // file is removed once its rows are in, so each is imported once, and a row
 // that is already there wins.
 func (s *Store) importFiles() error {
@@ -140,6 +148,21 @@ func (s *Store) importFiles() error {
 	case !errors.Is(err, os.ErrNotExist):
 		return err
 	}
+	replacedPath := filepath.Join(s.Root, "replaced.json")
+	replaced := map[string]string{}
+	switch err := fsutil.ReadJSON(replacedPath, &replaced); {
+	case err == nil:
+		for id, to := range replaced {
+			if err := insert(&replacement{ID: id, Replacement: to}); err != nil {
+				return fmt.Errorf("image: import %s: %w", replacedPath, err)
+			}
+		}
+		if err := os.Remove(replacedPath); err != nil {
+			return err
+		}
+	case !errors.Is(err, os.ErrNotExist):
+		return err
+	}
 	// The lock that guarded those files.
 	_ = os.Remove(filepath.Join(s.Root, "tags.lock"))
 	return nil
@@ -166,6 +189,48 @@ func (s *Store) Layer(id string) (Layer, error) {
 func (s *Store) Has(id string) bool {
 	_, err := s.Layer(id)
 	return err == nil
+}
+
+// Intact reports whether a layer is committed and its driver still holds what
+// it keeps for the layer outside the store. Another driver's layer is taken
+// at its word.
+func (s *Store) Intact(ctx context.Context, id string, driver machine.Driver) (bool, error) {
+	layer, err := s.Layer(id)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil || layer.Driver != driver.Name() {
+		return err == nil, err
+	}
+	return driver.LayerExists(ctx, s.MachineLayer(id))
+}
+
+// Current is the layer a build should use where its inputs say id: id itself,
+// or the layer that was built in its place after id's driver lost it.
+func (s *Store) Current(id string) (string, error) {
+	var replaced []replacement
+	if err := s.db.Read.Where("id = ?", id).Limit(1).Find(&replaced).Error; err != nil {
+		return "", err
+	}
+	if len(replaced) == 1 && s.Has(replaced[0].Replacement) {
+		return replaced[0].Replacement, nil
+	}
+	return id, nil
+}
+
+// Replace records that to was built in place of id, whose driver lost it. The
+// lost layer stays as it is: the layers built on it hold disks made from the
+// one that is gone, not from its replacement, so they are still its children
+// and not the replacement's. Replacements that have since been removed are
+// forgotten.
+func (s *Store) Replace(id, to string) error {
+	return s.db.Write.Transaction(func(tx *gorm.DB) error {
+		row := replacement{ID: id, Replacement: to}
+		if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
+			return err
+		}
+		return tx.Where("replacement NOT IN (?)", tx.Model(&Layer{}).Select("id")).Delete(&replacement{}).Error
+	})
 }
 
 // Layers lists every committed layer.
@@ -318,15 +383,42 @@ func tagged(db *gorm.DB, normalized string) (string, error) {
 	return tags[0].LayerID, nil
 }
 
-// Tag points ref at a layer.
-func (s *Store) Tag(ref, id string) error {
+// Tag points ref at a layer, and has the layer's driver record the tag where
+// it keeps the layer. A ref that named another layer is moved.
+func (s *Store) Tag(ctx context.Context, ref, id string, driver machine.Driver) error {
 	if err := ValidateRef(ref); err != nil {
 		return err
 	}
-	if !s.Has(id) {
-		return fmt.Errorf("layer %s: %w", short(id), ErrNotFound)
+	layer, err := s.Layer(id)
+	if err != nil {
+		return err
 	}
-	return s.db.Write.Clauses(clause.OnConflict{UpdateAll: true}).Create(&tag{Ref: NormalizeRef(ref), LayerID: id}).Error
+	normalized := NormalizeRef(ref)
+	if layer.Driver == driver.Name() {
+		if err := driver.TagLayer(ctx, s.MachineLayer(id), normalized); err != nil {
+			return err
+		}
+	}
+	var old string
+	err = s.db.Write.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		if old, err = tagged(tx, normalized); err != nil {
+			return err
+		}
+		return tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&tag{Ref: normalized, LayerID: id}).Error
+	})
+	if err != nil || old == "" || old == id {
+		return err
+	}
+	return s.untagLayer(ctx, old, normalized, driver)
+}
+
+// untagLayer has a layer's driver drop a tag it recorded.
+func (s *Store) untagLayer(ctx context.Context, id, normalized string, driver machine.Driver) error {
+	if layer, err := s.Layer(id); err != nil || layer.Driver != driver.Name() {
+		return nil //nolint:nilerr // a layer that is gone, or another driver's, has nothing of this driver's to drop
+	}
+	return driver.UntagLayer(ctx, s.MachineLayer(id), normalized)
 }
 
 // Resolve turns a reference into a layer ID. It accepts name:tag, a bare name
@@ -358,71 +450,113 @@ func (s *Store) Resolve(ref string) (string, error) {
 	return "", fmt.Errorf("image %q: %w", ref, ErrNotFound)
 }
 
-// Images lists every tag.
+// Images lists every tag, then every untagged image: a layer that has no tag
+// and is no other layer's parent, which is what a build without -t leaves. An
+// untagged image has an empty Ref and is named by its layer ID.
 func (s *Store) Images() ([]Image, error) {
 	var tags []tag
 	if err := s.db.Read.Find(&tags).Error; err != nil {
 		return nil, err
 	}
-	images := make([]Image, 0, len(tags))
-	for _, t := range tags {
-		layer, err := s.Layer(t.LayerID)
-		if err != nil {
-			layer = Layer{ID: t.LayerID}
-		}
-		images = append(images, Image{Ref: t.Ref, Layer: layer})
-	}
-	sort.Slice(images, func(i, j int) bool { return images[i].Ref < images[j].Ref })
-	return images, nil
-}
-
-// Remove untags ref, then deletes every layer that the removal left unused —
-// the layer itself, then its parents in turn — as `docker rmi` does. inUse
-// reports layers something outside the store (an instance) still needs.
-func (s *Store) Remove(ctx context.Context, ref string, driver machine.Driver, inUse func(id string) bool) ([]string, error) {
-	normalized := NormalizeRef(ref)
-	var id string
-	err := s.db.Write.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var err error
-		if id, err = tagged(tx, normalized); err != nil {
-			return err
-		}
-		if id == "" {
-			return fmt.Errorf("image %q: %w", ref, ErrNotFound)
-		}
-		return tx.Delete(&tag{Ref: normalized}).Error
-	})
+	layers, err := s.Layers()
 	if err != nil {
 		return nil, err
 	}
-	var removed []string
+	byID := make(map[string]Layer, len(layers))
+	named := map[string]bool{}
+	for _, layer := range layers {
+		byID[layer.ID] = layer
+		named[layer.Parent] = true
+	}
+	images := make([]Image, 0, len(tags))
+	for _, t := range tags {
+		layer, ok := byID[t.LayerID]
+		if !ok {
+			layer = Layer{ID: t.LayerID}
+		}
+		named[t.LayerID] = true
+		images = append(images, Image{Ref: t.Ref, Layer: layer})
+	}
+	sort.Slice(images, func(i, j int) bool { return images[i].Ref < images[j].Ref })
+	var untagged []Image
+	for _, layer := range layers {
+		if !named[layer.ID] {
+			untagged = append(untagged, Image{Layer: layer})
+		}
+	}
+	sort.Slice(untagged, func(i, j int) bool { return untagged[i].Layer.Created.After(untagged[j].Layer.Created) })
+	return append(images, untagged...), nil
+}
+
+// Remove untags ref, then deletes every layer that the removal left unused —
+// the layer itself, then its parents in turn — as `docker rmi` does. A ref
+// that is a layer ID removes an untagged image; a tagged one is removed by
+// name. inUse reports layers something outside the store (an instance) still
+// needs. untagged is the tag that was removed, or empty for a layer ID.
+func (s *Store) Remove(ctx context.Context, ref string, driver machine.Driver, inUse func(id string) bool) (untagged string, removed []string, err error) {
+	// The driver's record of the tag goes first: if that fails the tag is
+	// still here, and removing it again tries again.
+	normalized := NormalizeRef(ref)
+	id, err := tagged(s.db.Read, normalized)
+	if err != nil {
+		return "", nil, err
+	}
+	if id != "" {
+		if err := s.untagLayer(ctx, id, normalized, driver); err != nil {
+			return "", nil, err
+		}
+	}
+	err = s.db.Write.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Read again: the tag may have moved or gone since the driver was told.
+		var err error
+		if id, err = tagged(tx, normalized); err != nil || id == "" {
+			return err
+		}
+		untagged = normalized
+		return tx.Delete(&tag{Ref: normalized}).Error
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	if untagged == "" {
+		if id, err = s.Resolve(ref); err != nil {
+			return "", nil, err
+		}
+		used, err := s.used(id, inUse)
+		if err != nil {
+			return "", nil, err
+		}
+		if used {
+			return "", nil, fmt.Errorf("image %s is tagged, has layers built on it, or is in use; remove what names it first", short(id))
+		}
+	}
 	for id != "" {
 		used, err := s.used(id, inUse)
 		if err != nil || used {
-			return removed, err
+			return untagged, removed, err
 		}
 		layer, err := s.Layer(id)
 		if err != nil {
-			return removed, err
+			return untagged, removed, err
 		}
 		if layer.Driver == driver.Name() {
 			if err := driver.DeleteLayer(ctx, s.MachineLayer(id)); err != nil {
-				return removed, err
+				return untagged, removed, err
 			}
 		}
 		// The row goes first: a directory with no row is a stray that the next
 		// commit of this layer clears, and a row with no directory would be a
 		// layer that cannot boot.
 		if err := s.db.Write.WithContext(ctx).Delete(&Layer{ID: id}).Error; err != nil {
-			return removed, err
+			return untagged, removed, err
 		}
 		if err := os.RemoveAll(s.layerDir(id)); err != nil {
-			return removed, err
+			return untagged, removed, err
 		}
 		removed = append(removed, id)
 		id = layer.Parent
 	}
-	return removed, nil
+	return untagged, removed, nil
 }
 
 // used reports whether a layer is tagged, a parent of another layer, or in use

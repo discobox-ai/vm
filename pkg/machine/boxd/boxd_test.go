@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,88 @@ func TestWarmAtAnotherSize(t *testing.T) {
 	}
 	if len(fake.vms) != 0 {
 		t.Fatalf("%d machines were left behind", len(fake.vms))
+	}
+}
+
+// TestTagSnapshot checks that a tag is a snapshot of its own beside the
+// layer's, named so that a listing says what it is, and that untagging deletes
+// only it.
+func TestTagSnapshot(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	agent := linuxAgent(t)
+	dir, err := os.MkdirTemp("", "boxd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	d, fake := fakeDriver(t, agent, dir)
+	t.Cleanup(fake.close)
+	ctx := context.Background()
+
+	base := machine.Layer{ID: "0123456789abcdef", Dir: filepath.Join(dir, "layer")}
+	if err := os.MkdirAll(base.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux, Agent: agent}, base); err != nil {
+		t.Fatal(err)
+	}
+	names := func() []string {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if len(fake.vms) != 0 {
+			t.Fatalf("%d machines were left behind", len(fake.vms))
+		}
+		var names []string
+		for name := range fake.snapshots {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		return names
+	}
+	layer := names()
+	// Every call the tags make is reported, with its answer and its time.
+	var calls strings.Builder
+	machine.SetDebug(&calls)
+	t.Cleanup(func() { machine.SetDebug(nil) })
+	defer func() {
+		for _, want := range []string{"boxd CreateVmFromSnapshot {snapshot:", "boxd GetSnapshot {name:\"dvm-0123456789ab-tag-", "status:\"ready\"", "boxd DeleteSnapshot {name:"} {
+			if !strings.Contains(calls.String(), want) {
+				t.Errorf("debug output lacks %q:\n%s", want, calls.String())
+			}
+		}
+	}()
+	for _, ref := range []string{"discobox/base:latest", "discobox-base:latest", "discobox/base:latest"} {
+		if err := d.TagLayer(ctx, base, ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := names()
+	if len(got) != 3 || !slices.Contains(got, layer[0]) {
+		t.Fatalf("snapshots %v, want the layer's %v and one for each of two tags", got, layer)
+	}
+	for _, name := range got {
+		if name != layer[0] && !strings.HasPrefix(name, "dvm-0123456789ab-tag-discobox-base-latest-") {
+			t.Fatalf("a tag's snapshot is named %s", name)
+		}
+	}
+	if err := d.UntagLayer(ctx, base, "discobox/base:latest"); err != nil {
+		t.Fatal(err)
+	}
+	if got := names(); len(got) != 2 || !slices.Contains(got, layer[0]) {
+		t.Fatalf("snapshots %v after untagging one of two", got)
+	}
+
+	// A snapshot deleted behind the driver's back is a layer that is gone.
+	if ok, err := d.LayerExists(ctx, base); err != nil || !ok {
+		t.Fatalf("layer exists = %v, %v", ok, err)
+	}
+	fake.mu.Lock()
+	delete(fake.snapshots, layer[0])
+	fake.mu.Unlock()
+	if ok, err := d.LayerExists(ctx, base); err != nil || ok {
+		t.Fatalf("layer exists after its snapshot was deleted = %v, %v", ok, err)
 	}
 }
 

@@ -471,6 +471,27 @@ func (d *Driver) DeleteLayer(ctx context.Context, layer machine.Layer) error {
 	return nil
 }
 
+// LayerExists reports whether the daemon still has the layer's image, which
+// `docker rmi` or a prune can remove.
+func (d *Driver) LayerExists(ctx context.Context, layer machine.Layer) (bool, error) {
+	var ref layerRef
+	if err := fsutil.ReadJSON(filepath.Join(layer.Dir, layerFile), &ref); err != nil {
+		return false, nil //nolint:nilerr // a layer with no image recorded has none
+	}
+	if _, err := d.api.inspectImage(ctx, ref.Ref); err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("docker: image %s: %w", ref.Ref, err)
+	}
+	return true, nil
+}
+
+// TagLayer and UntagLayer do nothing: the daemon's images are named for their
+// layers, and the store's tags stay in the store.
+func (*Driver) TagLayer(context.Context, machine.Layer, string) error   { return nil }
+func (*Driver) UntagLayer(context.Context, machine.Layer, string) error { return nil }
+
 // servicePortKey is guest.ServicePort as the daemon's API names a port.
 var servicePortKey = fmt.Sprintf("%d/tcp", guest.ServicePort)
 

@@ -30,7 +30,9 @@ package boxd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"debug/elf"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -476,6 +478,88 @@ func (d *Driver) DeleteLayer(ctx context.Context, layer machine.Layer) error {
 		return nil //nolint:nilerr // never committed, or already released: nothing to delete
 	}
 	return d.deleteSnapshot(ctx, snap.Name)
+}
+
+// LayerExists reports whether boxd still has the layer's snapshot, which
+// `boxd snap rm` deletes without disco-vm knowing.
+func (d *Driver) LayerExists(ctx context.Context, layer machine.Layer) (bool, error) {
+	var snap snapshotRef
+	if err := readJSON(filepath.Join(layer.Dir, layerFile), &snap); err != nil {
+		return false, nil //nolint:nilerr // a layer with no snapshot recorded has none
+	}
+	api, err := d.api.API()
+	if err != nil {
+		return false, err
+	}
+	got, err := api.GetSnapshot(ctx, &boxdapi.GetSnapshotRequest{Name: snap.Name})
+	if isNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("boxd: snapshot %s: %w", snap.Name, err)
+	}
+	return got.GetSnapshot().GetStatus() != "failed", nil
+}
+
+// TagLayer saves a second snapshot of the layer, named for the layer and the
+// tag, so that `boxd snap ls` says which snapshots are which images. boxd has
+// no way to name or label a snapshot after the fact, and snapshots only a
+// running machine, so the layer's snapshot is restored into a machine and that
+// machine is snapshotted. Nothing restores from a tag's snapshot.
+func (d *Driver) TagLayer(ctx context.Context, layer machine.Layer, ref string) error {
+	var snap snapshotRef
+	if err := readJSON(filepath.Join(layer.Dir, layerFile), &snap); err != nil {
+		return fmt.Errorf("boxd: tag %s: %w", ref, err)
+	}
+	api, err := d.api.API()
+	if err != nil {
+		return err
+	}
+	created, err := api.CreateVmFromSnapshot(ctx, &boxdapi.CreateVmFromSnapshotRequest{Snapshot: snap.Name, Name: vmName("tag")})
+	if err != nil {
+		return fmt.Errorf("boxd: tag %s: restore %s: %w", ref, snap.Name, err)
+	}
+	vm := created.GetVmId()
+	defer d.destroyVM(vm)
+	if _, err := waitVM(ctx, api, vm, "running"); err != nil {
+		return err
+	}
+	name := tagSnapshot(layer.ID, ref)
+	saved, err := api.CreateSnapshot(ctx, &boxdapi.CreateSnapshotRequest{Vm: vm, Name: name})
+	if err != nil {
+		return fmt.Errorf("boxd: tag %s: snapshot %s: %w", ref, name, err)
+	}
+	if _, err := waitSnapshot(ctx, api, name, saved.GetVersion()); err != nil {
+		_ = d.deleteSnapshot(context.Background(), name)
+		return err
+	}
+	return nil
+}
+
+// UntagLayer deletes the tag's snapshot.
+func (d *Driver) UntagLayer(ctx context.Context, layer machine.Layer, ref string) error {
+	return d.deleteSnapshot(ctx, tagSnapshot(layer.ID, ref))
+}
+
+// tagSnapshot names a tag's snapshot `dvm-<layer id>-tag-<ref>-<hash>`: beside
+// its layer's `dvm-<layer id>-<random>` in a sorted listing, readable, and,
+// since a boxd name has no room for a ref's punctuation, told apart from
+// another ref that reads the same by a hash of the ref.
+func tagSnapshot(layerID, ref string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(ref) {
+		if b.Len() == 40 {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case b.Len() > 0 && !strings.HasSuffix(b.String(), "-"):
+			b.WriteByte('-')
+		}
+	}
+	sum := sha256.Sum256([]byte(ref))
+	return "dvm-" + label(layerID, 12) + "-tag-" + strings.TrimSuffix(b.String(), "-") + "-" + hex.EncodeToString(sum[:2])
 }
 
 // Warm points the stage at a snapshot to resume clones from. At the layer's

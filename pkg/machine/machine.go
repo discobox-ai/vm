@@ -222,6 +222,21 @@ type Driver interface {
 	// DeleteLayer releases anything the driver holds for a layer beyond its
 	// Dir, which the store removes itself.
 	DeleteLayer(ctx context.Context, layer Layer) error
+	// LayerExists reports whether what the driver holds for a layer beyond
+	// its Dir is still there. A boxd snapshot or a daemon's image can be
+	// deleted behind the store's back, and the store then drops the layer so
+	// that a build makes it again. A driver whose layers live only in Dir
+	// reports true.
+	LayerExists(ctx context.Context, layer Layer) (bool, error)
+	// TagLayer records that ref, a normalized name:tag, names layer, where
+	// the driver keeps layers somewhere a person browses, so that what is
+	// there says what it is for (boxd: a snapshot named after the layer and
+	// the tag). Tagging the same layer and ref again is not an error. A
+	// driver whose layers live only in the store does nothing.
+	TagLayer(ctx context.Context, layer Layer, ref string) error
+	// UntagLayer drops what TagLayer recorded for ref on layer. A tag it
+	// never recorded is not an error.
+	UntagLayer(ctx context.Context, layer Layer, ref string) error
 	// Service is the prepared instance's service. A URL the driver gives
 	// may exist only while the instance runs (a port the daemon publishes at
 	// each start); asked for one while it is stopped, the driver returns

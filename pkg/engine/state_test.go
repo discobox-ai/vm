@@ -92,8 +92,8 @@ func TestOpenInACallersDatabase(t *testing.T) {
 			t.Errorf("the engine made table %q, which is not named disco_vm_*", table)
 		}
 	}
-	if ours != 4 {
-		t.Errorf("tables = %v, want four named disco_vm_*", tables)
+	if ours != 5 {
+		t.Errorf("tables = %v, want five named disco_vm_*", tables)
 	}
 	if _, err := os.Stat(filepath.Join(root, "disco-vm.db")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the engine made a database of its own: %v", err)

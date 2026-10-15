@@ -75,7 +75,11 @@ func imagesCommand(g *globals) *cobra.Command {
 				if stage, ok := e.Stage(cmd.Context(), img.Layer.ID); ok {
 					warm = describeStage(stage)
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", img.Ref, image.Short(img.Layer.ID), img.Layer.GuestOS, img.Layer.Driver, warm, ago(img.Layer.Created))
+				ref := img.Ref
+				if ref == "" {
+					ref = "<none>"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", ref, image.Short(img.Layer.ID), img.Layer.GuestOS, img.Layer.Driver, warm, ago(img.Layer.Created))
 			}
 			return w.Flush()
 		},
@@ -85,7 +89,7 @@ func imagesCommand(g *globals) *cobra.Command {
 func rmiCommand(g *globals) *cobra.Command {
 	return &cobra.Command{
 		Use:   "rmi IMAGE...",
-		Short: "Untag images and delete layers nothing else uses",
+		Short: "Untag images, or remove untagged ones by ID, and delete layers nothing else uses",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
@@ -98,11 +102,13 @@ func rmiCommand(g *globals) *cobra.Command {
 				if id, err := e.Images.Resolve(ref); err == nil && e.IsWarm(id) {
 					return fmt.Errorf("image %s is warm; `disco-vm warm --rm %s` first", ref, ref)
 				}
-				removed, err := e.Images.Remove(cmd.Context(), ref, e.Driver, e.LayerInUse)
+				untagged, removed, err := e.Images.Remove(cmd.Context(), ref, e.Driver, e.LayerInUse)
 				if err != nil {
 					return err
 				}
-				fmt.Printf("untagged %s\n", image.NormalizeRef(ref))
+				if untagged != "" {
+					fmt.Printf("untagged %s\n", untagged)
+				}
 				for _, id := range removed {
 					fmt.Printf("deleted %s\n", image.Short(id))
 				}
@@ -117,7 +123,7 @@ func tagCommand(g *globals) *cobra.Command {
 		Use:   "tag SOURCE TARGET",
 		Short: "Add a name:tag to an image",
 		Args:  cobra.ExactArgs(2),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
 			if err != nil {
 				return err
@@ -126,7 +132,7 @@ func tagCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return e.Images.Tag(args[1], id)
+			return e.Images.Tag(cmd.Context(), args[1], id, e.Driver)
 		},
 	}
 }

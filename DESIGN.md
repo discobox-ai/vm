@@ -201,7 +201,9 @@ A layer is an immutable, committed disk state owned by a driver:
 A layer's **ID is its cache key**. The key is a hash of the parent ID, driver,
 guest OS, and the fully resolved steps, including a content digest of every
 copied file. An existing layer is never rebuilt, and `--no-cache` salts the
-keys instead of overwriting. Tags name layers. `rmi` untags, then
+keys instead of overwriting. Tags name layers. A layer with no tag
+and no child is an untagged image: `images` lists it as `<none>` and `rmi`
+takes its ID. `rmi` untags, then
 deletes layers that nothing else tags, parents, or runs, as `docker rmi` does.
 A layer is written under a temporary name, then renamed into place and
 recorded in one transaction, so a crash never leaves a half-layer under a
@@ -210,13 +212,26 @@ downloads itself (`media: latest`) is not a layer; it is kept in
 `cache/<driver>/` (`InstallSpec.CacheDir`), so it is fetched once per host. A
 driver may hold a layer outside its directory (a boxd snapshot), so the store
 has the driver release a layer whenever it drops one: on `rmi`, on an aborted
-build, and when another build published the same layer first.
+build, and when another build published the same layer first. What the
+driver holds can also be deleted behind the store's back (`boxd snap rm`,
+`docker rmi`), so a build asks the driver whether each cached layer is still
+there (`LayerExists`). One that is gone is built again under a new ID, salted
+as `--no-cache` salts one, and the store records that the new layer now
+answers for the old one's inputs. A new ID is what makes every layer after it
+build again: theirs were made from the disk that is gone, and steps are not
+reproducible. Nothing is removed on the driver's word. The lost layer and the
+images built on it stay until `rmi`, untagged once the build moves their tags.
+For the same
+reason a tag is told to the driver (`TagLayer`, `UntagLayer`): on boxd a tag
+is a snapshot of its own, named for the layer and the tag, so the account's
+snapshot listing says which snapshots are which images. Tags are still read
+only from the store.
 
 ### 6a. Metadata is rows in a database, and disks are files
 
 What disco-vm knows about a root is in a database opened with
-`github.com/discobox-ai/x/gormdb`, as every discobox-ai project's is: layers
-and tags (`pkg/image`), instances and warm requests
+`github.com/discobox-ai/x/gormdb`, as every discobox-ai project's is: layers,
+tags, and replaced layers (`pkg/image`), instances and warm requests
 (`pkg/engine`). What a driver writes stays in files under the root: a layer's
 `payload/`, an instance's and a stage's `machine/`, and a shim's `shim.json`
 and `shim.log`, which live and die with one process.
@@ -230,7 +245,7 @@ and `shim.log`, which live and die with one process.
   so one database serves one root.
 - **Each package migrates its own tables** when it opens (`AutoMigrate`).
 - **JSON files from before the database are imported on open** and removed
-  once their rows are in: `layer.json`, `tags.json`,
+  once their rows are in: `layer.json`, `tags.json`, `replaced.json`,
   `instance.json`, and `warm.json`.
 - **A row and its directory change in an order that can be repeated.** A
   layer's row is inserted in the transaction that renames its directory, and
@@ -360,6 +375,8 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | agent: exec, files, shutdown, info | ✅ | ✅ in-guest | ✅ in-guest (vsock, launchd daemon) | ✅ in-guest | ✅ in-guest (systemd unit, unix socket through `docker exec`) |
 | agent: TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ in-guest (`exec -t`) | ⬜ in-guest | ✅ in-guest (`exec -t`, the guest's own devpts) |
 | agent: run as user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew | ⬜ in-guest | ✅ in-guest (`useradd`, `exec -u`) |
+| a tag recorded where the driver keeps layers (`TagLayer`, `UntagLayer`) | no-op | no-op | no-op | ✅ boxd by hand in a discobox (2026-10-12): `tag` waited for the tag's snapshot to be ready, `run` from the tag, `rmi`; the snapshot was not read back with `boxd snap ls`; ✅ fake API (`TestTagSnapshot`, `machinetest`) | no-op |
+| a build replaces a layer its driver lost, and rebuilds the layers after it (`LayerExists`) | ✅ `internal/e2e` TestLostLayer, `pkg/image` TestReplacedLayer | ⬜ | ⬜ | ✅ boxd by hand in a discobox (2026-10-13): a middle layer pointed at a snapshot name boxd does not have was replaced, the layer after it rebuilt, a third build was all cached, and `run` from the tag read both layers' files; no snapshot was actually deleted with `boxd snap rm`; ✅ fake API (`TestTagSnapshot`: `LayerExists`) | ⬜ |
 | unattended install from media (`docs/examples/<os>.yaml`) | n/a | ✅ `docs/examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap | n/a (boots a boxd image) | n/a (an image from a registry, with systemd and the agent added and its owners shifted: `docs/examples/docker.yaml`) |
 | warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) | ✅ resume (`machinetest` on boxd) | n/a (cold only) |
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window | refused | refused |

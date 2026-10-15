@@ -54,6 +54,13 @@ func (*Driver) Destroy(_ context.Context, inst machine.InstanceSpec) error {
 
 func (*Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
 
+// LayerExists is true: a layer lives only in the store.
+func (*Driver) LayerExists(context.Context, machine.Layer) (bool, error) { return true, nil }
+
+// TagLayer and UntagLayer do nothing: a layer lives only in the store.
+func (*Driver) TagLayer(context.Context, machine.Layer, string) error   { return nil }
+func (*Driver) UntagLayer(context.Context, machine.Layer, string) error { return nil }
+
 // Service is guest.ServicePort over vsock; the engine's shim serves it on the
 // host's loopback.
 func (*Driver) Service(context.Context, machine.InstanceSpec) (machine.Service, error) {
