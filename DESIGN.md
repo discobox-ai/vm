@@ -65,7 +65,6 @@ hypervisor can do is a `Capabilities` field, never a faked method:
 | capability | hcs | vz | boxd | docker | fake |
 |---|---|---|---|---|---|
 | guest OS | windows | darwin | linux | linux | host's |
-| clone modes | cold, **fork** (live template, many clones, about 1s) | cold, **resume** (two saved templates, any number of clones) | cold, **resume** (a snapshot, any number of clones) | cold (a cold boot is under a second) | cold, resume (pre-copied roots) |
 | max running | none | **2 macOS guests** (framework limit) | none (the org's quota) | none | none |
 | shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | no |
 | display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no | no |
@@ -73,9 +72,8 @@ hypervisor can do is a `Capabilities` field, never a faked method:
 | remote (no shim; any process attaches) | no | no | **yes** | **yes** | no |
 | agent (Install bakes in `disco-vm guest`) | yes | yes | **no**: boxd's Exec | yes | yes |
 
-The engine enforces `MaxRunning`. `--mode fork|resume` is refused where it is
-unsupported. A fast mode also needs a warm image (decision 7), so it is a
-property of an image on this host, not only of the driver.
+The engine enforces `MaxRunning`. Every driver clones the same way: cold
+(decision 7).
 
 ### 3. Ports, not GUIDs
 
@@ -193,10 +191,6 @@ service (boxd's API, the Docker daemon) owns the VM, so each call attaches
 [docs/drivers/boxd.md](docs/drivers/boxd.md) and
 [docs/drivers/docker.md](docs/drivers/docker.md).
 
-HCS's live-template fork needs something to hold the template. That is a shim
-too, a **warm shim** (`disco-vm shim --warm <layer>`), not a special daemon. See
-decision 7.
-
 A program that embeds the engine (discobox) starts its shims as a subcommand of
 its own binary: `Engine.ShimCommand` names it, and that subcommand calls
 `Engine.ShimMain`. So an embedder ships one binary, and its VMs outlive it.
@@ -253,10 +247,10 @@ only from the store.
 
 What disco-vm knows about a root is in a database opened with
 `github.com/discobox-ai/x/gormdb`, as every discobox-ai project's is: layers,
-tags, and replaced layers (`pkg/image`), instances and warm requests
-(`pkg/engine`). What a driver writes stays in files under the root: a layer's
-`payload/`, an instance's and a stage's `machine/`, and a shim's `shim.json`
-and `shim.log`, which live and die with one process.
+tags, and replaced layers (`pkg/image`), and instances (`pkg/engine`). What a
+driver writes stays in files under the root: a layer's `payload/`, an
+instance's `machine/`, and a shim's `shim.json` and `shim.log`, which live
+and die with one process.
 
 - **The default is SQLite**, `<root>/disco-vm.db`. With no daemon, every
   command and every shim opens it, and SQLite's write lock is what serializes
@@ -268,11 +262,13 @@ and `shim.log`, which live and die with one process.
   one root, and every project in it.
 - **Each package migrates its own tables** when it opens (`AutoMigrate`).
 - **JSON files from before the database are imported on open** and removed
-  once their rows are in: `layer.json`, `tags.json`, `replaced.json`,
-  `instance.json`, and `warm.json`, into the default project. A database
-  from before projects is upgraded the same way: `disco_vm_tags` is copied
-  into `disco_vm_image_tags` and dropped, and the unique index on an
-  instance's name alone is dropped.
+  once their rows are in: `layer.json`, `tags.json`, `replaced.json`, and
+  `instance.json`, into the default project. A database from before projects
+  is upgraded the same way: `disco_vm_tags` is copied into
+  `disco_vm_image_tags` and dropped, and the unique index on an instance's
+  name alone is dropped. A database from before warm stages were removed
+  (decision 7) loses `disco_vm_warm_stages`, and keeps an instance's `mode`
+  column, which nothing reads.
 - **A row and its directory change in an order that can be repeated.** A
   layer's row is inserted in the transaction that renames its directory, and
   deleted before the directory is. An instance's row is inserted after the
@@ -313,59 +309,36 @@ another project's is deleted this way; a running machine takes `-f`. A
 driver whose resources
 live only in the store's directories (hcs, vz, fake) has none.
 
-### 7. Fast clones come from warm images, and auto falls back to cold
+### 7. Every clone is cold, and an image is made fast by what is in it
 
-Neither fast mode works from a committed layer alone. A resume needs saved
-machine states, and a fork needs a live template frozen in memory. So staging
-is its own step, and each image on each host is either warm or cold:
+Prepare makes one kind of clone (ADR 26-10-15-851): a copy-on-write clone of
+the image's disk, with a machine identity of its own, which Boot starts from
+power-off. There are no clone modes, no staged images, and no `warm`
+command. Work that every instance needs goes into the image, as a build step
+or by shaping a guest and taking a `snapshot` of it, so an instance starts
+with it done.
 
-```
-disco-vm warm IMAGE [--count N] [--cpus N] [--memory SIZE]
-disco-vm warm --rm IMAGE
-```
+What warming left behind is upgraded, not used:
 
-- **The driver picks how to stage** (`machine.Warmer`). hcs freezes one
-  template that forks any number of clones (`Warmth.Clones` is -1). vz saves
-  two templates, one per guest the framework can run at once, and each resume
-  clone is an APFS clone of whichever one no running VM holds, so it too serves
-  any number (-1). A saved state restores only under the identity it was saved
-  with (measured: a new machine identifier or MAC is "invalid argument"), and
-  two running guests must not share one, which two templates guarantee. The
-  fake driver stages a pool of `--count` clones that is used up, and `warm`
-  tops it back up.
-- **`--mode auto` is the default** for `run` and `create`. It picks the mode
-  the image is warm for, and cold when the stage is used up, missing, stale, or
-  sized differently from the request (a clone runs at its stage's CPUs and
-  memory). A stage that disappears between choosing and taking (`ErrNotWarm`
-  from Prepare) also falls back to cold. The instance records the mode it
-  actually got, and `ls` shows it. An explicit `--mode fork|resume` is strict:
-  it fails, and says to run `warm`.
-- **Staging is explicit, never a side effect of `run`.** Making a stage costs
-  a full cold boot, so the run that triggered it would gain nothing. A stage
-  also holds real resources: a template holds its VM's memory for as long as
-  it lives, and a saved state is memory-sized on disk. `images` shows what each
-  image has staged, and `rmi` refuses a warm image until it is cooled.
-- **A stage is not a layer.** A layer is immutable and its ID is a content
-  hash. A stage is tied to this host, can go stale (a host OS update
-  invalidates vz states), and a pool (fake) is used up by clones. It lives in
-  `warm/<layer>/` (the driver's `machine/`; what was asked for is a row), and drivers see
-  it as `WarmSpec.Dir` and `InstanceSpec.WarmDir`.
-- **Warming runs in a warm shim.** A resident stage must stay in the process
-  that made it, so `warm` spawns `disco-vm shim --warm <layer>`. A stage on
-  disk (vz, fake) lets the shim exit once it is written. A resident one (hcs)
-  keeps the shim serving `/status` and `/stop` until `warm --rm`.
-- **A stage can log in a user** (`warm --user NAME[:UID]`, or `--local-user`
-  for the host's own account, with the same name and uid, so files on a shared
-  directory have one owner on both sides). The user is part of the stage, like
-  its size, and `WarmSpec.User` asks the driver for it; a driver that cannot
-  make one returns `ErrUnsupported` (fake does). A cold clone of the image does
-  not have the user.
-- **The builder always clones cold.** A build starts from exactly the
-  committed disk, and it must not spend stages meant for instances.
+- **`warm/` under a root** is no longer read, and nothing stops a warm shim
+  any more. On hcs, first `stop` the running fork clones of the template: a
+  running clone may live on the template's memory, while a stopped one boots
+  from its own disk. Then end the `disco-vm
+  shim --warm <layer>` process (Task Manager, `Stop-Process`), which ends the
+  template system with its last handle, and delete `warm/` by hand.
+- **A boxd stage's own snapshot** is no longer the store's, so `images` lists
+  it as an orphan and `rmi` deletes it by name. Delete it once no instance
+  resumed from it is left: that a restored machine outlives its snapshot is
+  not proven.
+- **An instance cloned fast** that has booted once is a cold instance on its
+  own disk: a vz resume clone gets an identity of its own at its next boot,
+  and an hcs fork clone's disk differences over the template disk in its own
+  directory, which is why hcs still refuses to commit one. An instance
+  prepared fast and never booted (vz's `resume.pending`, an hcs fork ticket)
+  is refused at start: remove it and run the image again.
 
-Later, and not built yet: refilling a resume pool as clones use it, `run
---warm` (boot cold now, stage in the background), `build --warm`, and an idle
-TTL for templates.
+Fast clones may come back once every driver's builds and snapshots are proven
+(the ADR's Deferred section), with a design of their own.
 
 ### 8. boxd: a layer is a snapshot, and the guest is reached through Exec
 
@@ -378,11 +351,8 @@ nothing of disco-vm's in the guest but a shutdown hook. See
   committed disk. Commit starts the stopped instance and snapshots it, because
   boxd only snapshots a running machine. The layer is still cut from an
   orderly shutdown: the snapshot's disk is the one the guest flushed.
-- **A cold clone** restores the layer's snapshot and powers it off in order,
-  so its first boot is a cold boot of that disk. **A resume clone**
-  restores the stage's snapshot and suspends it until Boot. A snapshot
-  restores any number of times, so resume never runs out (`Clones` is -1),
-  and warming at the layer's own size costs nothing.
+- **A clone** restores the layer's snapshot and powers it off in order, so
+  its first boot is a cold boot of that disk.
 - **The guest's operations are Exec streams.** Each is one command line run
   as boxd's own user: `sudo -n -H -u USER -- env -C DIR -- K=V... ARGV...`,
   every word quoted, root unless the request names a user. Stdin, stdout,
@@ -445,20 +415,19 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ✅ macOS 27 guest | ⬜ `TestConformance` on boxd itself with no agent (it passed by hand with the agent, `BOXD_API_KEY`; the same operations passed by hand through the CLI, below); ✅ fake API (Linux CI), exec included; ⬜ `attach` on boxd itself (fake API only) | ✅ Docker 29.8 on Linux 7.0, from debian:trixie and ubuntu:24.04 (by hand, `DISCO_VM_DOCKER_IMAGE`) |
 | no shim: run, then exec/cp/stop/start/rm with a fresh credential each | n/a | n/a | n/a | ✅ by hand in a discobox (2026-10-08): exec and cp 5.5 minutes after `run`, once its sentinel had expired; stop, start, a guest's own `poweroff` found stopped by the next `ls`, rm | ✅ by hand (2026-10-09): no shim process after `run`; exec, a guest's own `systemctl poweroff` found stopped by the next `ls`, start, stop, rm; `machinetest` attach |
 | e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ✅ `DISCO_VM_DRIVER=vz` | ⬜ (not run with `DISCO_VM_DRIVER=boxd` yet; the same lifecycle passed by hand with `docs/examples/boxd.yaml`) | ✅ `DISCO_VM_DRIVER=docker` |
-| guest operations, `machine.Guest`: exec, files, shutdown, info (`machinetest` checks exec's stdin, stdout, stderr, environment, directory, and exit code) | ✅ through the agent, and from another process through the shim's relay (`pkg/engine` tests) | ✅ in-guest, through the agent; ⬜ the shim's relay | ✅ in-guest (vsock, launchd daemon), through the agent; ⬜ the shim's relay | ✅ boxd by hand in a discobox (2026-10-15), with no agent: `docs/examples/boxd.yaml` built with no `--agent` (apt as root, an orderly shutdown, a commit), and `exec` with `-e`, `-w`, `-i`, separate stderr, and an exit code; `cp` in (root's, a directory's mode kept) and out, and a missing path refused; `inspect`'s info; `stop` in order, `start`, a guest's own `systemctl poweroff` found stopped, `warm` and a resumed `run` in 8 s, `rm`, `rmi`; an image the agent-based binary built ran, stopped, started, and was removed by the new one; ✅ fake API (`TestConformanceFakeAPI`, which reads back the driver's command lines; `TestCommand`, `TestCopyFromMissing`) | ✅ in-guest (systemd unit, unix socket through `docker exec`), through the agent |
+| guest operations, `machine.Guest`: exec, files, shutdown, info (`machinetest` checks exec's stdin, stdout, stderr, environment, directory, and exit code) | ✅ through the agent, and from another process through the shim's relay (`pkg/engine` tests) | ✅ in-guest, through the agent; ⬜ the shim's relay | ✅ in-guest (vsock, launchd daemon), through the agent; ⬜ the shim's relay | ✅ boxd by hand in a discobox (2026-10-15), with no agent: `docs/examples/boxd.yaml` built with no `--agent` (apt as root, an orderly shutdown, a commit), and `exec` with `-e`, `-w`, `-i`, separate stderr, and an exit code; `cp` in (root's, a directory's mode kept) and out, and a missing path refused; `inspect`'s info; `stop` in order, `start`, a guest's own `systemctl poweroff` found stopped, `rm`, `rmi`; an image the agent-based binary built ran, stopped, started, and was removed by the new one; ✅ fake API (`TestConformanceFakeAPI`, which reads back the driver's command lines; `TestCommand`, `TestCopyFromMissing`) | ✅ in-guest (systemd unit, unix socket through `docker exec`), through the agent |
 | exec with a TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ in-guest (`exec -t`) | ✅ boxd by hand (2026-10-15): `exec -t` has a pty at the terminal's 45 rows and 123 columns, and its exit code; ⬜ a resize (`window_change`), which the CLI does not send yet | ✅ in-guest (`exec -t`, the guest's own devpts) |
 | exec as a user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew | ✅ boxd by hand (2026-10-15): `exec -u boxd` runs as boxd with its HOME, and with no user as root with root's HOME, USER, LOGNAME, and sudo's `secure_path` | ✅ in-guest (`useradd`, `exec -u`) |
 | a tag recorded where the driver keeps layers (`TagLayer`, `UntagLayer`) | no-op | no-op | no-op | ✅ boxd by hand in a discobox (2026-10-12): `tag` waited for the tag's snapshot to be ready, `run` from the tag, `rmi`; the snapshot was not read back with `boxd snap ls`; ✅ fake API (`TestTagSnapshot`, `machinetest`) | no-op |
 | a build replaces a layer its driver lost, and rebuilds the layers after it (`LayerExists`) | ✅ `internal/e2e` TestLostLayer, `pkg/image` TestReplacedLayer | ⬜ | ⬜ | ✅ boxd by hand in a discobox (2026-10-13): a middle layer pointed at a snapshot name boxd does not have was replaced, the layer after it rebuilt, a third build was all cached, and `run` from the tag read both layers' files; no snapshot was actually deleted with `boxd snap rm`; ✅ fake API (`TestTagSnapshot`: `LayerExists`) | ⬜ |
 | projects, and the driver's resources the store has no record of listed as `<orphan>` and removed by name (`Driver.Orphans`, `RemoveOrphan`; `pkg/engine` TestOpenUpgradesADatabaseFromBeforeProjects, `machinetest`) | ✅ projects kept apart in one database, and a database from before projects upgraded; none to list | ⬜ (none to list) | ⬜ (none to list) | ✅ boxd by hand in a discobox (2026-10-15): a build and an instance in project `vtest` made `dvm-vtest--` machines and snapshots, a tag's included; an empty root listed all three as orphans in `vtest` and none in `default`; `rm` and `rmi` left none; a snapshot a deleted default store left behind was listed; from an empty root, `rm` destroyed the stopped orphan machine and `rmi` both orphan snapshots by name, which the default project could not; ✅ fake API (`TestEngineListsOrphans`, `machinetest`): machines and snapshots under other names, and other projects', are not listed or removed, nor is the store's own snapshot; a second store lists every one of the first's | ✅ by hand (2026-10-15, Docker on Linux 7.0): a project's container and images named for it, invisible to `default` and to a project whose name is a prefix of it, and listed as orphans from an empty root; a container named before projects is the default's orphan, and an unlabeled `dvm-` container is not one; `rm` refused the running orphan container without `-f` and removed it with it, `rmi` removed both orphan images, and another project could not; `images -a` listed the intermediate layer; ✅ `machinetest` (`DISCO_VM_DOCKER_IMAGE=debian:trixie`) |
 | a stopped instance snapshotted as an image, consuming the instance; a running one, or a bad tag, refused with the instance kept; an instance of the snapshot snapshotted in turn (`Engine.Snapshot`, `internal/e2e` TestSnapshot) | ✅ | ⬜ | ⬜ | ⬜ | ✅ `DISCO_VM_DRIVER=docker` (2026-10-15, Docker 29.9 on Linux 7.0, debian:trixie): two generations of snapshots, each instance's files read back from the next |
+| a root from before warm stages were removed: the table dropped, an instance made in resume mode kept, found by name and listed, and a new one added beside the old mode column (`pkg/engine` TestOpenDropsWarmStages); an instance prepared fast and never booted refused at start | ✅ the database | ⬜ a fork ticket refused | ⬜ `resume.pending` refused | ⬜ a stage's snapshot listed as an orphan (no new test; the generic orphan listing in `TestEngineListsOrphans` covers it) | n/a (never warm) |
 | unattended install from media (`docs/examples/<os>.yaml`) | n/a | ✅ `docs/examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap | n/a (boots a boxd image) | n/a (an image from a registry, with systemd and the agent added and its owners shifted: `docs/examples/docker.yaml`) |
-| warm, auto, fast clones (`machinetest` warm, `internal/e2e` TestWarm) | ✅ resume | ✅ fork | ✅ resume from two templates, any number of clones (`TestTemplates`; agent answers about 6 s after Boot; needs an unlocked screen, and a locked one falls back to cold, `TestResumeOrFallBack`) | ✅ resume (`machinetest` on boxd) | n/a (cold only) |
 | `--gui` window (`run`, `start`, `build`) | refused | ✅ mstsc on the video console | ✅ native window | refused | refused |
 | forward, guest to host (`CreateOptions.Forwards`; `pkg/engine` TestForward) | ✅ | ✅ in-guest, both directions (through the since-removed `run --forward`) | ✅ in-guest, both directions (through the since-removed `run --forward`) | refused | refused |
 | service URL and service file (`Engine.URL`, `disco-vm url`) | ✅ a host server listening at the file's address through the shim's loopback URL, on two starts (`pkg/engine` TestURL, `internal/e2e` TestURL) | ⬜ (7302 in the ServiceTable: `TestDocumentService`) | ⬜ | ⬜ fixed port 7302 not run on boxd itself; earlier, a guest's HTTP server through the URL on two boots with an image-declared port (`TestService`, by hand, `DISCO_VM_INTEGRATION=1` and `BOXD_API_KEY`); ✅ fake API (`TestServiceFakeAPI`) | ✅ by hand (2026-10-15, Docker 29.9, debian:trixie): `url` refused while created, `http://127.0.0.1:N` once started, the service file `tcp:0.0.0.0:7302`; a static Go program copied in and run under `systemd-run`, listening with `guest.ListenService()`, answered through the URL, and again at a new port after stop and start; nothing left behind; ⬜ `internal/e2e` TestURL with `DISCO_VM_DRIVER=docker` |
 | metadata in the database: a root's JSON files imported, an embedder's database shared (`pkg/image` TestOpenImportsJSONFiles, `pkg/engine` TestOpenImportsInstanceFiles and TestOpenInACallersDatabase) | ✅ SQLite, Linux; `internal/e2e` passes on it | ⬜ | ⬜ | ✅ fake API (`machinetest`, Linux); ⬜ boxd itself | ⬜ |
-| warm with a user (`warm --user`, `--local-user`) | refused | refused | ✅ resumed into the user's session, at its uid, with passwordless sudo (`TestWarmUser`) | refused | n/a (cold only) |
 
 A platform driver is done when `machinetest.Run` passes against it on real
 hardware and `internal/e2e` passes with `DISCO_VM_DRIVER` set to it. See

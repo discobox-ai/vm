@@ -263,26 +263,20 @@ type bufConn struct {
 func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 // ShimMain is the body of a shim, given the arguments the engine appends to
-// ShimCommand: [--gui] INSTANCE, or --warm LAYER. A program that embeds the
-// engine calls it from the subcommand ShimCommand names.
+// ShimCommand: [--gui] INSTANCE. A program that embeds the engine calls it
+// from the subcommand ShimCommand names.
 func (e *Engine) ShimMain(ctx context.Context, args []string) error {
-	var gui, warm bool
+	var gui bool
 	var rest []string
 	for _, arg := range args {
-		switch arg {
-		case "--gui":
+		if arg == "--gui" {
 			gui = true
-		case "--warm":
-			warm = true
-		default:
+		} else {
 			rest = append(rest, arg)
 		}
 	}
-	if len(rest) != 1 || (warm && gui) {
-		return fmt.Errorf("shim: want [--gui] INSTANCE or --warm LAYER, not %q", args)
-	}
-	if warm {
-		return e.RunWarmShim(ctx, rest[0])
+	if len(rest) != 1 {
+		return fmt.Errorf("shim: want [--gui] INSTANCE, not %q", args)
 	}
 	return e.RunShim(ctx, rest[0], gui)
 }

@@ -6,8 +6,6 @@
 #   disco-vm run --name dev demo/app:v1
 #   disco-vm exec dev cat greeting.txt
 #   disco-vm exec -it dev sh
-#   disco-vm warm --count 2 demo/app:v1   # the next two runs resume, then cold
-#   disco-vm warm --rm demo/app:v1
 #
 # The fake driver records the media and never reads it, so "latest" is enough;
 # the copy step copies this file, so the example needs nothing beside it.

@@ -2,11 +2,6 @@
 // agent process on the host, confined to a directory that stands in for its
 // disk; clones and commits are directory copies.
 //
-// A warm fake image is a pool of pre-copied roots, and a resume clone takes one
-// by renaming it into place instead of copying the image. There is no memory
-// to save, so that is all resume means here, but it has vz's shape: a stage on
-// disk, used once per clone, topped up by warming again.
-//
 // It exists so that everything above the driver seam — the image store, the
 // builder, the engine and its shim, the guest protocol, the CLI — runs exactly
 // as it does against a real VM, on any machine and in CI, while the hcs and vz
@@ -18,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -48,10 +42,7 @@ type Driver struct {
 	Agent string
 }
 
-var (
-	_ machine.Driver = (*Driver)(nil)
-	_ machine.Warmer = (*Driver)(nil)
-)
+var _ machine.Driver = (*Driver)(nil)
 
 // New returns a fake driver whose guests run this binary, or $DISCO_VM_AGENT.
 func New() (*Driver, error) {
@@ -70,10 +61,9 @@ func (*Driver) Name() string { return "fake" }
 
 func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
-		GuestOS:    []machine.OS{machine.OS(runtime.GOOS)},
-		CloneModes: []machine.CloneMode{machine.Cold, machine.Resume},
-		Forward:    true,
-		Agent:      true,
+		GuestOS: []machine.OS{machine.OS(runtime.GOOS)},
+		Forward: true,
+		Agent:   true,
 	}
 }
 
@@ -81,7 +71,6 @@ func (*Driver) Check(context.Context) error { return nil }
 
 const (
 	rootfsName = "rootfs"
-	stagesName = "stages"
 	addrName   = "agent.addr"
 	// hostPortsName is where a running fake guest finds the ports its host
 	// listens on (guest.HostPortsEnv).
@@ -119,89 +108,7 @@ func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
 	if err := pickServicePort(inst.Dir); err != nil {
 		return err
 	}
-	switch inst.Mode {
-	case "", machine.Cold:
-		return fsutil.CopyTree(rootfs(inst.Parent().Dir), rootfs(inst.Dir))
-	case machine.Resume:
-		// Take any staged root. A rename is atomic, so two clones racing for
-		// the last one cannot both win.
-		stages, _ := staged(inst.WarmDir)
-		for _, stage := range stages {
-			if err := os.Rename(stage, rootfs(inst.Dir)); err == nil {
-				return nil
-			}
-		}
-		return fmt.Errorf("fake: %w", machine.ErrNotWarm)
-	default:
-		return fmt.Errorf("fake: clone mode %q: %w", inst.Mode, machine.ErrUnsupported)
-	}
-}
-
-// Warm copies the image's root until Count are staged.
-func (d *Driver) Warm(_ context.Context, spec machine.WarmSpec) (machine.Stage, error) {
-	if len(spec.Chain) == 0 {
-		return nil, errors.New("fake: warm: no image")
-	}
-	if spec.User != nil {
-		// A fake guest is a host process; it has no accounts of its own.
-		return nil, fmt.Errorf("fake: warm as a user: %w", machine.ErrUnsupported)
-	}
-	stages, err := staged(spec.Dir)
-	if err != nil {
-		return nil, err
-	}
-	dir := filepath.Join(spec.Dir, stagesName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	for n := len(stages); n < max(spec.Count, 1); n++ {
-		// Copied under a temporary name and renamed, so a half-copied root is
-		// never taken.
-		tmp := filepath.Join(spec.Dir, "tmp-"+fsutil.RandomHex(6))
-		if err := fsutil.CopyTree(rootfs(spec.Chain[len(spec.Chain)-1].Dir), tmp); err != nil {
-			_ = os.RemoveAll(tmp)
-			return nil, err
-		}
-		if err := os.Rename(tmp, filepath.Join(dir, fsutil.RandomHex(6))); err != nil {
-			_ = os.RemoveAll(tmp)
-			return nil, err
-		}
-		if spec.Log != nil {
-			fmt.Fprintf(spec.Log, "fake: staged resume clone %d of %d\n", n+1, spec.Count)
-		}
-	}
-	return nil, nil
-}
-
-func (d *Driver) Warmth(_ context.Context, spec machine.WarmSpec) (machine.Warmth, error) {
-	stages, err := staged(spec.Dir)
-	if err != nil || len(stages) == 0 {
-		return machine.Warmth{Mode: machine.Cold}, err
-	}
-	return machine.Warmth{Mode: machine.Resume, Clones: len(stages)}, nil
-}
-
-func (d *Driver) Cool(_ context.Context, spec machine.WarmSpec) error {
-	return os.RemoveAll(spec.Dir)
-}
-
-// staged lists the staged roots under a warm directory.
-func staged(warmDir string) ([]string, error) {
-	if warmDir == "" {
-		return nil, nil
-	}
-	entries, err := os.ReadDir(filepath.Join(warmDir, stagesName))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, entry := range entries {
-		out = append(out, filepath.Join(warmDir, stagesName, entry.Name()))
-	}
-	return out, nil
+	return fsutil.CopyTree(rootfs(inst.Parent().Dir), rootfs(inst.Dir))
 }
 
 func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {

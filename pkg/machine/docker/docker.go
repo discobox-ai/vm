@@ -109,10 +109,9 @@ func (*Driver) Name() string { return "docker" }
 
 func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
-		GuestOS:    []machine.OS{machine.Linux},
-		CloneModes: []machine.CloneMode{machine.Cold},
-		Remote:     true,
-		Agent:      true,
+		GuestOS: []machine.OS{machine.Linux},
+		Remote:  true,
+		Agent:   true,
 	}
 }
 
@@ -322,9 +321,6 @@ func (d *Driver) commit(ctx context.Context, container string, dst machine.Layer
 func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
 	if len(inst.Chain) == 0 {
 		return errors.New("docker: instance has no image")
-	}
-	if inst.Mode != "" && inst.Mode != machine.Cold {
-		return fmt.Errorf("docker: clone mode %q: %w", inst.Mode, machine.ErrUnsupported)
 	}
 	var layer layerRef
 	if err := fsutil.ReadJSON(filepath.Join(inst.Parent().Dir, layerFile), &layer); err != nil {

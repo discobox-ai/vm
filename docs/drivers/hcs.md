@@ -16,11 +16,11 @@ Implemented. On a Windows 11 Pro host (elevated, Virtual Machine Platform, no
 Hyper-V role needed) with a Windows 11 Pro 25H2 guest:
 
 - (1) passes: `DISCO_VM_HCS_BASE=<layer>\payload go test ./pkg/machine/hcs`
-  runs the whole suite, fork included, in about 45 s.
+  runs the whole suite in about 45 s.
 - (2) passes: `DISCO_VM_DRIVER=hcs DISCO_VM_E2E_ROOT=<root>
   DISCO_VM_E2E_ISO=<iso> go test ./internal/e2e` from an elevated shell. The
   first run installs and tags `e2e/base` (about 15 min in all); later runs
-  reuse it. TestWarm takes its fork branch: a template never runs out.
+  reuse it.
 - (3) passes: `docs/examples/windows.yaml` builds from the retail ISO (the 128 GiB
   fixed disk alone takes over ten minutes to allocate), its OpenSSH step
   downloads from Windows Update through the guest's NIC, and a second build
@@ -28,18 +28,6 @@ Hyper-V role needed) with a Windows 11 Pro 25H2 guest:
 
 What building it found, beyond the recipes below:
 
-- **Clones are forked by the warm shim, not the instance's shim.** A template
-  can only be forked through the handle of the process that created it
-  (0xC0370400 otherwise, as sandboxi found). So the warm shim serves a named
-  pipe (admins and SYSTEM only); an instance shim's fork Boot sends the
-  clone's files and NIC, the warm shim creates, starts, and hot-adds the NIC on
-  its own handle, the instance shim opens the clone by ID, and the warm shim
-  lets go. The clone then belongs to the instance shim like any other VM.
-- **A clone differences over the template's disk**, whose memory it forks. The
-  template's disk is frozen with it, and each clone hard-links it into its own
-  directory, so a stopped clone still boots (cold) after the image is cooled.
-- **Cooling a template did not end its running clones** here, contrary to
-  sandboxi's note. They kept running and shut down in order afterwards.
 - **`ShouldTerminateOnLastHandleClosed: true`.** Each VM lives exactly as long
   as the shim holding its handle, so a crashed shim cannot orphan a system and
   no orphan sweep is needed.
@@ -48,8 +36,9 @@ What building it found, beyond the recipes below:
   An instance asks for the same MAC on every boot.
 - **Commit moves the disk, then rewrites its parent locator**
   (`SetVirtualDiskInformation`, parent path with depth), so a move across
-  directories cannot break the chain. A fork clone cannot be committed; the
-  builder always clones cold.
+  directories cannot break the chain. A fork clone from before fork clones
+  were removed differences over the template disk hard-linked into its own
+  directory, so it cannot be committed; one never booted is refused at start.
 - **Install waits for Setup through the agent**, which starts during Setup:
   `ImageState` reaching `IMAGE_STATE_COMPLETE`, then `explorer.exe` for the
   automatic logon, then OOBE's completion (the `OOBECompleteTimestamp` value
@@ -67,17 +56,16 @@ What building it found, beyond the recipes below:
   loads user32 fails with 0xC0000142).
 - **Display is the VM's basic video console**, as sandboxi proved: every
   document has `VideoMonitor` (with `ConnectionOptions` naming a pipe per VM
-  and the current user's SID), `Keyboard` and `Mouse`, so a template and its
-  clones agree on devices. A fork clone restores fine with its own console
-  pipe. With `BootOptions.GUI` the driver relays a loopback port to the pipe
-  and opens `mstsc` on it, titled `BootOptions.Title` (standard RDP security
+  and the current user's SID), `Keyboard` and `Mouse`. With
+  `BootOptions.GUI` the driver relays a loopback port to the pipe and opens
+  `mstsc` on it, titled `BootOptions.Title` (standard RDP security
   only, so CredSSP is off in the `.rdp` file); the window closes when the VM
   stops, and closing it leaves the VM running. `InstallSpec.GUI` shows the
   install's first boot, Windows Setup included. Checked through the CLI:
   `run --gui` and `start --gui` (window in the shim; a plain `start` opens
-  none), a fork clone with `--gui`, and `build --gui` with a reboot step (one
-  window per boot, never two at once, none left after). `TestConsole` checks the console answers RDP on a cold VM and
-  a fork clone. Not checked by a machine: the pixels after clicking through
+  none) and `build --gui` with a reboot step (one window per boot, never two
+  at once, none left after). `TestConsole` checks the console answers RDP.
+  Not checked by a machine: the pixels after clicking through
   mstsc's warning about the unsigned `.rdp` file, which sandboxi did by hand.
 - **A TTY session ignores end of input.** The client closes stdin when it has
   none, and for a terminal that closed the whole pseudo console before the
@@ -156,9 +144,7 @@ List `00001C84-FACB-11E6-BD58-64006A7986D3` (port 7300, via
 `winio.VsockServiceID`) in the HvSocket `ServiceTable`, or the agent's bind is
 refused. List 7302 (`guest.ServicePort`, `00001C86-…`) too: it is every
 instance's service, which the shim serves on the host's loopback by dialing
-it over hvsocket. Add 7301 when display lands. A template's holder answers a
-clone request with the service port it listed, and a clone from a holder that
-predates the fixed port is refused, with a hint to warm the image again.
+it over hvsocket. Add 7301 when display lands.
 
 `Machine.Dial(port)` is `winio.Dial` of an `HvsockAddr{VMID: <RuntimeId>,
 ServiceID: VsockServiceID(port)}`. `Done` fires from an HCS system-exit
@@ -174,42 +160,16 @@ merge/copy it.
 system, terminate it by ID first. A crashed shim can orphan a registered
 system, so do an orphan sweep in Check or at shim start.
 
-## Fork (CloneMode "fork"), through machine.Warmer
+## No fast clones
 
-This is the live-template model. Boot a template from the image, wait for the
-agent, then call `HcsSaveComputeSystem` with `{"SaveType":"AsTemplate"}`
-(which **freezes** it for forking; it does not write a restorable file). Clones
-are then created with `RestoreState.TemplateSystemId`. That measured 0.44–0.86 s
-create+start, about 1 s per clone end to end.
-
-It fits the seam as `machine.Warmer` (design decision 7):
-
-- **Warm(spec):** boot the template from `spec.Chain` at `spec.CPUs` and
-  `spec.Memory`, wait for the agent, and freeze it. Return a `machine.Stage`
-  that owns it. The template must stay resident in the process that created
-  it, and the engine already runs Warm in a **warm shim** (`disco-vm shim
-  --warm <layer>`) that holds the Stage until `warm --rm`. Write whatever a
-  clone needs to find the template (its system ID) into `spec.Dir`. Ignore
-  `spec.Count`: one template serves any number of clones.
-- **Warmth(spec):** `{Fork, -1}` while the template system exists and is
-  frozen, and zero otherwise, such as after the warm shim crashed.
-- **Prepare(inst) with Mode fork:** create the clone's disk the way a cold
-  Prepare does, and read the template's ID from `inst.WarmDir`. Return
-  `machine.ErrNotWarm` if the template is gone. The engine then clones cold
-  when the mode was auto.
-- **Boot(inst) with Mode fork:** create the compute system with
-  `RestoreState.TemplateSystemId`. It belongs to vmcompute, not the warm shim,
-  so the instance's shim can own it like any other VM. Only the first boot
-  after Prepare forks. A later start of the same instance is cold.
-- **Stage.Close / Cool(spec):** terminate the template system, then remove
-  what Warm wrote.
-- `AsTemplate` needs commit headroom and fails with 0x800705AA otherwise.
-  Surface that from Warm with the fix in the message.
-- Proof: the `warm` subtest of `machinetest.Run` forks a clone of a warmed
-  committed layer and checks it sees the layer's writes.
-
-Suspend-to-disk (save a `.vmrs`, then restore) did **not** work on image VMs:
-HCS cold-booted instead. Don't promise `resume` on hcs.
+Every clone is cold (ADR 26-10-15-851). A live-template fork was built here
+and removed with warm stages; it is in the history before that ADR. What it
+measured, for a return: a template frozen with `HcsSaveComputeSystem`
+`{"SaveType":"AsTemplate"}` forks clones through
+`RestoreState.TemplateSystemId` in 0.44–0.86 s, only through the handle of
+the process that created it (0xC0370400 otherwise), and the save needs
+commit headroom (0x800705AA otherwise). Suspend-to-disk (save a `.vmrs`, then
+restore) did **not** work on image VMs: HCS cold-booted instead.
 
 ## Guest-side work (`pkg/guest`, Windows files)
 
@@ -233,4 +193,3 @@ HCS cold-booted instead. Don't promise `resume` on hcs.
 |---|---|
 | first boot, full Setup | 4.6 min (sandboxi); 3.9–5.5 min to a settled desktop (disco-vm) |
 | boot from a captured disk | about 37 s to desktop; `run` to the agent answering in 5.8 s |
-| fork a clone | about 1 s (0.44–0.86 s raw); `run` to the agent in 3.5–9 s with six VMs up |

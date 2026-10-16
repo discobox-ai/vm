@@ -19,8 +19,8 @@ from:
       # agent gets onto the disk; see docs/drivers/vz.md.
       username: ${USER}
       autologin: "true"
-      # Moved off 501 at install, so `disco-vm warm --local-user` can give 501
-      # to your own account (the default; named so the cache key says so).
+      # Moved off 501 at install (the default; named so the cache key says
+      # so). disco-vm makes no account at 501 itself.
       uid: "600"
 resources:
   cpus: 4

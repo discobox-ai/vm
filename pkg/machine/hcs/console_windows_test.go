@@ -38,7 +38,7 @@ func rdpAnswers(t *testing.T, id string) {
 	}
 }
 
-// Every VM serves its video console, cold boots and fork clones alike.
+// Every VM serves its video console.
 func TestConsole(t *testing.T) {
 	base := os.Getenv(BaseEnv)
 	if base == "" {
@@ -57,7 +57,7 @@ func TestConsole(t *testing.T) {
 		return m
 	}
 
-	cold := machine.InstanceSpec{ID: "cold", Dir: filepath.Join(work, "cold"), GuestOS: machine.Windows, Chain: chain, Mode: machine.Cold}
+	cold := machine.InstanceSpec{ID: "cold", Dir: filepath.Join(work, "cold"), GuestOS: machine.Windows, Chain: chain}
 	if err := d.Prepare(ctx, cold); err != nil {
 		t.Fatal(err)
 	}
@@ -65,20 +65,4 @@ func TestConsole(t *testing.T) {
 	boot(cold)
 	rdpAnswers(t, vmID(cold.Dir))
 
-	spec := machine.WarmSpec{GuestOS: machine.Windows, Chain: chain, Dir: filepath.Join(work, "warm"), CPUs: 4, Memory: 4 << 30}
-	if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	stage, err := d.Warm(ctx, spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = stage.Close(context.Background()); _ = d.Cool(context.Background(), spec) })
-	fork := machine.InstanceSpec{ID: "fork", Dir: filepath.Join(work, "fork"), GuestOS: machine.Windows, Chain: chain, Mode: machine.Fork, WarmDir: spec.Dir}
-	if err := d.Prepare(ctx, fork); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Destroy(context.Background(), fork) })
-	boot(fork)
-	rdpAnswers(t, vmID(fork.Dir))
 }

@@ -53,8 +53,7 @@ func (b bundle) newIdentifier() error {
 
 // macAddress is the bundle's network address, created on first use. It is
 // part of the running machine's identity, like the identifier: stable across
-// boots so the guest keeps its lease, and carried by a saved state, whose
-// memory holds a network stack configured for it.
+// boots so the guest keeps its lease.
 func (b bundle) macAddress() (*vz.MACAddress, error) {
 	data, err := os.ReadFile(b.path(macName))
 	if err == nil {
@@ -78,9 +77,8 @@ func (b bundle) macAddress() (*vz.MACAddress, error) {
 }
 
 // configuration is a bundle's machine. It is the same set of devices at
-// install, at every boot, and at every save and restore, so the guest never
-// sees its hardware change and a saved state always matches; only shares are
-// optional, and a boot with shares cannot restore a state saved without them.
+// install and at every boot, so the guest never sees its hardware change;
+// only shares are optional.
 func (b bundle) configuration(cpus uint, memory uint64, shares []machine.Share) (*vz.VirtualMachineConfiguration, error) {
 	platform, err := b.platform()
 	if err != nil {
@@ -163,8 +161,7 @@ func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk
 	config.SetSocketDevicesVirtualMachineConfiguration([]vz.SocketDeviceConfiguration{socket})
 
 	// No memory balloon. A macOS guest matches the device but ignores a host
-	// target, so it would return nothing, and any device added or removed
-	// later strands every saved state taken before.
+	// target, so it would return nothing.
 
 	if len(shares) > 0 {
 		devices, err := shareDevices(shares)

@@ -14,7 +14,7 @@ disco-vm is the VM layer. discobox keeps everything above it.
 |---|---|
 | the Docker pool: `dockerworker.Engine`, the pool-agent container, BuildKit, the registry and Git origins | the hypervisors: vz (Virtualization.framework), libkrun, and hcs |
 | the docker, digitalocean, wslc, and execvm providers | VM lifecycle: create, boot, stop, remove, and a supervising shim per VM |
-| placement, credentials, the pool proxy, the control plane | images and layers, warm stages, guest agent, vsock in both directions |
+| placement, credentials, the pool proxy, the control plane | images and layers, snapshots, guest agent, vsock in both directions |
 
 The Linux pool driver that only runs Docker containers does not move. What
 moves is the two VM implementations underneath `dockerworker.Driver`: discobox's
@@ -85,7 +85,7 @@ environment per sandbox**. disco-vm is that provider, one VM per sandbox:
 
 | 0126 backend operation | disco-vm |
 |---|---|
-| create | `engine.Create(image, {Name: sandboxID, Forwards: …})`, then `Start`. The default mode is auto, so a warm image resumes in about 4 s and falls back to a cold boot |
+| create | `engine.Create(image, {Name: sandboxID, Forwards: …})`, then `Start`, a cold boot of the image: what every sandbox needs is in the image, built or snapshotted |
 | inspect / list | `engine.Get` / `List` and `State`; the name carries the sandbox ID, so a lost create is recovered by name, never duplicated |
 | start / stop | `engine.Start` / `Stop` (an orderly shutdown through the guest) |
 | delete | `engine.Remove(force)` |
@@ -116,15 +116,16 @@ discobox must add:
 4. **The sandbox user, per guest OS.** ADR 0141 requires a sandbox uid in
    [1000, 60000] and maps a macOS host's 501 to 1000. That range is Debian's
    and right for Linux. On a macOS guest 501 is the ordinary first user: the
-   install moves its own account to 600 so that `warm --local-user` can give
-   501 to the host's user, and files on a shared directory then have one owner
-   on both sides. We would ask 0141's range to be per guest OS (macOS: 501 and
-   up); a native macOS sandbox created as 1000 still works, and only loses that
-   match.
-5. **Warm stages as the fast path.** `engine.Warm(image, {User: …})` stages an
-   image logged in as the sandbox user. On vz a stage is two saved templates,
-   one per guest the framework can run at once, and serves any number of
-   clones; on hcs it is a live fork template.
+   install moves its own account to 600, so 501 is free in the guest, but
+   disco-vm no longer makes a user there (ADR 26-10-15-851): discobox would
+   have to create the sandbox user at 501 over SSH as the install account,
+   which is the only session macOS lets change a uid. Files on a shared
+   directory would then have one owner on both sides. We would ask 0141's
+   range to be per guest OS (macOS: 501 and up); a native macOS sandbox
+   created as 1000 still works, and only loses that match.
+5. **No fast path yet.** Every sandbox boots cold (ADR 26-10-15-851). Fast
+   clones come back only when the pool measures cold start as what limits it,
+   with a design of their own.
 
 ## Moving vz and libkrun (the next phase)
 
@@ -142,10 +143,9 @@ adapter:
 | passt networking with TSI off (libkrun, ADR 0013) | the framework's NAT on vz; a libkrun driver brings its own |
 | the guest's lifecycle service (`discobox-vsock-guest`) | disco-vm's agent builds for Linux and speaks vsock; the guest image would carry it |
 
-What it buys: one VM layer for every discobox VM, shims (a pool VM survives a
-server restart), and warm stages for pool VMs (a Linux vz guest saves and
-restores too). The libkrun launcher (ADR 0013 §1) is already shaped like a
-shim: its own process session, a lock, re-adoption.
+What it buys: one VM layer for every discobox VM, and shims (a pool VM
+survives a server restart). The libkrun launcher (ADR 0013 §1) is already
+shaped like a shim: its own process session, a lock, re-adoption.
 
 ## Order
 

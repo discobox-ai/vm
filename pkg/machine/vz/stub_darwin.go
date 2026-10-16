@@ -22,9 +22,3 @@ func (*Driver) Prepare(context.Context, machine.InstanceSpec) error { return err
 func (*Driver) Boot(context.Context, machine.InstanceSpec, machine.BootOptions) (machine.Machine, error) {
 	return nil, errNoCgo
 }
-
-func (*Driver) Warm(context.Context, machine.WarmSpec) (machine.Stage, error) { return nil, errNoCgo }
-
-func (*Driver) Warmth(context.Context, machine.WarmSpec) (machine.Warmth, error) {
-	return machine.Warmth{Mode: machine.Cold}, nil
-}

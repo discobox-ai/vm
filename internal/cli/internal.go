@@ -105,13 +105,12 @@ func dockerInitCommand() *cobra.Command {
 	return cmd
 }
 
-// shimCommand is one instance's supervisor, started by `start` and `run`, or
-// with --warm one image's stage, started by `warm`.
+// shimCommand is one instance's supervisor, started by `start` and `run`.
 func shimCommand(g *globals) *cobra.Command {
-	var warm, gui bool
+	var gui bool
 	cmd := &cobra.Command{
-		Use:    "shim [--gui] INSTANCE | shim --warm LAYER",
-		Short:  "Own one running instance or warm stage (started by disco-vm itself)",
+		Use:    "shim [--gui] INSTANCE",
+		Short:  "Own one running instance (started by disco-vm itself)",
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -120,16 +119,12 @@ func shimCommand(g *globals) *cobra.Command {
 				return err
 			}
 			shimArgs := args
-			if warm {
-				shimArgs = append([]string{"--warm"}, shimArgs...)
-			}
 			if gui {
 				shimArgs = append([]string{"--gui"}, shimArgs...)
 			}
 			return e.ShimMain(cmd.Context(), shimArgs)
 		},
 	}
-	cmd.Flags().BoolVar(&warm, "warm", false, "stage LAYER and hold the stage")
 	cmd.Flags().BoolVar(&gui, "gui", false, "show the guest's display in a window")
 	return cmd
 }

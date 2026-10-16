@@ -7,7 +7,7 @@
 // disk that Install wrote from a retail ISO and booted once through Windows
 // Setup, and every later layer is a differencing disk over its parent. Guests
 // get a NIC on an HNS network of the driver's own, and the agent is reached
-// over hvsocket. Fork clones come from a live template held by the warm shim.
+// over hvsocket.
 //
 // The work is specified in docs/drivers/hcs.md; the recipes it ports were
 // proven in Rust in the sandboxi repository (crates/sandboxw-core).

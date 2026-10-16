@@ -16,13 +16,12 @@ Status, 2026-10-07, with an agent in the guest: criteria 1 and 3 held. On
 the image through the same commands, `exec -t` included; `TestConformance`
 has not been run against boxd since, because a discobox's five-minute
 credential does not outlive it. `TestConformance` passes against
-boxd. `docs/examples/boxd.yaml` builds, and the CLI runs it through `run`, `exec`,
-`cp`, `stop`, `start`, `warm`, a resumed `run`, `rm`, and `rmi` with nothing
-left on boxd. Criterion 2 waits on `internal/e2e`, which is written for the
-fake driver. `TestConformanceFakeAPI` runs the same suite in CI against an
-in-process fake of boxd's API (`fakeapi_test.go`), whose "machines" are
-directory roots: its Exec reads back the driver's command lines and runs them
-on the host.
+boxd. `docs/examples/boxd.yaml` builds, and the CLI runs it through `run`,
+`exec`, `cp`, `stop`, `start`, `rm`, and `rmi` with nothing left on boxd.
+Criterion 2 waits on `internal/e2e`, which is written for the fake driver.
+`TestConformanceFakeAPI` runs the same suite in CI against an in-process fake
+of boxd's API (`fakeapi_test.go`), whose "machines" are directory roots: its
+Exec reads back the driver's command lines and runs them on the host.
 
 ## What boxd is
 
@@ -50,8 +49,7 @@ use. The parts that matter here:
 | layer | `layer.json`: the snapshot's name, ID, version, and size. `DeleteLayer` deletes the snapshot. |
 | `LayerExists` | `GetSnapshot` on the layer's snapshot: gone, or `failed`, is a layer the build replaces, along with every layer after it. One call for each cached layer of a build. |
 | `TagLayer`, `UntagLayer` | boxd cannot name or label a snapshot after the fact, and snapshots only a running machine. A tag restores the layer's snapshot into a machine, saves that as `dvm-<project>--<layer id>-tag-<ref>-<hash>`, and destroys the machine; untagging deletes the snapshot. Nothing restores from it: it is there so `boxd snap ls` says what each layer is. Each tag costs a restore and a whole snapshot. A tag made before this existed has none; tag it again to make one. |
-| `Prepare` cold | restore the layer's snapshot, power the guest off (`systemctl --no-block poweroff`), and `StopVm` once the shutdown hook says it halted. The first boot is a cold boot of the layer's disk. A guest that cannot be shut down in order is stopped anyway, and Prepare fails. |
-| `Prepare` resume | restore the stage's snapshot and suspend it. A missing stage or snapshot is `ErrNotWarm`. |
+| `Prepare` | restore the layer's snapshot, power the guest off (`systemctl --no-block poweroff`), and `StopVm` once the shutdown hook says it halted. The first boot is a cold boot of the layer's disk. A guest that cannot be shut down in order is stopped anyway, and Prepare fails. |
 | `Boot` | `StartVm` (after `ResizeVm` when the boot asks for another size), `ResumeVm`, or `WakeVm`, by state. A machine still `stopping` is waited out first. Returns once the guest answers: an Exec of `sudo -n systemctl is-system-running --wait` returns, once a second, for up to 5 minutes. A machine that stops meanwhile (`GetVm` every 2s) ends the wait. |
 | `Attach` | (`Capabilities.Remote`: the engine runs no shim for boxd.) `GetVm`: not found, `stopped`, or any state but `running` or `starting` is `ErrNotRunning`. While it is `running`, an Exec reads the shutdown hook's marker: a guest that halted while nothing watched is stopped with `StopVm` and reads as not running, and one that rebooted is started again. |
 | `Machine.Done` | watching starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to run a command polls nothing. `GetVm` every 2s: `stopped` is a power-off, and `failed`, `destroying`, or not-found is an error. While it is `running`, an Exec reads the shutdown hook's marker, and a guest that has halted is stopped with `StopVm` (and started again if it rebooted). |
@@ -63,10 +61,8 @@ use. The parts that matter here:
 | `Machine.Shutdown` | Exec of `systemctl --no-block poweroff` (or `reboot`) as root. The shutdown hook marks the halt, and the watcher or the next attach stops the machine. |
 | `Commit` | the guest is stopped after an orderly shutdown. Start it, wait for the guest, and snapshot. |
 | `Destroy` | `DestroyVm`. |
-| `Orphans` | `ListVms` and `ListSnapshots` in the caller's context, keeping the names of the project (`dvm-<project>--`) that no instance's `vm.json`, layer's `layer.json`, stage's `stage.json`, or tag names. Two calls on every `ls` and `images`. |
+| `Orphans` | `ListVms` and `ListSnapshots` in the caller's context, keeping the names of the project (`dvm-<project>--`) that no instance's `vm.json`, layer's `layer.json`, or tag names. A snapshot a warm stage took at a size of its own, from before warm stages were removed, is one of them. Two calls on every `ls` and `images`. |
 | `RemoveOrphan` | `DestroyVm` a machine, `DeleteSnapshot` a snapshot (`disco-vm rm` / `rmi` with an orphan's name). |
-| `Warm` | at the layer's size, point `stage.json` at the layer's snapshot. At another size, boot a cold clone at that size and snapshot it (`own`, deleted by `Cool`). |
-| `Warmth` | `{resume, -1}` while the stage's snapshot is ready. |
 | `Prepare` | once the machine is restored, `SetBotProtection` off, `SetProxyPort` pins the default proxy (the one `ListProxies` marks `is_default`) to 7302, and its domain is recorded in `vm.json`. |
 | `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `https://<machine>.boxd.sh` from `vm.json`, with no API call. |
 
@@ -107,9 +103,8 @@ export DISCO_VM_DRIVER=boxd
 ./disco-vm cp ./README.md dev:/tmp
 ./disco-vm url dev                                      # https://<machine>.boxd.sh
 ./disco-vm stop dev && ./disco-vm start dev
-./disco-vm warm demo/boxd && ./disco-vm run --name fast demo/boxd   # resumes from the snapshot
-./disco-vm rm -f dev fast
-./disco-vm warm --rm demo/boxd && ./disco-vm rmi demo/boxd
+./disco-vm rm -f dev
+./disco-vm rmi demo/boxd
 ```
 
 Each instance is a machine named `dvm-default--...` in `boxd ls`, and each
@@ -188,7 +183,7 @@ its listener on it.
   commits go through. Exec's `rows` and `cols` (fields 8 and 7) size the pty.
   GNU `env` ends its options at the first `NAME=VALUE`, so its `--` comes
   before the variables. The first build of `docs/examples/boxd.yaml` with no
-  agent took 2.5 minutes, a cold `run` 23 s, and a resumed one 8 s.
+  agent took 2.5 minutes, and a `run` 23 s.
 
 - The URL (2026-10-09, then `TestEndpoint` with an image-declared port; not
   rerun since the port became a fixed 7302): `SetProxyPort` pins a restored
@@ -205,17 +200,15 @@ its listener on it.
   command, and systemd is reachable only through `sudo systemctl`.
 - `GetVm` reports `running` and `stopped`, and `CreateSnapshot` reaches `ready`
   through `GetSnapshot` within seconds.
-- A restore gets its own name and hostname (`dvm-<id>-<rand>`), even resumed
-  from memory.
+- A restore gets its own name and hostname (`dvm-<id>-<rand>`).
 - Timings for a 2 vCPU/8 GiB machine, measured with the agent: a cold `run`
   takes 15s, which includes the restore and power-off in Prepare. `stop`
-  takes 4s and `start` 3s. `warm` at the layer's size takes 1s, and a resumed
-  `run` 4s.
+  takes 4s and `start` 3s.
 
 ## Not verified yet
 
 - `ResizeVm` on a stopped machine, which a boot at a size other than the
-  layer's uses, and `Warm` at another size. Both pass against the fake only.
+  layer's uses. It passes against the fake only.
 - The `suspended`/`standby` status strings, and `WakeVm` from `hibernated`.
   The driver turns off auto-suspend and auto-hibernate on every machine, so
   these show up only when something else suspends one.

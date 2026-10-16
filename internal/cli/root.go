@@ -71,7 +71,6 @@ func Main(args []string) int {
 	root.AddCommand(
 		buildCommand(g),
 		imagesCommand(g), rmiCommand(g), tagCommand(g), snapshotCommand(g),
-		warmCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
 		lsCommand(g), inspectCommand(g), urlCommand(g), execCommand(g), cpCommand(g),
 		infoCommand(g),

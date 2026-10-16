@@ -17,7 +17,6 @@ const (
 	hardwareName   = "hardwaremodel"
 	identifierName = "machineidentifier"
 	macName        = "macaddress"
-	stateName      = "state.bin"
 	metaName       = "vz.json"
 )
 
@@ -66,31 +65,15 @@ type meta struct {
 	User     string `json:"user"`
 	UID      int    `json:"uid,omitempty"`
 	Password string `json:"password,omitempty"`
-	// Login is the account a warm stage created and logs in at boot; every
-	// clone of the stage has it.
-	Login *login `json:"login,omitempty"`
-	// Template is the template a resume clone was restored from, whose
-	// identity it still has; its next boot gives it its own.
+	// Login is the account a warm stage created and logged in at boot, with
+	// its password, in a clone of a stage from before warm stages were removed
+	// (ADR 26-10-15-851). Nothing reads it; it is kept whole so that rewriting
+	// vz.json does not lose the only record of that password.
+	Login json.RawMessage `json:"login,omitempty"`
+	// Template is the template a resume clone was restored from, from before
+	// resume clones were removed (ADR 26-10-15-851), whose identity it still
+	// has; its next boot gives it its own.
 	Template string `json:"template,omitempty"`
-	// Saved is set on a staged clone: the size and host its state was saved
-	// at. A restore needs the size exactly, and a host OS update can
-	// invalidate a state, so a state from another host build is stale.
-	Saved *saved `json:"saved,omitempty"`
-}
-
-type login struct {
-	Name     string `json:"name"`
-	UID      int    `json:"uid,omitempty"`
-	Password string `json:"password"`
-	// Version is how the account was set up (loginVersion); a base made an
-	// older way is made again.
-	Version int `json:"version,omitempty"`
-}
-
-type saved struct {
-	CPUs      uint   `json:"cpus"`
-	Memory    uint64 `json:"memory"`
-	HostBuild string `json:"hostBuild"`
 }
 
 func (b bundle) readMeta() (meta, error) {
@@ -160,13 +143,4 @@ func clonefile(from, to string) error {
 		return fmt.Errorf("vz: clone %s to %s: %w", from, to, err)
 	}
 	return nil
-}
-
-// hostBuild is the host's OS build, which a saved state is only good for.
-func hostBuild() string {
-	build, err := unix.Sysctl("kern.osversion")
-	if err != nil {
-		return ""
-	}
-	return build
 }

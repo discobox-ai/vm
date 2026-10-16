@@ -72,7 +72,7 @@ type options struct {
 }
 
 // defaultUID is where the provisioned account is moved, off the 501 that the
-// host's first user has, so a warm stage can give 501 to that user.
+// host's first user has (see installScript).
 const defaultUID = 600
 
 func parseOptions(in map[string]string) (options, error) {

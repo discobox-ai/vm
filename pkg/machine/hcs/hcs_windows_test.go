@@ -84,18 +84,6 @@ func TestDocument(t *testing.T) {
 			t.Errorf("document has %s:\n%s", never, doc)
 		}
 	}
-	fork, err := json.Marshal(newDocument(vmConfig{Disk: "d", GuestFile: "g", StateFile: "s", Template: "tpl", Memory: 8 << 30, CPUs: 2}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`"RestoreState":{"TemplateSystemId":"tpl"}`, `"SizeInMB":8192`, `"Count":2`} {
-		if !strings.Contains(string(fork), want) {
-			t.Errorf("fork document lacks %s:\n%s", want, fork)
-		}
-	}
-	if strings.Contains(string(fork), "NetworkAdapters") {
-		t.Errorf("a fork document may not attach a NIC (the restore fails):\n%s", fork)
-	}
 }
 
 // Commit moves a differencing disk into another directory. The moved child
