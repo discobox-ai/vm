@@ -37,6 +37,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   `discobox-access run --use <id> -- disco-vm ...`. Each run gets a sentinel
   that lives five minutes. Spell commands as the use names them: `ps`, not
   its alias `ls`, and no `--debug`, or the judge may refuse the run.
+  `unset BOXD_API_KEY` first: a box may carry a stale one, and the driver
+  reads it before `BOXD_TOKEN`, so every call is a 401. A use that says it
+  makes only `dvm-*` machines gets `--name` refused unless the instance's
+  name starts with `dvm-` too (`run --name dvm-dev`), although the machine
+  is named `dvm-<project>--...` either way.
 - Isolate state: `export DISCO_VM_ROOT=<a scratch directory>/dvm
   DISCO_VM_DRIVER=boxd`. The image index lives there; the layers are boxd
   snapshots.
