@@ -111,7 +111,10 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	// The base decides the guest OS, which decides which layers and steps apply.
-	var parent string
+	// parent is the layer the next one is built on, and from is what its
+	// build instance is created from: the same layer, or for the first layer
+	// on a base of the driver's, the base, which has no layer to be a parent.
+	var parent, from, parentKey string
 	var guestOS machine.OS
 	var install *Install
 	if spec.From.Install != nil {
@@ -122,22 +125,32 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 		guestOS = in.OS
 	} else {
 		ref := expand(spec.From.Image, args)
-		if parent, err = store.Resolve(ref); err != nil {
-			return nil, fmt.Errorf("from.image: %w", err)
+		if parent, err = store.Resolve(ref); err == nil {
+			layer, err := store.Layer(parent)
+			if err != nil {
+				return nil, err
+			}
+			if layer.Driver != driver.Name() {
+				return nil, fmt.Errorf("from.image %s was built with driver %s, not %s", ref, layer.Driver, driver.Name())
+			}
+			if intact, err := store.Intact(ctx, parent, driver); err != nil {
+				return nil, fmt.Errorf("from.image: %w", err)
+			} else if !intact {
+				return nil, fmt.Errorf("from.image %s: %s no longer has its layer %s; build that image again", ref, driver.Name(), image.Short(parent))
+			}
+			guestOS = layer.GuestOS
+			b.logf("==> from %s (%s)", ref, image.Short(parent))
+		} else {
+			base, err := b.Engine.ResolveBase(ctx, ref, err)
+			if err != nil {
+				return nil, fmt.Errorf("from.image: %w", err)
+			}
+			// A layer's key names its parent; the first one on a base names
+			// the base, by version, so a base captured again builds again.
+			parent, from, guestOS = "", base.ID, base.GuestOS
+			parentKey = "base " + driver.Name() + " " + base.ID + "@" + base.Version
+			b.logf("==> from %s, one of %s's bases", ref, driver.Name())
 		}
-		layer, err := store.Layer(parent)
-		if err != nil {
-			return nil, err
-		}
-		if layer.Driver != driver.Name() {
-			return nil, fmt.Errorf("from.image %s was built with driver %s, not %s", ref, layer.Driver, driver.Name())
-		}
-		if intact, err := store.Intact(ctx, parent, driver); err != nil {
-			return nil, fmt.Errorf("from.image: %w", err)
-		} else if !intact {
-			return nil, fmt.Errorf("from.image %s: %s no longer has its layer %s; build that image again", ref, driver.Name(), image.Short(parent))
-		}
-		guestOS = layer.GuestOS
 	}
 	if !driver.Capabilities().SupportsOS(guestOS) {
 		return nil, fmt.Errorf("driver %s cannot run %s guests", driver.Name(), guestOS)
@@ -146,40 +159,44 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	if parent == "" && install == nil && len(p.Layers) == 0 {
+		return nil, fmt.Errorf("from.image %s is one of %s's bases, not an image, and a build of it with no layers makes nothing", expand(spec.From.Image, args), driver.Name())
+	}
 
 	if install != nil {
 		if parent, err = b.install(ctx, p, *install, contextDir, opts.Agent, salt); err != nil {
 			return nil, err
 		}
-	} else {
-		b.logf("==> from %s (%s)", expand(spec.From.Image, args), image.Short(parent))
+	}
+	if parentKey == "" {
+		parentKey, from = parent, parent
 	}
 	for _, name := range p.Skipped {
 		b.logf("==> %s: skipped, nothing in it applies to %s", name, guestOS)
 	}
 	for i, layer := range p.Layers {
 		prefix := fmt.Sprintf("[%d/%d] %s", i+1, len(p.Layers), layer.Name)
-		inputs := layerKey(parent, driver.Name(), guestOS, layer, salt)
+		inputs := layerKey(parentKey, driver.Name(), guestOS, layer, salt)
 		key, lost, err := b.cached(ctx, inputs)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", prefix, err)
 		}
 		if key != "" {
 			b.logf("==> %s: CACHED %s", prefix, image.Short(key))
-			parent = key
+			parent, from, parentKey = key, key, key
 			continue
 		}
 		key = inputs
 		if lost != "" {
 			// Under a new ID, so that every layer after this one is built
 			// again too: theirs were made from the disk that is gone.
-			key = layerKey(parent, driver.Name(), guestOS, layer, salt+"|replaces "+lost+"|"+fsutil.RandomHex(8))
+			key = layerKey(parentKey, driver.Name(), guestOS, layer, salt+"|replaces "+lost+"|"+fsutil.RandomHex(8))
 			b.logf("==> %s: %s no longer has %s, building it again as %s", prefix, driver.Name(), image.Short(lost), image.Short(key))
 		} else {
 			b.logf("==> %s", prefix)
 		}
 		started := time.Now()
-		if err := b.buildLayer(ctx, p, buildName(opts), parent, key, layer); err != nil {
+		if err := b.buildLayer(ctx, p, buildName(opts), from, parent, key, layer); err != nil {
 			return nil, fmt.Errorf("%s: %w", prefix, err)
 		}
 		if lost != "" {
@@ -188,7 +205,7 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 			}
 		}
 		b.logf("==> %s: committed %s in %s", prefix, image.Short(key), time.Since(started).Round(time.Second))
-		parent = key
+		parent, from, parentKey = key, key, key
 	}
 
 	result := &Result{Layer: parent}
@@ -318,11 +335,12 @@ func (b *Builder) cached(ctx context.Context, inputs string) (key, lost string, 
 	return current, "", nil
 }
 
-// buildLayer boots the parent, runs the layer's steps, shuts the guest down in
-// order, and commits its disk as the layer key.
-func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, parent, key string, layer PlannedLayer) (err error) {
+// buildLayer boots an instance of from (the parent layer, or a base), runs the
+// layer's steps, shuts the guest down in order, and commits its disk as the
+// layer key on parent.
+func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, from, parent, key string, layer PlannedLayer) (err error) {
 	e := b.Engine
-	inst, err := e.Create(ctx, parent, engine.CreateOptions{Temporary: true, CPUs: p.CPUs, Memory: p.Memory})
+	inst, err := e.Create(ctx, from, engine.CreateOptions{Temporary: true, CPUs: p.CPUs, Memory: p.Memory})
 	if err != nil {
 		return err
 	}

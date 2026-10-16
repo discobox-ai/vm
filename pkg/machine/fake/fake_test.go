@@ -28,7 +28,8 @@ func TestConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	machinetest.Run(t, &fake.Driver{Agent: agent}, machinetest.Config{
+	catalog := []machine.Base{{Name: "stock", ID: "stock-1", GuestOS: machine.OS(runtime.GOOS), Options: map[string]string{"image": "stock"}}}
+	machinetest.Run(t, &fake.Driver{Agent: agent, Catalog: catalog}, machinetest.Config{
 		Install:    machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"},
 		Timeout:    30 * time.Second,
 		ScratchDir: "/scratch",

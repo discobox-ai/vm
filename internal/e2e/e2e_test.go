@@ -582,3 +582,69 @@ func TestURL(t *testing.T) {
 	e.ok("rm", "-f", "svc")
 	e.ok("rmi", "test/svc")
 }
+
+// TestBases lists a driver's base among the images, runs it with no build and
+// no layer, builds an image on it, and snapshots an instance of it; a base is
+// not an image, so tag and rmi refuse it.
+func TestBases(t *testing.T) {
+	if tg.driver != "fake" {
+		t.Skip("only the fake driver is given its bases by the test")
+	}
+	t.Setenv("DISCO_VM_FAKE_BASES", fmt.Sprintf(`[{"name":"stock","id":"stock-1","version":"7","guestOS":%q,"options":{"image":"stock"}}]`, runtime.GOOS))
+	e := newEnv(t)
+	row := func() []string {
+		t.Helper()
+		out := e.ok("images")
+		for line := range strings.SplitSeq(out, "\n") {
+			if f := strings.Fields(line); len(f) > 1 && f[0] == "stock" {
+				return f
+			}
+		}
+		t.Fatalf("images lists no base stock:\n%s", out)
+		return nil
+	}
+	if r := row(); r[1] != "-" {
+		t.Fatalf("a base has a layer: %v", r)
+	}
+	// A base runs with no image made of it.
+	e.ok("run", "--name", "b", "stock")
+	mustContain(t, e.ok(append([]string{"exec", "b"}, catArgv(".disco-vm-install")...)...), "base=stock-1", "option.image=stock")
+	if images := e.ok("images", "-a"); strings.Contains(images, "<none>") {
+		t.Fatalf("running a base made an image:\n%s", images)
+	}
+	for _, args := range [][]string{{"tag", "stock", "test/stock"}, {"rmi", "stock"}} {
+		if out, code := e.run(args...); code == 0 || !strings.Contains(out, "bases, not an image") {
+			t.Fatalf("disco-vm %s on a base (exit %d):\n%s", strings.Join(args, " "), code, out)
+		}
+	}
+
+	// A build on a base: its first layer has no parent, and a second build
+	// of it is cached.
+	shell := `["/bin/sh", "-c"]`
+	if runtime.GOOS == "windows" {
+		shell = `["cmd", "/c"]`
+	}
+	spec := filepath.Join(t.TempDir(), "disco-vm.yaml")
+	if err := os.WriteFile(spec, fmt.Appendf(nil, "from:\n  image: stock\nshell: %s\nlayers:\n  - name: one\n    steps:\n      - run: echo built> %s\n", shell, tg.cmd("built.txt")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, e.ok("build", "-f", spec, "-t", "test/on-stock"), "one of fake's bases", "[1/1] one: committed")
+	mustContain(t, e.ok("build", "-f", spec, "-t", "test/on-stock"), "[1/1] one: CACHED")
+	e.ok("run", "--name", "built", "test/on-stock")
+	mustContain(t, e.ok(append([]string{"exec", "built"}, catArgv("built.txt")...)...), "built")
+	mustContain(t, e.ok(append([]string{"exec", "built"}, catArgv(".disco-vm-install")...)...), "base=stock-1")
+	// A new version of the base builds the layer on it again.
+	t.Setenv("DISCO_VM_FAKE_BASES", fmt.Sprintf(`[{"name":"stock","id":"stock-1","version":"8","guestOS":%q,"options":{"image":"stock"}}]`, runtime.GOOS))
+	mustContain(t, e.ok("build", "-f", spec, "-t", "test/on-stock"), "[1/1] one: committed")
+
+	// An instance of a base snapshots to an image like any other.
+	e.ok("stop", "b")
+	e.ok("snapshot", "b", "test/from-b")
+	e.ok("run", "--name", "b2", "test/from-b")
+	mustContain(t, e.ok(append([]string{"exec", "b2"}, catArgv(".disco-vm-install")...)...), "base=stock-1")
+	e.ok("rm", "-f", "built", "b2")
+	e.ok("rmi", "test/on-stock", "test/from-b")
+	if r := row(); r[1] != "-" {
+		t.Fatalf("the base is not listed as it was: %v", r)
+	}
+}

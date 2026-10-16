@@ -35,10 +35,12 @@ const (
 	BoxdApi_DestroyVm_FullMethodName               = "/boxd.api.v1.BoxdApi/DestroyVm"
 	BoxdApi_StartVm_FullMethodName                 = "/boxd.api.v1.BoxdApi/StartVm"
 	BoxdApi_StopVm_FullMethodName                  = "/boxd.api.v1.BoxdApi/StopVm"
+	BoxdApi_RebootVm_FullMethodName                = "/boxd.api.v1.BoxdApi/RebootVm"
 	BoxdApi_GetVm_FullMethodName                   = "/boxd.api.v1.BoxdApi/GetVm"
 	BoxdApi_ListVms_FullMethodName                 = "/boxd.api.v1.BoxdApi/ListVms"
 	BoxdApi_Exec_FullMethodName                    = "/boxd.api.v1.BoxdApi/Exec"
 	BoxdApi_Whoami_FullMethodName                  = "/boxd.api.v1.BoxdApi/Whoami"
+	BoxdApi_GetConfig_FullMethodName               = "/boxd.api.v1.BoxdApi/GetConfig"
 	BoxdApi_SuspendVm_FullMethodName               = "/boxd.api.v1.BoxdApi/SuspendVm"
 	BoxdApi_ResumeVm_FullMethodName                = "/boxd.api.v1.BoxdApi/ResumeVm"
 	BoxdApi_WakeVm_FullMethodName                  = "/boxd.api.v1.BoxdApi/WakeVm"
@@ -63,6 +65,7 @@ type BoxdApiClient interface {
 	DestroyVm(ctx context.Context, in *DestroyVmRequest, opts ...grpc.CallOption) (*DestroyVmResponse, error)
 	StartVm(ctx context.Context, in *StartVmRequest, opts ...grpc.CallOption) (*StartVmResponse, error)
 	StopVm(ctx context.Context, in *StopVmRequest, opts ...grpc.CallOption) (*StopVmResponse, error)
+	RebootVm(ctx context.Context, in *RebootVmRequest, opts ...grpc.CallOption) (*RebootVmResponse, error)
 	// NOT_FOUND for an id/name with no matching machine, including a destroyed
 	// one.
 	GetVm(ctx context.Context, in *GetVmRequest, opts ...grpc.CallOption) (*GetVmResponse, error)
@@ -73,6 +76,8 @@ type BoxdApiClient interface {
 	// call kills the remote command.
 	Exec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ExecChunk, ExecChunk], error)
 	Whoami(ctx context.Context, in *WhoamiRequest, opts ...grpc.CallOption) (*WhoamiResponse, error)
+	// The image a machine gets when CreateVm names none. boxd lists no others.
+	GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
 	SuspendVm(ctx context.Context, in *SuspendVmRequest, opts ...grpc.CallOption) (*SuspendVmResponse, error)
 	ResumeVm(ctx context.Context, in *ResumeVmRequest, opts ...grpc.CallOption) (*ResumeVmResponse, error)
 	WakeVm(ctx context.Context, in *WakeVmRequest, opts ...grpc.CallOption) (*WakeVmResponse, error)
@@ -143,6 +148,16 @@ func (c *boxdApiClient) StopVm(ctx context.Context, in *StopVmRequest, opts ...g
 	return out, nil
 }
 
+func (c *boxdApiClient) RebootVm(ctx context.Context, in *RebootVmRequest, opts ...grpc.CallOption) (*RebootVmResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RebootVmResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_RebootVm_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *boxdApiClient) GetVm(ctx context.Context, in *GetVmRequest, opts ...grpc.CallOption) (*GetVmResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetVmResponse)
@@ -180,6 +195,16 @@ func (c *boxdApiClient) Whoami(ctx context.Context, in *WhoamiRequest, opts ...g
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(WhoamiResponse)
 	err := c.cc.Invoke(ctx, BoxdApi_Whoami_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *boxdApiClient) GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetConfigResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_GetConfig_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -334,6 +359,7 @@ type BoxdApiServer interface {
 	DestroyVm(context.Context, *DestroyVmRequest) (*DestroyVmResponse, error)
 	StartVm(context.Context, *StartVmRequest) (*StartVmResponse, error)
 	StopVm(context.Context, *StopVmRequest) (*StopVmResponse, error)
+	RebootVm(context.Context, *RebootVmRequest) (*RebootVmResponse, error)
 	// NOT_FOUND for an id/name with no matching machine, including a destroyed
 	// one.
 	GetVm(context.Context, *GetVmRequest) (*GetVmResponse, error)
@@ -344,6 +370,8 @@ type BoxdApiServer interface {
 	// call kills the remote command.
 	Exec(grpc.BidiStreamingServer[ExecChunk, ExecChunk]) error
 	Whoami(context.Context, *WhoamiRequest) (*WhoamiResponse, error)
+	// The image a machine gets when CreateVm names none. boxd lists no others.
+	GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
 	SuspendVm(context.Context, *SuspendVmRequest) (*SuspendVmResponse, error)
 	ResumeVm(context.Context, *ResumeVmRequest) (*ResumeVmResponse, error)
 	WakeVm(context.Context, *WakeVmRequest) (*WakeVmResponse, error)
@@ -386,6 +414,9 @@ func (UnimplementedBoxdApiServer) StartVm(context.Context, *StartVmRequest) (*St
 func (UnimplementedBoxdApiServer) StopVm(context.Context, *StopVmRequest) (*StopVmResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopVm not implemented")
 }
+func (UnimplementedBoxdApiServer) RebootVm(context.Context, *RebootVmRequest) (*RebootVmResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RebootVm not implemented")
+}
 func (UnimplementedBoxdApiServer) GetVm(context.Context, *GetVmRequest) (*GetVmResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetVm not implemented")
 }
@@ -397,6 +428,9 @@ func (UnimplementedBoxdApiServer) Exec(grpc.BidiStreamingServer[ExecChunk, ExecC
 }
 func (UnimplementedBoxdApiServer) Whoami(context.Context, *WhoamiRequest) (*WhoamiResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Whoami not implemented")
+}
+func (UnimplementedBoxdApiServer) GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetConfig not implemented")
 }
 func (UnimplementedBoxdApiServer) SuspendVm(context.Context, *SuspendVmRequest) (*SuspendVmResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SuspendVm not implemented")
@@ -533,6 +567,24 @@ func _BoxdApi_StopVm_Handler(srv interface{}, ctx context.Context, dec func(inte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BoxdApi_RebootVm_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RebootVmRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).RebootVm(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_RebootVm_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).RebootVm(ctx, req.(*RebootVmRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _BoxdApi_GetVm_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetVmRequest)
 	if err := dec(in); err != nil {
@@ -590,6 +642,24 @@ func _BoxdApi_Whoami_Handler(srv interface{}, ctx context.Context, dec func(inte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(BoxdApiServer).Whoami(ctx, req.(*WhoamiRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BoxdApi_GetConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).GetConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_GetConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).GetConfig(ctx, req.(*GetConfigRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -870,6 +940,10 @@ var BoxdApi_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _BoxdApi_StopVm_Handler,
 		},
 		{
+			MethodName: "RebootVm",
+			Handler:    _BoxdApi_RebootVm_Handler,
+		},
+		{
 			MethodName: "GetVm",
 			Handler:    _BoxdApi_GetVm_Handler,
 		},
@@ -880,6 +954,10 @@ var BoxdApi_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Whoami",
 			Handler:    _BoxdApi_Whoami_Handler,
+		},
+		{
+			MethodName: "GetConfig",
+			Handler:    _BoxdApi_GetConfig_Handler,
 		},
 		{
 			MethodName: "SuspendVm",

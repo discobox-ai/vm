@@ -19,6 +19,7 @@ service BoxdApi {
   rpc DestroyVm(DestroyVmRequest)           returns (DestroyVmResponse);
   rpc StartVm(StartVmRequest)               returns (StartVmResponse);
   rpc StopVm(StopVmRequest)                 returns (StopVmResponse);
+  rpc RebootVm(RebootVmRequest)             returns (RebootVmResponse);
   // NOT_FOUND for an id/name with no matching machine, including a destroyed
   // one.
   rpc GetVm(GetVmRequest)                   returns (GetVmResponse);
@@ -29,6 +30,8 @@ service BoxdApi {
   // call kills the remote command.
   rpc Exec(stream ExecChunk)                returns (stream ExecChunk);
   rpc Whoami(WhoamiRequest)                 returns (WhoamiResponse);
+  // The image a machine gets when CreateVm names none. boxd lists no others.
+  rpc GetConfig(GetConfigRequest)           returns (GetConfigResponse);
   rpc SuspendVm(SuspendVmRequest)           returns (SuspendVmResponse);
   rpc ResumeVm(ResumeVmRequest)             returns (ResumeVmResponse);
   rpc WakeVm(WakeVmRequest)                 returns (WakeVmResponse);
@@ -85,6 +88,9 @@ message StartVmResponse {}
 message StopVmRequest  { string vm_id = 1; }
 message StopVmResponse {}
 
+message RebootVmRequest  { string vm_id = 1; }
+message RebootVmResponse {}
+
 message SuspendVmRequest  { string vm_id = 1; }
 message SuspendVmResponse { uint64 suspend_us = 1; }
 
@@ -140,6 +146,11 @@ message ExecChunk {
   bool   is_stderr     = 10;
 }
 
+message GetConfigRequest {}
+message GetConfigResponse {
+  string default_image = 1;
+}
+
 message WhoamiRequest {}
 message WhoamiResponse {
   string user_id      = 1;
@@ -175,21 +186,21 @@ message ListSnapshotsRequest {
 message ListSnapshotsResponse { repeated SnapshotInfo snapshots = 1; }
 
 message GetSnapshotRequest {
-  string name = 1;
+  string name = 1;  // snapshot name or id
   string org  = 2;
 }
 message GetSnapshotResponse { SnapshotInfo snapshot = 1; }
 
 message DeleteSnapshotRequest {
-  string name = 1;
+  string name = 1;  // snapshot name or id
   string org  = 2;
 }
 message DeleteSnapshotResponse {}
 
 message CreateVmFromSnapshotRequest {
-  string   snapshot = 1;
+  string   snapshot = 1;  // snapshot name or id
   string   name     = 2;
-  VmConfig config   = 3;
+  VmConfig config   = 3;  // optional overrides
   string   org      = 4;
   bool     isolated = 5;
 }

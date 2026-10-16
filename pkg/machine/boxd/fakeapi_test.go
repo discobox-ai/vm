@@ -29,10 +29,10 @@ import (
 // standing in for its disk, and a snapshot is a copy of that directory.
 // Memory is not modeled. Exec understands the command lines the driver sends:
 // a request's argv runs on this host, in the machine's directory, and the
-// driver's own scripts (copies, info, systemd's) are done here instead.
+// driver's own scripts (copies, info, systemd's, sync) are done here instead.
 //
-// As on boxd, a guest that shuts itself down leaves its machine "running":
-// a power-off sets the marker the real shutdown hook writes, and nothing more.
+// A machine's power is the API's alone: StopVm, StartVm, RebootVm. The driver
+// asks nothing in the guest to power off.
 type fakeAPI struct {
 	boxdapi.UnimplementedBoxdApiServer
 	dir string
@@ -40,11 +40,16 @@ type fakeAPI struct {
 	mu        sync.Mutex
 	vms       map[string]*fakeVM
 	snapshots map[string]*fakeSnapshot
+	// defaultImage is GetConfig's answer: the image a machine gets when
+	// CreateVm names none.
+	defaultImage string
 
 	// down makes GetVm and StopVm fail as an unreachable API does.
 	down atomic.Bool
 	// proxyErr, when set, is SetProxyPort's answer.
 	proxyErr error
+	// syncFails makes the guest's sync exit 1.
+	syncFails atomic.Bool
 }
 
 type fakeVM struct {
@@ -53,7 +58,8 @@ type fakeVM struct {
 	status   string
 	vcpu     uint32
 	memory   uint64
-	halted   string
+	// reboots counts RebootVm calls.
+	reboots int
 	// proxyPort is the port the default proxy is pinned to, zero for auto;
 	// botProtection is on for a new machine, as on boxd.
 	proxyPort     uint32
@@ -68,7 +74,17 @@ type fakeSnapshot struct {
 }
 
 func newFakeAPI(dir string) *fakeAPI {
-	return &fakeAPI{dir: dir, vms: map[string]*fakeVM{}, snapshots: map[string]*fakeSnapshot{}}
+	return &fakeAPI{dir: dir, vms: map[string]*fakeVM{}, snapshots: map[string]*fakeSnapshot{}, defaultImage: "ubuntu-24.04"}
+}
+
+// snapshot finds a snapshot by name or ID, as boxd does.
+func (f *fakeAPI) snapshot(ref string) (*fakeSnapshot, error) {
+	for _, snap := range f.snapshots {
+		if snap.name == ref || snap.id == ref {
+			return snap, nil
+		}
+	}
+	return nil, status.Errorf(codes.NotFound, "no snapshot %q", ref)
 }
 
 func (f *fakeAPI) root(v *fakeVM) string { return filepath.Join(v.dir, "root") }
@@ -95,13 +111,27 @@ func (f *fakeAPI) newVM(name string, vcpu uint32, memory uint64) *fakeVM {
 	return v
 }
 
-// boot starts the guest, which clears the shutdown hook's marker.
-func (f *fakeAPI) boot(v *fakeVM) {
-	v.status, v.halted = "running", ""
+func (f *fakeAPI) boot(v *fakeVM) { v.status = "running" }
+
+func (f *fakeAPI) halt(v *fakeVM) { v.status = "stopped" }
+
+// RebootVm restarts a running machine's guest, which leaves it running.
+func (f *fakeAPI) RebootVm(_ context.Context, req *boxdapi.RebootVmRequest) (*boxdapi.RebootVmResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, err := f.vm(req.GetVmId())
+	if err != nil {
+		return nil, err
+	}
+	if v.status != "running" {
+		return nil, status.Errorf(codes.FailedPrecondition, "%s is %s, not running", v.name, v.status)
+	}
+	v.reboots++
+	return &boxdapi.RebootVmResponse{}, nil
 }
 
-func (f *fakeAPI) halt(v *fakeVM) {
-	v.status, v.halted = "stopped", ""
+func (f *fakeAPI) GetConfig(context.Context, *boxdapi.GetConfigRequest) (*boxdapi.GetConfigResponse, error) {
+	return &boxdapi.GetConfigResponse{DefaultImage: f.defaultImage}, nil
 }
 
 func (f *fakeAPI) Whoami(context.Context, *boxdapi.WhoamiRequest) (*boxdapi.WhoamiResponse, error) {
@@ -121,11 +151,20 @@ func (f *fakeAPI) CreateVm(_ context.Context, req *boxdapi.CreateVmRequest) (*bo
 func (f *fakeAPI) CreateVmFromSnapshot(_ context.Context, req *boxdapi.CreateVmFromSnapshotRequest) (*boxdapi.CreateVmResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	snap, ok := f.snapshots[req.GetSnapshot()]
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "no snapshot %q", req.GetSnapshot())
+	snap, err := f.snapshot(req.GetSnapshot())
+	if err != nil {
+		return nil, err
 	}
-	v := f.newVM(req.GetName(), snap.vcpu, snap.memory)
+	// The config is "optional overrides" of the snapshot's size, each field
+	// on its own: zero keeps the snapshot's.
+	vcpu, memory := snap.vcpu, snap.memory
+	if c := req.GetConfig().GetVcpu(); c != 0 {
+		vcpu = c
+	}
+	if c := req.GetConfig().GetMemoryBytes(); c != 0 {
+		memory = c
+	}
+	v := f.newVM(req.GetName(), vcpu, memory)
 	if err := fsutil.CopyTree(snap.dir, f.root(v)); err != nil {
 		return nil, err
 	}
@@ -311,9 +350,9 @@ func (f *fakeAPI) CreateSnapshot(_ context.Context, req *boxdapi.CreateSnapshotR
 func (f *fakeAPI) GetSnapshot(_ context.Context, req *boxdapi.GetSnapshotRequest) (*boxdapi.GetSnapshotResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	snap, ok := f.snapshots[req.GetName()]
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "no snapshot %q", req.GetName())
+	snap, err := f.snapshot(req.GetName())
+	if err != nil {
+		return nil, err
 	}
 	return &boxdapi.GetSnapshotResponse{Snapshot: &boxdapi.SnapshotInfo{
 		SnapshotId: snap.id, Name: snap.name, Version: 1, Status: "ready", Vcpu: snap.vcpu, MemoryBytes: snap.memory,
@@ -335,9 +374,9 @@ func (f *fakeAPI) ListSnapshots(context.Context, *boxdapi.ListSnapshotsRequest) 
 func (f *fakeAPI) DeleteSnapshot(_ context.Context, req *boxdapi.DeleteSnapshotRequest) (*boxdapi.DeleteSnapshotResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	snap, ok := f.snapshots[req.GetName()]
-	if !ok {
-		return nil, status.Errorf(codes.NotFound, "no snapshot %q", req.GetName())
+	snap, err := f.snapshot(req.GetName())
+	if err != nil {
+		return nil, err
 	}
 	delete(f.snapshots, snap.name)
 	return &boxdapi.DeleteSnapshotResponse{}, os.RemoveAll(snap.dir)
@@ -373,19 +412,6 @@ func (f *fakeAPI) Exec(stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdap
 	}
 
 	command := first.GetCommand()
-	switch command {
-	case "cat " + haltedMarker + " 2>/dev/null":
-		f.mu.Lock()
-		how := v.halted
-		f.mu.Unlock()
-		if how == "" {
-			return exit(1, "")
-		}
-		_, _ = stdout.Write([]byte(how + "\n"))
-		return exit(0, "")
-	case installScript:
-		return exit(0, "")
-	}
 	req, err := parseCommand(command)
 	if err != nil {
 		return exit(127, fmt.Sprintf("fake boxd: %v", err))
@@ -414,10 +440,11 @@ func (f *fakeAPI) Exec(stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdap
 	case slices.Equal(req.Argv, readyCommand.Argv):
 		_, _ = stdout.Write([]byte("running\n"))
 		return exit(0, "")
-	case len(req.Argv) == 3 && req.Argv[0] == "systemctl" && req.Argv[1] == "--no-block":
-		f.mu.Lock()
-		v.halted = req.Argv[2]
-		f.mu.Unlock()
+	case slices.Equal(req.Argv, []string{"sync"}):
+		// The host's disks are not the guest's to flush.
+		if f.syncFails.Load() {
+			return exit(1, "sync: I/O error")
+		}
 		return exit(0, "")
 	case isScript(req, infoScript):
 		arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]

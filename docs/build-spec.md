@@ -11,7 +11,7 @@ with that advice.
 
 ```yaml
 from:                          # exactly one of image or install
-  image: discobox/windows:11   #   an image already in the store
+  image: discobox/windows:11   #   an image already in the store, or a driver's base
   install:                     #   or an OS installed from media
     os: windows                #     windows | darwin | linux
     media: Win11.iso           #     ISO, IPSW, or "latest" (context-relative or absolute)

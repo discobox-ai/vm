@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,11 +51,6 @@ func init() {
 }
 
 const (
-	// haltedMarker is written by the shutdown hook (shutdownHook) and read by
-	// the driver. It is on tmpfs, so a cold boot starts without one.
-	haltedMarker = "/run/disco-vm/halted"
-	shutdownHook = "/usr/lib/systemd/system-shutdown/disco-vm"
-
 	// maxDisk is boxd's fixed disk: every machine has 100 GiB.
 	maxDisk = 100 << 30
 
@@ -118,9 +114,9 @@ type vmRef struct {
 	Endpoint string `json:"endpoint,omitempty"`
 }
 
-// Install creates a machine from one of boxd's own images, adds the shutdown
-// hook, and snapshots it as the base layer. It puts no agent in the guest, so
-// spec.Agent is not used.
+// Install creates a machine from one of boxd's own images and snapshots it as
+// the base layer. It puts nothing of disco-vm's in the guest, so spec.Agent is
+// not used.
 func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst machine.Layer) error {
 	if spec.GuestOS != machine.Linux {
 		return fmt.Errorf("boxd: guests are linux, not %s", spec.GuestOS)
@@ -164,13 +160,11 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 		return err
 	}
 
-	log("boxd: installing the shutdown hook")
-	if out, code, err := run(ctx, api, vm, installScript); err != nil {
-		return fmt.Errorf("boxd: install the shutdown hook: %w: %s", err, out)
-	} else if code != 0 {
-		return fmt.Errorf("boxd: install the shutdown hook: exit %d: %s", code, out)
+	// The base layer is snapshotted running, and a cold clone boots its
+	// disk: what the guest wrote must be on it.
+	if err := syncDisks(ctx, api, vm); err != nil {
+		return err
 	}
-
 	log("boxd: snapshotting the base layer")
 	snap, err := d.snapshot(ctx, api, vm, dst)
 	if err != nil {
@@ -179,29 +173,17 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 	return writeJSON(filepath.Join(dst.Dir, layerFile), snap)
 }
 
-// installScript runs as boxd's default user, who has passwordless sudo.
-var installScript = `set -e
-sudo mkdir -p ` + filepath.Dir(shutdownHook) + `
-sudo tee ` + shutdownHook + ` >/dev/null <<'HOOK'
-#!/bin/sh
-# systemd-shutdown runs this once disks are synced, just before it asks the
-# kernel to power off, which a boxd machine ignores. disco-vm's boxd driver
-# watches for the marker and stops the machine through boxd's API.
-mkdir -p ` + filepath.Dir(haltedMarker) + `
-echo "$1" > ` + haltedMarker + `
-HOOK
-sudo chmod 0755 ` + shutdownHook + `
-# The base layer is snapshotted without a shutdown, and a cold clone boots
-# its disk: what is installed must be on it.
-sync
-`
-
 func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
-	if len(inst.Chain) == 0 {
+	if len(inst.Chain) == 0 && inst.Base == nil {
 		return errors.New("boxd: instance has no image")
 	}
 	if err := os.MkdirAll(inst.Dir, 0o755); err != nil {
 		return err
+	}
+	if inst.Base != nil {
+		// Its machine is made at its first Boot, at the size that boot asks
+		// for, so a first start is one boot.
+		return nil
 	}
 	api, err := d.api.API()
 	if err != nil {
@@ -218,9 +200,59 @@ func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
 	if err := d.expose(ctx, api, inst); err != nil {
 		return err
 	}
-	// The snapshot is of a running guest. Power it off in order, so the first
-	// boot is a cold boot of the layer's disk.
-	return d.powerOff(ctx, api, vm)
+	// The snapshot is of a running guest. Stop it, so the first boot is a
+	// cold boot of the layer's disk.
+	return powerOff(ctx, api, vm)
+}
+
+// create makes the machine of an instance of a base, from boxd's image or the
+// snapshot, at the size opts asks for, and pins its proxy as Prepare does an
+// instance of a layer's. vm.json is written as soon as the machine exists, so
+// Destroy removes it even when a later step fails.
+func (d *Driver) create(ctx context.Context, api boxdapi.BoxdApiClient, inst machine.InstanceSpec, opts machine.BootOptions) (vmRef, error) {
+	config := &boxdapi.VmConfig{Vcpu: uint32(opts.CPUs), MemoryBytes: opts.Memory}
+	name := vmName(inst.Project, inst.ID)
+	var created *boxdapi.CreateVmResponse
+	var err error
+	if snapshot := inst.Base.Options["snapshot"]; snapshot != "" {
+		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: snapshot, Name: name}
+		if opts.CPUs != 0 || opts.Memory != 0 {
+			// With none asked for, the snapshot's own size.
+			req.Config = config
+		}
+		created, err = api.CreateVmFromSnapshot(ctx, req)
+	} else {
+		created, err = api.CreateVm(ctx, &boxdapi.CreateVmRequest{
+			Name: name, ImageRef: inst.Base.Options["image"], RestartPolicy: "never", Config: config,
+		})
+	}
+	if err != nil {
+		return vmRef{}, fmt.Errorf("boxd: create %s from %s: %w", name, inst.Base.Name, err)
+	}
+	ref := vmRef{ID: created.GetVmId(), Name: created.GetName()}
+	path := filepath.Join(inst.Dir, vmFile)
+	if err := writeJSON(path, ref); err != nil {
+		d.destroyVM(ref.ID)
+		return vmRef{}, err
+	}
+	err = d.settle(ctx, api, ref.ID)
+	if err == nil {
+		_, err = waitVM(ctx, api, ref.ID, "running")
+	}
+	if err == nil {
+		err = d.expose(ctx, api, inst)
+	}
+	if err == nil {
+		err = readJSON(path, &ref)
+	}
+	if err != nil {
+		// Undone whole, so the next start makes the machine again rather
+		// than boot one with no URL.
+		d.destroyVM(ref.ID)
+		_ = os.Remove(path)
+		return vmRef{}, err
+	}
+	return ref, nil
 }
 
 // restore creates the instance's machine from a snapshot and waits for it to
@@ -262,21 +294,26 @@ func (d *Driver) settle(ctx context.Context, api boxdapi.BoxdApiClient, vm strin
 }
 
 func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
-	var ref vmRef
-	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
-		return nil, fmt.Errorf("boxd: instance %s is not prepared: %w", inst.ID, err)
-	}
 	api, err := d.api.API()
 	if err != nil {
 		return nil, err
+	}
+	var ref vmRef
+	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
+		if inst.Base == nil || !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("boxd: instance %s is not prepared: %w", inst.ID, err)
+		}
+		if ref, err = d.create(ctx, api, inst, opts); err != nil {
+			return nil, err
+		}
 	}
 	info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: ref.ID})
 	if err != nil {
 		return nil, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
 	}
 	if info.GetStatus() == "stopping" {
-		// A stop is still settling: one a guest's own poweroff asked for, seen
-		// by an attach a moment ago. Start what it leaves.
+		// A stop is still settling: a `disco-vm stop` a moment ago. Start
+		// what it leaves.
 		if _, err := waitVM(ctx, api, ref.ID, "stopped"); err != nil {
 			return nil, err
 		}
@@ -343,11 +380,9 @@ func stopped(ctx context.Context, api boxdapi.BoxdApiClient, vm string) <-chan s
 	return ch
 }
 
-// Attach finds the instance's machine through the API, as any process can. A
-// guest that shut itself down is left running by boxd, and with no shim to
-// watch it nothing has stopped it yet: Attach reads the shutdown hook's marker
-// and finishes the job, so a powered-off guest is stopped and reads as not
-// running, and a rebooted one is started again.
+// Attach finds the instance's machine through the API, as any process can.
+// Its state is boxd's: a guest that powered itself off from inside is left
+// running by boxd, and reads as running until `disco-vm stop`.
 func (d *Driver) Attach(ctx context.Context, inst machine.InstanceSpec) (machine.Machine, error) {
 	var ref vmRef
 	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
@@ -365,25 +400,7 @@ func (d *Driver) Attach(ctx context.Context, inst machine.InstanceSpec) (machine
 		return nil, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
 	}
 	switch state := info.GetStatus(); state {
-	case "running":
-		m := newVM(api, ref)
-		how := halted(ctx, api, ref.ID)
-		if how == "" {
-			return m, nil
-		}
-		// Finishing a halt is not the caller's to cut short: a reboot
-		// stopped and never started again would read as a poweroff. It is
-		// bounded on its own, as the watcher's is.
-		finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Minute)
-		defer cancel()
-		if err := m.afterHalt(finish, how); err != nil {
-			return nil, err
-		}
-		if how == "reboot" {
-			return m, nil
-		}
-		return nil, fmt.Errorf("boxd: machine %s powered itself off: %w", ref.Name, machine.ErrNotRunning)
-	case "starting":
+	case "running", "starting":
 		return newVM(api, ref), nil
 	default:
 		return nil, fmt.Errorf("boxd: machine %s is %s: %w", ref.Name, state, machine.ErrNotRunning)
@@ -394,7 +411,9 @@ func (d *Driver) Attach(ctx context.Context, inst machine.InstanceSpec) (machine
 // a boxd snapshot can only be taken of a running machine.
 func (d *Driver) Commit(ctx context.Context, inst machine.InstanceSpec, dst machine.Layer) error {
 	var ref vmRef
-	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
+	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); errors.Is(err, fs.ErrNotExist) && inst.Base != nil {
+		return fmt.Errorf("boxd: instance %s of %s has never started, so it has no machine to commit; start it once, then stop it", inst.ID, inst.Base.Name)
+	} else if err != nil {
 		return fmt.Errorf("boxd: instance %s: %w", inst.ID, err)
 	}
 	api, err := d.api.API()
@@ -590,54 +609,36 @@ func (d *Driver) deleteSnapshot(ctx context.Context, name string) error {
 	return nil
 }
 
-// powerOff shuts a running guest down in order, as the engine does, and stops
-// the machine once the guest has halted. A guest that cannot be shut
-// down in order is still stopped, so it costs nothing, but powerOff fails: a
+// powerOff stops a machine: the guest's writes flushed (syncDisks), then
+// StopVm, and the wait until boxd says it stopped. A guest that cannot be
+// asked to flush is still stopped, so it costs nothing, but powerOff fails: a
 // disk cut off mid-write is not one to boot clones from, which is the rule a
 // layer commit follows too.
-func (d *Driver) powerOff(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
-	orderly := halt(ctx, api, vm)
+func powerOff(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
+	flushed := syncDisks(ctx, api, vm)
 	if _, err := api.StopVm(ctx, &boxdapi.StopVmRequest{VmId: vm}); err != nil && !isNotFound(err) {
-		return errors.Join(orderly, fmt.Errorf("boxd: stop %s: %w", vm, err))
+		return errors.Join(flushed, fmt.Errorf("boxd: stop %s: %w", vm, err))
 	}
 	if _, err := waitVM(ctx, api, vm, "stopped"); err != nil {
-		return errors.Join(orderly, err)
+		return errors.Join(flushed, err)
 	}
-	return orderly
+	return flushed
 }
 
-// halt asks systemd for a power-off once the guest has booted, and waits for
-// the shutdown hook to say the guest has halted.
-func halt(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
+// syncDisks flushes the guest's writes to its disk, once it answers. boxd does
+// not say whether StopVm shuts a guest down in order or cuts its power, so
+// every stop that keeps the disk (Shutdown, a cold clone's, a layer's install)
+// flushes it first.
+func syncDisks(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 	ready, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	if err := waitGuest(ready, api, vm, nil); err != nil {
-		return fmt.Errorf("boxd: power off %s: %w", vm, err)
+		return fmt.Errorf("boxd: flush %s: %w", vm, err)
 	}
-	if err := shutdown(ready, api, vm, false); err != nil {
-		return err
-	}
-	halt, cancel := context.WithTimeout(ctx, waitLimit)
-	defer cancel()
-	for halted(halt, api, vm) == "" {
-		select {
-		case <-halt.Done():
-			return fmt.Errorf("boxd: %s did not halt after a power-off: %w", vm, halt.Err())
-		case <-time.After(time.Second):
-		}
+	if err := runAsRoot(ready, api, vm, machine.ExecRequest{Argv: []string{"sync"}}); err != nil {
+		return fmt.Errorf("boxd: flush %s: %w", vm, err)
 	}
 	return nil
-}
-
-// halted reads the shutdown hook's marker: "poweroff", "halt", or "reboot"
-// once the guest has shut down, and empty while it runs.
-// A probe that cannot run reads as still running, to be asked again.
-func halted(ctx context.Context, api boxdapi.BoxdApiClient, vm string) string {
-	out, code, err := run(ctx, api, vm, "cat "+haltedMarker+" 2>/dev/null")
-	if err != nil || code != 0 {
-		return ""
-	}
-	return strings.TrimSpace(out)
 }
 
 // destroyVM is best-effort cleanup of a machine the driver made for itself.

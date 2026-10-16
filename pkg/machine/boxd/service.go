@@ -2,7 +2,9 @@ package boxd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"strconv"
 
@@ -15,10 +17,14 @@ import (
 // the machine over its network, at guest.ServicePort.
 var serviceListen = "tcp:0.0.0.0:" + strconv.FormatUint(uint64(guest.ServicePort), 10)
 
-// Service is the guest's TCP port behind the HTTPS URL Prepare pointed at it.
+// Service is the guest's TCP port behind the HTTPS URL Prepare pointed at it,
+// or for an instance of a base, its first Boot. Until that boot there is no
+// machine, and so no URL.
 func (*Driver) Service(_ context.Context, inst machine.InstanceSpec) (machine.Service, error) {
 	var ref vmRef
-	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
+	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); errors.Is(err, fs.ErrNotExist) && inst.Base != nil {
+		return machine.Service{}, fmt.Errorf("boxd: instance %s has not started yet: %w", inst.ID, machine.ErrNotRunning)
+	} else if err != nil {
 		return machine.Service{}, fmt.Errorf("boxd: instance %s is not prepared: %w", inst.ID, err)
 	}
 	if ref.Endpoint == "" {
