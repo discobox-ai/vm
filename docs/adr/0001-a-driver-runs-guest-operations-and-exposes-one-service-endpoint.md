@@ -1,6 +1,6 @@
 # 0001 — A driver runs guest operations itself and exposes one service endpoint
 
-- **Status**: Accepted
+- **Status**: Accepted (§1's boxd shutdown superseded by 26-10-15-833)
 - **Date**: 2026-10-09
 
 ## Context
