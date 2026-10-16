@@ -93,6 +93,9 @@ func (d *Driver) RemoveOrphan(ctx context.Context, orphan machine.Orphan) error 
 	}
 }
 
+// Bases is empty: a base layer is installed from an image a spec names.
+func (*Driver) Bases(context.Context) ([]machine.Base, error) { return nil, nil }
+
 type containerSummary struct {
 	ID      string            `json:"Id"`
 	Names   []string          `json:"Names"`

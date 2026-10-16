@@ -6,8 +6,9 @@
 // contract the engine relies on: a layer can be installed, cloned, booted, and
 // reached; a booted machine's guest operations answer, and exec carries stdin,
 // stdout, stderr, the environment, the working directory, and the exit code;
-// an orderly shutdown stops the machine; a committed layer carries its writes to clones
-// of it and to no one else; clones run side by side; Kill always works.
+// an orderly shutdown stops the machine; a committed layer carries its writes
+// to clones of it and to no one else; an instance runs from a base the driver
+// lists, and commits a layer; clones run side by side; Kill always works.
 package machinetest
 
 import (
@@ -159,6 +160,52 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			if ok, err := driver.LayerExists(ctx, layer); err != nil || !ok {
 				t.Fatalf("layer %s exists = %v, %v", layer.ID, ok, err)
 			}
+		}
+	})
+
+	// Every base the driver lists names itself, and an instance of the first
+	// runs from it with no layer, and commits a layer, as a build from it does.
+	t.Run("an-instance-of-a-base", func(t *testing.T) {
+		bases, err := driver.Bases(ctx)
+		if err != nil {
+			t.Fatalf("bases: %v", err)
+		}
+		for _, b := range bases {
+			if b.Name == "" || b.ID == "" || !caps.SupportsOS(b.GuestOS) {
+				t.Fatalf("base %+v has no name, no ID, or a guest OS the driver does not run", b)
+			}
+		}
+		if len(bases) == 0 {
+			t.Skip("the driver lists no bases")
+		}
+		b := bases[0]
+		inst := machine.InstanceSpec{ID: "from-base", Dir: filepath.Join(work, "inst-from-base"), GuestOS: b.GuestOS, Base: &b}
+		if err := driver.Prepare(ctx, inst); err != nil {
+			t.Fatalf("prepare from base %s: %v", b.Name, err)
+		}
+		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+		m := boot(t, inst)
+		info, err := m.Info(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.OS != string(b.GuestOS) {
+			t.Fatalf("a guest of base %s reports OS %q, want %q", b.Name, info.OS, b.GuestOS)
+		}
+		if err := m.CopyTo(ctx, marker, tarOf(t, "proof.txt", "on a base")); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+		shutdown(t, m)
+		layer := machine.Layer{ID: "on-base", Dir: filepath.Join(work, "layer-on-base")}
+		if err := os.MkdirAll(layer.Dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := driver.Commit(ctx, inst, layer); err != nil {
+			t.Fatalf("commit an instance of a base: %v", err)
+		}
+		t.Cleanup(func() { _ = driver.DeleteLayer(context.Background(), layer) })
+		if ok, err := driver.LayerExists(ctx, layer); err != nil || !ok {
+			t.Fatalf("the layer committed from a base exists = %v, %v", ok, err)
 		}
 	})
 

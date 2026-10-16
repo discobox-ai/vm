@@ -62,7 +62,7 @@ func imagesCommand(g *globals) *cobra.Command {
 	var all bool
 	cmd := &cobra.Command{
 		Use:   "images",
-		Short: "List images",
+		Short: "List images, and the driver's bases, which run and build take by name with no image",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			e, err := g.engine()
@@ -81,6 +81,9 @@ func imagesCommand(g *globals) *cobra.Command {
 					ref = "<none>"
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ref, image.Short(img.Layer.ID), img.Layer.GuestOS, img.Layer.Driver, ago(img.Layer.Created))
+			}
+			for _, b := range bases(cmd.Context(), e) {
+				fmt.Fprintf(w, "%s\t-\t%s\t%s\t%s\n", b.Name, b.GuestOS, e.Driver.Name(), ago(b.Created))
 			}
 			for _, o := range orphans(cmd.Context(), e, machine.OrphanLayer) {
 				fmt.Fprintf(w, "<orphan>\t%s\t-\t%s\t%s\n", o.Name, e.Driver.Name(), ago(o.Created))
@@ -104,6 +107,10 @@ func rmiCommand(g *globals) *cobra.Command {
 			}
 			for _, ref := range args {
 				_, err := e.Images.Resolve(ref)
+				// A base is the driver's, and disco-vm never deletes it.
+				if err = e.NotABase(cmd.Context(), ref, err); errors.Is(err, engine.ErrBase) {
+					return err
+				}
 				if errors.Is(err, image.ErrNotFound) {
 					// Not an image: an orphaned layer of the project.
 					o, err := e.RemoveOrphan(cmd.Context(), machine.OrphanLayer, ref, false)
@@ -144,7 +151,7 @@ func tagCommand(g *globals) *cobra.Command {
 			}
 			id, err := e.Images.Resolve(args[0])
 			if err != nil {
-				return err
+				return e.NotABase(cmd.Context(), args[0], err)
 			}
 			return e.Images.Tag(cmd.Context(), args[1], id, e.Driver)
 		},
@@ -197,6 +204,19 @@ func ago(t time.Time) string {
 	default:
 		return fmt.Sprintf("%d days ago", int(d.Hours()/24))
 	}
+}
+
+// bases is the driver's bases, or none, with a warning, when it cannot list
+// them.
+func bases(ctx context.Context, e *engine.Engine) []machine.Base {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	list, err := e.Driver.Bases(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "disco-vm: cannot list %s's bases: %v\n", e.Driver.Name(), err)
+		return nil
+	}
+	return list
 }
 
 // orphans is what the driver holds of one kind that the store has no record

@@ -230,15 +230,19 @@ const (
 type Instance struct {
 	ID string `json:"id" gorm:"primaryKey"`
 	// Project is the instance's project; its name is unique within it.
-	Project string     `json:"project,omitempty" gorm:"not null;default:'default';uniqueIndex:idx_disco_vm_instances_project_name"`
-	Name    string     `json:"name" gorm:"uniqueIndex:idx_disco_vm_instances_project_name"`
-	Image   string     `json:"image"`
-	Layer   string     `json:"layer" gorm:"index"`
-	Driver  string     `json:"driver"`
-	GuestOS machine.OS `json:"guestOS" gorm:"column:guest_os"`
-	CPUs    int        `json:"cpus,omitempty" gorm:"column:cpus"`
-	Memory  uint64     `json:"memory,omitempty"`
-	Created time.Time  `json:"created"`
+	Project string `json:"project,omitempty" gorm:"not null;default:'default';uniqueIndex:idx_disco_vm_instances_project_name"`
+	Name    string `json:"name" gorm:"uniqueIndex:idx_disco_vm_instances_project_name"`
+	Image   string `json:"image"`
+	// Layer is the image's layer, or empty for an instance of Base.
+	Layer string `json:"layer" gorm:"index"`
+	// Base is the driver's base the instance runs from when it has no layer
+	// (machine.InstanceSpec.Base).
+	Base    *machine.Base `json:"base,omitempty" gorm:"serializer:json;type:text"`
+	Driver  string        `json:"driver"`
+	GuestOS machine.OS    `json:"guestOS" gorm:"column:guest_os"`
+	CPUs    int           `json:"cpus,omitempty" gorm:"column:cpus"`
+	Memory  uint64        `json:"memory,omitempty"`
+	Created time.Time     `json:"created"`
 	// Temporary instances belong to a build and are not listed.
 	Temporary bool `json:"temporary,omitempty"`
 	// Forwards are served by the instance's shim whenever it runs.
@@ -269,17 +273,21 @@ func (e *Engine) instanceDir(id string) string { return filepath.Join(e.Root, "i
 
 // machineSpec is the driver's view of an instance.
 func (e *Engine) machineSpec(inst *Instance) (machine.InstanceSpec, error) {
-	chain, err := e.Images.MachineChain(inst.Layer)
-	if err != nil {
-		return machine.InstanceSpec{}, err
-	}
-	return machine.InstanceSpec{
+	spec := machine.InstanceSpec{
 		ID:      inst.ID,
 		Project: inst.Project,
 		Dir:     filepath.Join(e.instanceDir(inst.ID), "machine"),
 		GuestOS: inst.GuestOS,
-		Chain:   chain,
-	}, nil
+		Base:    inst.Base,
+	}
+	if inst.Base == nil {
+		chain, err := e.Images.MachineChain(inst.Layer)
+		if err != nil {
+			return machine.InstanceSpec{}, err
+		}
+		spec.Chain = chain
+	}
+	return spec, nil
 }
 
 // CreateOptions describes a new instance.
@@ -293,21 +301,33 @@ type CreateOptions struct {
 	Forwards []Forward
 }
 
-// Create makes an instance from an image reference or layer ID.
+// Create makes an instance from an image reference or layer ID, or from one of
+// the driver's bases by its name or ID, which it runs from with no layer.
 func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*Instance, error) {
-	layerID, err := e.Images.Resolve(ref)
-	if err != nil {
-		return nil, err
-	}
-	layer, err := e.Images.Layer(layerID)
-	if err != nil {
-		return nil, err
-	}
-	if layer.Driver != e.Driver.Name() {
-		return nil, fmt.Errorf("image %s was built for driver %s, not %s", ref, layer.Driver, e.Driver.Name())
-	}
 	if err := e.checkForwards(opts.Forwards); err != nil {
 		return nil, err
+	}
+	var (
+		layerID string
+		base    *machine.Base
+		guestOS machine.OS
+	)
+	layerID, err := e.Images.Resolve(ref)
+	if err != nil {
+		b, err := e.ResolveBase(ctx, ref, err)
+		if err != nil {
+			return nil, err
+		}
+		base, guestOS, layerID = &b, b.GuestOS, ""
+	} else {
+		layer, err := e.Images.Layer(layerID)
+		if err != nil {
+			return nil, err
+		}
+		if layer.Driver != e.Driver.Name() {
+			return nil, fmt.Errorf("image %s was built for driver %s, not %s", ref, layer.Driver, e.Driver.Name())
+		}
+		guestOS = layer.GuestOS
 	}
 	id := fsutil.RandomHex(6)
 	name := opts.Name
@@ -317,8 +337,8 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 		return nil, fmt.Errorf("an instance named %q already exists", name)
 	}
 	inst := &Instance{
-		ID: id, Project: e.Project, Name: name, Image: ref, Layer: layerID,
-		Driver: e.Driver.Name(), GuestOS: layer.GuestOS,
+		ID: id, Project: e.Project, Name: name, Image: ref, Layer: layerID, Base: base,
+		Driver: e.Driver.Name(), GuestOS: guestOS,
 		CPUs: opts.CPUs, Memory: opts.Memory,
 		Created: time.Now().UTC(), Temporary: opts.Temporary,
 		Forwards: opts.Forwards,
@@ -800,21 +820,24 @@ func (e *Engine) Boot(ctx context.Context, inst *Instance, opts BootOptions) (*B
 // Shutdown powers a booted machine off in order: the guest is asked, and the
 // machine is killed only if it will not answer or will not stop in time. A
 // hard stop is a dirty unmount of the guest's disk, and a layer cut from one
-// is not trustworthy, so the builder always comes through here.
+// is not trustworthy, so the builder always comes through here. timeout
+// bounds the request and the stop together: a driver may do real work before
+// its guest accepts (boxd flushes the guest's disks, then asks StopVm).
 func (b *Booted) Shutdown(ctx context.Context, timeout time.Duration) error {
 	select {
 	case <-b.Machine.Done():
 		return b.Machine.Err()
 	default:
 	}
-	askCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	deadline := time.Now().Add(timeout)
+	askCtx, cancel := context.WithDeadline(ctx, deadline)
 	err := b.Machine.Shutdown(askCtx, false)
 	cancel()
 	if err == nil {
 		select {
 		case <-b.Machine.Done():
 			return b.Machine.Err()
-		case <-time.After(timeout):
+		case <-time.After(time.Until(deadline)):
 			err = fmt.Errorf("guest did not power off within %s", timeout)
 		case <-ctx.Done():
 			err = ctx.Err()

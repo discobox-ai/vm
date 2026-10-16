@@ -315,6 +315,9 @@ func (*Driver) Orphans(context.Context, machine.Known) ([]machine.Orphan, error)
 // RemoveOrphan is never asked of a driver that lists no orphans.
 func (*Driver) RemoveOrphan(context.Context, machine.Orphan) error { return machine.ErrUnsupported }
 
+// Bases is empty: every base layer is installed from media.
+func (*Driver) Bases(context.Context) ([]machine.Base, error) { return nil, nil }
+
 // Service is the hvsocket service ID of guest.ServicePort, which every VM's
 // ServiceTable lists; the engine's shim serves it on the host's loopback.
 func (*Driver) Service(context.Context, machine.InstanceSpec) (machine.Service, error) {

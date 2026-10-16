@@ -11,7 +11,7 @@ import (
 )
 
 // pollEvery is how often a running machine's state is read. boxd has no event
-// stream for it, and Done only has to notice a power-off, not race it.
+// stream for it, and Done only has to notice a stop, not race it.
 var pollEvery = 2 * time.Second
 
 // killLimit bounds Kill on its own, since its callers pass a context with no
@@ -37,9 +37,7 @@ type vm struct {
 	// poll and killLimit are read once, when the machine is booted.
 	poll, killLimit time.Duration
 
-	// mu orders Kill against the watcher restarting a guest that rebooted, so
-	// a killed machine is never started again.
-	mu     sync.Mutex
+	// killed is set by Kill: a stop it asked for is not an error.
 	killed atomic.Bool
 }
 
@@ -79,58 +77,8 @@ func (m *vm) watch(ctx context.Context) {
 		case "failed", "destroying":
 			m.finish(fmt.Errorf("boxd: machine %s is %s", m.ref.Name, info.GetStatus()))
 			return
-		case "running":
-			// A guest that shut itself down is left running by boxd; the
-			// shutdown hook's marker says so, and the driver stops it.
-			probe, cancel := context.WithTimeout(ctx, 30*time.Second)
-			how := halted(probe, m.api, m.ref.ID)
-			cancel()
-			if err := m.afterHalt(ctx, how); err != nil {
-				m.finish(err)
-				return
-			}
 		}
 	}
-}
-
-// afterHalt finishes what a guest's own shutdown asked for: a power-off stops
-// the machine, and a reboot stops and starts it again.
-func (m *vm) afterHalt(ctx context.Context, how string) error {
-	if how == "" {
-		return nil
-	}
-	if _, err := m.api.StopVm(ctx, &boxdapi.StopVmRequest{VmId: m.ref.ID}); err != nil && !isNotFound(err) {
-		return fmt.Errorf("boxd: stop %s after the guest's %s: %w", m.ref.Name, how, err)
-	}
-	if how != "reboot" {
-		return nil // the next poll sees it stopped
-	}
-	stopped, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	_, err := waitVM(stopped, m.api, m.ref.ID, "stopped")
-	cancel()
-	if err != nil {
-		return err
-	}
-	// Held across the start, which is bounded, so Kill waits at most that
-	// long for it and then stops the machine it started.
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.killed.Load() {
-		return nil // stays stopped; the next poll finishes it
-	}
-	call, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if _, err := m.api.StartVm(call, &boxdapi.StartVmRequest{VmId: m.ref.ID}); err != nil {
-		// Two processes attaching at once both act on the same marker; the
-		// one that starts the machine second finds it already started.
-		if info, getErr := m.api.GetVm(call, &boxdapi.GetVmRequest{VmId: m.ref.ID}); getErr == nil {
-			if state := info.GetStatus(); state == "running" || state == "starting" {
-				return nil
-			}
-		}
-		return fmt.Errorf("boxd: start %s after the guest's reboot: %w", m.ref.Name, err)
-	}
-	return nil
 }
 
 func (m *vm) finish(err error) {
@@ -163,9 +111,7 @@ func (m *vm) Kill(ctx context.Context) error {
 	limit, cancel := context.WithTimeout(context.Background(), m.killLimit)
 	defer cancel()
 	m.watched()
-	m.mu.Lock()
 	m.killed.Store(true)
-	m.mu.Unlock()
 
 	var last error
 	for stopped := false; !stopped; {

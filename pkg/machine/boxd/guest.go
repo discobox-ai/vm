@@ -272,20 +272,24 @@ func (m *vm) Info(ctx context.Context) (machine.GuestInfo, error) {
 	return machine.GuestInfo{OS: string(machine.Linux), Arch: arch, Hostname: lines[1]}, nil
 }
 
-// Shutdown asks systemd for a power-off or reboot, which it queues and
-// returns from. The shutdown hook marks the halt, and the machine's watcher,
-// or the next Attach, stops the machine through the API.
+// Shutdown is boxd's: a reboot is RebootVm, and a power-off flushes the
+// guest's writes and then asks StopVm, returning once boxd has accepted the
+// stop; Done closes when it says the machine stopped. Nothing in the guest is
+// asked to power off, since boxd leaves a guest that halts itself running. A
+// flush that fails is an error, and no StopVm is asked: the caller's fallback
+// is Kill, and a layer is not cut from the disk.
 func (m *vm) Shutdown(ctx context.Context, reboot bool) error {
-	return shutdown(ctx, m.api, m.ref.ID, reboot)
-}
-
-func shutdown(ctx context.Context, api boxdapi.BoxdApiClient, vm string, reboot bool) error {
-	how := "poweroff"
 	if reboot {
-		how = "reboot"
+		if _, err := m.api.RebootVm(ctx, &boxdapi.RebootVmRequest{VmId: m.ref.ID}); err != nil {
+			return fmt.Errorf("boxd: reboot %s: %w", m.ref.Name, err)
+		}
+		return nil
 	}
-	if err := runAsRoot(ctx, api, vm, machine.ExecRequest{Argv: []string{"systemctl", "--no-block", how}}); err != nil {
-		return fmt.Errorf("boxd: %s %s: %w", how, vm, err)
+	if err := syncDisks(ctx, m.api, m.ref.ID); err != nil {
+		return err
+	}
+	if _, err := m.api.StopVm(ctx, &boxdapi.StopVmRequest{VmId: m.ref.ID}); err != nil && !isNotFound(err) {
+		return fmt.Errorf("boxd: stop %s: %w", m.ref.Name, err)
 	}
 	return nil
 }

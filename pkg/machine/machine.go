@@ -180,7 +180,12 @@ type InstanceSpec struct {
 	Dir     string
 	GuestOS OS
 	// Chain is the instance's image, base layer first and parent layer last.
+	// It is empty when the instance runs from Base.
 	Chain []Layer
+	// Base is the driver's base the instance runs from instead of a layer:
+	// one Bases listed. It is set on every call for the instance, Prepare and
+	// each Boot alike, and only on a driver that lists bases.
+	Base *Base
 }
 
 // Service is an instance's one service: where a program in the guest listens,
@@ -202,7 +207,8 @@ type Service struct {
 	URL string
 }
 
-// Parent is the layer the instance is derived from.
+// Parent is the layer the instance is derived from. An instance of a Base has
+// none.
 func (s InstanceSpec) Parent() Layer { return s.Chain[len(s.Chain)-1] }
 
 // Share is a host directory exported to the guest.
@@ -281,6 +287,12 @@ type Driver interface {
 	// returned for its project just before. Something already gone is not an
 	// error.
 	RemoveOrphan(ctx context.Context, orphan Orphan) error
+	// Bases lists what the driver already has that an instance can run from
+	// with no layer (InstanceSpec.Base): boxd's default image, and the
+	// snapshots in the account that disco-vm did not make. It reads the
+	// service on every call, never a cache. A driver with nothing of the
+	// kind returns none.
+	Bases(ctx context.Context) ([]Base, error)
 	// Service is the prepared instance's service. A URL the driver gives
 	// may exist only while the instance runs (a port the daemon publishes at
 	// each start); asked for one while it is stopped, the driver returns
@@ -330,6 +342,23 @@ type Orphan struct {
 	// Status is the service's word for its state: running, stopped, ready.
 	Status  string    `json:"status,omitempty"`
 	Created time.Time `json:"created,omitzero"`
+}
+
+// Base is something a driver already has that an instance can run from with
+// no layer.
+type Base struct {
+	// Name is what `images` lists, and a reference may name the base by it.
+	Name string `json:"name"`
+	// ID is the service's own ID for it, which a reference may name too.
+	ID string `json:"id"`
+	// Version changes whenever what the base holds does (a boxd snapshot
+	// captured again), so that a layer built on a new version is built again.
+	Version string `json:"version,omitempty"`
+	GuestOS OS     `json:"guestOS"`
+	// Options are the driver's own: what it makes a machine from (boxd: an
+	// image or a snapshot).
+	Options map[string]string `json:"options,omitempty"`
+	Created time.Time         `json:"created,omitzero"`
 }
 
 // ErrNotRunning reports that an instance has no running machine to attach to.

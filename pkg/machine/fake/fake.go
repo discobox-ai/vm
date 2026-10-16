@@ -10,14 +10,17 @@ package fake
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,10 +39,17 @@ func init() {
 // AgentEnv overrides the agent binary; by default it is the running disco-vm.
 const AgentEnv = "DISCO_VM_AGENT"
 
+// BasesEnv is a JSON array of machine.Base, the Catalog a driver from New
+// lists, so a test of the CLI has bases to run.
+const BasesEnv = "DISCO_VM_FAKE_BASES"
+
 // Driver is the fake driver.
 type Driver struct {
 	// Agent is the disco-vm binary each guest runs as `disco-vm guest`.
 	Agent string
+	// Catalog is what Bases lists. An instance of one starts from an empty
+	// root whose marker names the base, as an install's names its media.
+	Catalog []machine.Base
 }
 
 var _ machine.Driver = (*Driver)(nil)
@@ -54,7 +64,13 @@ func New() (*Driver, error) {
 		}
 		agent = exe
 	}
-	return &Driver{Agent: agent}, nil
+	d := &Driver{Agent: agent}
+	if raw := os.Getenv(BasesEnv); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &d.Catalog); err != nil {
+			return nil, fmt.Errorf("fake: %s: %w", BasesEnv, err)
+		}
+	}
+	return d, nil
 }
 
 func (*Driver) Name() string { return "fake" }
@@ -99,7 +115,7 @@ func (d *Driver) Install(_ context.Context, spec machine.InstallSpec, dst machin
 }
 
 func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
-	if len(inst.Chain) == 0 {
+	if len(inst.Chain) == 0 && inst.Base == nil {
 		return errors.New("fake: instance has no image")
 	}
 	if err := os.MkdirAll(inst.Dir, 0o755); err != nil {
@@ -107,6 +123,20 @@ func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
 	}
 	if err := pickServicePort(inst.Dir); err != nil {
 		return err
+	}
+	if b := inst.Base; b != nil {
+		if b.GuestOS != machine.OS(runtime.GOOS) {
+			return fmt.Errorf("fake: a %s host can only fake %s guests, not %s", runtime.GOOS, runtime.GOOS, b.GuestOS)
+		}
+		if err := os.MkdirAll(rootfs(inst.Dir), 0o755); err != nil {
+			return err
+		}
+		var marker strings.Builder
+		fmt.Fprintf(&marker, "os=%s\nbase=%s\nversion=%s\n", b.GuestOS, b.ID, b.Version)
+		for _, key := range slices.Sorted(maps.Keys(b.Options)) {
+			fmt.Fprintf(&marker, "option.%s=%s\n", key, b.Options[key])
+		}
+		return os.WriteFile(filepath.Join(rootfs(inst.Dir), markerName), []byte(marker.String()), 0o644) //nolint:gosec // G306: the fake guest's marker, no secrets
 	}
 	return fsutil.CopyTree(rootfs(inst.Parent().Dir), rootfs(inst.Dir))
 }
@@ -206,6 +236,9 @@ func (*Driver) Orphans(context.Context, machine.Known) ([]machine.Orphan, error)
 
 // RemoveOrphan is never asked of a driver that lists no orphans.
 func (*Driver) RemoveOrphan(context.Context, machine.Orphan) error { return machine.ErrUnsupported }
+
+// Bases is the Catalog the driver was given.
+func (d *Driver) Bases(context.Context) ([]machine.Base, error) { return d.Catalog, nil }
 
 // pickServicePort gives the instance a free port on the host's loopback for
 // its service: a fake guest is a host process, so a port of its own keeps two

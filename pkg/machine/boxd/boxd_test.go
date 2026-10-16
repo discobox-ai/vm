@@ -2,6 +2,7 @@ package boxd
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -230,28 +231,95 @@ func TestKillGivesUp(t *testing.T) {
 	}
 }
 
-// TestKillDuringReboot checks that a guest's reboot does not start a machine
-// that Kill has already been asked to stop.
-func TestKillDuringReboot(t *testing.T) {
+// TestShutdownFlushesFirst stops a machine only once the guest's writes are
+// flushed. A flush that fails is Shutdown's error, with no stop asked, so the
+// caller falls back to Kill and cuts no layer from the disk.
+func TestShutdownFlushesFirst(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
 	defer func(poll time.Duration) { pollEvery = poll }(pollEvery)
-	pollEvery = time.Hour // the test drives afterHalt itself
-	d, fake := fakeDriver(t, t.TempDir())
-	api, _ := d.api.API()
-	ctx := context.Background()
-	created, err := api.CreateVm(ctx, &boxdapi.CreateVmRequest{})
+	pollEvery = 50 * time.Millisecond
+	for _, fails := range []bool{false, true} {
+		d, fake := fakeDriver(t, t.TempDir())
+		fake.syncFails.Store(fails)
+		api, _ := d.api.API()
+		ctx := context.Background()
+		created, err := api.CreateVm(ctx, &boxdapi.CreateVmRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := newVM(api, vmRef{ID: created.GetVmId(), Name: created.GetName()})
+		t.Cleanup(m.stop)
+		err = m.Shutdown(ctx, false)
+		if (err != nil) != fails {
+			t.Fatalf("with the flush failing %v, Shutdown = %v", fails, err)
+		}
+		want := "stopped"
+		if fails {
+			want = "running"
+		} else {
+			select {
+			case <-m.Done():
+			case <-time.After(30 * time.Second):
+				t.Fatal("the machine did not stop")
+			}
+			if err := m.Err(); err != nil {
+				t.Fatalf("an orderly stop ended in %v", err)
+			}
+		}
+		fake.mu.Lock()
+		v, _ := fake.vm(created.GetVmId())
+		state := v.status
+		fake.mu.Unlock()
+		if state != want {
+			t.Fatalf("with the flush failing %v, the machine is %s, want %s", fails, state, want)
+		}
+	}
+}
+
+// TestFirstStartUndone leaves an instance of a base that failed its first
+// start as it was before it: no machine, and no vm.json, so the next start
+// makes one again, with its URL.
+func TestFirstStartUndone(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	dir, err := os.MkdirTemp("", "boxd")
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newVM(api, vmRef{ID: created.GetVmId(), Name: created.GetName()})
-	defer m.stop()
-	m.killed.Store(true) // Kill has begun
-	if err := m.afterHalt(ctx, "reboot"); err != nil {
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	d, fake := fakeDriver(t, dir)
+	ctx := context.Background()
+	base := machine.Base{Name: "ubuntu-24.04", ID: "ubuntu-24.04", GuestOS: machine.Linux, Options: map[string]string{"image": "ubuntu-24.04"}}
+	inst := machine.InstanceSpec{ID: "first", Dir: filepath.Join(dir, "inst"), GuestOS: machine.Linux, Base: &base}
+	if err := d.Prepare(ctx, inst); err != nil {
 		t.Fatal(err)
 	}
 	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if v, _ := fake.vm(created.GetVmId()); v.status != "stopped" {
-		t.Fatalf("a killed machine is %s after its guest rebooted", v.status)
+	fake.proxyErr = errors.New("proxy unavailable")
+	fake.mu.Unlock()
+	if _, err := d.Boot(ctx, inst, machine.BootOptions{}); err == nil {
+		t.Fatal("a first start with no proxy succeeded")
+	}
+	fake.mu.Lock()
+	left := len(fake.vms)
+	fake.proxyErr = nil
+	fake.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("a failed first start left %d machines", left)
+	}
+	if _, err := os.Stat(filepath.Join(inst.Dir, vmFile)); !os.IsNotExist(err) {
+		t.Fatalf("a failed first start left vm.json: %v", err)
+	}
+	m, err := d.Boot(ctx, inst, machine.BootOptions{})
+	if err != nil {
+		t.Fatalf("the next start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Kill(context.Background()); _ = d.Destroy(context.Background(), inst) })
+	if svc, err := d.Service(ctx, inst); err != nil || svc.URL == "" {
+		t.Fatalf("the next start's service = %+v, %v", svc, err)
 	}
 }
 

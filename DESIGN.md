@@ -309,6 +309,27 @@ another project's is deleted this way; a running machine takes `-f`. A
 driver whose resources
 live only in the store's directories (hcs, vz, fake) has none.
 
+### 6c. An instance runs straight from a driver's base
+
+A driver lists what it already has that an instance can run from with no
+layer (`Driver.Bases`, `machine.Base`; ADR 26-10-15-833): boxd's default
+image (`GetConfig`), and every ready snapshot in the account whose name does
+not start with `dvm-`, so no project's layers or orphans are bases. The other
+drivers have none. `images` lists each on a row of its own, after the store's
+images, with `-` for its layer.
+
+A ref goes to the store first, a tag or a layer ID, then to the driver's
+bases by name or ID (`Engine.Base`), so a tag of the same name hides a base
+and its ID still reaches it. `create` and `run` of a base make an instance
+that records the base instead of a layer (`Instance.Base`,
+`InstanceSpec.Base`, an empty `Chain`), cold, with nothing installed. A
+build's `from.image` may name one: its first layer is committed with no
+parent, and its key names the base's driver, ID, and version where a parent
+layer's ID would be, so a snapshot captured again builds again. `snapshot` of
+an instance of a base is a layer with no parent too. A base is not an image:
+`tag` and `rmi` refuse it (`ErrBase`), since it has no layer and
+disco-vm never deletes what it did not make.
+
 ### 7. Every clone is cold, and an image is made fast by what is in it
 
 Prepare makes one kind of clone (ADR 26-10-15-851): a copy-on-write clone of
@@ -344,15 +365,17 @@ Fast clones may come back once every driver's builds and snapshots are proven
 
 boxd offers machines and snapshots of running machines, not disk images, and
 no socket into a guest. The boxd driver maps the seam onto what it has, with
-nothing of disco-vm's in the guest but a shutdown hook. See
+nothing of disco-vm's in the guest. See
 [docs/drivers/boxd.md](docs/drivers/boxd.md).
 
 - **A layer is a snapshot** (memory and disk) of the guest booted from the
   committed disk. Commit starts the stopped instance and snapshots it, because
   boxd only snapshots a running machine. The layer is still cut from an
   orderly shutdown: the snapshot's disk is the one the guest flushed.
-- **A clone** restores the layer's snapshot and powers it off in order, so
-  its first boot is a cold boot of that disk.
+- **A clone** restores the layer's snapshot and stops it, so its first boot
+  is a cold boot of that disk. **An instance of a base** has no machine until
+  its first Boot makes one, from the image (`CreateVm`) or the snapshot
+  (`CreateVmFromSnapshot`), at the size that boot asks for.
 - **The guest's operations are Exec streams.** Each is one command line run
   as boxd's own user: `sudo -n -H -u USER -- env -C DIR -- K=V... ARGV...`,
   every word quoted, root unless the request names a user. Stdin, stdout,
@@ -364,15 +387,18 @@ nothing of disco-vm's in the guest but a shutdown hook. See
   command runs in a booted system. boxd authenticates every stream. An image
   installed before this carries an agent that nothing reaches; it does no
   harm.
-- **The URL is the machine's default proxy.** Prepare pins the default proxy
+- **The URL is the machine's default proxy.** Prepare (an instance of a
+  base's first Boot) pins the default proxy
   at `<machine>.boxd.sh` to 7302 and turns off bot protection, which would
   put a browser challenge in front of a request that wakes the machine.
   Pinning it also stops the proxy forwarding to whichever common port the
   guest listens on (80, 443, 8080, 8000, 3000, 5000, 5173).
-- **A guest cannot power its machine off.** boxd leaves a halted guest
-  `running`, so an orderly shutdown (`systemctl --no-block poweroff`) ends
-  with the driver stopping the machine through the API. A systemd shutdown hook marks the moment the
-  guest's disks are synced, and the driver waits for that mark.
+- **A machine's power is boxd's** (ADR 26-10-15-833). Its state is `GetVm`'s
+  status. An orderly shutdown runs `sync` in the guest, since boxd does not
+  say whether `StopVm` cuts the power, then `StopVm`; a reboot is `RebootVm`,
+  and Kill is `StopVm`. A guest that powers itself off from inside is not
+  supported: boxd leaves it `running`, and so does disco-vm, until `disco-vm
+  stop`. An image built before this has a shutdown hook that nothing reads.
 - **The driver talks to boxd's public gRPC API directly**, not through the
   boxd CLI: it works from a server that embeds the engine, from any host OS,
   and with an API key (`BOXD_API_KEY`) rather than a browser login.
@@ -413,14 +439,15 @@ forced off fails the build rather than caching a disk with unflushed writes.
 | | fake (all OSes, CI) | hcs | vz | boxd | docker |
 |---|---|---|---|---|---|
 | machine conformance suite (`pkg/machine/machinetest`) | ✅ | ✅ Win 11 Pro guest | ✅ macOS 27 guest | ⬜ `TestConformance` on boxd itself with no agent (it passed by hand with the agent, `BOXD_API_KEY`; the same operations passed by hand through the CLI, below); ✅ fake API (Linux CI), exec included; ⬜ `attach` on boxd itself (fake API only) | ✅ Docker 29.8 on Linux 7.0, from debian:trixie and ubuntu:24.04 (by hand, `DISCO_VM_DOCKER_IMAGE`) |
-| no shim: run, then exec/cp/stop/start/rm with a fresh credential each | n/a | n/a | n/a | ✅ by hand in a discobox (2026-10-08): exec and cp 5.5 minutes after `run`, once its sentinel had expired; stop, start, a guest's own `poweroff` found stopped by the next `ls`, rm | ✅ by hand (2026-10-09): no shim process after `run`; exec, a guest's own `systemctl poweroff` found stopped by the next `ls`, start, stop, rm; `machinetest` attach |
+| no shim: run, then exec/cp/stop/start/rm with a fresh credential each | n/a | n/a | n/a | ✅ by hand in a discobox (2026-10-08): exec and cp 5.5 minutes after `run`, once its sentinel had expired; stop, start, rm; a guest's own `poweroff`, then found through the shutdown hook, is not supported since ADR 26-10-15-833 | ✅ by hand (2026-10-09): no shim process after `run`; exec, a guest's own `systemctl poweroff` found stopped by the next `ls`, start, stop, rm; `machinetest` attach |
 | e2e CLI lifecycle (`internal/e2e`) | ✅ | ✅ `DISCO_VM_DRIVER=hcs` | ✅ `DISCO_VM_DRIVER=vz` | ⬜ (not run with `DISCO_VM_DRIVER=boxd` yet; the same lifecycle passed by hand with `docs/examples/boxd.yaml`) | ✅ `DISCO_VM_DRIVER=docker` |
-| guest operations, `machine.Guest`: exec, files, shutdown, info (`machinetest` checks exec's stdin, stdout, stderr, environment, directory, and exit code) | ✅ through the agent, and from another process through the shim's relay (`pkg/engine` tests) | ✅ in-guest, through the agent; ⬜ the shim's relay | ✅ in-guest (vsock, launchd daemon), through the agent; ⬜ the shim's relay | ✅ boxd by hand in a discobox (2026-10-15), with no agent: `docs/examples/boxd.yaml` built with no `--agent` (apt as root, an orderly shutdown, a commit), and `exec` with `-e`, `-w`, `-i`, separate stderr, and an exit code; `cp` in (root's, a directory's mode kept) and out, and a missing path refused; `inspect`'s info; `stop` in order, `start`, a guest's own `systemctl poweroff` found stopped, `rm`, `rmi`; an image the agent-based binary built ran, stopped, started, and was removed by the new one; ✅ fake API (`TestConformanceFakeAPI`, which reads back the driver's command lines; `TestCommand`, `TestCopyFromMissing`) | ✅ in-guest (systemd unit, unix socket through `docker exec`), through the agent |
+| guest operations, `machine.Guest`: exec, files, shutdown, info (`machinetest` checks exec's stdin, stdout, stderr, environment, directory, and exit code) | ✅ through the agent, and from another process through the shim's relay (`pkg/engine` tests) | ✅ in-guest, through the agent; ⬜ the shim's relay | ✅ in-guest (vsock, launchd daemon), through the agent; ⬜ the shim's relay | ✅ boxd by hand in a discobox (2026-10-15), with no agent: `docs/examples/boxd.yaml` built with no `--agent` (apt as root, an orderly shutdown, a commit), and `exec` with `-e`, `-w`, `-i`, separate stderr, and an exit code; `cp` in (root's, a directory's mode kept) and out, and a missing path refused; `inspect`'s info; `stop` in order (then through the shutdown hook; since ADR 26-10-15-833 `sync` and `StopVm`, 2026-10-16: a 512 MiB file written just before `stop` read back after `start` with the same SHA-256), `start`, `rm`, `rmi`; an image the agent-based binary built ran, stopped, started, and was removed by the new one; ✅ fake API (`TestConformanceFakeAPI`, which reads back the driver's command lines; `TestCommand`, `TestCopyFromMissing`) | ✅ in-guest (systemd unit, unix socket through `docker exec`), through the agent |
 | exec with a TTY | ✅ unix, ConPTY on the host | ✅ ConPTY in-guest | ✅ in-guest (`exec -t`) | ✅ boxd by hand (2026-10-15): `exec -t` has a pty at the terminal's 45 rows and 123 columns, and its exit code; ⬜ a resize (`window_change`), which the CLI does not send yet | ✅ in-guest (`exec -t`, the guest's own devpts) |
 | exec as a user | ✅ unix | ✅ in-guest (LogonUser, elevated) | ✅ in-guest (a user added with sysadminctl: uid, HOME, groups); ⬜ Homebrew | ✅ boxd by hand (2026-10-15): `exec -u boxd` runs as boxd with its HOME, and with no user as root with root's HOME, USER, LOGNAME, and sudo's `secure_path` | ✅ in-guest (`useradd`, `exec -u`) |
 | a tag recorded where the driver keeps layers (`TagLayer`, `UntagLayer`) | no-op | no-op | no-op | ✅ boxd by hand in a discobox (2026-10-12): `tag` waited for the tag's snapshot to be ready, `run` from the tag, `rmi`; the snapshot was not read back with `boxd snap ls`; ✅ fake API (`TestTagSnapshot`, `machinetest`) | no-op |
 | a build replaces a layer its driver lost, and rebuilds the layers after it (`LayerExists`) | ✅ `internal/e2e` TestLostLayer, `pkg/image` TestReplacedLayer | ⬜ | ⬜ | ✅ boxd by hand in a discobox (2026-10-13): a middle layer pointed at a snapshot name boxd does not have was replaced, the layer after it rebuilt, a third build was all cached, and `run` from the tag read both layers' files; no snapshot was actually deleted with `boxd snap rm`; ✅ fake API (`TestTagSnapshot`: `LayerExists`) | ⬜ |
 | projects, and the driver's resources the store has no record of listed as `<orphan>` and removed by name (`Driver.Orphans`, `RemoveOrphan`; `pkg/engine` TestOpenUpgradesADatabaseFromBeforeProjects, `machinetest`) | ✅ projects kept apart in one database, and a database from before projects upgraded; none to list | ⬜ (none to list) | ⬜ (none to list) | ✅ boxd by hand in a discobox (2026-10-15): a build and an instance in project `vtest` made `dvm-vtest--` machines and snapshots, a tag's included; an empty root listed all three as orphans in `vtest` and none in `default`; `rm` and `rmi` left none; a snapshot a deleted default store left behind was listed; from an empty root, `rm` destroyed the stopped orphan machine and `rmi` both orphan snapshots by name, which the default project could not; ✅ fake API (`TestEngineListsOrphans`, `machinetest`): machines and snapshots under other names, and other projects', are not listed or removed, nor is the store's own snapshot; a second store lists every one of the first's | ✅ by hand (2026-10-15, Docker on Linux 7.0): a project's container and images named for it, invisible to `default` and to a project whose name is a prefix of it, and listed as orphans from an empty root; a container named before projects is the default's orphan, and an unlabeled `dvm-` container is not one; `rm` refused the running orphan container without `-f` and removed it with it, `rmi` removed both orphan images, and another project could not; `images -a` listed the intermediate layer; ✅ `machinetest` (`DISCO_VM_DOCKER_IMAGE=debian:trixie`) |
+| a driver's bases listed, and an instance run from one with no layer; a build on a base, rebuilt for its new version; a snapshot of an instance of one; `tag` and `rmi` of a base refused (`Driver.Bases`, `InstanceSpec.Base`; `internal/e2e` TestBases; `machinetest` an-instance-of-a-base) | ✅ a catalog the test gives it | n/a (none) | n/a (none) | ✅ boxd by hand in a discobox (2026-10-16): `images` listed the default image (`europe-docker.pkg.dev/azin-console-prod/boxd/computer:0.1.52`) and no `dvm-` snapshot; `run` of it with no build in 6 s, systemd `running`, no disco-vm file in `system-shutdown/`; `stop` and `start` kept a file; `snapshot` of the instance made an image, and a cold `run` of it in 10 s read the file back; `tag` and `rmi` of the base refused; an empty root listed no orphans after; ⬜ on boxd itself: a hand-made snapshot as a base (the account had none), a base's machine made at a size asked for (not checked), a build on a base and its rebuild for a new version, and `machinetest`'s an-instance-of-a-base; ✅ fake API (`TestEngineRunsABase`: the default image and a hand-made snapshot listed, `dvm-` ones of every project not; no machine until the first start, which makes it from the snapshot, holding its disk, or from the image at the size asked; a snapshot of it runs; `machinetest` boots the default image and commits a layer from it) | n/a (none) |
 | a stopped instance snapshotted as an image, consuming the instance; a running one, or a bad tag, refused with the instance kept; an instance of the snapshot snapshotted in turn (`Engine.Snapshot`, `internal/e2e` TestSnapshot) | ✅ | ⬜ | ⬜ | ⬜ | ✅ `DISCO_VM_DRIVER=docker` (2026-10-15, Docker 29.9 on Linux 7.0, debian:trixie): two generations of snapshots, each instance's files read back from the next |
 | a root from before warm stages were removed: the table dropped, an instance made in resume mode kept, found by name and listed, and a new one added beside the old mode column (`pkg/engine` TestOpenDropsWarmStages); an instance prepared fast and never booted refused at start | ✅ the database | ⬜ a fork ticket refused | ⬜ `resume.pending` refused | ⬜ a stage's snapshot listed as an orphan (no new test; the generic orphan listing in `TestEngineListsOrphans` covers it) | n/a (never warm) |
 | unattended install from media (`docs/examples/<os>.yaml`) | n/a | ✅ `docs/examples/windows.yaml` | ✅ IPSW download, install, provisioning, agent bootstrap | n/a (boots a boxd image) | n/a (an image from a registry, with systemd and the agent added and its owners shifted: `docs/examples/docker.yaml`) |
