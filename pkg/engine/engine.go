@@ -47,22 +47,21 @@ import (
 type Engine struct {
 	Root   string
 	Driver machine.Driver
-	// Project scopes every image, instance, and stage the engine reads and
+	// Project scopes every image and instance the engine reads and
 	// makes, and the driver names what it makes for them after it.
 	Project string
 	Images  *image.Store
 	// Exe is the disco-vm binary, started as each instance's shim.
 	Exe string
 	// ShimCommand is how a shim is started: a program and its leading
-	// arguments, to which the shim's own ([--gui] INSTANCE, or --warm LAYER)
-	// are appended. Empty means Exe's `shim` subcommand. A program that embeds
-	// the engine points it at a subcommand of its own that opens the same
-	// root, driver, and project and calls ShimMain, so it ships no second
-	// binary.
+	// arguments, to which the shim's own ([--gui] INSTANCE) are appended.
+	// Empty means Exe's `shim` subcommand. A program that embeds the engine
+	// points it at a subcommand of its own that opens the same root, driver,
+	// and project and calls ShimMain, so it ships no second binary.
 	ShimCommand []string
 
-	// db holds the metadata: the image store's tables, instances, and warm
-	// stages. ownsDB is set when Open opened it, and Close then closes it.
+	// db holds the metadata: the image store's tables and instances. ownsDB
+	// is set when Open opened it, and Close then closes it.
 	db     *gormdb.Pools
 	ownsDB bool
 }
@@ -150,7 +149,12 @@ func (e *Engine) openState() error {
 	}
 	e.Images = store
 	err = e.db.Write.Transaction(func(tx *gorm.DB) error {
-		if err := tx.AutoMigrate(&Instance{}, &warmState{}); err != nil {
+		if err := tx.AutoMigrate(&Instance{}); err != nil {
+			return err
+		}
+		// Warm stages are gone (ADR 26-10-15-851), and with them what was
+		// asked of each. What a stage left in warm/ is the user's to delete.
+		if err := tx.Migrator().DropTable(legacyWarmTable); err != nil {
 			return err
 		}
 		// Before projects an instance's name was unique on its own.
@@ -175,7 +179,7 @@ func (e *Engine) Close() error {
 }
 
 // importFiles moves the metadata a disco-vm from before the database kept in
-// JSON files (instances/<id>/instance.json, warm/<layer>/warm.json) into it.
+// JSON files (instances/<id>/instance.json) into it.
 // A file is removed once its row is in, so each is imported once.
 func (e *Engine) importFiles() error {
 	insert := func(row any) error {
@@ -206,24 +210,6 @@ func (e *Engine) importFiles() error {
 			return err
 		}
 	}
-	entries, err = os.ReadDir(filepath.Join(e.Root, "warm"))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	for _, entry := range entries {
-		path := filepath.Join(e.warmDir(entry.Name()), "warm.json")
-		var st warmState
-		if err := fsutil.ReadJSON(path, &st); err != nil || st.Layer != entry.Name() {
-			continue
-		}
-		st.Project = machine.DefaultProject
-		if err := insert(&st); err != nil {
-			return fmt.Errorf("engine: import %s: %w", path, err)
-		}
-		if err := os.Remove(path); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -244,16 +230,15 @@ const (
 type Instance struct {
 	ID string `json:"id" gorm:"primaryKey"`
 	// Project is the instance's project; its name is unique within it.
-	Project string            `json:"project,omitempty" gorm:"not null;default:'default';uniqueIndex:idx_disco_vm_instances_project_name"`
-	Name    string            `json:"name" gorm:"uniqueIndex:idx_disco_vm_instances_project_name"`
-	Image   string            `json:"image"`
-	Layer   string            `json:"layer" gorm:"index"`
-	Driver  string            `json:"driver"`
-	GuestOS machine.OS        `json:"guestOS" gorm:"column:guest_os"`
-	Mode    machine.CloneMode `json:"mode"`
-	CPUs    int               `json:"cpus,omitempty" gorm:"column:cpus"`
-	Memory  uint64            `json:"memory,omitempty"`
-	Created time.Time         `json:"created"`
+	Project string     `json:"project,omitempty" gorm:"not null;default:'default';uniqueIndex:idx_disco_vm_instances_project_name"`
+	Name    string     `json:"name" gorm:"uniqueIndex:idx_disco_vm_instances_project_name"`
+	Image   string     `json:"image"`
+	Layer   string     `json:"layer" gorm:"index"`
+	Driver  string     `json:"driver"`
+	GuestOS machine.OS `json:"guestOS" gorm:"column:guest_os"`
+	CPUs    int        `json:"cpus,omitempty" gorm:"column:cpus"`
+	Memory  uint64     `json:"memory,omitempty"`
+	Created time.Time  `json:"created"`
 	// Temporary instances belong to a build and are not listed.
 	Temporary bool `json:"temporary,omitempty"`
 	// Forwards are served by the instance's shim whenever it runs.
@@ -265,6 +250,10 @@ func (Instance) TableName() string { return "disco_vm_instances" }
 
 // legacyNameIndex made an instance's name unique across projects.
 const legacyNameIndex = "idx_disco_vm_instances_name"
+
+// legacyWarmTable held what was asked of each warm stage. An instance's mode
+// column, from the same time, stays and is no longer read.
+const legacyWarmTable = "disco_vm_warm_stages"
 
 // Forward sends the connections a guest process opens to the host on a port
 // (guest.DialHost: vsock to the host on vz, hvsocket on HCS) to a Unix socket
@@ -284,27 +273,18 @@ func (e *Engine) machineSpec(inst *Instance) (machine.InstanceSpec, error) {
 	if err != nil {
 		return machine.InstanceSpec{}, err
 	}
-	spec := machine.InstanceSpec{
+	return machine.InstanceSpec{
 		ID:      inst.ID,
 		Project: inst.Project,
 		Dir:     filepath.Join(e.instanceDir(inst.ID), "machine"),
 		GuestOS: inst.GuestOS,
 		Chain:   chain,
-		Mode:    inst.Mode,
-	}
-	if inst.Mode != machine.Cold {
-		spec.WarmDir = e.warmMachineDir(inst.Layer)
-	}
-	return spec, nil
+	}, nil
 }
 
 // CreateOptions describes a new instance.
 type CreateOptions struct {
-	Name string
-	// Mode is how to clone the image. Empty means machine.Auto: the fastest
-	// mode the image is warm for, else cold. A fast mode named explicitly
-	// fails when the image is not warm for it.
-	Mode      machine.CloneMode
+	Name      string
 	CPUs      int
 	Memory    uint64
 	Temporary bool
@@ -329,10 +309,6 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 	if err := e.checkForwards(opts.Forwards); err != nil {
 		return nil, err
 	}
-	mode, err := e.cloneMode(ctx, ref, layerID, opts)
-	if err != nil {
-		return nil, err
-	}
 	id := fsutil.RandomHex(6)
 	name := opts.Name
 	if name == "" {
@@ -342,7 +318,7 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 	}
 	inst := &Instance{
 		ID: id, Project: e.Project, Name: name, Image: ref, Layer: layerID,
-		Driver: e.Driver.Name(), GuestOS: layer.GuestOS, Mode: mode,
+		Driver: e.Driver.Name(), GuestOS: layer.GuestOS,
 		CPUs: opts.CPUs, Memory: opts.Memory,
 		Created: time.Now().UTC(), Temporary: opts.Temporary,
 		Forwards: opts.Forwards,
@@ -352,13 +328,6 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (*I
 	}
 	spec, err := e.machineSpec(inst)
 	if err == nil {
-		err = e.Driver.Prepare(ctx, spec)
-	}
-	if errors.Is(err, machine.ErrNotWarm) && (opts.Mode == "" || opts.Mode == machine.Auto) {
-		// The stage went between asking and taking (another clone took the
-		// last one, or it was stale), and auto means whatever is fastest now.
-		_ = e.Driver.Destroy(ctx, spec)
-		inst.Mode, spec.Mode, spec.WarmDir = machine.Cold, machine.Cold, ""
 		err = e.Driver.Prepare(ctx, spec)
 	}
 	if err == nil {

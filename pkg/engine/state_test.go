@@ -38,7 +38,7 @@ func TestOpenImportsInstanceFiles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if inst.ID != "0123456789ab" || inst.GuestOS != machine.Linux || inst.Mode != machine.Cold || inst.CPUs != 2 ||
+		if inst.ID != "0123456789ab" || inst.GuestOS != machine.Linux || inst.CPUs != 2 ||
 			inst.Memory != 1<<30 || len(inst.Forwards) != 1 || inst.Forwards[0].Socket != "/run/x.sock" {
 			t.Fatalf("instance = %+v", inst)
 		}
@@ -93,8 +93,8 @@ func TestOpenInACallersDatabase(t *testing.T) {
 			t.Errorf("the engine made table %q, which is not named disco_vm_*", table)
 		}
 	}
-	if ours != 5 {
-		t.Errorf("tables = %v, want five named disco_vm_*", tables)
+	if ours != 4 {
+		t.Errorf("tables = %v, want four named disco_vm_*", tables)
 	}
 	if _, err := os.Stat(filepath.Join(root, "disco-vm.db")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the engine made a database of its own: %v", err)
@@ -206,6 +206,67 @@ func TestOpenUpgradesADatabaseFromBeforeProjects(t *testing.T) {
 	}
 	if err := db.Write.Table("disco_vm_instances").Create(map[string]any{"id": "fedcba987655", "project": "other", "name": "web"}).Error; err == nil {
 		t.Fatal("two instances in one project share a name")
+	}
+}
+
+// A database from when images could be warmed loses the warm stages' table,
+// and its instances, each with the clone mode it was made in, are kept and
+// can be added to: the mode column stays, and nothing reads or writes it.
+func TestOpenDropsWarmStages(t *testing.T) {
+	dir := t.TempDir()
+	db, err := gormdb.Open(gormdb.Config{DSN: filepath.Join(dir, "old.db"), Logger: logger.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	root := filepath.Join(dir, "root")
+	e, err := engine.Open(root, &fake.Driver{}, db, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Close(); err != nil {
+		t.Fatal(err)
+	}
+	type oldWarm struct {
+		Layer   string `gorm:"primaryKey"`
+		Project string
+		Image   string
+		Count   int
+	}
+	w := db.Write
+	if err := w.Table("disco_vm_warm_stages").AutoMigrate(&oldWarm{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Table("disco_vm_warm_stages").Create(&oldWarm{Layer: "aaaaaaaaaaaa1", Project: "default", Image: "app", Count: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Exec("ALTER TABLE disco_vm_instances ADD COLUMN mode text").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Table("disco_vm_instances").Create(map[string]any{"id": "0123456789ab", "project": "default", "name": "web", "layer": "aaaaaaaaaaaa1", "temporary": false, "mode": "resume"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		e, err := engine.Open(root, &fake.Driver{}, db, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inst, err := e.Get("web"); err != nil || inst.ID != "0123456789ab" {
+			t.Fatalf("the instance made in resume mode = %+v, %v", inst, err)
+		}
+		if list, err := e.List(); err != nil || len(list) != 1 || list[0].Name != "web" {
+			t.Fatalf("list = %v, %v", list, err)
+		}
+		if err := e.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w.Migrator().HasTable("disco_vm_warm_stages") {
+		t.Fatal("the warm stages' table is still there")
+	}
+	if err := w.Create(&engine.Instance{ID: "fedcba987654", Project: "default", Name: "api", Layer: "aaaaaaaaaaaa1"}).Error; err != nil {
+		t.Fatalf("an instance cannot be added beside the old mode column: %v", err)
 	}
 }
 

@@ -74,20 +74,16 @@ func imagesCommand(g *globals) *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "IMAGE\tLAYER\tOS\tDRIVER\tWARM\tCREATED")
+			fmt.Fprintln(w, "IMAGE\tLAYER\tOS\tDRIVER\tCREATED")
 			for _, img := range images {
-				warm := "-"
-				if stage, ok := e.Stage(cmd.Context(), img.Layer.ID); ok {
-					warm = describeStage(stage)
-				}
 				ref := img.Ref
 				if ref == "" {
 					ref = "<none>"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", ref, image.Short(img.Layer.ID), img.Layer.GuestOS, img.Layer.Driver, warm, ago(img.Layer.Created))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ref, image.Short(img.Layer.ID), img.Layer.GuestOS, img.Layer.Driver, ago(img.Layer.Created))
 			}
 			for _, o := range orphans(cmd.Context(), e, machine.OrphanLayer) {
-				fmt.Fprintf(w, "<orphan>\t%s\t-\t%s\t-\t%s\n", o.Name, e.Driver.Name(), ago(o.Created))
+				fmt.Fprintf(w, "<orphan>\t%s\t-\t%s\t%s\n", o.Name, e.Driver.Name(), ago(o.Created))
 			}
 			return w.Flush()
 		},
@@ -107,12 +103,7 @@ func rmiCommand(g *globals) *cobra.Command {
 				return err
 			}
 			for _, ref := range args {
-				// A stage holds memory or disk the user asked for; dropping
-				// it is its own decision.
-				id, err := e.Images.Resolve(ref)
-				if err == nil && e.IsWarm(id) {
-					return fmt.Errorf("image %s is warm; `disco-vm warm --rm %s` first", ref, ref)
-				}
+				_, err := e.Images.Resolve(ref)
 				if errors.Is(err, image.ErrNotFound) {
 					// Not an image: an orphaned layer of the project.
 					o, err := e.RemoveOrphan(cmd.Context(), machine.OrphanLayer, ref, false)

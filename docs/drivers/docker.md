@@ -189,8 +189,7 @@ Linux 7.0.11), 2026-10-09:
   no `shim.json`. `exec`, `start`, `stop`, and `rm` each attach. A guest's own
   `systemctl poweroff` shows as stopped in the next `ls`.
 - `internal/e2e` passes with `DISCO_VM_DRIVER=docker`, about 40 s, and leaves
-  no container or image behind. `TestWarm` skips, because the
-  driver lists no fast clone mode. (`TestURL` came after this run.)
+  no container or image behind. (`TestURL` came after this run.)
 - `docs/examples/docker.yaml` builds and runs through `run`, `exec`, `exec -t` (a
   TTY on the guest's own devpts), `exec -u`, `cp`, `stop`, `start`, `rm`, and
   `rmi`. A cold `run` takes 0.6 s, `stop` 0.4 s, and `start` 0.5 s. Writes and
@@ -221,7 +220,6 @@ Linux 7.0.11), 2026-10-09:
   `~/.docker/config.json`, but systemd starts services with a clean
   environment, so build steps do not see them. A spec's `env:` passes them to
   its steps.
-- **No fast clones.** A cold boot is under a second, so there is no `Warmer`.
 - **No shared directories.** A bind mount would show the guest the host's
   owners, which it does not map; it needs an idmapped mount.
 - **No forward** (guest to host), no display.

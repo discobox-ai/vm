@@ -56,10 +56,13 @@ var daemonPlist = `<?xml version="1.0" encoding="UTF-8"?>
 // sleep is turned off because a sleeping guest's agent answers nothing.
 //
 // Provisioning always makes the first account uid 501, which is also the first
-// account on the host. It is moved so that a warm stage can give 501 to the
-// host's own user (warm --local-user). Only a session with Full Disk Access
-// may change a user record, which SSH has and the agent's daemon has not, so
-// this happens here.
+// account on the host. It is moved off 501, which warm stages gave to the
+// host's own user until they were removed (ADR 26-10-15-851). disco-vm makes
+// no such account now; the move is kept so that layers and their cache keys
+// stay as they were, and an account at 501 has to be made over SSH as the
+// install account, not by a build step or exec: only a session with Full Disk
+// Access may change a user record, which SSH has and the agent's daemon has
+// not, so this happens here.
 var installScript = `set -e
 old=$(id -u "$2")
 if [ "$old" != "$3" ]; then

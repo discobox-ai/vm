@@ -35,7 +35,7 @@ func TestForward(t *testing.T) {
 	d := &Driver{}
 	ctx := context.Background()
 	inst := machine.InstanceSpec{ID: "fwd", Dir: filepath.Join(t.TempDir(), "fwd"), GuestOS: machine.Windows,
-		Chain: []machine.Layer{{ID: "base", Dir: base}}, Mode: machine.Cold}
+		Chain: []machine.Layer{{ID: "base", Dir: base}}}
 	if err := d.Prepare(ctx, inst); err != nil {
 		t.Fatal(err)
 	}

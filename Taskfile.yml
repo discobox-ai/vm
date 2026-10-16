@@ -68,13 +68,12 @@ tasks:
 
   # The vz conformance suite on real hardware. DISCO_VM_VZ_BASE names an
   # installed layer's directory (see docs/drivers/vz.md); without it the suite
-  # skips. caffeinate -d keeps the display awake, so the Mac does not lock
-  # mid-run: a vz restore needs the screen unlocked.
+  # skips. caffeinate -d keeps the display awake for the hours a run takes.
   test:vz:
     desc: Run the vz conformance suite on this Mac (needs DISCO_VM_VZ_BASE)
     platforms: [darwin]
     cmds:
-      - caffeinate -d go test -exec {{.ROOT_DIR}}/scripts/codesign-exec -timeout 4h -v -run 'TestConformance|TestResumeOrFallBack|TestWarmUser|TestTemplates' ./pkg/machine/vz
+      - caffeinate -d go test -exec {{.ROOT_DIR}}/scripts/codesign-exec -timeout 4h -v -run 'TestConformance' ./pkg/machine/vz
 
   # internal/e2e against vz: the signed binary, and a state root that keeps its
   # base install between runs (the first run installs macOS).

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -42,43 +41,11 @@ func (*Driver) Check(context.Context) error {
 }
 
 // Prepare clones the parent layer's bundle into the instance, with its own
-// machine identifier (and a MAC address on its first boot). A resume clone
-// only checks that the stage has a template and marks the instance: its first
-// boot takes a template that no running VM has, which only the process that
-// will run the VM can hold.
+// machine identifier (and a MAC address on its first boot).
 func (*Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
 	if len(inst.Chain) == 0 {
 		return errors.New("vz: instance has no image")
 	}
-	switch inst.Mode {
-	case "", machine.Cold:
-		return coldClone(inst)
-	case machine.Resume:
-		if ts, err := templates(inst.WarmDir, true); err != nil || len(ts) == 0 {
-			return fmt.Errorf("vz: %w", machine.ErrNotWarm)
-		}
-		if err := os.MkdirAll(inst.Dir, 0o700); err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(inst.Dir, pendingName), nil, 0o600)
-	default:
-		return fmt.Errorf("vz: clone mode %q: %w", inst.Mode, machine.ErrUnsupported)
-	}
-}
-
-// stageBase is what a resume clone boots cold from when it cannot resume: the
-// stage's base, which has the stage's user, or else the image.
-func stageBase(inst machine.InstanceSpec) bundle {
-	if inst.WarmDir != "" {
-		if base := bundle(filepath.Join(inst.WarmDir, "base")); base.installedLayer() == nil {
-			return base
-		}
-	}
-	return bundle(inst.Parent().Dir)
-}
-
-// coldClone clones the image into the instance with an identity of its own.
-func coldClone(inst machine.InstanceSpec) error {
 	dst := bundle(inst.Dir)
 	if err := cloneLayer(bundle(inst.Parent().Dir), dst); err != nil {
 		return err
@@ -86,10 +53,12 @@ func coldClone(inst machine.InstanceSpec) error {
 	return dst.newIdentifier()
 }
 
-// Boot starts a prepared instance and waits for its agent. A resume clone's
-// first boot restores a template, and falls back to a cold boot of the image
-// when none is free or the framework refuses the restore (a locked screen, a
-// host update). Every other boot is cold.
+// pendingName marked a resume clone that had not had its first boot, from
+// before resume clones were removed (ADR 26-10-15-851). Such an instance has
+// no disk to boot.
+const pendingName = "resume.pending"
+
+// Boot starts a prepared instance from power-off and waits for its agent.
 func (*Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
 	vm, err := bootInstance(inst, opts)
 	if err != nil {
@@ -109,24 +78,7 @@ func bootInstance(inst machine.InstanceSpec, opts machine.BootOptions) (*vmMachi
 		console = io.Discard
 	}
 	if _, err := os.Stat(b.path(pendingName)); err == nil {
-		vm, err := resumeTemplate(inst, opts)
-		if err == nil {
-			_ = os.Remove(b.path(pendingName))
-			fmt.Fprintln(console, "vz: resumed a template")
-			return vm, vm.display(opts)
-		}
-		src := stageBase(inst)
-		fmt.Fprintf(console, "%v; booting a cold clone of %s instead\n", err, src)
-		for _, name := range templateFiles {
-			_ = os.Remove(b.path(name))
-		}
-		if err := cloneLayer(src, b); err != nil {
-			return nil, err
-		}
-		if err := b.newIdentifier(); err != nil {
-			return nil, err
-		}
-		_ = os.Remove(b.path(pendingName))
+		return nil, fmt.Errorf("vz: instance %s was prepared as a resume clone and never booted, and resume clones are gone; remove it and run its image again", inst.ID)
 	}
 	if err := b.installed(); err != nil {
 		return nil, err
@@ -136,8 +88,8 @@ func bootInstance(inst machine.InstanceSpec, opts machine.BootOptions) (*vmMachi
 		return nil, err
 	}
 	if m.Template != "" {
-		// Restored from a template, so still its identity, which the
-		// template's next clone will run with too.
+		// A resume clone from before they were removed, restored from a
+		// template, so still the template's identity.
 		if err := b.newIdentifier(); err != nil {
 			return nil, err
 		}
@@ -179,50 +131,6 @@ func (m *vmMachine) display(opts machine.BootOptions) error {
 	return nil
 }
 
-// resumeTemplate locks a free template, clones it into the instance, and
-// restores it. The lock is held until the VM stops.
-func resumeTemplate(inst machine.InstanceSpec, opts machine.BootOptions) (*vmMachine, error) {
-	ts, err := templates(inst.WarmDir, false)
-	if err != nil {
-		return nil, err
-	}
-	b := bundle(inst.Dir)
-	for _, t := range ts {
-		lock, ok := lockTemplate(t)
-		if !ok {
-			continue
-		}
-		if err := cloneTemplate(t, b); err != nil {
-			lock.Close()
-			return nil, err
-		}
-		m, err := b.readMeta()
-		if err != nil {
-			lock.Close()
-			return nil, err
-		}
-		vm, err := resume(b, m, opts.Shares)
-		// The state is the template's; the clone's copy is done with.
-		_ = os.Remove(b.path(stateName))
-		if err != nil {
-			lock.Close()
-			return nil, err
-		}
-		m.Saved, m.Template = nil, filepath.Base(string(t))
-		if err := b.writeMeta(m); err != nil {
-			lock.Close()
-			_ = vm.Kill(context.Background())
-			return nil, err
-		}
-		go func() {
-			<-vm.done
-			lock.Close()
-		}()
-		return vm, nil
-	}
-	return nil, errors.New("vz: every template is running in another VM")
-}
-
 // start boots a bundle from power-off, provisioning its first account if asked.
 func start(b bundle, cpus uint, memory uint64, shares []machine.Share, provision *vz.MacGuestProvisioningOptions) (*vmMachine, error) {
 	var options []vz.VirtualMachineStartOption
@@ -236,30 +144,7 @@ func start(b bundle, cpus uint, memory uint64, shares []machine.Share, provision
 	return watch(vm), nil
 }
 
-// resume restores a bundle's saved state at the size it was saved at, which
-// a restore needs exactly.
-func resume(b bundle, m meta, shares []machine.Share) (*vmMachine, error) {
-	if m.Saved == nil {
-		return nil, errors.New("vz: the saved state has no record of its size")
-	}
-	// A restore takes a stopped VM to paused, holding the memory the guest
-	// had when it was saved; resuming is what makes it run.
-	vm, err := unlocked(b, m.Saved.CPUs, m.Saved.Memory, shares, func(vm *vz.VirtualMachine) error {
-		return vm.RestoreMachineStateFromURL(b.path(stateName))
-	})
-	if err != nil {
-		return nil, fmt.Errorf("vz: restore (\"permission denied\" means the Mac's screen is locked; \"invalid argument\" means the configuration differs from the saved one; a host OS update can invalidate a state too): %w", err)
-	}
-	if err := vm.Resume(); err != nil {
-		if vm.CanStop() {
-			_ = vm.Stop()
-		}
-		return nil, fmt.Errorf("vz: resume: %w", err)
-	}
-	return watch(vm), nil
-}
-
-// unlocked creates a VM for the bundle and starts or restores it, retrying
+// unlocked creates a VM for the bundle and starts it, retrying
 // while the bundle's auxiliary storage is locked. A VM holds that lock until
 // the VM object is freed, not merely stopped, and the bindings free it from a
 // finalizer, so a bundle booted again by the process that last booted it (the

@@ -15,3 +15,9 @@
   search of `pkg/machine/vz` by hand.** Its cgo files, its tests among them,
   compile only on a Mac, so neither Linux nor `GOOS=windows` vet sees a
   caller left behind there. (Commit 335ed4b.)
+- **A field removed from a struct that is read from a file and written back
+  stays, as `json.RawMessage`.** vz's `vz.json` and hcs's `state.json` are
+  read into a struct and rewritten whole, so a field that is no longer
+  declared is erased on the next write, along with whatever it held: a warm
+  user's only password, in vz's case. Keep it opaque, with a comment saying
+  why. (ADR 26-10-15-851.)

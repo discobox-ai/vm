@@ -18,7 +18,7 @@ const namePrefix = "dvm-"
 
 // Orphans lists the machines and snapshots in the caller's boxd context named
 // for known's project that known does not name: no instance's vm.json, no
-// layer's layer.json, no stage's stage.json, and no tag's snapshot name.
+// layer's layer.json, and no tag's snapshot name.
 func (d *Driver) Orphans(ctx context.Context, known machine.Known) ([]machine.Orphan, error) {
 	project := known.Project
 	if project == "" {
@@ -39,12 +39,6 @@ func (d *Driver) Orphans(ctx context.Context, known machine.Known) ([]machine.Or
 	}
 	for _, tag := range known.Tags {
 		snapshots[tagSnapshot(tag.Layer, tag.Ref)] = true
-	}
-	for _, dir := range known.Stages {
-		var snap snapshotRef
-		if readJSON(filepath.Join(dir, stageFile), &snap) == nil {
-			snapshots[snap.Name] = true
-		}
 	}
 
 	api, err := d.api.API()

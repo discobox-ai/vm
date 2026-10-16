@@ -28,9 +28,6 @@ var (
 	procHcsCloseComputeSystem          = computecore.NewProc("HcsCloseComputeSystem")
 	procHcsStartComputeSystem          = computecore.NewProc("HcsStartComputeSystem")
 	procHcsTerminateComputeSystem      = computecore.NewProc("HcsTerminateComputeSystem")
-	procHcsPauseComputeSystem          = computecore.NewProc("HcsPauseComputeSystem")
-	procHcsSaveComputeSystem           = computecore.NewProc("HcsSaveComputeSystem")
-	procHcsModifyComputeSystem         = computecore.NewProc("HcsModifyComputeSystem")
 	procHcsGetComputeSystemProperties  = computecore.NewProc("HcsGetComputeSystemProperties")
 	procHcsSetComputeSystemCallback    = computecore.NewProc("HcsSetComputeSystemCallback")
 	procHcsGrantVMAccess               = computecore.NewProc("HcsGrantVmAccess")
@@ -46,9 +43,6 @@ const (
 	genericAll = 0x10000000
 
 	eAccessDenied = 0x80070005
-	// eResources is ERROR_NO_SYSTEM_RESOURCES as an HRESULT: a save as
-	// template without the commit headroom to materialize guest memory.
-	eResources = 0x800705AA
 )
 
 // hcsError is a failed HCS call with the result document HCS explained it in.
@@ -67,13 +61,6 @@ func (e *hcsError) Error() string {
 		msg += ": " + e.Detail
 	}
 	return msg
-}
-
-func hresultOf(err error) uint32 {
-	if he, ok := errors.AsType[*hcsError](err); ok {
-		return he.HR
-	}
-	return 0
 }
 
 // errorDetail pulls the human part out of an HCS result document, which is
@@ -163,9 +150,8 @@ func call2(op string, p *windows.LazyProc, args ...string) error {
 	return err
 }
 
-// system is an open handle on a compute system. A template can only be forked
-// through the handle, in the process, that created it, so the handle is kept
-// for as long as the system is ours.
+// system is an open handle on a compute system, kept for as long as the
+// system is ours.
 //
 // HCS frees a handle's memory on close, so every use takes mu and a closed
 // system refuses calls instead of passing a dangling handle.
@@ -236,35 +222,6 @@ func (s *system) start() error {
 
 func (s *system) terminate() error {
 	_, err := s.op("HcsTerminateComputeSystem", procHcsTerminateComputeSystem, "")
-	return err
-}
-
-func (s *system) pause(options string) error {
-	_, err := s.op("HcsPauseComputeSystem", procHcsPauseComputeSystem, options)
-	return err
-}
-
-func (s *system) save(options string) error {
-	_, err := s.op("HcsSaveComputeSystem", procHcsSaveComputeSystem, options)
-	return err
-}
-
-func (s *system) modify(request any) error {
-	config, err := json.Marshal(request)
-	if err != nil {
-		return err
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.handle == 0 {
-		return errClosed
-	}
-	configp := utf16(string(config))
-	_, err = run("HcsModifyComputeSystem", func(op uintptr) uintptr {
-		hr, _, _ := procHcsModifyComputeSystem.Call(s.handle, op, uintptr(unsafe.Pointer(configp)), 0)
-		return hr
-	})
-	runtime.KeepAlive(configp)
 	return err
 }
 
@@ -360,10 +317,9 @@ func (s *system) onEvent(fn func(typ uint32, data string)) (func(), error) {
 
 // listedSystem is one element of HcsEnumerateComputeSystems.
 type listedSystem struct {
-	ID                string `json:"Id"`
-	Owner             string `json:"Owner"`
-	State             string `json:"State"`
-	RuntimeTemplateID string `json:"RuntimeTemplateId"`
+	ID    string `json:"Id"`
+	Owner string `json:"Owner"`
+	State string `json:"State"`
 }
 
 func enumerate() ([]listedSystem, error) {

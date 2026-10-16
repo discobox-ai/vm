@@ -76,57 +76,6 @@ func TestConformanceFakeAPI(t *testing.T) {
 	}
 }
 
-// TestWarmAtAnotherSize stages an image at a size its layer was not
-// snapshotted at, which takes a snapshot of its own that Cool deletes.
-func TestWarmAtAnotherSize(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
-	}
-	dir, err := os.MkdirTemp("", "boxd")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	d, fake := fakeDriver(t, dir)
-	ctx := context.Background()
-
-	base := machine.Layer{ID: "base", Dir: filepath.Join(dir, "layer")}
-	if err := os.MkdirAll(base.Dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, base); err != nil {
-		t.Fatal(err)
-	}
-	spec := machine.WarmSpec{GuestOS: machine.Linux, Chain: []machine.Layer{base}, Dir: filepath.Join(dir, "warm"), CPUs: 8, Memory: 32 << 30}
-	if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Warm(ctx, spec); err != nil {
-		t.Fatal(err)
-	}
-	var stage snapshotRef
-	if err := readJSON(filepath.Join(spec.Dir, stageFile), &stage); err != nil {
-		t.Fatal(err)
-	}
-	if !stage.Own || stage.CPUs != 8 || stage.Memory != 32<<30 {
-		t.Fatalf("stage %+v, want its own snapshot at 8 CPUs and 32 GiB", stage)
-	}
-	if w, err := d.Warmth(ctx, spec); err != nil || w != (machine.Warmth{Mode: machine.Resume, Clones: -1}) {
-		t.Fatalf("warmth %+v, %v", w, err)
-	}
-	if err := d.Cool(ctx, spec); err != nil {
-		t.Fatal(err)
-	}
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if _, ok := fake.snapshots[stage.Name]; ok {
-		t.Fatal("Cool left the stage's own snapshot")
-	}
-	if len(fake.vms) != 0 {
-		t.Fatalf("%d machines were left behind", len(fake.vms))
-	}
-}
-
 // TestTagSnapshot checks that a tag is a snapshot of its own beside the
 // layer's, named so that a listing says what it is, and that untagging deletes
 // only it.

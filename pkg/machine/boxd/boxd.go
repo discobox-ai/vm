@@ -11,10 +11,6 @@
 //   - An instance is a boxd machine restored from its parent layer's snapshot,
 //     named in the instance's vm.json. A cold clone is powered off in order
 //     once restored, so its first boot is a cold boot of the layer's disk.
-//     A resume clone is suspended once restored, and its first boot resumes it.
-//   - A warm stage points at a snapshot to resume from: the layer's own, or one
-//     taken at another size. A snapshot restores any number of times, so a warm
-//     image never runs out (Warmth.Clones is -1).
 //
 // There is no hypervisor socket to the guest, and no disco-vm agent in it.
 // The guest's operations (machine.Guest) are boxd's authenticated Exec stream:
@@ -64,7 +60,6 @@ const (
 
 	layerFile = "layer.json"
 	vmFile    = "vm.json"
-	stageFile = "stage.json"
 
 	// waitLimit bounds each wait for a machine or snapshot to change state.
 	waitLimit = 10 * time.Minute
@@ -77,7 +72,6 @@ type Driver struct {
 
 var (
 	_ machine.Driver   = (*Driver)(nil)
-	_ machine.Warmer   = (*Driver)(nil)
 	_ machine.Attacher = (*Driver)(nil)
 )
 
@@ -89,9 +83,8 @@ func (*Driver) Name() string { return "boxd" }
 
 func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
-		GuestOS:    []machine.OS{machine.Linux},
-		CloneModes: []machine.CloneMode{machine.Cold, machine.Resume},
-		Remote:     true,
+		GuestOS: []machine.OS{machine.Linux},
+		Remote:  true,
 	}
 }
 
@@ -108,16 +101,13 @@ func (d *Driver) Check(ctx context.Context) error {
 	return nil
 }
 
-// snapshotRef is a layer's layer.json and a stage's stage.json.
+// snapshotRef is a layer's layer.json.
 type snapshotRef struct {
 	Name    string `json:"name"`
 	ID      string `json:"id"`
 	Version uint64 `json:"version"`
 	CPUs    uint32 `json:"cpus"`
 	Memory  uint64 `json:"memory"`
-	// Own is set on a stage that took its own snapshot, which Cool deletes. A
-	// stage that points at its layer's snapshot leaves it to DeleteLayer.
-	Own bool `json:"own,omitempty"`
 }
 
 // vmRef is an instance's vm.json.
@@ -217,45 +207,20 @@ func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
 	if err != nil {
 		return err
 	}
-	switch inst.Mode {
-	case "", machine.Cold:
-		var layer snapshotRef
-		if err := readJSON(filepath.Join(inst.Parent().Dir, layerFile), &layer); err != nil {
-			return fmt.Errorf("boxd: layer %s: %w", inst.Parent().ID, err)
-		}
-		vm, err := d.restore(ctx, api, inst, layer.Name)
-		if err != nil {
-			return err
-		}
-		if err := d.expose(ctx, api, inst); err != nil {
-			return err
-		}
-		// The snapshot is of a running guest. Power it off in order, so the
-		// first boot is a cold boot of the layer's disk.
-		return d.powerOff(ctx, api, vm)
-	case machine.Resume:
-		var stage snapshotRef
-		if err := readJSON(filepath.Join(inst.WarmDir, stageFile), &stage); err != nil {
-			return fmt.Errorf("boxd: %w", machine.ErrNotWarm)
-		}
-		vm, err := d.restore(ctx, api, inst, stage.Name)
-		if isNotFound(err) {
-			return fmt.Errorf("boxd: snapshot %s is gone: %w", stage.Name, machine.ErrNotWarm)
-		}
-		if err != nil {
-			return err
-		}
-		if err := d.expose(ctx, api, inst); err != nil {
-			return err
-		}
-		// Held suspended, with its memory, until Boot resumes it.
-		if _, err := api.SuspendVm(ctx, &boxdapi.SuspendVmRequest{VmId: vm}); err != nil {
-			return fmt.Errorf("boxd: suspend %s: %w", vm, err)
-		}
-		return nil
-	default:
-		return fmt.Errorf("boxd: clone mode %q: %w", inst.Mode, machine.ErrUnsupported)
+	var layer snapshotRef
+	if err := readJSON(filepath.Join(inst.Parent().Dir, layerFile), &layer); err != nil {
+		return fmt.Errorf("boxd: layer %s: %w", inst.Parent().ID, err)
 	}
+	vm, err := d.restore(ctx, api, inst, layer.Name)
+	if err != nil {
+		return err
+	}
+	if err := d.expose(ctx, api, inst); err != nil {
+		return err
+	}
+	// The snapshot is of a running guest. Power it off in order, so the first
+	// boot is a cold boot of the layer's disk.
+	return d.powerOff(ctx, api, vm)
 }
 
 // restore creates the instance's machine from a snapshot and waits for it to
@@ -566,99 +531,6 @@ func tagSnapshot(layer machine.Layer, ref string) string {
 		}
 	}
 	return head + strings.Trim(b.String(), "-") + tail
-}
-
-// Warm points the stage at a snapshot to resume clones from. At the layer's
-// own size that is the layer's snapshot; at another size it is a new snapshot
-// of the layer booted at that size.
-func (d *Driver) Warm(ctx context.Context, spec machine.WarmSpec) (machine.Stage, error) {
-	if len(spec.Chain) == 0 {
-		return nil, errors.New("boxd: warm: no image")
-	}
-	if spec.User != nil {
-		return nil, fmt.Errorf("boxd: warm: a stage that logs in a user: %w", machine.ErrUnsupported)
-	}
-	var layer snapshotRef
-	if err := readJSON(filepath.Join(spec.Chain[len(spec.Chain)-1].Dir, layerFile), &layer); err != nil {
-		return nil, fmt.Errorf("boxd: warm: %w", err)
-	}
-	cpus, memory := uint32(spec.CPUs), spec.Memory
-	sized := func(s snapshotRef) bool {
-		return (cpus == 0 || cpus == s.CPUs) && (memory == 0 || memory == s.Memory)
-	}
-	path := filepath.Join(spec.Dir, stageFile)
-	var old snapshotRef
-	if readJSON(path, &old) == nil {
-		if sized(old) {
-			return nil, nil
-		}
-		if err := d.Cool(ctx, spec); err != nil {
-			return nil, err
-		}
-		if err := os.MkdirAll(spec.Dir, 0o755); err != nil {
-			return nil, err
-		}
-	}
-	log := logger(spec.Log)
-	if sized(layer) {
-		log("boxd: clones resume from the layer's snapshot %s", layer.Name)
-		return nil, writeJSON(path, layer)
-	}
-
-	api, err := d.api.API()
-	if err != nil {
-		return nil, err
-	}
-	log("boxd: snapshotting the image at %d CPUs, %d bytes", cpus, memory)
-	inst := machine.InstanceSpec{ID: "warm", Project: spec.Chain[len(spec.Chain)-1].Project, Dir: filepath.Join(spec.Dir, "tmp-"+fsutil.RandomHex(6)), Chain: spec.Chain, Mode: machine.Cold}
-	defer func() { _ = d.Destroy(context.Background(), inst) }()
-	if err := d.Prepare(ctx, inst); err != nil {
-		return nil, err
-	}
-	m, err := d.Boot(ctx, inst, machine.BootOptions{CPUs: spec.CPUs, Memory: spec.Memory})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = m.Kill(context.Background()) }()
-	var ref vmRef
-	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
-		return nil, err
-	}
-	snap, err := d.snapshot(ctx, api, ref.ID, spec.Chain[len(spec.Chain)-1])
-	if err != nil {
-		return nil, err
-	}
-	snap.Own = true
-	return nil, writeJSON(path, snap)
-}
-
-func (d *Driver) Warmth(ctx context.Context, spec machine.WarmSpec) (machine.Warmth, error) {
-	var stage snapshotRef
-	if err := readJSON(filepath.Join(spec.Dir, stageFile), &stage); err != nil {
-		return machine.Warmth{Mode: machine.Cold}, nil //nolint:nilerr // no readable stage snapshot means a cold start, not a failure
-	}
-	api, err := d.api.API()
-	if err != nil {
-		return machine.Warmth{Mode: machine.Cold}, err
-	}
-	got, err := api.GetSnapshot(ctx, &boxdapi.GetSnapshotRequest{Name: stage.Name})
-	if isNotFound(err) || (err == nil && got.GetSnapshot().GetStatus() != "ready") {
-		return machine.Warmth{Mode: machine.Cold}, nil
-	}
-	if err != nil {
-		return machine.Warmth{Mode: machine.Cold}, fmt.Errorf("boxd: snapshot %s: %w", stage.Name, err)
-	}
-	return machine.Warmth{Mode: machine.Resume, Clones: -1}, nil
-}
-
-func (d *Driver) Cool(ctx context.Context, spec machine.WarmSpec) error {
-	var stage snapshotRef
-	if readJSON(filepath.Join(spec.Dir, stageFile), &stage) == nil && stage.Own {
-		if err := d.deleteSnapshot(ctx, stage.Name); err != nil {
-			return err
-		}
-	}
-	return os.RemoveAll(spec.Dir)
 }
 
 // snapshot captures a running machine under a new name for layer,

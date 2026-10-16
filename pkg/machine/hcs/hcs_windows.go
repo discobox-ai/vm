@@ -2,6 +2,7 @@ package hcs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,23 +27,18 @@ func init() {
 // Driver runs Windows guests as HCS virtual machines.
 type Driver struct{}
 
-var (
-	_ machine.Driver = (*Driver)(nil)
-	_ machine.Warmer = (*Driver)(nil)
-)
+var _ machine.Driver = (*Driver)(nil)
 
 func (*Driver) Name() string { return "hcs" }
 
-// Capabilities is what the driver offers on this host: cold clones,
-// live-template fork (many clones from one frozen template, about a second
-// each), and a display: the VM's video console, shown by mstsc.
+// Capabilities is what the driver offers on this host: Windows guests, and a
+// display: the VM's video console, shown by mstsc.
 func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
-		GuestOS:    []machine.OS{machine.Windows},
-		CloneModes: []machine.CloneMode{machine.Cold, machine.Fork},
-		Display:    true,
-		Forward:    true,
-		Agent:      true,
+		GuestOS: []machine.OS{machine.Windows},
+		Display: true,
+		Forward: true,
+		Agent:   true,
 	}
 }
 
@@ -53,6 +49,11 @@ const (
 	guestFileName = "guest.vmgs"
 	stateFileName = "runtime.vmrs"
 	stateJSON     = "state.json"
+	// forkDiskName is the template disk a fork clone, from before fork
+	// clones were removed (ADR 26-10-15-851), hard-linked into its own
+	// directory. Its disk differences over it, so it boots like any other
+	// instance but cannot be committed.
+	forkDiskName = "template.vhdx"
 )
 
 func layerDisk(layer machine.Layer) string { return filepath.Join(layer.Dir, diskName) }
@@ -61,8 +62,10 @@ func layerDisk(layer machine.Layer) string { return filepath.Join(layer.Dir, dis
 type instanceState struct {
 	// MAC is asked for again on every boot, so the guest keeps one adapter.
 	MAC string `json:"mac,omitempty"`
-	// Fork is set from a fork Prepare until the boot that forks.
-	Fork *forkTicket `json:"fork,omitempty"`
+	// Fork is a fork clone's claim on its template, set from its Prepare
+	// until its first boot, from before fork clones were removed. Such an
+	// instance has no disk to boot.
+	Fork json.RawMessage `json:"fork,omitempty"`
 }
 
 func readState(dir string) instanceState {
@@ -116,14 +119,7 @@ func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
 	if err := os.MkdirAll(inst.Dir, 0o755); err != nil {
 		return err
 	}
-	switch inst.Mode {
-	case "", machine.Cold:
-		return createDiff(filepath.Join(inst.Dir, diskName), layerDisk(inst.Parent()))
-	case machine.Fork:
-		return d.prepareFork(inst)
-	default:
-		return fmt.Errorf("hcs: clone mode %q: %w", inst.Mode, machine.ErrUnsupported)
-	}
+	return createDiff(filepath.Join(inst.Dir, diskName), layerDisk(inst.Parent()))
 }
 
 // grantPaths is every file and directory a VM booting inst must be able to
@@ -185,7 +181,7 @@ func terminateStale(id string) {
 // window on the VM's video console that closes when the VM stops. Closing the
 // window leaves the VM running.
 func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
-	m, err := d.boot(ctx, inst, opts)
+	m, err := d.boot(inst, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +215,7 @@ func (d *Driver) view(m *vm, inst machine.InstanceSpec, opts machine.BootOptions
 	}()
 }
 
-func (d *Driver) boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (*vm, error) {
+func (d *Driver) boot(inst machine.InstanceSpec, opts machine.BootOptions) (*vm, error) {
 	if len(opts.Shares) > 0 {
 		return nil, fmt.Errorf("hcs: shared directories: %w", machine.ErrUnsupported)
 	}
@@ -229,7 +225,7 @@ func (d *Driver) boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 	}
 	st := readState(inst.Dir)
 	if st.Fork != nil {
-		return d.bootFork(ctx, inst, st, log)
+		return nil, fmt.Errorf("hcs: instance %s was prepared as a fork clone and never booted, and fork clones are gone; remove it and run its image again", inst.ID)
 	}
 	id := vmID(inst.Dir)
 	terminateStale(id)
@@ -266,7 +262,7 @@ func (d *Driver) Commit(_ context.Context, inst machine.InstanceSpec, dst machin
 		return fmt.Errorf("hcs: instance %s is still running; it must be stopped to commit", inst.ID)
 	}
 	if _, err := os.Stat(filepath.Join(inst.Dir, forkDiskName)); err == nil {
-		return fmt.Errorf("hcs: instance %s is a fork clone, whose disk depends on its template's; commit a cold clone", inst.ID)
+		return fmt.Errorf("hcs: instance %s is a fork clone, whose disk depends on its template's; it cannot be committed", inst.ID)
 	}
 	if err := os.MkdirAll(dst.Dir, 0o755); err != nil {
 		return err

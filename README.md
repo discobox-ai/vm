@@ -19,9 +19,9 @@ disco-vm works on its own, and it is also meant to become a
 > every OS through a `fake` driver. That covers the CLI, the YAML image
 > builder and its layer cache, the image store, instance lifecycle with a shim
 > per VM, and the guest agent and its protocol. The `vz` driver runs macOS 27
-> guests on Apple silicon, including resume clones and a native window
-> (`--gui`) ([docs/drivers/vz.md](docs/drivers/vz.md)). The `hcs` driver's
-> brief is [docs/drivers/hcs.md](docs/drivers/hcs.md). The `boxd` driver passes
+> guests on Apple silicon, with a native window (`--gui`)
+> ([docs/drivers/vz.md](docs/drivers/vz.md)). The `hcs` driver's brief is
+> [docs/drivers/hcs.md](docs/drivers/hcs.md). The `boxd` driver passes
 > the conformance suite against boxd itself, and `docs/examples/boxd.yaml` builds and
 > runs on it by hand; `internal/e2e` does not run on it yet (see
 > [docs/drivers/boxd.md](docs/drivers/boxd.md)). The `docker` driver passes the

@@ -1,6 +1,6 @@
 // Package e2e drives the real disco-vm binary through its whole lifecycle: build
 // (install, layers, cache), images, run, exec, cp, stop, start, snapshot, rm,
-// rmi, warm.
+// rmi.
 // On the fake driver it is the neutral proof of everything above the driver
 // seam, and it runs on every OS.
 //
@@ -195,9 +195,8 @@ func newEnv(t *testing.T) env {
 	}
 	e := env{t: t, root: tg.root}
 	// Whatever a failed run left, so that this one builds its layers anew.
-	e.run("rm", "-f", "dev", "dev2", "before", "one", "two", "after", "fw", "svc", "nosvc", "snap", "snap2")
-	e.run("warm", "--rm", "test/warm")
-	for _, ref := range []string{"test/app:v1", "test/app:latest", "test/app:other", "test/warm", "test/fwd", "test/svc", "test/nosvc", "test/snap:v2", "test/snap:v1", "test/snap:base"} {
+	e.run("rm", "-f", "dev", "dev2", "fw", "svc", "nosvc", "snap", "snap2")
+	for _, ref := range []string{"test/app:v1", "test/app:latest", "test/app:other", "test/fwd", "test/svc", "test/nosvc", "test/snap:v2", "test/snap:v1", "test/snap:base"} {
 		e.run("rmi", ref)
 	}
 	spec := filepath.Join(t.TempDir(), "base.yaml")
@@ -223,7 +222,6 @@ func (e env) release() {
 		e.run(append([]string{"rm", "-f"}, ids...)...)
 	}
 	for _, ref := range rows(e.ok("images")) {
-		e.run("warm", "--rm", ref)
 		e.run("rmi", ref)
 	}
 	// What is left is untagged, and named by its layer.
@@ -516,120 +514,6 @@ func TestInfo(t *testing.T) {
 			t.Fatalf("build --gui on the fake driver: exit %d\n%s", code, out)
 		}
 	}
-}
-
-// A warm image serves clones from its stage. A template (hcs fork, vz resume)
-// serves any number; a pool (fake) serves one per staged clone until it is
-// used up, then auto falls back to cold and an explicit resume says to warm
-// again.
-func TestWarm(t *testing.T) {
-	e := newEnv(t)
-	// The driver's fast mode.
-	info := e.ok("info")
-	fast := "resume"
-	if strings.Contains(info, `"fork"`) {
-		fast = "fork"
-	} else if !strings.Contains(info, `"resume"`) {
-		t.Skipf("driver %s clones cold only", tg.driver)
-	}
-	contextDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(contextDir, "greeting.txt"), []byte("warm hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	spec := fmt.Sprintf(`
-from:
-  install: %s
-layers:
-  - name: files
-    steps:
-      - copy: {src: greeting.txt, dst: %s}
-`, tg.install, tg.file(""))
-	specPath := filepath.Join(contextDir, "disco-vm.yaml")
-	if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	e.ok("build", "-f", specPath, "-t", "test/warm")
-	mode := func(name string) string {
-		t.Helper()
-		out := e.ok("inspect", name)
-		for _, m := range []string{"cold", "resume", "fork"} {
-			if strings.Contains(out, `"mode": "`+m+`"`) {
-				return m
-			}
-		}
-		t.Fatalf("inspect %s shows no mode:\n%s", name, out)
-		return ""
-	}
-
-	// Cold until warmed.
-	e.ok("run", "--name", "before", "test/warm")
-	if got := mode("before"); got != "cold" {
-		t.Fatalf("an instance of a cold image cloned %s", got)
-	}
-	if _, code := e.run("run", "--mode", fast, "test/warm"); code == 0 {
-		t.Fatalf("a %s clone of an image never warmed was allowed", fast)
-	}
-	// No more than two run at once anywhere in this test: vz allows two.
-	e.ok("rm", "-f", "before")
-
-	// A template says "<mode> clones", any number; a pool counts them.
-	warmed := e.ok("warm", "--count", "2", "test/warm")
-	unlimited := strings.Contains(warmed, "warm, "+fast+" clones")
-	if unlimited {
-		mustContain(t, e.ok("images"), fast+" clones")
-	} else {
-		mustContain(t, warmed, "warm, 2 "+fast+" clones")
-		mustContain(t, e.ok("images"), "2 "+fast+" clones")
-	}
-	// Auto takes the fast mode, and naming it does too.
-	e.ok("run", "--name", "one", "test/warm")
-	e.ok("run", "--name", "two", "--mode", fast, "test/warm")
-	for _, name := range []string{"one", "two"} {
-		if got := mode(name); got != fast {
-			t.Fatalf("instance %s of a warm image cloned %s", name, got)
-		}
-		mustContain(t, e.ok(append([]string{"exec", name}, catArgv("greeting.txt")...)...), "warm hello")
-	}
-	mustContain(t, e.ok("ls"), fast)
-	e.ok("rm", "-f", "one", "two")
-
-	if unlimited {
-		// A template is never used up.
-		e.ok("run", "--name", "after", "test/warm")
-		if got := mode("after"); got != fast {
-			t.Fatalf("an instance of a warm template cloned %s", got)
-		}
-		mustContain(t, e.ok("warm", "test/warm"), "warm, "+fast+" clones")
-	} else {
-		// Used up: auto boots cold, and resume says to warm again.
-		e.ok("run", "--name", "after", "test/warm")
-		if got := mode("after"); got != "cold" {
-			t.Fatalf("an instance of a used-up stage cloned %s", got)
-		}
-		out, code := e.run("run", "--mode", "resume", "test/warm")
-		if code == 0 {
-			t.Fatal("a resume clone of a used-up stage was allowed")
-		}
-		mustContain(t, out, "disco-vm warm test/warm")
-		mustContain(t, e.ok("images"), "used up (0 of 2)")
-
-		// Warming again tops the stage up.
-		mustContain(t, e.ok("warm", "test/warm"), "1 resume clone")
-	}
-
-	// A warm image is not deleted out from under its stage.
-	e.ok("rm", "-f", "after")
-	if _, code := e.run("rmi", "test/warm"); code == 0 {
-		t.Fatal("rmi deleted a warm image")
-	}
-	mustContain(t, e.ok("warm", "--rm", "test/warm"), "cooled")
-	if strings.Contains(e.ok("images"), "clone") {
-		t.Fatal("a cooled image still shows a stage")
-	}
-	if entries, _ := os.ReadDir(filepath.Join(e.root, "warm")); len(entries) != 0 {
-		t.Fatalf("warm --rm left %d stages on disk", len(entries))
-	}
-	e.ok("rmi", "test/warm")
 }
 
 // Every instance has one service. Its URL is served while it runs, and the

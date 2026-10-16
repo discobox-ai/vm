@@ -72,7 +72,7 @@ func TestShimCommand(t *testing.T) {
 
 func TestShimMainArgs(t *testing.T) {
 	e := &engine.Engine{}
-	for _, args := range [][]string{nil, {"a", "b"}, {"--gui", "--warm", "x"}} {
+	for _, args := range [][]string{nil, {"a", "b"}, {"--warm", "x"}} {
 		if err := e.ShimMain(context.Background(), args); err == nil || !strings.Contains(err.Error(), "want [--gui] INSTANCE") {
 			t.Errorf("ShimMain(%q) = %v, want a usage error", args, err)
 		}

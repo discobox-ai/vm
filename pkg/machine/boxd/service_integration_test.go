@@ -36,7 +36,7 @@ func TestService(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = d.DeleteLayer(context.Background(), base) })
 	}
-	inst := machine.InstanceSpec{ID: "service", Dir: t.TempDir(), GuestOS: machine.Linux, Chain: []machine.Layer{base}, Mode: machine.Cold}
+	inst := machine.InstanceSpec{ID: "service", Dir: t.TempDir(), GuestOS: machine.Linux, Chain: []machine.Layer{base}}
 	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
 	if err := d.Prepare(ctx, inst); err != nil {
 		t.Fatal(err)

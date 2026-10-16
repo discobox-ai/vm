@@ -4,16 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // Orphans lists what the driver holds that this store has no record of: a
-// machine no instance names, a snapshot or image no layer, tag, or stage
-// names. It asks the driver's service every time, so that nothing the store
-// lost track of can stay out of sight; ls and images list them with the
+// machine no instance names, a snapshot or image no layer or tag names. It
+// asks the driver's service every time, so that nothing the store lost track
+// of can stay out of sight; ls and images list them with the
 // instances and images.
 func (e *Engine) Orphans(ctx context.Context) ([]machine.Orphan, error) {
 	known := machine.Known{Project: e.Project}
@@ -40,16 +39,6 @@ func (e *Engine) Orphans(ctx context.Context) ([]machine.Orphan, error) {
 	for _, img := range images {
 		if img.Ref != "" {
 			known.Tags = append(known.Tags, machine.Tag{Layer: e.Images.MachineLayer(img.Layer.ID), Ref: img.Ref})
-		}
-	}
-	// A stage is its directory, row or not: IsWarm asks the same.
-	stages, err := os.ReadDir(filepath.Join(e.Root, "warm"))
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	for _, stage := range stages {
-		if stage.IsDir() {
-			known.Stages = append(known.Stages, e.warmMachineDir(stage.Name()))
 		}
 	}
 	return e.Driver.Orphans(ctx, known)

@@ -161,9 +161,6 @@ func TestEngineListsOrphans(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
-	// A stage at another size has a snapshot of its own. Engine.Warm runs
-	// the driver in a warm shim, which a test binary cannot be, so the
-	// driver warms the engine's stage directory itself.
 	layerID, err := e.Images.Resolve("t/base")
 	if err != nil {
 		t.Fatal(err)
@@ -172,14 +169,6 @@ func TestEngineListsOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stage := machine.WarmSpec{GuestOS: machine.Linux, Chain: chain, Dir: filepath.Join(e.Root, "warm", layerID, "machine"), CPUs: 4, Memory: 16 << 30}
-	if err := os.MkdirAll(stage.Dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Warm(ctx, stage); err != nil {
-		t.Fatalf("warm: %v", err)
-	}
-	t.Cleanup(func() { _ = d.Cool(context.Background(), stage) })
 
 	names := func(e *engine.Engine) map[string]machine.OrphanKind {
 		t.Helper()
@@ -236,8 +225,8 @@ func TestEngineListsOrphans(t *testing.T) {
 	}
 
 	// A second store on the same account knows none of the first's: its
-	// instance's machine, its layer's snapshot, its tag's, and its stage's
-	// are all orphans to it.
+	// instance's machine, its layer's snapshot, and its tag's are all
+	// orphans to it.
 	other, err := engine.Open(t.TempDir(), d, nil, "")
 	if err != nil {
 		t.Fatal(err)
@@ -252,8 +241,8 @@ func TestEngineListsOrphans(t *testing.T) {
 			layers++
 		}
 	}
-	if machines != 2 || layers != 4 {
-		t.Fatalf("a lost store's orphans = %v, want 2 machines (the instance's and the lost one) and 4 snapshots (layer, tag, stage, lost)", got)
+	if machines != 2 || layers != 3 {
+		t.Fatalf("a lost store's orphans = %v, want 2 machines (the instance's and the lost one) and 3 snapshots (layer, tag, lost)", got)
 	}
 	for name := range got {
 		if name != "dvm-lost-snap" && !strings.HasPrefix(name, "dvm-default--") {

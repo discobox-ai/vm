@@ -34,12 +34,11 @@ type schemaVersion struct {
 }
 
 type virtualMachine struct {
-	StopOnReset     bool          `json:"StopOnReset"`
-	Chipset         chipset       `json:"Chipset"`
-	ComputeTopology topology      `json:"ComputeTopology"`
-	Devices         devices       `json:"Devices"`
-	GuestState      guestState    `json:"GuestState"`
-	RestoreState    *restoreState `json:"RestoreState,omitempty"`
+	StopOnReset     bool       `json:"StopOnReset"`
+	Chipset         chipset    `json:"Chipset"`
+	ComputeTopology topology   `json:"ComputeTopology"`
+	Devices         devices    `json:"Devices"`
+	GuestState      guestState `json:"GuestState"`
 }
 
 type chipset struct {
@@ -125,10 +124,6 @@ type guestState struct {
 	RuntimeStateFilePath string `json:"RuntimeStateFilePath"`
 }
 
-type restoreState struct {
-	TemplateSystemID string `json:"TemplateSystemId"`
-}
-
 const (
 	// microsoftWindowsTemplate is the standard Secure Boot template, which a
 	// stock Windows bootloader validates against.
@@ -150,13 +145,9 @@ type vmConfig struct {
 	StateFile string
 	CPUs      int
 	Memory    uint64 // bytes
-	// NIC is attached at create for a cold boot. A fork's memory has no
-	// adapter in it, so a clone gets its NIC hot-added after start instead.
+	// NIC is attached at create.
 	NIC *endpoint
-	// Template makes a fork clone of the named template system.
-	Template string
-	// Console serves the video console on this pipe to ConsoleSID. Every VM
-	// has the video devices, so a template and its clones agree on them.
+	// Console serves the video console on this pipe to ConsoleSID.
 	Console    string
 	ConsoleSID string
 }
@@ -213,17 +204,5 @@ func newDocument(c vmConfig) document {
 	if c.NIC != nil {
 		d.VirtualMachine.Devices.NetworkAdapters = map[string]networkAdapter{c.NIC.ID: {EndpointID: c.NIC.ID, MacAddress: c.NIC.MAC}}
 	}
-	if c.Template != "" {
-		d.VirtualMachine.RestoreState = &restoreState{TemplateSystemID: c.Template}
-	}
 	return d
-}
-
-// addNIC is the modify request that hot-adds a NIC to a running system.
-func addNIC(nic *endpoint) any {
-	return map[string]any{
-		"ResourcePath": "VirtualMachine/Devices/NetworkAdapters/" + nic.ID,
-		"RequestType":  "Add",
-		"Settings":     networkAdapter{EndpointID: nic.ID, MacAddress: nic.MAC},
-	}
 }

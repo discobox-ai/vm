@@ -7,10 +7,9 @@
 // differing.
 //
 // The contract is the intersection of what Host Compute Service and
-// Virtualization.framework can both do honestly. Where they differ — a live
-// template that forks many clones exists only on HCS, a saved state that
-// resumes once exists only on vz, and macOS guests are capped at two per host —
-// the difference is reported through Capabilities rather than faked. A caller
+// Virtualization.framework can both do honestly. Where they differ — host
+// directory sharing, a display, and macOS guests capped at two per host — the
+// difference is reported through Capabilities rather than faked. A caller
 // that needs a capability checks for it; a driver that lacks one returns
 // ErrUnsupported instead of emulating it badly.
 package machine
@@ -45,37 +44,12 @@ const (
 	Linux   OS = "linux"
 )
 
-// CloneMode is how an instance's disk and state are derived from its image.
-type CloneMode string
-
-const (
-	// Auto asks the engine for the fastest mode the image is warm for, and
-	// cold when it is warm for none. The engine resolves it before Prepare, so
-	// a driver never sees it.
-	Auto CloneMode = "auto"
-	// Cold copies the disk copy-on-write and boots it from power-off with a
-	// fresh machine identity. Every driver supports it.
-	Cold CloneMode = "cold"
-	// Resume copies the disk and a saved memory state, and resumes the saved
-	// machine. The clone runs with the saved machine's identity, which is why a
-	// vz stage keeps one template per guest that can run at once; a boxd
-	// snapshot restores any number of times. It needs a warm image.
-	Resume CloneMode = "resume"
-	// Fork clones a live, paused template: memory is shared copy-on-write and
-	// many clones can be forked from one template (HCS). It needs a warm image.
-	Fork CloneMode = "fork"
-)
-
 // Capabilities is what a driver can do on this host. It is reported, never
 // assumed, so that pools, the builder, and a discobox provider plan around the
 // real limits of each hypervisor.
 type Capabilities struct {
 	// GuestOS is every guest OS this driver can install and boot.
 	GuestOS []OS `json:"guestOS"`
-	// CloneModes is every mode Prepare accepts. Cold is always present; any
-	// other mode needs a warm image, so a driver that lists one implements
-	// Warmer.
-	CloneModes []CloneMode `json:"cloneModes"`
 	// MaxRunning caps concurrently running guests per guest OS. Zero means no
 	// cap. Virtualization.framework allows two macOS guests per host.
 	MaxRunning map[OS]int `json:"maxRunning,omitempty"`
@@ -100,11 +74,6 @@ type Capabilities struct {
 
 // SupportsOS reports whether the driver can run the given guest OS.
 func (c Capabilities) SupportsOS(os OS) bool { return slices.Contains(c.GuestOS, os) }
-
-// SupportsMode reports whether Prepare accepts the given clone mode.
-func (c Capabilities) SupportsMode(mode CloneMode) bool {
-	return mode == "" || slices.Contains(c.CloneModes, mode)
-}
 
 // Layer is one immutable, committed disk state in the image store. Dir belongs
 // to the driver: it holds whatever the driver needs to boot or derive from this
@@ -212,11 +181,6 @@ type InstanceSpec struct {
 	GuestOS OS
 	// Chain is the instance's image, base layer first and parent layer last.
 	Chain []Layer
-	Mode  CloneMode
-	// WarmDir is the image's stage (WarmSpec.Dir) when Mode is not cold. Only
-	// Prepare and the first Boot after it draw on the stage; a later boot of
-	// the same instance is cold.
-	WarmDir string
 }
 
 // Service is an instance's one service: where a program in the guest listens,
@@ -271,7 +235,9 @@ type Driver interface {
 	Check(ctx context.Context) error
 	// Install creates a base layer in dst.Dir from installation media.
 	Install(ctx context.Context, spec InstallSpec, dst Layer) error
-	// Prepare creates the instance's disk from its chain in inst.Dir.
+	// Prepare creates the instance's disk from its chain in inst.Dir: a
+	// copy-on-write clone of the image that boots from power-off with a fresh
+	// machine identity.
 	Prepare(ctx context.Context, inst InstanceSpec) error
 	// Boot starts a prepared instance and returns once its guest operations
 	// answer. The returned machine lives until it powers off or is killed; it
@@ -336,8 +302,6 @@ type Known struct {
 	// Tags are the store's tags, each on its layer, as TagLayer was given
 	// them.
 	Tags []Tag
-	// Stages are the Dirs of every warm stage (WarmSpec.Dir).
-	Stages []string
 }
 
 // Tag is one tag a layer carries in the store.
@@ -366,89 +330,6 @@ type Orphan struct {
 	// Status is the service's word for its state: running, stopped, ready.
 	Status  string    `json:"status,omitempty"`
 	Created time.Time `json:"created,omitzero"`
-}
-
-// ErrNotWarm reports that nothing is staged for the clone mode Prepare was
-// asked for: the image was never warmed, its stage was used up, or the stage
-// was rejected (a saved state from before a host update). The engine answers
-// it by cloning cold when the mode was auto.
-var ErrNotWarm = errors.New("machine: the image is not warm for this clone mode")
-
-// WarmSpec is one image's stage: what Warm builds and what a warm Prepare
-// draws on.
-type WarmSpec struct {
-	GuestOS OS
-	// Chain is the image, base layer first, as in InstanceSpec.
-	Chain []Layer
-	// Dir is private to the driver for this image's stage. It exists, and it
-	// is the same directory for Warm, Warmth, Cool, and InstanceSpec.WarmDir.
-	Dir string
-	// Count is how many clones to stage where a stage is a pool used once per
-	// clone (fake)
-	// (resume). Warm tops an existing stage up to Count. A mode whose stage
-	// serves any number of clones (fork) ignores it.
-	Count int
-	// CPUs and Memory size the staged machine; zero is the driver's default.
-	// A clone of a stage runs at the stage's size.
-	CPUs   int
-	Memory uint64
-	// User, when set, is an account created in the stage and logged in on its
-	// display, so every clone of the stage starts as that user. A driver that
-	// cannot create one returns ErrUnsupported.
-	User *User
-	// Log receives human-readable progress.
-	Log io.Writer
-}
-
-// User is a guest account a driver creates.
-type User struct {
-	Name     string `json:"name"`
-	FullName string `json:"fullName,omitempty"`
-	// UID is the account's numeric ID where the guest OS has one (macOS), so
-	// that it can match the host's; zero lets the guest pick.
-	UID int `json:"uid,omitempty"`
-}
-
-// Warmth is what a stage can serve now.
-type Warmth struct {
-	// Mode is the clone mode the stage serves, or Cold when nothing is staged.
-	Mode CloneMode `json:"mode"`
-	// Clones is how many Prepares the stage can serve: zero when nothing is
-	// staged, and -1 when it serves any number (a fork template).
-	Clones int `json:"clones"`
-	// Held says why the stage cannot serve as it should right now: a vz
-	// restore needs the Mac's screen unlocked. With Clones zero nothing is
-	// served; otherwise clones are served some slower way (vz boots them cold
-	// from the stage).
-	Held string `json:"held,omitempty"`
-}
-
-// Warmer is a driver that can stage an image so that clones skip the cold
-// boot: vz saves machine states to resume, and HCS freezes a live template to
-// fork. Every driver that lists a clone mode other than cold implements it.
-type Warmer interface {
-	// Warm stages spec.Chain in spec.Dir and returns once the stage is
-	// usable. The driver picks the mode, the fastest it has.
-	//
-	// A stage that lives on disk (saved states) returns a nil Stage. A stage
-	// that lives in memory (an HCS template) returns one, and the caller keeps
-	// its process alive for as long as the image stays warm: the engine runs
-	// Warm in a warm shim for exactly this.
-	Warm(ctx context.Context, spec WarmSpec) (Stage, error)
-	// Warmth reports what the stage can serve now. It is cheap and changes
-	// nothing; a stage that is gone or stale reports zero.
-	Warmth(ctx context.Context, spec WarmSpec) (Warmth, error)
-	// Cool releases everything Warm staged. A resident stage has already been
-	// closed.
-	Cool(ctx context.Context, spec WarmSpec) error
-}
-
-// Stage is a warm stage that lives in memory.
-type Stage interface {
-	// Done is closed once the stage is gone.
-	Done() <-chan struct{}
-	// Close releases the stage and waits for it to be gone.
-	Close(ctx context.Context) error
 }
 
 // ErrNotRunning reports that an instance has no running machine to attach to.
