@@ -17,8 +17,8 @@ embeds `pkg/engine` as a library.
 
 > **Status: the shell.** Everything above the hypervisor is built and tested on
 > every OS through a `fake` driver. That covers the CLI, the YAML image
-> builder and its layer cache, the image store, instance lifecycle with a shim
-> per VM, and the guest agent and its protocol. The `vz` driver runs macOS 27
+> builder and its layer cache, instance lifecycle, the local driver's store and
+> its shim per VM, and the guest agent and its protocol. The `vz` driver runs macOS 27
 > guests on Apple silicon, with a native window (`--gui`)
 > ([docs/drivers/vz.md](docs/drivers/vz.md)). The `hcs` driver's brief is
 > [docs/drivers/hcs.md](docs/drivers/hcs.md). The `boxd` driver passes
@@ -98,10 +98,9 @@ go test ./...          # includes the full CLI lifecycle on the fake driver
 | path | what |
 |---|---|
 | `cmd/disco-vm` | the one binary: CLI, guest agent (`guest`), per-VM supervisor (`shim`) |
-| `pkg/machine` | the driver seam; `fake`, `hcs` (windows), `vz` (darwin); `machinetest` conformance suite |
-| `pkg/engine` | instances and lifecycle; the shim |
+| `pkg/machine` | the driver seam; `boxd`, `docker`, `fake`, `hcs` (windows), `vz` (darwin); `local`, the store and shim of the drivers on this host's disk; `machinetest` conformance suite |
+| `pkg/engine` | images, tags, instances, and lifecycle, kept by the driver |
 | `pkg/build` | YAML spec, plan, cache keys, builder |
-| `pkg/image` | layer store and tags |
 | `pkg/guest` | agent protocol, server, and host client |
 | `internal/e2e` | the CLI end to end |
 

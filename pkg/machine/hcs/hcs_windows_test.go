@@ -12,32 +12,53 @@ import (
 	"github.com/Microsoft/go-winio/vhd"
 
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// BaseEnv names an installed hcs base layer: a directory holding disk.vhdx,
-// such as images/layers/<id>/payload under a disco-vm root. It gates the
-// conformance suite, which needs a real hypervisor and an installed Windows.
+// BaseEnv names an installed hcs base layer, by its ID, in the driver's
+// directory ($DISCO_VM_ROOT, or %LOCALAPPDATA%\disco-vm): a layer an install
+// made, which `disco-vm images -a` lists. It gates the tests that need a real
+// hypervisor and an installed Windows.
 const BaseEnv = "DISCO_VM_HCS_BASE"
 
+// basePayload is the directory holding BaseEnv's disk.vhdx, for a test that
+// drives the hypervisor without the driver's store.
+func basePayload(t *testing.T) string {
+	t.Helper()
+	id := os.Getenv(BaseEnv)
+	if id == "" {
+		t.Skipf("set %s to an installed hcs base layer to run on HCS", BaseEnv)
+	}
+	return filepath.Join(machine.DefaultDir(), "images", "layers", id, "payload")
+}
+
+// TestConformance runs the suite on HCS. Each started instance's shim is
+// $DISCO_VM_TEST_BINARY, a disco-vm built for this host.
 func TestConformance(t *testing.T) {
 	base := os.Getenv(BaseEnv)
 	if base == "" {
 		t.Skipf("set %s to an installed hcs base layer to run the conformance suite on HCS", BaseEnv)
 	}
-	machinetest.Run(t, &Driver{}, machinetest.Config{
-		Base:       &machine.Layer{ID: "base", Dir: base},
-		Boot:       machine.BootOptions{CPUs: 4, Memory: 4 << 30, Console: testLog{t}},
+	binary := os.Getenv("DISCO_VM_TEST_BINARY")
+	if binary == "" {
+		t.Fatal("$DISCO_VM_TEST_BINARY names no disco-vm to run each started instance's shim")
+	}
+	dir := machine.DefaultDir()
+	driver, err := local.New(machine.Config{
+		Dir:         dir,
+		ShimCommand: []string{binary, "--root", dir, "--driver", "hcs", "shim"},
+	}, &Hypervisor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machinetest.Run(t, driver, machinetest.Config{
+		Base:       base,
+		CPUs:       4,
+		Memory:     4 << 30,
 		Timeout:    10 * time.Minute,
 		ScratchDir: `C:\disco-vm-conformance`,
 	})
-}
-
-type testLog struct{ t *testing.T }
-
-func (l testLog) Write(p []byte) (int, error) {
-	l.t.Log(strings.TrimRight(string(p), "\n"))
-	return len(p), nil
 }
 
 // An instance's service port is in its ServiceTable beside the agent's, or the

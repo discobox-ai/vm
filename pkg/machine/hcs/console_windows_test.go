@@ -2,7 +2,6 @@ package hcs
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/Microsoft/go-winio"
 
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // rdpAnswers checks that an RDP server answers on a VM's console pipe: an
@@ -40,16 +40,13 @@ func rdpAnswers(t *testing.T, id string) {
 
 // Every VM serves its video console.
 func TestConsole(t *testing.T) {
-	base := os.Getenv(BaseEnv)
-	if base == "" {
-		t.Skipf("set %s to run on HCS", BaseEnv)
-	}
-	d := &Driver{}
+	base := basePayload(t)
+	d := &Hypervisor{}
 	ctx := context.Background()
 	work := t.TempDir()
-	chain := []machine.Layer{{ID: "base", Dir: base}}
-	boot := func(inst machine.InstanceSpec) machine.Machine {
-		m, err := d.Boot(ctx, inst, machine.BootOptions{CPUs: 4, Memory: 4 << 30})
+	chain := []local.Layer{{ID: "base", Dir: base}}
+	boot := func(inst local.InstanceSpec) machine.Machine {
+		m, err := d.Boot(ctx, inst, local.BootOptions{CPUs: 4, Memory: 4 << 30})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -57,7 +54,7 @@ func TestConsole(t *testing.T) {
 		return m
 	}
 
-	cold := machine.InstanceSpec{ID: "cold", Dir: filepath.Join(work, "cold"), GuestOS: machine.Windows, Chain: chain}
+	cold := local.InstanceSpec{ID: "cold", Dir: filepath.Join(work, "cold"), GuestOS: machine.Windows, Chain: chain}
 	if err := d.Prepare(ctx, cold); err != nil {
 		t.Fatal(err)
 	}

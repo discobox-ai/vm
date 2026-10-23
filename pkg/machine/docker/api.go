@@ -149,7 +149,12 @@ func (a *api) info(ctx context.Context) (info, error) {
 }
 
 type imageInfo struct {
-	ID string `json:"Id"`
+	ID       string   `json:"Id"`
+	RepoTags []string `json:"RepoTags"`
+	Created  string   `json:"Created"`
+	Config   struct {
+		Labels map[string]string `json:"Labels"`
+	} `json:"Config"`
 }
 
 func (a *api) inspectImage(ctx context.Context, ref string) (imageInfo, error) {
@@ -201,6 +206,12 @@ func splitRef(ref string) (string, string) {
 		return ref[:colon], ref[colon+1:]
 	}
 	return ref, "latest"
+}
+
+// tagImage tags the image ref as repo:tag, moving the tag from any other
+// image.
+func (a *api) tagImage(ctx context.Context, ref, repo, tag string) error {
+	return a.call(ctx, http.MethodPost, "/images/"+ref+"/tag", url.Values{"repo": {repo}, "tag": {tag}}, nil, nil)
 }
 
 func (a *api) removeImage(ctx context.Context, ref string) error {
@@ -266,9 +277,14 @@ type containerState struct {
 }
 
 type containerInfo struct {
-	ID         string         `json:"Id"`
-	Name       string         `json:"Name"`
-	State      containerState `json:"State"`
+	ID      string         `json:"Id"`
+	Name    string         `json:"Name"`
+	Created string         `json:"Created"`
+	Image   string         `json:"Image"`
+	State   containerState `json:"State"`
+	Config  struct {
+		Labels map[string]string `json:"Labels"`
+	} `json:"Config"`
 	HostConfig struct {
 		NanoCPUs int64 `json:"NanoCpus"`
 		Memory   int64 `json:"Memory"`

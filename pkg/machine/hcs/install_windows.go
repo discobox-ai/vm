@@ -21,6 +21,7 @@ import (
 	"github.com/discobox-ai/vm/internal/units"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 //go:embed install.ps1
@@ -47,7 +48,7 @@ const (
 //
 // Options: user and password name the local administrator Setup creates and
 // logs on automatically (default "disco", blank).
-func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst machine.Layer) error {
+func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) error {
 	log := spec.Log
 	if log == nil {
 		log = io.Discard
@@ -88,7 +89,7 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 	if err := createFixed(fixed, size); err != nil {
 		return err
 	}
-	if err := writeDisk(ctx, fixed, spec, log); err != nil {
+	if err := writeDisk(ctx, fixed, spec.InstallSpec, log); err != nil {
 		return err
 	}
 	fmt.Fprintln(log, "hcs: compacting the disk")
@@ -99,7 +100,7 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 	if err := os.Remove(fixed); err != nil {
 		return err
 	}
-	return firstBoot(ctx, spec, dst.Dir, disk, log)
+	return firstBoot(ctx, spec.InstallSpec, dst.Dir, disk, log)
 }
 
 // needSpace fails early when dir's volume cannot hold what Install writes.

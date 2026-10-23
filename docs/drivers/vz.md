@@ -2,13 +2,20 @@
 
 **Scope:** `pkg/machine/vz` and the darwin-specific parts of `pkg/guest`.
 Above the `machine.Driver` seam, the driver needed only neutral additions:
-`InstallSpec.CacheDir` (see Install), and for windows `BootOptions.Title`,
-`InstallSpec.GUI`, and `machine.Main` (see GUI).
+for windows `BootOptions.Title`, `InstallSpec.GUI`, and `machine.Main` (see
+GUI). `vz.Hypervisor` is a `local.Hypervisor`: `pkg/machine/local` keeps its
+layers, tags, and instances in its directory (`--root`, `$DISCO_VM_ROOT`, or
+`~/Library/Application Support/disco-vm`), gives it a media cache there
+(`local.InstallSpec.CacheDir`, see Install), and runs each started instance
+under a shim, since a VM dies with the process that made it (ADR
+26-10-23-417).
 
 **Done means:**
 
-1. `machinetest.Run` passes against `vz.Driver` on an Apple silicon Mac
-   (`go tool task test:vz`).
+1. `machinetest.Run` passes against the vz driver on an Apple silicon Mac
+   (`go tool task test:vz`: `DISCO_VM_VZ_BASE` names an installed layer's
+   ID, and `DISCO_VM_TEST_BINARY` the signed disco-vm each started
+   instance's shim runs).
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=vz` (`go tool task test:e2e:vz`).
 3. `docs/examples/macos.yaml` builds.
 
@@ -61,7 +68,7 @@ volumes is an error that says so, never a silent 100 GiB copy.
    supports, downloaded once into `spec.CacheDir` under the name Apple gives
    it (`UniversalMac_27.0_26A428_Restore.ipsw`). A partial download is
    resumed, and the image is renamed into place only once it is complete. The
-   builder sets `CacheDir` to `<root>/cache/<driver>`.
+   local driver sets `CacheDir` to `<root>/cache/vz`.
 2. The hardware model is the restore image's. The machine identifier, the aux
    storage, and a disk are created (raw by default, `disk-format: asif` for
    ASIF), and the installer runs. That took 3 minutes on an M-series Mac.

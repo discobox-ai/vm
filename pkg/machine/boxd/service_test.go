@@ -3,7 +3,6 @@ package boxd
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -14,9 +13,8 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// TestServiceFakeAPI checks what Prepare sets up for the service: the default
-// proxy pinned to guest.ServicePort, bot protection off, and the URL
-// recorded.
+// TestServiceFakeAPI checks what Create sets up for the service: the default
+// proxy pinned to guest.ServicePort, bot protection off, and the URL.
 func TestServiceFakeAPI(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
@@ -29,48 +27,42 @@ func TestServiceFakeAPI(t *testing.T) {
 	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
-	base := machine.Layer{ID: "base", Dir: filepath.Join(dir, "layer")}
-	if err := os.MkdirAll(base.Dir, 0o755); err != nil {
+	base, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, machine.Layer{ID: "0123456789abcdef"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, base); err != nil {
-		t.Fatal(err)
-	}
-	inst := machine.InstanceSpec{ID: "cold", Dir: filepath.Join(dir, "cold"), GuestOS: machine.Linux, Chain: []machine.Layer{base}}
-	if err := d.Prepare(ctx, inst); err != nil {
-		t.Fatalf("prepare: %v", err)
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "cold", Layer: base.ID, GuestOS: machine.Linux})
+	if err != nil {
+		t.Fatalf("create: %v", err)
 	}
 	service, err := d.Service(ctx, inst)
 	if err != nil {
 		t.Fatalf("service: %v", err)
 	}
-	if service.Listen != "tcp:0.0.0.0:7302" || service.Port != guest.ServicePort {
+	if service.Listen != "tcp:0.0.0.0:7302" {
 		t.Errorf("service %+v", service)
 	}
-	var ref vmRef
-	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
-		t.Fatal(err)
-	}
 	fake.mu.Lock()
-	v := fake.vms[ref.ID]
+	v := fake.vms[inst.ID]
 	port, bots := v.proxyPort, v.botProtection
 	fake.mu.Unlock()
-	if service.URL != "https://"+ref.Name+".boxd.test" || port != guest.ServicePort || bots {
+	if service.URL != "https://dvm-default--cold.boxd.test" || port != guest.ServicePort || bots {
 		t.Errorf("URL %q, proxy port %d, bot protection %v", service.URL, port, bots)
 	}
 	if err := d.Destroy(ctx, inst); err != nil {
 		t.Fatal(err)
 	}
 
-	// A proxy the API cannot find fails the clone.
+	// A proxy the API cannot find fails the clone, which leaves no machine.
 	fake.mu.Lock()
 	fake.proxyErr = status.Error(codes.NotFound, "no such proxy")
 	fake.mu.Unlock()
-	inst = machine.InstanceSpec{ID: "noproxy", Dir: filepath.Join(dir, "noproxy"), GuestOS: machine.Linux, Chain: []machine.Layer{base}}
-	if err := d.Prepare(ctx, inst); err == nil {
-		t.Fatal("prepare with a proxy that cannot be found succeeded")
+	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "noproxy", Layer: base.ID, GuestOS: machine.Linux}); err == nil {
+		t.Fatal("create with a proxy that cannot be found succeeded")
 	}
-	if err := d.Destroy(ctx, inst); err != nil {
-		t.Fatal(err)
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.vms) != 0 {
+		t.Fatalf("a failed create left %d machines", len(fake.vms))
 	}
 }

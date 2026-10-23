@@ -10,37 +10,44 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// BaseEnv names an installed layer's directory, the `payload` directory of an
-// install layer in the image store. The conformance suite clones it rather
+// BaseEnv names an installed layer, by its ID, in the driver's directory
+// ($DISCO_VM_ROOT, or the per-OS data directory): a layer an install made,
+// which `disco-vm images -a` lists. The conformance suite clones it rather
 // than installing macOS on every run, and skips without it.
 const BaseEnv = "DISCO_VM_VZ_BASE"
 
 // TestConformance is the vz driver's definition of done. It creates VMs, so
-// the test binary has to be signed: run it with `go tool task test:vz`.
+// the test binary has to be signed, and so does the disco-vm that runs as each
+// started instance's shim ($DISCO_VM_TEST_BINARY): run it with
+// `go tool task test:vz`.
 func TestConformance(t *testing.T) {
 	base := os.Getenv(BaseEnv)
 	if base == "" {
 		t.Skipf("$%s names no installed layer", BaseEnv)
 	}
-	if err := bundle(base).installedLayer(); err != nil {
+	binary := os.Getenv("DISCO_VM_TEST_BINARY")
+	if binary == "" {
+		t.Fatal("$DISCO_VM_TEST_BINARY names no signed disco-vm to run each started instance's shim")
+	}
+	dir := machine.DefaultDir()
+	driver, err := local.New(machine.Config{
+		Dir:         dir,
+		ShimCommand: []string{binary, "--root", dir, "--driver", "vz", "shim"},
+	}, &Hypervisor{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	machinetest.Run(t, &Driver{}, machinetest.Config{
-		Base:       &machine.Layer{ID: "base", Dir: base},
-		Boot:       machine.BootOptions{CPUs: 4, Memory: 8 << 30, Console: testWriter{t}},
+	machinetest.Run(t, driver, machinetest.Config{
+		Base:       base,
+		CPUs:       4,
+		Memory:     8 << 30,
 		Timeout:    10 * time.Minute,
 		ScratchDir: "/Users/Shared",
 	})
-}
-
-type testWriter struct{ t *testing.T }
-
-func (w testWriter) Write(p []byte) (int, error) {
-	w.t.Log(string(p))
-	return len(p), nil
 }
 
 func TestLeaseFor(t *testing.T) {

@@ -6,19 +6,19 @@ import (
 	"context"
 	"errors"
 
-	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // errNoCgo is every framework call in a build without cgo: the bindings are
 // Objective-C.
 var errNoCgo = errors.New("vz: this disco-vm was built without cgo, and Virtualization.framework needs it; rebuild with CGO_ENABLED=1 (go tool task build)")
 
-func (*Driver) Check(context.Context) error { return errNoCgo }
+func (*Hypervisor) Check(context.Context) error { return errNoCgo }
 
-func (*Driver) Install(context.Context, machine.InstallSpec, machine.Layer) error { return errNoCgo }
+func (*Hypervisor) Install(context.Context, local.InstallSpec, local.Layer) error { return errNoCgo }
 
-func (*Driver) Prepare(context.Context, machine.InstanceSpec) error { return errNoCgo }
+func (*Hypervisor) Prepare(context.Context, local.InstanceSpec) error { return errNoCgo }
 
-func (*Driver) Boot(context.Context, machine.InstanceSpec, machine.BootOptions) (machine.Machine, error) {
+func (*Hypervisor) Boot(context.Context, local.InstanceSpec, local.BootOptions) (local.Machine, error) {
 	return nil, errNoCgo
 }

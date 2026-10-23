@@ -16,10 +16,9 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// ImageEnv names the image to install a base layer from, and BaseEnv a layer
-// directory whose layer.json names an installed one, which skips Install.
-// Either runs the conformance suite against the Docker daemon $DOCKER_HOST
-// names.
+// ImageEnv names the image to install a base layer from, and BaseEnv the ID
+// of an installed layer in the default project, which skips Install. Either
+// runs the conformance suite against the Docker daemon $DOCKER_HOST names.
 const (
 	ImageEnv = "DISCO_VM_DOCKER_IMAGE"
 	BaseEnv  = "DISCO_VM_DOCKER_BASE"
@@ -34,20 +33,20 @@ func TestConformance(t *testing.T) {
 		t.Skipf("set %s (an image, such as debian:trixie) or %s to run the conformance suite against docker", ImageEnv, BaseEnv)
 	}
 	cfg := machinetest.Config{
-		Boot:    machine.BootOptions{CPUs: 2, Memory: 2 << 30},
+		CPUs:    2,
+		Memory:  2 << 30,
 		Timeout: 2 * time.Minute,
 		// Not /tmp, which the guest's systemd may clean at boot.
 		ScratchDir: "/var/lib",
+		Base:       base,
 	}
-	if base != "" {
-		cfg.Base = &machine.Layer{ID: "base", Dir: base}
-	} else {
+	if base == "" {
 		cfg.Install = machine.InstallSpec{
 			GuestOS: machine.Linux, Media: "latest", Agent: linuxAgent(t),
 			Options: map[string]string{"image": image}, Log: testLog{t},
 		}
 	}
-	machinetest.Run(t, New(), cfg)
+	machinetest.Run(t, New(""), cfg)
 }
 
 func TestDemux(t *testing.T) {

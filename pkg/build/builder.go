@@ -16,7 +16,6 @@ import (
 	"github.com/discobox-ai/vm/internal/units"
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/guest"
-	"github.com/discobox-ai/vm/pkg/image"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -90,13 +89,12 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 		args[k] = v
 	}
 	for _, tag := range opts.Tags {
-		if err := image.ValidateRef(tag); err != nil {
+		if err := engine.ValidateRef(tag); err != nil {
 			return nil, err
 		}
 	}
 
 	driver := b.Engine.Driver
-	store := b.Engine.Images
 	// A project other than the default is part of every layer's key, so no
 	// two projects ever share a layer ID; the default's keys are those from
 	// before projects, so its cache stays valid.
@@ -105,8 +103,8 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 		salt = "project " + project + "|"
 	}
 	if opts.NoCache {
-		// A fresh salt gives every layer a fresh ID, so nothing already in the
-		// store is reused or overwritten.
+		// A fresh salt gives every layer a fresh ID, so nothing the driver
+		// already has is reused or overwritten.
 		salt += fsutil.RandomHex(8)
 	}
 
@@ -125,21 +123,9 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 		guestOS = in.OS
 	} else {
 		ref := expand(spec.From.Image, args)
-		if parent, err = store.Resolve(ref); err == nil {
-			layer, err := store.Layer(parent)
-			if err != nil {
-				return nil, err
-			}
-			if layer.Driver != driver.Name() {
-				return nil, fmt.Errorf("from.image %s was built with driver %s, not %s", ref, layer.Driver, driver.Name())
-			}
-			if intact, err := store.Intact(ctx, parent, driver); err != nil {
-				return nil, fmt.Errorf("from.image: %w", err)
-			} else if !intact {
-				return nil, fmt.Errorf("from.image %s: %s no longer has its layer %s; build that image again", ref, driver.Name(), image.Short(parent))
-			}
-			guestOS = layer.GuestOS
-			b.logf("==> from %s (%s)", ref, image.Short(parent))
+		if layer, err := b.Engine.Resolve(ctx, ref); err == nil {
+			parent, guestOS = layer.ID, layer.GuestOS
+			b.logf("==> from %s (%s)", ref, engine.Short(parent))
 		} else {
 			base, err := b.Engine.ResolveBase(ctx, ref, err)
 			if err != nil {
@@ -176,49 +162,36 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 	}
 	for i, layer := range p.Layers {
 		prefix := fmt.Sprintf("[%d/%d] %s", i+1, len(p.Layers), layer.Name)
-		inputs := layerKey(parentKey, driver.Name(), guestOS, layer, salt)
-		key, lost, err := b.cached(ctx, inputs)
+		key := layerKey(parentKey, driver.Name(), guestOS, layer, salt)
+		cached, err := b.cached(ctx, key)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", prefix, err)
 		}
-		if key != "" {
-			b.logf("==> %s: CACHED %s", prefix, image.Short(key))
+		if cached {
+			b.logf("==> %s: CACHED %s", prefix, engine.Short(key))
 			parent, from, parentKey = key, key, key
 			continue
 		}
-		key = inputs
-		if lost != "" {
-			// Under a new ID, so that every layer after this one is built
-			// again too: theirs were made from the disk that is gone.
-			key = layerKey(parentKey, driver.Name(), guestOS, layer, salt+"|replaces "+lost+"|"+fsutil.RandomHex(8))
-			b.logf("==> %s: %s no longer has %s, building it again as %s", prefix, driver.Name(), image.Short(lost), image.Short(key))
-		} else {
-			b.logf("==> %s", prefix)
-		}
+		b.logf("==> %s", prefix)
 		started := time.Now()
-		if err := b.buildLayer(ctx, p, buildName(opts), from, parent, key, layer); err != nil {
+		if err := b.buildLayer(ctx, p, buildName(opts), from, key, layer); err != nil {
 			return nil, fmt.Errorf("%s: %w", prefix, err)
 		}
-		if lost != "" {
-			if err := store.Replace(inputs, key); err != nil {
-				return nil, err
-			}
-		}
-		b.logf("==> %s: committed %s in %s", prefix, image.Short(key), time.Since(started).Round(time.Second))
+		b.logf("==> %s: committed %s in %s", prefix, engine.Short(key), time.Since(started).Round(time.Second))
 		parent, from, parentKey = key, key, key
 	}
 
 	result := &Result{Layer: parent}
 	for _, ref := range opts.Tags {
-		if err := store.Tag(ctx, ref, parent, b.Engine.Driver); err != nil {
+		if err := b.Engine.Tag(ctx, ref, parent); err != nil {
 			return nil, err
 		}
-		b.logf("==> tagged %s", image.NormalizeRef(ref))
+		b.logf("==> tagged %s", engine.NormalizeRef(ref))
 	}
 	if len(opts.Tags) > 0 {
-		result.Ref = image.NormalizeRef(opts.Tags[0])
+		result.Ref = engine.NormalizeRef(opts.Tags[0])
 	} else {
-		b.logf("==> built %s, untagged; name it with -t, or `disco-vm tag %s NAME[:TAG]`", image.Short(parent), image.Short(parent))
+		b.logf("==> built %s, untagged; name it with -t, or `disco-vm tag %s NAME[:TAG]`", engine.Short(parent), engine.Short(parent))
 	}
 	return result, nil
 }
@@ -227,14 +200,14 @@ func (b *Builder) Build(ctx context.Context, opts Options) (*Result, error) {
 // tag, or its spec's file name.
 func buildName(opts Options) string {
 	if len(opts.Tags) > 0 {
-		return image.NormalizeRef(opts.Tags[0])
+		return engine.NormalizeRef(opts.Tags[0])
 	}
 	return filepath.Base(opts.File)
 }
 
 // install creates (or finds cached) the base layer for a from.install build.
 func (b *Builder) install(ctx context.Context, p *Plan, in Install, contextDir, agent, salt string) (string, error) {
-	driver, store := b.Engine.Driver, b.Engine.Images
+	driver := b.Engine.Driver
 	mediaPath := ""
 	if in.Media != "latest" {
 		if filepath.IsAbs(in.Media) || filepath.VolumeName(in.Media) != "" {
@@ -247,30 +220,25 @@ func (b *Builder) install(ctx context.Context, p *Plan, in Install, contextDir, 
 			mediaPath = resolved
 		}
 	}
-	inputs, err := installKey(driver.Name(), in, mediaPath, salt)
+	key, err := installKey(driver.Name(), in, mediaPath, salt)
 	if err != nil {
 		return "", err
 	}
-	key, lost, err := b.cached(ctx, inputs)
+	cached, err := b.cached(ctx, key)
 	if err != nil {
 		return "", err
 	}
-	if key != "" {
-		b.logf("==> install %s: CACHED %s", in.OS, image.Short(key))
+	if cached {
+		b.logf("==> install %s: CACHED %s", in.OS, engine.Short(key))
 		return key, nil
-	}
-	key = inputs
-	if lost != "" {
-		if key, err = installKey(driver.Name(), in, mediaPath, salt+"|replaces "+lost+"|"+fsutil.RandomHex(8)); err != nil {
-			return "", err
-		}
-		b.logf("==> install %s: %s no longer has %s, installing again as %s", in.OS, driver.Name(), image.Short(lost), image.Short(key))
 	}
 	if agent == "" && driver.Capabilities().Agent {
 		if in.OS != machine.OS(runtime.GOOS) {
 			return "", fmt.Errorf("installing a %s guest from a %s host needs --agent, the disco-vm binary built for %s", in.OS, runtime.GOOS, in.OS)
 		}
-		agent = b.Engine.Exe
+		if agent, err = os.Executable(); err != nil {
+			return "", err
+		}
 	}
 	diskBytes, err := units.ParseBytes(in.Disk)
 	if err != nil {
@@ -281,11 +249,7 @@ func (b *Builder) install(ctx context.Context, p *Plan, in Install, contextDir, 
 		media = mediaPath
 	}
 	b.logf("==> install %s from %s", in.OS, media)
-	pending, err := store.Begin(image.Layer{ID: key, Driver: driver.Name(), GuestOS: in.OS, Comment: "install " + string(in.OS)})
-	if err != nil {
-		return "", err
-	}
-	err = driver.Install(ctx, machine.InstallSpec{
+	_, err = driver.Install(ctx, machine.InstallSpec{
 		GuestOS:   in.OS,
 		Media:     media,
 		Edition:   in.Edition,
@@ -294,51 +258,30 @@ func (b *Builder) install(ctx context.Context, p *Plan, in Install, contextDir, 
 		Memory:    p.Memory,
 		Agent:     agent,
 		Options:   in.Options,
-		CacheDir:  filepath.Join(b.Engine.Root, "cache", driver.Name()),
 		GUI:       b.gui,
 		Log:       b.Out,
-	}, pending.MachineLayer())
+	}, machine.Layer{ID: key, GuestOS: in.OS, Comment: "install " + string(in.OS)})
 	if err != nil {
-		pending.Abort(context.Background(), driver)
 		return "", fmt.Errorf("install %s: %w", in.OS, err)
-	}
-	if _, err := pending.Commit(ctx, driver); err != nil {
-		pending.Abort(context.Background(), driver)
-		return "", err
-	}
-	if lost != "" {
-		if err := store.Replace(inputs, key); err != nil {
-			return "", err
-		}
 	}
 	return key, nil
 }
 
-// cached looks a layer up by the ID its inputs give it. It returns the layer
-// to use: that one, or the one built in its place. When the driver no longer
-// holds the layer (a boxd snapshot deleted behind the store's back), there is
-// nothing to use, and lost names it: the caller builds it again under a new
-// ID and records the replacement.
-func (b *Builder) cached(ctx context.Context, inputs string) (key, lost string, err error) {
-	store := b.Engine.Images
-	current, err := store.Current(inputs)
-	if err != nil || !store.Has(current) {
-		return "", "", err
+// cached reports whether the driver has the layer its inputs give the ID key.
+// One it lost (a boxd snapshot or a Docker image deleted behind disco-vm's
+// back) is not there, so it is built again under the same ID.
+func (b *Builder) cached(ctx context.Context, key string) (bool, error) {
+	_, err := b.Engine.Driver.Layer(ctx, key)
+	if errors.Is(err, machine.ErrNotFound) {
+		return false, nil
 	}
-	intact, err := store.Intact(ctx, current, b.Engine.Driver)
-	if err != nil {
-		return "", "", err
-	}
-	if !intact {
-		return "", current, nil
-	}
-	return current, "", nil
+	return err == nil, err
 }
 
 // buildLayer boots an instance of from (the parent layer, or a base), runs the
 // layer's steps, shuts the guest down in order, and commits its disk as the
-// layer key on parent.
-func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, from, parent, key string, layer PlannedLayer) (err error) {
+// layer key on from's layer.
+func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, from, key string, layer PlannedLayer) (err error) {
 	e := b.Engine
 	inst, err := e.Create(ctx, from, engine.CreateOptions{Temporary: true, CPUs: p.CPUs, Memory: p.Memory})
 	if err != nil {
@@ -392,16 +335,7 @@ func (b *Builder) buildLayer(ctx context.Context, p *Plan, name, from, parent, k
 		return fmt.Errorf("shutdown before commit: %w", err)
 	}
 	booted = nil
-	meta := image.Layer{
-		ID: key, Parent: parent, Driver: e.Driver.Name(), GuestOS: p.GuestOS,
-		Comment: name + ":" + layer.Name,
-	}
-	pending, err := e.Images.Begin(meta)
-	if err != nil {
-		return err
-	}
-	if _, err = e.Commit(ctx, inst, pending); err != nil {
-		pending.Abort(context.Background(), e.Driver)
+	if _, err = e.Commit(ctx, inst, machine.Layer{ID: key, Comment: name + ":" + layer.Name}); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil

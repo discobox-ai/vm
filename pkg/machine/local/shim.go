@@ -1,4 +1,4 @@
-package engine
+package local
 
 import (
 	"bufio"
@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
+	"github.com/discobox-ai/vm/internal/proc"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
@@ -35,50 +37,48 @@ type shimState struct {
 	Service string `json:"service,omitempty"`
 }
 
-// RunShim is the body of `disco-vm shim <id>`: boot the instance, serve its
-// control API, and return when the machine stops. Canceling ctx (a signal)
-// shuts the guest down in order first.
-func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
-	inst, err := e.Get(id)
+// runShim is the body of a shim: boot the instance, serve its control API,
+// its URL, and its forwards, and return when the machine stops. Canceling ctx
+// (a signal) shuts the guest down in order first.
+func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
+	inst, err := d.readInstance(id)
 	if err != nil {
 		return err
 	}
-	booted, err := e.Boot(ctx, inst, BootOptions{Console: os.Stderr, GUI: gui})
+	hs, err := d.spec(inst)
 	if err != nil {
 		return err
 	}
-	forwards, err := serveForwards(booted.Machine, inst.Forwards)
+	_, port, err := d.hv.Service(hs)
 	if err != nil {
-		_ = booted.Machine.Kill(context.Background())
+		return err
+	}
+	m, err := d.boot(ctx, inst, machine.BootOptions{Console: os.Stderr, GUI: gui})
+	if err != nil {
+		return err
+	}
+	forwards, err := serveForwards(m, inst.Forwards)
+	if err != nil {
+		_ = m.Kill(context.Background())
 		return err
 	}
 	defer forwards()
-	service, err := e.announceService(ctx, inst, booted.Machine)
-	if err != nil {
-		_ = booted.Machine.Kill(context.Background())
-		return err
-	}
 	serviceListener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
-		_ = booted.Machine.Kill(context.Background())
+		_ = m.Kill(context.Background())
 		return err
 	}
 	defer serviceListener.Close()
-	dialer, ok := booted.Machine.(machine.Dialer)
-	if !ok {
-		_ = booted.Machine.Kill(context.Background())
-		return fmt.Errorf("the %s driver's machine cannot be dialed, so its shim cannot serve the instance's URL", e.Driver.Name())
-	}
-	go serveService(serviceListener, dialer, service.Port)
+	go serveService(serviceListener, m, port)
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
-		_ = booted.Machine.Kill(context.Background())
+		_ = m.Kill(context.Background())
 		return err
 	}
 	var stopOnce sync.Once
 	var stopErr error
 	stop := func(timeout time.Duration) error {
-		stopOnce.Do(func() { stopErr = booted.Shutdown(context.Background(), timeout) })
+		stopOnce.Do(func() { stopErr = shutdown(context.Background(), m, timeout) })
 		return stopErr
 	}
 
@@ -98,10 +98,17 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /kill", func(w http.ResponseWriter, r *http.Request) {
+		if err := m.Kill(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	// Other processes reach the machine's guest operations here, on
 	// connections the relay serves once they are upgraded.
 	relay := newConnListener(listener.Addr())
-	relayServer := &http.Server{Handler: guest.Relay(booted.Machine), ReadHeaderTimeout: 30 * time.Second}
+	relayServer := &http.Server{Handler: guest.Relay(m), ReadHeaderTimeout: 30 * time.Second}
 	go func() { _ = relayServer.Serve(relay) }()
 	defer relayServer.Close()
 	mux.HandleFunc("GET /guest", func(w http.ResponseWriter, _ *http.Request) {
@@ -116,29 +123,57 @@ func (e *Engine) RunShim(ctx context.Context, id string, gui bool) error {
 		}
 		relay.hand(&bufConn{Conn: conn, r: rw.Reader})
 	})
-	statePath := filepath.Join(e.instanceDir(id), shimStateName)
+	statePath := filepath.Join(d.instanceDir(id), shimStateName)
 	state, closeControl, err := serveControl(listener, mux, statePath, serviceListener.Addr().String())
 	if err != nil {
-		_ = booted.Machine.Kill(context.Background())
+		_ = m.Kill(context.Background())
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "shim: %s running, control on %s\n", inst.Name, state.Addr)
 
 	select {
-	case <-booted.Machine.Done():
+	case <-m.Done():
 	case <-ctx.Done():
 		_ = stop(time.Minute)
 	}
 	closeControl()
-	err = booted.Machine.Err()
+	err = m.Err()
 	fmt.Fprintf(os.Stderr, "shim: %s stopped (%v)\n", inst.Name, err)
 	return err
+}
+
+// shutdown powers a machine off in order: the guest is asked, and the
+// machine is killed only if it will not answer or will not stop in time.
+func shutdown(ctx context.Context, m machine.Machine, timeout time.Duration) error {
+	select {
+	case <-m.Done():
+		return m.Err()
+	default:
+	}
+	deadline := time.Now().Add(timeout)
+	askCtx, cancel := context.WithDeadline(ctx, deadline)
+	err := m.Shutdown(askCtx, false)
+	cancel()
+	if err == nil {
+		select {
+		case <-m.Done():
+			return m.Err()
+		case <-time.After(time.Until(deadline)):
+			err = fmt.Errorf("guest did not power off within %s", timeout)
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	}
+	if killErr := m.Kill(context.Background()); killErr != nil {
+		return fmt.Errorf("not stopped in order (%w), nor forced off: %w", err, killErr)
+	}
+	return fmt.Errorf("forced off: %w", err)
 }
 
 // serveService splices every connection to the instance's loopback URL into
 // the service's guest port, until the listener is closed. A guest with nothing
 // listening yet closes the connection.
-func serveService(l net.Listener, m machine.Dialer, port uint32) {
+func serveService(l net.Listener, m Machine, port uint32) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -159,7 +194,7 @@ func serveService(l net.Listener, m machine.Dialer, port uint32) {
 
 // serveForwards listens for the guest on each forward's port and splices every
 // connection into its host socket. The returned func stops listening.
-func serveForwards(m machine.Machine, forwards []Forward) (func(), error) {
+func serveForwards(m machine.Machine, forwards []machine.Forward) (func(), error) {
 	if len(forwards) == 0 {
 		return func() {}, nil
 	}
@@ -180,7 +215,7 @@ func serveForwards(m machine.Machine, forwards []Forward) (func(), error) {
 			return nil, err
 		}
 		listeners = append(listeners, l)
-		go func(l net.Listener, f Forward) {
+		go func(l net.Listener, f machine.Forward) {
 			for {
 				conn, err := l.Accept()
 				if err != nil {
@@ -262,10 +297,11 @@ type bufConn struct {
 
 func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
-// ShimMain is the body of a shim, given the arguments the engine appends to
-// ShimCommand: [--gui] INSTANCE. A program that embeds the engine calls it
-// from the subcommand ShimCommand names.
-func (e *Engine) ShimMain(ctx context.Context, args []string) error {
+// ShimMain is the body of a shim, given the arguments Start appends to the
+// shim command: [--gui] INSTANCE-ID. driver is the one Start was called on,
+// made again from the same configuration: a program that embeds the engine
+// calls it from the subcommand its machine.Config.ShimCommand names.
+func ShimMain(ctx context.Context, driver machine.Driver, args []string) error {
 	var gui bool
 	var rest []string
 	for _, arg := range args {
@@ -278,21 +314,38 @@ func (e *Engine) ShimMain(ctx context.Context, args []string) error {
 	if len(rest) != 1 {
 		return fmt.Errorf("shim: want [--gui] INSTANCE, not %q", args)
 	}
-	return e.RunShim(ctx, rest[0], gui)
+	d, ok := driver.(*Driver)
+	if !ok {
+		return fmt.Errorf("shim: the %s driver runs no shims", driver.Name())
+	}
+	return d.runShim(ctx, rest[0], gui)
+}
+
+// shimCommand is how a shim is started: the configured command, or this
+// executable's `shim` subcommand for the same driver, project, and directory.
+func (d *Driver) shimCommand() ([]string, error) {
+	if len(d.shim) > 0 {
+		return d.shim, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return []string{exe, "--root", d.dir, "--driver", d.hv.Name(), "--project", d.project, "shim"}, nil
 }
 
 // spawnShim starts a shim with args, detached from this process, so the VM
 // outlives the command that started it. The returned channel yields once,
 // when the shim exits.
-func (e *Engine) spawnShim(args []string, log *os.File) (<-chan error, error) {
-	argv := e.ShimCommand
-	if len(argv) == 0 {
-		argv = []string{e.Exe, "--root", e.Root, "--driver", e.Driver.Name(), "--project", e.Project, "shim"}
+func (d *Driver) spawnShim(args []string, log *os.File) (<-chan error, error) {
+	argv, err := d.shimCommand()
+	if err != nil {
+		return nil, err
 	}
 	// Not tied to a ctx: the shim outlives the command that spawned it.
-	cmd := exec.CommandContext(context.Background(), argv[0], append(slices.Clone(argv[1:]), args...)...) //nolint:gosec // G204: argv is the engine's own executable or its configured ShimCommand
+	cmd := exec.CommandContext(context.Background(), argv[0], append(slices.Clone(argv[1:]), args...)...) //nolint:gosec // G204: argv is this executable or its configured shim command
 	cmd.Stdout, cmd.Stderr = log, log
-	detach(cmd)
+	proc.Detach(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start shim: %w", err)
 	}
@@ -301,25 +354,74 @@ func (e *Engine) spawnShim(args []string, log *os.File) (<-chan error, error) {
 	return exited, nil
 }
 
+// Start boots the instance under a shim of its own, and returns once the shim
+// has the machine and serves it.
+func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+	if opts.GUI && !d.hv.Capabilities().Display {
+		return nil, fmt.Errorf("%s has no display to show: %w", d.hv.Name(), machine.ErrUnsupported)
+	}
+	if shim, err := d.openShim(inst.ID); err == nil && shim.status(ctx) == nil {
+		return nil, fmt.Errorf("instance %s is already running", inst.Name)
+	}
+	dir := d.instanceDir(inst.ID)
+	_ = os.Remove(filepath.Join(dir, shimStateName))
+	logFile, err := os.OpenFile(filepath.Join(dir, "shim.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	defer logFile.Close()
+	args := []string{inst.ID}
+	if opts.GUI {
+		args = []string{"--gui", inst.ID}
+	}
+	exited, err := d.spawnShim(args, logFile)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		if m, err := d.Attach(ctx, inst); err == nil {
+			return m, nil
+		}
+		select {
+		case err := <-exited:
+			return nil, fmt.Errorf("instance %s failed to start: %w\n%s", inst.Name, err, tail(filepath.Join(dir, "shim.log")))
+		case <-ctx.Done():
+			return nil, fmt.Errorf("instance %s: shim did not come up: %w", inst.Name, ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func tail(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return ""
+		}
+		return err.Error()
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > 20 {
+		lines = lines[len(lines)-20:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // shimClient is another process's handle on a running shim.
 type shimClient struct {
 	state shimState
 	http  *http.Client
 }
 
-// shim finds a running instance's shim. It fails when the instance is not
+// openShim finds a running instance's shim. It fails when the instance is not
 // running.
-func (e *Engine) shim(id string) (*shimClient, error) {
-	return openShim(filepath.Join(e.instanceDir(id), shimStateName))
-}
-
-// openShim finds the shim published at statePath.
-func openShim(statePath string) (*shimClient, error) {
+func (d *Driver) openShim(id string) (*shimClient, error) {
+	statePath := filepath.Join(d.instanceDir(id), shimStateName)
 	var state shimState
 	if err := fsutil.ReadJSON(statePath, &state); err != nil {
 		return nil, err
 	}
-	if !processAlive(state.PID) {
+	if !proc.Alive(state.PID) {
 		return nil, errors.New("shim is gone")
 	}
 	return &shimClient{state: state, http: &http.Client{}}, nil
@@ -346,6 +448,31 @@ func (c *shimClient) status(ctx context.Context) error {
 	return nil
 }
 
+// kill forces the machine off and waits for the shim to exit, so the caller
+// can delete the instance's files at once (Windows will not remove a file a
+// live process still has open). A shim from before /kill is stopped with no
+// grace instead.
+func (c *shimClient) kill(ctx context.Context) error {
+	resp, err := c.do(ctx, http.MethodPost, "/kill")
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return c.stop(ctx, time.Second)
+	}
+	c.waitExit()
+	return nil
+}
+
+// waitExit waits a moment for the shim's process to end.
+func (c *shimClient) waitExit() {
+	deadline := time.Now().Add(15 * time.Second)
+	for proc.Alive(c.state.PID) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // stop asks for an orderly shutdown and waits for the shim to exit, so the
 // caller can delete the instance's files at once (Windows will not remove a
 // file a live process still has open).
@@ -356,10 +483,7 @@ func (c *shimClient) stop(ctx context.Context, timeout time.Duration) error {
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	resp.Body.Close()
-	deadline := time.Now().Add(15 * time.Second)
-	for processAlive(c.state.PID) && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
+	c.waitExit()
 	if msg := strings.TrimSpace(string(body)); msg != "" {
 		return errors.New(msg)
 	}

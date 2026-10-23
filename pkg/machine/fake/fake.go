@@ -2,10 +2,10 @@
 // agent process on the host, confined to a directory that stands in for its
 // disk; clones and commits are directory copies.
 //
-// It exists so that everything above the driver seam — the image store, the
-// builder, the engine and its shim, the guest protocol, the CLI — runs exactly
-// as it does against a real VM, on any machine and in CI, while the hcs and vz
-// drivers are written. Its guest OS is always the host's.
+// It exists so that everything above the driver seam — the builder, the
+// engine, the guest protocol, the CLI — and the local driver's store and shim
+// run exactly as they do against a real VM, on any machine and in CI. Its
+// guest OS is always the host's.
 package fake
 
 import (
@@ -30,10 +30,17 @@ import (
 	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 func init() {
-	machine.Register("fake", func() (machine.Driver, error) { return New() })
+	machine.Register("fake", func(cfg machine.Config) (machine.Driver, error) {
+		hv, err := New()
+		if err != nil {
+			return nil, err
+		}
+		return local.New(cfg, hv)
+	})
 }
 
 // AgentEnv overrides the agent binary; by default it is the running disco-vm.
@@ -43,8 +50,8 @@ const AgentEnv = "DISCO_VM_AGENT"
 // lists, so a test of the CLI has bases to run.
 const BasesEnv = "DISCO_VM_FAKE_BASES"
 
-// Driver is the fake driver.
-type Driver struct {
+// Hypervisor is the fake driver's hypervisor, under a local.Driver.
+type Hypervisor struct {
 	// Agent is the disco-vm binary each guest runs as `disco-vm guest`.
 	Agent string
 	// Catalog is what Bases lists. An instance of one starts from an empty
@@ -52,10 +59,11 @@ type Driver struct {
 	Catalog []machine.Base
 }
 
-var _ machine.Driver = (*Driver)(nil)
+var _ local.Hypervisor = (*Hypervisor)(nil)
 
-// New returns a fake driver whose guests run this binary, or $DISCO_VM_AGENT.
-func New() (*Driver, error) {
+// New returns a fake hypervisor whose guests run this binary, or
+// $DISCO_VM_AGENT.
+func New() (*Hypervisor, error) {
 	agent := os.Getenv(AgentEnv)
 	if agent == "" {
 		exe, err := os.Executable()
@@ -64,7 +72,7 @@ func New() (*Driver, error) {
 		}
 		agent = exe
 	}
-	d := &Driver{Agent: agent}
+	d := &Hypervisor{Agent: agent}
 	if raw := os.Getenv(BasesEnv); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &d.Catalog); err != nil {
 			return nil, fmt.Errorf("fake: %s: %w", BasesEnv, err)
@@ -73,9 +81,9 @@ func New() (*Driver, error) {
 	return d, nil
 }
 
-func (*Driver) Name() string { return "fake" }
+func (*Hypervisor) Name() string { return "fake" }
 
-func (*Driver) Capabilities() machine.Capabilities {
+func (*Hypervisor) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.OS(runtime.GOOS)},
 		Forward: true,
@@ -83,7 +91,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 	}
 }
 
-func (*Driver) Check(context.Context) error { return nil }
+func (*Hypervisor) Check(context.Context) error { return nil }
 
 const (
 	rootfsName = "rootfs"
@@ -100,7 +108,7 @@ func rootfs(dir string) string { return filepath.Join(dir, rootfsName) }
 
 // Install creates an empty root. The media is not read; it is recorded, so a
 // test can see what the spec asked for.
-func (d *Driver) Install(_ context.Context, spec machine.InstallSpec, dst machine.Layer) error {
+func (d *Hypervisor) Install(_ context.Context, spec local.InstallSpec, dst local.Layer) error {
 	if spec.GuestOS != machine.OS(runtime.GOOS) {
 		return fmt.Errorf("fake: a %s host can only fake %s guests, not %s", runtime.GOOS, runtime.GOOS, spec.GuestOS)
 	}
@@ -114,7 +122,7 @@ func (d *Driver) Install(_ context.Context, spec machine.InstallSpec, dst machin
 	return os.WriteFile(filepath.Join(rootfs(dst.Dir), markerName), []byte(marker), 0o644) //nolint:gosec // G306: the fake guest's install marker, no secrets
 }
 
-func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
+func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 	if len(inst.Chain) == 0 && inst.Base == nil {
 		return errors.New("fake: instance has no image")
 	}
@@ -141,7 +149,7 @@ func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
 	return fsutil.CopyTree(rootfs(inst.Parent().Dir), rootfs(inst.Dir))
 }
 
-func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
+func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (local.Machine, error) {
 	addrFile := filepath.Join(inst.Dir, addrName)
 	_ = os.Remove(addrFile)
 	//nolint:gosec,noctx // G204: the agent is the driver's own disco-vm binary; noctx: the guest outlives Boot's ctx and stops through Stop or Kill
@@ -206,7 +214,7 @@ listening:
 	return m, nil
 }
 
-func (d *Driver) Commit(_ context.Context, inst machine.InstanceSpec, dst machine.Layer) error {
+func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst local.Layer) error {
 	if err := os.MkdirAll(dst.Dir, 0o755); err != nil {
 		return err
 	}
@@ -214,31 +222,12 @@ func (d *Driver) Commit(_ context.Context, inst machine.InstanceSpec, dst machin
 	return os.Rename(rootfs(inst.Dir), rootfs(dst.Dir))
 }
 
-func (d *Driver) Destroy(_ context.Context, inst machine.InstanceSpec) error {
+func (d *Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {
 	return os.RemoveAll(inst.Dir)
 }
 
-func (d *Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
-
-// LayerExists reports whether the layer's root is there, so that a test can
-// lose a layer by removing it.
-func (d *Driver) LayerExists(_ context.Context, layer machine.Layer) (bool, error) {
-	_, err := os.Stat(rootfs(layer.Dir))
-	return err == nil, nil
-}
-
-// TagLayer and UntagLayer do nothing: a layer lives only in the store.
-func (d *Driver) TagLayer(context.Context, machine.Layer, string) error   { return nil }
-func (d *Driver) UntagLayer(context.Context, machine.Layer, string) error { return nil }
-
-// Orphans is empty: nothing the driver makes lives outside the store.
-func (*Driver) Orphans(context.Context, machine.Known) ([]machine.Orphan, error) { return nil, nil }
-
-// RemoveOrphan is never asked of a driver that lists no orphans.
-func (*Driver) RemoveOrphan(context.Context, machine.Orphan) error { return machine.ErrUnsupported }
-
 // Bases is the Catalog the driver was given.
-func (d *Driver) Bases(context.Context) ([]machine.Base, error) { return d.Catalog, nil }
+func (d *Hypervisor) Bases(context.Context) ([]machine.Base, error) { return d.Catalog, nil }
 
 // pickServicePort gives the instance a free port on the host's loopback for
 // its service: a fake guest is a host process, so a port of its own keeps two
@@ -257,17 +246,17 @@ func pickServicePort(dir string) error {
 }
 
 // Service is the port Prepare picked on the host's loopback, which the
-// engine's shim serves.
-func (*Driver) Service(_ context.Context, inst machine.InstanceSpec) (machine.Service, error) {
+// instance's shim serves.
+func (*Hypervisor) Service(inst local.InstanceSpec) (string, uint32, error) {
 	data, err := os.ReadFile(filepath.Join(inst.Dir, servicePortName))
 	if err != nil {
-		return machine.Service{}, fmt.Errorf("fake: instance %s is not prepared: %w", inst.ID, err)
+		return "", 0, fmt.Errorf("fake: instance %s is not prepared: %w", inst.ID, err)
 	}
 	port, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 16)
 	if err != nil {
-		return machine.Service{}, fmt.Errorf("fake: instance %s service port: %w", inst.ID, err)
+		return "", 0, fmt.Errorf("fake: instance %s service port: %w", inst.ID, err)
 	}
-	return machine.Service{Listen: "tcp:127.0.0.1:" + strconv.FormatUint(port, 10), Port: uint32(port)}, nil
+	return "tcp:127.0.0.1:" + strconv.FormatUint(port, 10), uint32(port), nil
 }
 
 // proc is a running fake guest. Its guest operations are its agent's.
@@ -282,7 +271,7 @@ type proc struct {
 	killed    atomic.Bool
 }
 
-var _ machine.Dialer = (*proc)(nil)
+var _ local.Machine = (*proc)(nil)
 
 // Dial reaches the agent at its own address. A fake guest is a host process,
 // so any other port is the host's loopback.

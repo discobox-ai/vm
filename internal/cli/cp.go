@@ -43,7 +43,7 @@ func cpCommand(g *globals) *cobra.Command {
 			case srcGuest == dstGuest:
 				return errors.New("exactly one of SRC and DST must be INSTANCE:PATH")
 			case dstGuest:
-				inst, err := e.Get(dstInst)
+				inst, err := e.Get(cmd.Context(), dstInst)
 				if err != nil {
 					return err
 				}
@@ -57,7 +57,7 @@ func cpCommand(g *globals) *cobra.Command {
 				go func() { writer.CloseWithError(guest.Pack(writer, filepath.Clean(srcPath), contents)) }()
 				return g.CopyTo(cmd.Context(), dstPath, reader)
 			default:
-				inst, err := e.Get(srcInst)
+				inst, err := e.Get(cmd.Context(), srcInst)
 				if err != nil {
 					return err
 				}

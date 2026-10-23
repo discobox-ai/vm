@@ -73,11 +73,16 @@ tasks:
       - go test {{.RACE}} {{.PACKAGES}}
 
   # The vz conformance suite on real hardware. DISCO_VM_VZ_BASE names an
-  # installed layer's directory (see docs/drivers/vz.md); without it the suite
-  # skips. caffeinate -d keeps the display awake for the hours a run takes.
+  # installed layer's ID (see docs/drivers/vz.md); without it the suite skips.
+  # Each started instance's shim is the signed build. caffeinate -d keeps the
+  # display awake for the hours a run takes.
   test:vz:
     desc: Run the vz conformance suite on this Mac (needs DISCO_VM_VZ_BASE)
     platforms: [darwin]
+    deps:
+      - build
+    env:
+      DISCO_VM_TEST_BINARY: '{{.ROOT_DIR}}/{{.BINARY}}'
     cmds:
       - caffeinate -d go test -exec {{.ROOT_DIR}}/scripts/codesign-exec -timeout 4h -v -run 'TestConformance' ./pkg/machine/vz
 

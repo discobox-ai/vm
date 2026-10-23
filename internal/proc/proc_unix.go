@@ -1,29 +1,23 @@
 //go:build !windows
 
-package engine
+package proc
 
 import (
 	"os/exec"
 	"syscall"
 )
 
-// detach puts the shim in its own session, so a Ctrl-C at the terminal that
+// Detach puts the shim in its own session, so a Ctrl-C at the terminal that
 // started it reaches the CLI and not the VM.
-func detach(cmd *exec.Cmd) {
+func Detach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
-func processAlive(pid int) bool {
+// Alive reports whether a process of the PID runs.
+func Alive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM
-}
-
-// killProcess ends a process at once, without letting it clean up.
-func killProcess(pid int) {
-	if pid > 0 {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-	}
 }

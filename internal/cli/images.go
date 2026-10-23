@@ -12,7 +12,6 @@ import (
 
 	"github.com/discobox-ai/vm/pkg/build"
 	"github.com/discobox-ai/vm/pkg/engine"
-	"github.com/discobox-ai/vm/pkg/image"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -69,7 +68,7 @@ func imagesCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			images, err := e.Images.Images(all)
+			images, err := e.Images(cmd.Context(), all)
 			if err != nil {
 				return err
 			}
@@ -80,13 +79,10 @@ func imagesCommand(g *globals) *cobra.Command {
 				if ref == "" {
 					ref = "<none>"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ref, image.Short(img.Layer.ID), img.Layer.GuestOS, img.Layer.Driver, ago(img.Layer.Created))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ref, engine.Short(img.Layer.ID), img.Layer.GuestOS, e.Driver.Name(), ago(img.Layer.Created))
 			}
 			for _, b := range bases(cmd.Context(), e) {
 				fmt.Fprintf(w, "%s\t-\t%s\t%s\t%s\n", b.Name, b.GuestOS, e.Driver.Name(), ago(b.Created))
-			}
-			for _, o := range orphans(cmd.Context(), e, machine.OrphanLayer) {
-				fmt.Fprintf(w, "<orphan>\t%s\t-\t%s\t%s\n", o.Name, e.Driver.Name(), ago(o.Created))
 			}
 			return w.Flush()
 		},
@@ -98,7 +94,7 @@ func imagesCommand(g *globals) *cobra.Command {
 func rmiCommand(g *globals) *cobra.Command {
 	return &cobra.Command{
 		Use:   "rmi IMAGE...",
-		Short: "Untag images, or remove untagged ones by ID, and delete layers nothing else uses; or delete orphaned layers by the name images shows",
+		Short: "Untag images, or remove untagged ones by ID, and delete layers nothing else uses",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
@@ -106,24 +102,13 @@ func rmiCommand(g *globals) *cobra.Command {
 				return err
 			}
 			for _, ref := range args {
-				_, err := e.Images.Resolve(ref)
 				// A base is the driver's, and disco-vm never deletes it.
-				if err = e.NotABase(cmd.Context(), ref, err); errors.Is(err, engine.ErrBase) {
-					return err
-				}
-				if errors.Is(err, image.ErrNotFound) {
-					// Not an image: an orphaned layer of the project.
-					o, err := e.RemoveOrphan(cmd.Context(), machine.OrphanLayer, ref, false)
-					if errors.Is(err, engine.ErrNotOrphan) {
-						return fmt.Errorf("no image or orphaned layer %q", ref)
-					}
-					if err != nil {
+				if _, err := e.Resolve(cmd.Context(), ref); err != nil {
+					if err := e.NotABase(cmd.Context(), ref, err); errors.Is(err, engine.ErrBase) {
 						return err
 					}
-					fmt.Printf("deleted orphan %s\n", o.Name)
-					continue
 				}
-				untagged, removed, err := e.Images.Remove(cmd.Context(), ref, e.Driver, e.LayerInUse)
+				untagged, removed, err := e.RemoveImage(cmd.Context(), ref)
 				if err != nil {
 					return err
 				}
@@ -131,7 +116,7 @@ func rmiCommand(g *globals) *cobra.Command {
 					fmt.Printf("untagged %s\n", untagged)
 				}
 				for _, id := range removed {
-					fmt.Printf("deleted %s\n", image.Short(id))
+					fmt.Printf("deleted %s\n", engine.Short(id))
 				}
 			}
 			return nil
@@ -149,11 +134,11 @@ func tagCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			id, err := e.Images.Resolve(args[0])
+			layer, err := e.Resolve(cmd.Context(), args[0])
 			if err != nil {
 				return e.NotABase(cmd.Context(), args[0], err)
 			}
-			return e.Images.Tag(cmd.Context(), args[1], id, e.Driver)
+			return e.Tag(cmd.Context(), args[1], layer.ID)
 		},
 	}
 }
@@ -171,7 +156,7 @@ Without NAME the image is known by the layer ID it prints.`,
 			if err != nil {
 				return err
 			}
-			inst, err := e.Get(args[0])
+			inst, err := e.Get(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
@@ -217,31 +202,4 @@ func bases(ctx context.Context, e *engine.Engine) []machine.Base {
 		return nil
 	}
 	return list
-}
-
-// orphans is what the driver holds of one kind that the store has no record
-// of. A driver that cannot be asked is a warning, not a failed listing: the
-// store's own rows still list.
-func orphans(ctx context.Context, e *engine.Engine, kind machine.OrphanKind) []machine.Orphan {
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-	all, err := e.Orphans(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "disco-vm: cannot list what %s holds outside this store: %v\n", e.Driver.Name(), err)
-		return nil
-	}
-	var out []machine.Orphan
-	for _, o := range all {
-		if o.Kind == kind {
-			out = append(out, o)
-		}
-	}
-	if len(out) > 0 {
-		remove := "rmi"
-		if kind == machine.OrphanMachine {
-			remove = "rm"
-		}
-		fmt.Fprintf(os.Stderr, "disco-vm: <orphan> rows are %s's, named as disco-vm names them, and this store has no record of them; `disco-vm %s NAME` deletes one\n", e.Driver.Name(), remove)
-	}
-	return out
 }

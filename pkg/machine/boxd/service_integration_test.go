@@ -2,15 +2,17 @@ package boxd
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
 )
@@ -26,31 +28,29 @@ func TestService(t *testing.T) {
 	if os.Getenv(IntegrationEnv) != "1" || (os.Getenv(APIKeyEnv) == "" && os.Getenv(tokenEnv) == "") {
 		t.Skipf("set %s=1 and %s to reach a service on boxd, which bills the account", IntegrationEnv, APIKeyEnv)
 	}
-	d := New()
+	d := New("")
 	ctx := context.Background()
-	base := machine.Layer{ID: "base", Dir: os.Getenv(BaseEnv)}
-	if base.Dir == "" {
-		base.Dir = t.TempDir()
-		if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Log: testLog{t}}, base); err != nil {
+	layer := os.Getenv(BaseEnv)
+	if layer == "" {
+		installed, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Log: testLog{t}}, machine.Layer{ID: randomID()})
+		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = d.DeleteLayer(context.Background(), base) })
+		layer = installed.ID
+		t.Cleanup(func() { _ = d.DeleteLayer(context.Background(), layer) })
 	}
-	inst := machine.InstanceSpec{ID: "service", Dir: t.TempDir(), GuestOS: machine.Linux, Chain: []machine.Layer{base}}
-	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
-	if err := d.Prepare(ctx, inst); err != nil {
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "service-" + randomID()[:8], Layer: layer, GuestOS: machine.Linux})
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
 	service, err := d.Service(ctx, inst)
 	if err != nil || !strings.HasPrefix(service.URL, "https://") || service.Listen != "tcp:0.0.0.0:7302" {
 		t.Fatalf("service %+v, %v", service, err)
 	}
-	url, port := service.URL, service.Port
+	url, port := service.URL, guest.ServicePort
 	t.Logf("URL %s", url)
-	var ref vmRef
-	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); err != nil {
-		t.Fatal(err)
-	}
+	ref := vmRef{ID: inst.ID}
 	api, _ := d.api.API()
 
 	for boot := 1; boot <= 2; boot++ {
@@ -121,4 +121,11 @@ func httpGet(ctx context.Context, url string) (string, error) {
 		return string(body), fmt.Errorf("%s", resp.Status)
 	}
 	return string(body), err
+}
+
+// randomID is a layer ID no build makes.
+func randomID() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

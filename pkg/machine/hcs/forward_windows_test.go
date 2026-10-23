@@ -14,15 +14,13 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // A guest process reaches the host through Machine.Listen: disco-vm dial-host
 // in a real guest dials hvsocket to its parent partition.
 func TestForward(t *testing.T) {
-	base := os.Getenv(BaseEnv)
-	if base == "" {
-		t.Skipf("set %s to run on HCS", BaseEnv)
-	}
+	base := basePayload(t)
 	// This build's disco-vm, since the image's baked-in agent may predate
 	// dial-host.
 	exe := filepath.Join(t.TempDir(), "disco-vm.exe")
@@ -32,15 +30,15 @@ func TestForward(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := &Driver{}
+	d := &Hypervisor{}
 	ctx := context.Background()
-	inst := machine.InstanceSpec{ID: "fwd", Dir: filepath.Join(t.TempDir(), "fwd"), GuestOS: machine.Windows,
-		Chain: []machine.Layer{{ID: "base", Dir: base}}}
+	inst := local.InstanceSpec{ID: "fwd", Dir: filepath.Join(t.TempDir(), "fwd"), GuestOS: machine.Windows,
+		Chain: []local.Layer{{ID: "base", Dir: base}}}
 	if err := d.Prepare(ctx, inst); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
-	m, err := d.Boot(ctx, inst, machine.BootOptions{CPUs: 4, Memory: 4 << 30})
+	m, err := d.Boot(ctx, inst, local.BootOptions{CPUs: 4, Memory: 4 << 30})
 	if err != nil {
 		t.Fatal(err)
 	}

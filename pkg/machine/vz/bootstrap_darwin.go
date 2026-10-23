@@ -18,7 +18,7 @@ import (
 	"github.com/Code-Hex/vz/v3"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // The agent's place in the guest, and the launchd daemon that starts it at
@@ -116,7 +116,7 @@ func bootstrap(ctx context.Context, b bundle, m meta, agent string, opts options
 		if err != nil {
 			return err
 		}
-		if err := vm.display(machine.BootOptions{GUI: gui, Title: "disco-vm install: first boot"}); err != nil {
+		if err := vm.display(local.BootOptions{GUI: gui, Title: "disco-vm install: first boot"}); err != nil {
 			return err
 		}
 		err = installAgent(ctx, vm, address.String(), binary, opts, log)
