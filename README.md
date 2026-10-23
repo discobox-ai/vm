@@ -38,6 +38,14 @@ disco-vm cp ./project dev:C:\src
 disco-vm stop dev && disco-vm rm dev
 ```
 
+List the drivers compiled into the current binary, then select one with the
+global `--driver` flag (or `DISCO_VM_DRIVER`):
+
+```sh
+disco-vm drivers
+disco-vm --driver docker info
+```
+
 ## Images are YAML
 
 The build spec is Dockerfile-shaped: a base, then steps, cached by prefix. It

@@ -516,6 +516,41 @@ func TestInfo(t *testing.T) {
 	}
 }
 
+func TestDrivers(t *testing.T) {
+	e := env{t: t, root: t.TempDir()}
+	out := e.ok("drivers")
+	mustContain(t, out, "DRIVER", "SELECTED", "boxd", "docker", "fake")
+	if !driverSelected(out, tg.driver) {
+		t.Fatalf("selected driver is not %s:\n%s", tg.driver, out)
+	}
+
+	// The command-line flag takes precedence over DISCO_VM_DRIVER, which the
+	// harness sets to tg.driver, so the flag names a different driver.
+	other := "docker"
+	if tg.driver == other {
+		other = "fake"
+	}
+	out = e.ok("--driver", other, "drivers")
+	if !driverSelected(out, other) {
+		t.Fatalf("--driver %s did not select %s:\n%s", other, other, out)
+	}
+
+	// An unknown driver is refused.
+	if out, code := e.run("--driver", "nope", "drivers"); code == 0 || !strings.Contains(out, `no driver "nope"`) {
+		t.Fatalf("--driver nope: exit %d\n%s", code, out)
+	}
+}
+
+func driverSelected(out, name string) bool {
+	for line := range strings.SplitSeq(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == name && fields[1] == "*" {
+			return true
+		}
+	}
+	return false
+}
+
 // Every instance has one service. Its URL is served while it runs, and the
 // guest finds where to listen in its service file. On the fake driver the
 // guest is a host process, so the service is this test's server.
