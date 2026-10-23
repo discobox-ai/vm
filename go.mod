@@ -138,7 +138,7 @@ require (
 	github.com/dave/dst v0.27.3 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/denis-tingaikin/go-header v0.5.0 // indirect
-	github.com/discobox-ai/repostd v0.0.0-20261017030812-71cf38c7b5f7 // indirect
+	github.com/discobox-ai/repostd v0.0.0-20261023211838-c2d203d5c80c // indirect
 	github.com/discobox-ai/watchnbuild v0.1.1-0.20260919045642-dfdfac09bda9 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.7.1 // indirect

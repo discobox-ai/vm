@@ -54,7 +54,8 @@ inside a git repository, `$RC` says so; stop and tell the user.
      symlinks.
    - `env GOPROXY=direct go get -tool` for
      `github.com/go-task/task/v3/cmd/task`,
-     `github.com/golangci/golangci-lint/v2/cmd/golangci-lint` and
+     `github.com/golangci/golangci-lint/v2/cmd/golangci-lint`,
+     `github.com/discobox-ai/watchnbuild@main` and
      `github.com/discobox-ai/repostd/cmd/repocheck@main`.
    - `go mod tidy`, because `go get -tool` leaves `go.sum` incomplete and
      `verify` would fail on it.
@@ -257,9 +258,9 @@ inside a git repository, `$RC` says so; stop and tell the user.
   environment a developer would. A service for this repo's own program
   `exec`s a Taskfile target; an auxiliary one, such as a metrics dashboard,
   may run a container. `discobox.services`
-- A repo with a `dev` target or script has a service that runs
-  `go tool task dev` or `pnpm run dev`, so the dev loop is running as soon
-  as the sandbox is up. `discobox.dev-service`
+- A service runs `go tool task dev`, or a node repo's `pnpm run dev` where
+  it has one, so the dev loop is running as soon as the sandbox is up.
+  `discobox.dev-service`
 
 ## 4. Environment and tools
 
@@ -271,7 +272,8 @@ inside a git repository, `$RC` says so; stop and tell the user.
   the flake. `env.flake`, `env.envrc`
 - Go-program tools are pinned by `tool` directives in `go.mod` and never also
   in the flake, because two pins drift. The minimum set is task,
-  golangci-lint and repocheck. `env.go-tools`, `env.flake-go-tools`
+  golangci-lint, repocheck and watchnbuild. `env.go-tools`,
+  `env.flake-go-tools`
 - Always run task as `go tool task`. `Taskfile.yml` defines these targets
   (`env.taskfile-targets`):
 
@@ -279,18 +281,20 @@ inside a git repository, `$RC` says so; stop and tell the user.
   |---|---|
   | `build` | Builds into `build/`. |
   | `run` | Runs the program, where there is one. |
-  | `dev` | Hot-reloads it through watchnbuild, where there is one. `env.dev-watch` |
+  | `dev` | Rebuilds on every change through watchnbuild, and restarts the program where there is one to run. `env.dev-watch` |
   | `test` | `go test -race`. `env.test-race` |
   | `check` | golangci-lint, `repocheck`, shellcheck, actionlint. |
   | `fmt`, `tidy`, `generate` | Format, tidy go.mod, regenerate code. |
   | `verify` | fmt, tidy, generate and `repocheck sync` leave the tree unchanged. |
   | `ci` | `verify` + `check` + `test`. |
 
-- A repo with a long-running program (a server, a daemon) has a `dev`
-  target: hot reload through `go tool watchnbuild`, configured by
-  `.wnb.yaml` at the root, with `.wnb.<name>.yaml` for a second loop such as
-  a CLI built beside the server. Pin
-  `github.com/discobox-ai/watchnbuild` as a tool. Every config is used by a
+- Every repo has a `dev` target: `go tool watchnbuild`, configured by
+  `.wnb.yaml` at the root, rebuilding whenever the source changes, so a
+  broken build shows up in `wnb-build-failed.txt` as soon as it happens. A
+  long-running program (a server, a daemon) is also run and restarted after
+  each build (`run:`); a CLI or library has nothing to run, so its config
+  has no `run:`, and the loop only builds. A second loop, such as a CLI
+  built beside the server, is `.wnb.<name>.yaml`. Every config is used by a
   dev target, and every dev target drives watchnbuild. `env.dev-watch`
 - Logic beyond a few lines goes in a Go program under `internal/cmd`, not in
   Taskfile shell or workflow YAML. Shared programs go in repostd or `x`.
