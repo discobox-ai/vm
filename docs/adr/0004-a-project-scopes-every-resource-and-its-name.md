@@ -1,6 +1,6 @@
 # 0004 — A project scopes every resource, and is in the name of what a driver makes
 
-- **Status**: Accepted
+- **Status**: Accepted (orphan listing superseded by 26-10-23-417)
 - **Date**: 2026-10-15
 
 ## Context
