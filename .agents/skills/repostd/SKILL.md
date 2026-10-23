@@ -144,8 +144,8 @@ inside a git repository, `$RC` says so; stop and tell the user.
 - `AGENTS.md` is the real file. `CLAUDE.md` is a symlink to `AGENTS.md`
   wherever either exists. `docs.agents-symlink`
 - The root `AGENTS.md` has these `##` sections: Project Structure, Shared
-  Libraries, Git Workflow, Commands, Implementation Quality, Package Design
-  Docs, Architecture Decision Records. `docs.agents-sections`
+  Libraries, Commands, Implementation Quality, Package Design Docs,
+  Architecture Decision Records. `docs.agents-sections`
 - Required files: `README.md` (user-facing), `DESIGN.md`, `LICENSE`
   (Apache-2.0), `NOTICE` and `SECURITY.md`. A design doc is always named
   `DESIGN.md`: move a `docs/design.md` to the root rather than keeping two.

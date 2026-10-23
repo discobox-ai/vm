@@ -7,3 +7,5 @@
 .env
 .env.*
 !.env.example
+# watchnbuild failure reports.
+wnb-*-failed.txt

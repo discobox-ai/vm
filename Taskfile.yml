@@ -54,6 +54,12 @@ tasks:
       - mkdir -p build/linux-amd64
       - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '{{.LDFLAGS}}' -o build/linux-amd64/disco-vm {{.MAIN}}
 
+  # disco-vm has nothing long-running to serve, so the loop only rebuilds.
+  dev:
+    desc: Rebuild build/disco-vm whenever its source changes
+    cmds:
+      - go tool watchnbuild -config .wnb.yaml
+
   run:
     desc: Build and run disco-vm (pass flags after --)
     deps:
