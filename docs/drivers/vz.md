@@ -131,7 +131,7 @@ need; the bindings keep the connection's Unix-domain socket unexported, so
 `CloseWrite` reaches it by reflection and falls back to a full close if their
 layout changes. `Done` follows the VM's state channel. `Kill` is `Stop`.
 
-**GUI** (`BootOptions.GUI`, `InstallSpec.GUI`; design decision 3a): after the
+**GUI** (`BootOptions.GUI`, `InstallSpec.GUI`; [a window per boot](../../pkg/machine/DESIGN.md#a-window-is-per-boot-and-lives-with-the-vm)): after the
 VM starts, the driver opens an `NSWindow` whose content is a
 `VZVirtualMachineView` on it, capturing system keys and resizing the guest's
 display to the window. It is our own window (`window_darwin.go`), not the

@@ -12,8 +12,8 @@ Build OS images and run them as VMs, from one codebase and one command line:
   uid on the host, without `--privileged`.
 
 disco-vm works on its own, and it is also meant to become a
-[discobox](https://github.com/discobox-ai/discobox) sandbox provider (see
-[docs/discobox.md](docs/discobox.md)).
+[discobox](https://github.com/discobox-ai/discobox) sandbox provider, which
+embeds `pkg/engine` as a library.
 
 > **Status: the shell.** Everything above the hypervisor is built and tested on
 > every OS through a `fake` driver. That covers the CLI, the YAML image

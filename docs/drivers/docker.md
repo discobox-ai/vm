@@ -4,7 +4,7 @@
 command that is a guest container's PID 1. That command is the one place
 above the `machine.Driver` seam that names the driver: `internal/cli` imports
 `pkg/machine/docker` for it, since the guest's init is the same binary (one
-binary, decision 1). It picks no behavior by OS or driver. Nothing else above
+binary, see [DESIGN.md](../../DESIGN.md#one-binary-three-roles)). It picks no behavior by OS or driver. Nothing else above
 the seam changed, and `internal/e2e` gained a `docker` target. Like
 boxd, the driver is remote (`Capabilities.Remote`): the Docker daemon owns a
 running guest, so the engine runs no shim, and every command attaches to the
