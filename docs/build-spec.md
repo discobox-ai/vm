@@ -67,7 +67,8 @@ mtime, not its hash, so a 6 GB ISO is not reread on every build.
 
 **Service.** A spec declares no service; `service:` is refused. Every instance
 has one, where its driver picks, and a program in the guest learns the address
-from its service file. See `disco-vm url --help` and `DESIGN.md` decision 3b.
+from its service file. See `disco-vm url --help` and
+[pkg/engine/DESIGN.md](../pkg/engine/DESIGN.md#every-instance-has-one-service-at-one-http-url).
 
 **Args.** Only `${NAME}` with braces, and only for declared args, is
 substituted. `$env:PATH` in PowerShell and `$HOME` or `${HOME}` in sh reach the
