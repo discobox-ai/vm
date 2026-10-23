@@ -24,8 +24,13 @@
 // committed from a stopped container, and every layer after the base is
 // written by the guest, in its uids already.
 //
-// The daemon owns a running guest, so the driver is remote: the engine runs no
-// shim, and every command attaches to the container (Attach).
+// The daemon owns a running guest, so every command attaches to the container
+// (Attach), and the daemon keeps everything the driver knows (ADR
+// 26-10-23-417): a layer is an image tagged disco-vm-layer:<project>--<id>
+// and labeled with its parent and comment, a tag is a tag of that image in
+// disco-vm/<project>/, and an instance is a container named
+// dvm-<project>--<name> and labeled with what it was made from. Nothing is
+// kept on the host.
 //
 // The agent listens on a root-only unix socket in the guest, and is the
 // container's guest operations (guest.Client). Each connection to it runs
@@ -45,6 +50,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,7 +60,7 @@ import (
 )
 
 func init() {
-	machine.Register("docker", func() (machine.Driver, error) { return New(), nil })
+	machine.Register("docker", func(cfg machine.Config) (machine.Driver, error) { return New(cfg.Project), nil })
 }
 
 const (
@@ -79,38 +85,51 @@ const (
 	// defaultImage is the image installed when options.image is not given.
 	defaultImage = "debian:trixie"
 	// layerRepo names the images the driver commits, each tagged
-	// `<project>--<layer id>-<random>`.
+	// `<project>--<layer id>`.
 	layerRepo = "disco-vm-layer"
+	// tagRepo starts the repository of every tag, before the project:
+	// disco-vm/<project>/<name>:<tag>.
+	tagRepo = "disco-vm/"
 	// namePrefix starts every container's name, before the project.
 	namePrefix = "dvm-"
 
-	layerFile     = "layer.json"
-	containerFile = "container.json"
-
+	// labelInstance is an instance's name, on its container.
 	labelInstance = "ai.discobox.vm.instance"
-	labelLayer    = "ai.discobox.vm.layer"
+	// labelLayer is a layer's ID, on its image, and on the install container
+	// that makes a base layer.
+	labelLayer   = "ai.discobox.vm.layer"
+	labelProject = "ai.discobox.vm.project"
+	labelParent  = "ai.discobox.vm.parent"
+	labelComment = "ai.discobox.vm.comment"
+	// labelImage is the reference an instance was made from, and labelCPUs
+	// and labelMemory its size, on its container.
+	labelImage  = "ai.discobox.vm.image"
+	labelCPUs   = "ai.discobox.vm.cpus"
+	labelMemory = "ai.discobox.vm.memory"
 )
 
 // Driver is the docker driver.
 type Driver struct {
-	api *api
+	api     *api
+	project string
 }
 
-var (
-	_ machine.Driver   = (*Driver)(nil)
-	_ machine.Attacher = (*Driver)(nil)
-)
+var _ machine.Driver = (*Driver)(nil)
 
-// New returns a driver for the daemon $DOCKER_HOST names. It dials nothing
-// until it is used.
-func New() *Driver { return &Driver{api: newAPI()} }
+// New returns a driver for the daemon $DOCKER_HOST names, for a project
+// (machine.DefaultProject when empty). It dials nothing until it is used.
+func New(project string) *Driver {
+	if project == "" {
+		project = machine.DefaultProject
+	}
+	return &Driver{api: newAPI(), project: project}
+}
 
 func (*Driver) Name() string { return "docker" }
 
 func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.Linux},
-		Remote:  true,
 		Agent:   true,
 	}
 }
@@ -136,15 +155,7 @@ func (d *Driver) Check(ctx context.Context) error {
 	return nil
 }
 
-// layerRef is a layer's layer.json.
-type layerRef struct {
-	// Image is the image's ID, and Ref the tag that keeps it from being
-	// pruned. DeleteLayer removes the tag, and the image with it.
-	Image string `json:"image"`
-	Ref   string `json:"ref"`
-}
-
-// containerRef is an instance's container.json.
+// containerRef is a container the driver reaches.
 type containerRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -153,18 +164,26 @@ type containerRef struct {
 // Install pulls an image, installs systemd in it if it has none, installs the
 // agent as a systemd service, shifts its files into the guest's uids, and
 // commits it as the base layer.
-func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst machine.Layer) error {
+func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst machine.Layer) (machine.Layer, error) {
 	if spec.GuestOS != machine.Linux {
-		return fmt.Errorf("docker: guests are linux, not %s", spec.GuestOS)
+		return machine.Layer{}, fmt.Errorf("docker: guests are linux, not %s", spec.GuestOS)
 	}
 	if spec.Media != "" && spec.Media != "latest" {
-		return fmt.Errorf("docker: install from media \"latest\"; pick an image with options.image, not media %q", spec.Media)
+		return machine.Layer{}, fmt.Errorf("docker: install from media \"latest\"; pick an image with options.image, not media %q", spec.Media)
 	}
 	for key := range spec.Options {
 		if key != "image" {
-			return fmt.Errorf("docker: unknown install option %q (have: image)", key)
+			return machine.Layer{}, fmt.Errorf("docker: unknown install option %q (have: image)", key)
 		}
 	}
+	dst.Parent, dst.GuestOS = "", machine.Linux
+	if err := d.install(ctx, spec, dst); err != nil {
+		return machine.Layer{}, err
+	}
+	return d.Layer(ctx, dst.ID)
+}
+
+func (d *Driver) install(ctx context.Context, spec machine.InstallSpec, dst machine.Layer) error {
 	image := spec.Options["image"]
 	if image == "" {
 		image = defaultImage
@@ -187,7 +206,7 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 	}
 
 	log("docker: installing systemd and the agent in %s", image)
-	id, err := d.api.createContainer(ctx, containerName(dst.Project, "install"), containerConfig{
+	id, err := d.api.createContainer(ctx, containerName(d.project, machine.TemporaryPrefix+"install-"+fsutil.RandomHex(3)), containerConfig{
 		Image:      image,
 		Entrypoint: []string{"/bin/sh", "-c", installScript},
 		Cmd:        []string{},
@@ -303,39 +322,50 @@ func agentTar(agent string) (io.Reader, error) {
 	return &buf, tw.Close()
 }
 
-// commit commits a stopped container as the layer dst.
+// commit commits a stopped container as the layer dst, its image labeled
+// with what the layer is, and with no instance's labels, which the container
+// carried.
 func (d *Driver) commit(ctx context.Context, container string, dst machine.Layer, changes []string) error {
-	tag := machine.ResourcePrefix("", dst.Project) + label(dst.ID, 24) + "-" + fsutil.RandomHex(3)
-	image, err := d.api.commit(ctx, container, layerRepo, tag, changes)
-	if err != nil {
-		return fmt.Errorf("docker: commit: %w", err)
+	labels := map[string]string{
+		labelLayer: dst.ID, labelProject: d.project, labelParent: dst.Parent, labelComment: dst.Comment,
+		labelInstance: "", labelImage: "", labelCPUs: "", labelMemory: "",
 	}
-	ref := layerRef{Image: image, Ref: layerRepo + ":" + tag}
-	if err := fsutil.WriteJSON(filepath.Join(dst.Dir, layerFile), ref); err != nil {
-		_ = d.api.removeImage(context.Background(), ref.Ref)
-		return err
+	for _, key := range sortedKeys(labels) {
+		changes = append(changes, "LABEL "+key+"="+strconv.Quote(labels[key]))
+	}
+	if _, err := d.api.commit(ctx, container, layerRepo, layerTag(d.project, dst.ID), changes); err != nil {
+		return fmt.Errorf("docker: commit: %w", err)
 	}
 	return nil
 }
 
-func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
-	if len(inst.Chain) == 0 {
-		return errors.New("docker: instance has no image")
+func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
+	if err := machine.ValidateName(spec.Name); err != nil {
+		return machine.Instance{}, err
 	}
-	var layer layerRef
-	if err := fsutil.ReadJSON(filepath.Join(inst.Parent().Dir, layerFile), &layer); err != nil {
-		return fmt.Errorf("docker: layer %s: %w", inst.Parent().ID, err)
+	if spec.Base != nil || spec.Layer == "" {
+		return machine.Instance{}, errors.New("docker: an instance needs a layer; the driver has no bases")
 	}
-	if err := os.MkdirAll(inst.Dir, 0o755); err != nil {
-		return err
+	if len(spec.Forwards) > 0 {
+		return machine.Instance{}, fmt.Errorf("docker: forwards: %w", machine.ErrUnsupported)
+	}
+	image, err := d.api.inspectImage(ctx, layerRepo+":"+layerTag(d.project, spec.Layer))
+	if isNotFound(err) {
+		return machine.Instance{}, fmt.Errorf("docker: layer %s: %w", spec.Layer, machine.ErrNotFound)
+	} else if err != nil {
+		return machine.Instance{}, err
 	}
 	none := []string{}
-	name := containerName(inst.Project, inst.ID)
+	name := containerName(d.project, spec.Name)
 	id, err := d.api.createContainer(ctx, name, containerConfig{
-		Image:    layer.Image,
-		Hostname: name,
+		Image:    image.ID,
+		Hostname: spec.Name,
 		Cmd:      []string{},
-		Labels:   map[string]string{labelInstance: inst.ID},
+		Labels: map[string]string{
+			labelInstance: spec.Name, labelProject: d.project, labelLayer: spec.Layer, labelImage: spec.Image,
+			labelCPUs: strconv.Itoa(spec.CPUs), labelMemory: strconv.FormatUint(spec.Memory, 10),
+			labelParent: "", labelComment: "",
+		},
 		// The service is published on the host's loopback, on a port the
 		// daemon picks at every start.
 		ExposedPorts: map[string]struct{}{servicePortKey: {}},
@@ -350,36 +380,39 @@ func (d *Driver) Prepare(ctx context.Context, inst machine.InstanceSpec) error {
 			Tmpfs:         map[string]string{relayDir: "mode=0700"},
 		},
 	})
+	if isConflict(err) {
+		return machine.Instance{}, fmt.Errorf("docker: an instance named %q: %w", spec.Name, machine.ErrExists)
+	}
 	if err != nil {
-		return fmt.Errorf("docker: create %s: %w", name, err)
+		return machine.Instance{}, fmt.Errorf("docker: create %s: %w", name, err)
 	}
-	if err := fsutil.WriteJSON(filepath.Join(inst.Dir, containerFile), containerRef{ID: id, Name: name}); err != nil {
+	c, err := d.api.inspectContainer(ctx, id)
+	if err != nil {
 		d.removeContainer(id)
-		return err
+		return machine.Instance{}, fmt.Errorf("docker: container %s: %w", name, err)
 	}
-	return nil
+	return d.instance(c, map[string]string{image.ID: spec.Layer}), nil
 }
 
-func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
-	var ref containerRef
-	if err := fsutil.ReadJSON(filepath.Join(inst.Dir, containerFile), &ref); err != nil {
-		return nil, fmt.Errorf("docker: instance %s is not prepared: %w", inst.ID, err)
-	}
+// Start is Boot: the daemon owns the container, whatever process started it.
+func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+	return d.Boot(ctx, inst, opts)
+}
+
+func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
 	if opts.GUI {
 		return nil, fmt.Errorf("docker: a window on the guest's display: %w", machine.ErrUnsupported)
 	}
-	if len(opts.Shares) > 0 {
-		return nil, fmt.Errorf("docker: shared directories: %w", machine.ErrUnsupported)
-	}
+	ref := containerRef{ID: inst.ID, Name: containerName(d.project, inst.Name)}
 	c, err := d.api.inspectContainer(ctx, ref.ID)
 	if err != nil {
 		return nil, fmt.Errorf("docker: container %s: %w", ref.Name, err)
 	}
 	if !c.State.Running {
-		res := hostConfig{NanoCPUs: int64(opts.CPUs) * 1e9}
-		if opts.Memory != 0 {
+		res := hostConfig{NanoCPUs: int64(inst.CPUs) * 1e9}
+		if inst.Memory != 0 {
 			// No swap, as a machine of that size has none.
-			res.Memory, res.MemorySwap = int64(opts.Memory), int64(opts.Memory)
+			res.Memory, res.MemorySwap = int64(inst.Memory), int64(inst.Memory)
 		}
 		if res.NanoCPUs != c.HostConfig.NanoCPUs || res.Memory != c.HostConfig.Memory {
 			if err := d.api.update(ctx, ref.ID, res); err != nil {
@@ -427,11 +460,8 @@ func (d *Driver) stopped(ctx context.Context, id string) <-chan struct{} {
 // Attach finds the instance's container through the daemon, as any process
 // can: the daemon owns it, so the engine runs no shim. A guest that powered
 // itself off has already stopped its container, because Init exits with it.
-func (d *Driver) Attach(ctx context.Context, inst machine.InstanceSpec) (machine.Machine, error) {
-	var ref containerRef
-	if err := fsutil.ReadJSON(filepath.Join(inst.Dir, containerFile), &ref); err != nil {
-		return nil, fmt.Errorf("docker: instance %s has no container: %w", inst.ID, machine.ErrNotRunning)
-	}
+func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
+	ref := containerRef{ID: inst.ID, Name: containerName(d.project, inst.Name)}
 	c, err := d.api.inspectContainer(ctx, ref.ID)
 	switch {
 	case isNotFound(err):
@@ -444,27 +474,34 @@ func (d *Driver) Attach(ctx context.Context, inst machine.InstanceSpec) (machine
 	return newContainer(d.api, ref), nil
 }
 
-// Commit commits the stopped instance's container as a new image. It keeps
-// the container's config, which is its parent layer's.
-func (d *Driver) Commit(ctx context.Context, inst machine.InstanceSpec, dst machine.Layer) error {
-	var ref containerRef
-	if err := fsutil.ReadJSON(filepath.Join(inst.Dir, containerFile), &ref); err != nil {
-		return fmt.Errorf("docker: instance %s: %w", inst.ID, err)
-	}
+// Commit commits the stopped instance's container as a new image, and
+// removes the container. The image keeps the container's config, which is its
+// parent layer's.
+func (d *Driver) Commit(ctx context.Context, inst machine.Instance, dst machine.Layer) (machine.Layer, error) {
+	ref := containerRef{ID: inst.ID, Name: containerName(d.project, inst.Name)}
 	c, err := d.api.inspectContainer(ctx, ref.ID)
 	if err != nil {
-		return fmt.Errorf("docker: container %s: %w", ref.Name, err)
+		return machine.Layer{}, fmt.Errorf("docker: container %s: %w", ref.Name, err)
 	}
 	if c.State.Running {
-		return fmt.Errorf("docker: commit needs a stopped container; %s is %s", ref.Name, c.State.Status)
+		return machine.Layer{}, fmt.Errorf("docker: commit needs a stopped container; %s is %s", ref.Name, c.State.Status)
 	}
 	// systemd wrote the guest's machine ID at its first boot; a layer that
 	// kept it would give it to every instance built on the layer. (D-Bus's
 	// copy is a link to it, from Install.)
 	if err := d.api.putArchive(ctx, ref.ID, "/", emptyMachineID()); err != nil {
-		return fmt.Errorf("docker: clear %s's machine ID: %w", ref.Name, err)
+		return machine.Layer{}, fmt.Errorf("docker: clear %s's machine ID: %w", ref.Name, err)
 	}
-	return d.commit(ctx, ref.ID, dst, nil)
+	dst.Parent, dst.GuestOS = inst.Layer, machine.Linux
+	if err := d.commit(ctx, ref.ID, dst, nil); err != nil {
+		return machine.Layer{}, err
+	}
+	layer, err := d.Layer(ctx, dst.ID)
+	if err != nil {
+		return machine.Layer{}, err
+	}
+	d.removeContainer(ref.ID)
+	return layer, nil
 }
 
 // emptyMachineID is /etc/machine-id, empty and the guest root's, as a tar
@@ -477,49 +514,12 @@ func emptyMachineID() io.Reader {
 	return &buf
 }
 
-func (d *Driver) Destroy(ctx context.Context, inst machine.InstanceSpec) error {
-	var ref containerRef
-	if err := fsutil.ReadJSON(filepath.Join(inst.Dir, containerFile), &ref); err == nil {
-		if err := d.api.removeContainer(ctx, ref.ID); err != nil {
-			return fmt.Errorf("docker: remove %s: %w", ref.Name, err)
-		}
-	}
-	return os.RemoveAll(inst.Dir)
-}
-
-// DeleteLayer removes the layer's tag, and with it the image, which nothing
-// else uses: the store deletes a layer only once no layer is built on it.
-func (d *Driver) DeleteLayer(ctx context.Context, layer machine.Layer) error {
-	var ref layerRef
-	if err := fsutil.ReadJSON(filepath.Join(layer.Dir, layerFile), &ref); err != nil {
-		return nil //nolint:nilerr // never committed, or already released: nothing to delete
-	}
-	if err := d.api.removeImage(ctx, ref.Ref); err != nil {
-		return fmt.Errorf("docker: remove image %s: %w", ref.Ref, err)
+func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
+	if err := d.api.removeContainer(ctx, inst.ID); err != nil {
+		return fmt.Errorf("docker: remove %s: %w", containerName(d.project, inst.Name), err)
 	}
 	return nil
 }
-
-// LayerExists reports whether the daemon still has the layer's image, which
-// `docker rmi` or a prune can remove.
-func (d *Driver) LayerExists(ctx context.Context, layer machine.Layer) (bool, error) {
-	var ref layerRef
-	if err := fsutil.ReadJSON(filepath.Join(layer.Dir, layerFile), &ref); err != nil {
-		return false, nil //nolint:nilerr // a layer with no image recorded has none
-	}
-	if _, err := d.api.inspectImage(ctx, ref.Ref); err != nil {
-		if isNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("docker: image %s: %w", ref.Ref, err)
-	}
-	return true, nil
-}
-
-// TagLayer and UntagLayer do nothing: the daemon's images are named for their
-// layers, and the store's tags stay in the store.
-func (*Driver) TagLayer(context.Context, machine.Layer, string) error   { return nil }
-func (*Driver) UntagLayer(context.Context, machine.Layer, string) error { return nil }
 
 // servicePortKey is guest.ServicePort as the daemon's API names a port.
 var servicePortKey = fmt.Sprintf("%d/tcp", guest.ServicePort)
@@ -528,12 +528,9 @@ var servicePortKey = fmt.Sprintf("%d/tcp", guest.ServicePort)
 // host's loopback at a port the daemon picked when the container started, so
 // its URL lasts only as long as the container runs. The daemon is the
 // host's own: one reached over tcp:// publishes on its own loopback.
-func (d *Driver) Service(ctx context.Context, inst machine.InstanceSpec) (machine.Service, error) {
-	service := machine.Service{Listen: fmt.Sprintf("tcp:0.0.0.0:%d", guest.ServicePort), Port: guest.ServicePort}
-	var ref containerRef
-	if err := fsutil.ReadJSON(filepath.Join(inst.Dir, containerFile), &ref); err != nil {
-		return service, fmt.Errorf("docker: instance %s is not prepared: %w", inst.ID, err)
-	}
+func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
+	service := machine.Service{Listen: fmt.Sprintf("tcp:0.0.0.0:%d", guest.ServicePort)}
+	ref := containerRef{ID: inst.ID, Name: containerName(d.project, inst.Name)}
 	c, err := d.api.inspectContainer(ctx, ref.ID)
 	switch {
 	case isNotFound(err):
@@ -581,29 +578,13 @@ func checkArch(agent, arch string) error {
 	return nil
 }
 
-// containerName is a fresh container name that says where it came from.
-// It is `dvm-<project>--<id>-<random>`, at most 59 characters, so it is also
-// a hostname.
-func containerName(project, id string) string {
-	return machine.ResourcePrefix(namePrefix, project) + label(id, 16) + "-" + fsutil.RandomHex(2)
+// containerName is an instance's container: `dvm-<project>--<name>`.
+func containerName(project, name string) string {
+	return machine.ResourcePrefix(namePrefix, project) + name
 }
 
-// label keeps the characters of s that a name allows, up to n of them.
-func label(s string, n int) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
-		if b.Len() == n {
-			break
-		}
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
-			b.WriteRune(r)
-		}
-	}
-	if b.Len() == 0 {
-		return "x"
-	}
-	return b.String()
-}
+// layerTag is a layer's image's tag in layerRepo: `<project>--<id>`.
+func layerTag(project, id string) string { return machine.ResourcePrefix("", project) + id }
 
 func logger(w io.Writer) func(string, ...any) {
 	return func(format string, args ...any) {

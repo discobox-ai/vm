@@ -2,10 +2,7 @@ package boxd
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
-	"path/filepath"
 	"strconv"
 
 	"github.com/discobox-ai/vm/pkg/guest"
@@ -17,36 +14,22 @@ import (
 // the machine over its network, at guest.ServicePort.
 var serviceListen = "tcp:0.0.0.0:" + strconv.FormatUint(uint64(guest.ServicePort), 10)
 
-// Service is the guest's TCP port behind the HTTPS URL Prepare pointed at it,
-// or for an instance of a base, its first Boot. Until that boot there is no
-// machine, and so no URL.
-func (*Driver) Service(_ context.Context, inst machine.InstanceSpec) (machine.Service, error) {
-	var ref vmRef
-	if err := readJSON(filepath.Join(inst.Dir, vmFile), &ref); errors.Is(err, fs.ErrNotExist) && inst.Base != nil {
-		return machine.Service{}, fmt.Errorf("boxd: instance %s has not started yet: %w", inst.ID, machine.ErrNotRunning)
-	} else if err != nil {
-		return machine.Service{}, fmt.Errorf("boxd: instance %s is not prepared: %w", inst.ID, err)
-	}
-	if ref.Endpoint == "" {
-		return machine.Service{}, fmt.Errorf("boxd: instance %s was prepared without a service; create it again", inst.ID)
-	}
-	return machine.Service{Listen: serviceListen, Port: guest.ServicePort, URL: ref.Endpoint}, nil
-}
-
-// expose points a restored instance's machine at the service port, and
-// records the URL in vm.json for Service.
-func (d *Driver) expose(ctx context.Context, api boxdapi.BoxdApiClient, inst machine.InstanceSpec) error {
-	path := filepath.Join(inst.Dir, vmFile)
-	var ref vmRef
-	if err := readJSON(path, &ref); err != nil {
-		return err
-	}
-	url, err := pinProxy(ctx, api, ref.ID, guest.ServicePort)
+// Service is the guest's TCP port behind the HTTPS URL of the machine's
+// default proxy, which Create pinned to it. The URL is the same across stop
+// and start.
+func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
+	api, err := d.api.API()
 	if err != nil {
-		return err
+		return machine.Service{}, err
 	}
-	ref.Endpoint = url
-	return writeJSON(path, ref)
+	def, err := defaultProxy(ctx, api, inst.ID)
+	if err != nil {
+		return machine.Service{}, err
+	}
+	if def.GetDomain() == "" {
+		return machine.Service{}, fmt.Errorf("boxd: %s's proxy has no domain", d.machineName(inst.Name))
+	}
+	return machine.Service{Listen: serviceListen, URL: "https://" + def.GetDomain()}, nil
 }
 
 // pinProxy points the machine's default proxy at the service port and returns

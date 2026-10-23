@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/discobox-ai/vm/pkg/image"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -14,8 +13,8 @@ import (
 var ErrBase = errors.New("not an image")
 
 // Base finds the driver's base that ref names, by name or by ID
-// (machine.Driver.Bases). The store's references come first everywhere one is
-// taken, so a tag of the same name hides a base; its ID still reaches it.
+// (machine.Driver.Bases). Images come first everywhere a reference is taken,
+// so a tag of the same name hides a base; its ID still reaches it.
 func (e *Engine) Base(ctx context.Context, ref string) (machine.Base, bool, error) {
 	bases, err := e.Driver.Bases(ctx)
 	if err != nil {
@@ -29,12 +28,12 @@ func (e *Engine) Base(ctx context.Context, ref string) (machine.Base, bool, erro
 	return machine.Base{}, false, nil
 }
 
-// ResolveBase is the base ref names when the store has no image of that name
-// (err, from the store's Resolve, is image.ErrNotFound). Any other error, or a
+// ResolveBase is the base ref names when there is no image of that name
+// (err, from Resolve, is ErrImageNotFound). Any other error, or a
 // ref that is no base either, is returned as it came. Everything that takes a
-// ref resolves a base this way, after the store.
+// ref resolves a base this way, after the images.
 func (e *Engine) ResolveBase(ctx context.Context, ref string, err error) (machine.Base, error) {
-	if !errors.Is(err, image.ErrNotFound) {
+	if !errors.Is(err, ErrImageNotFound) {
 		return machine.Base{}, err
 	}
 	b, found, listErr := e.Base(ctx, ref)
@@ -47,11 +46,11 @@ func (e *Engine) ResolveBase(ctx context.Context, ref string, err error) (machin
 	return b, nil
 }
 
-// NotABase is err, from the store's Resolve of ref, unless ref names one of
+// NotABase is err, from Resolve of ref, unless ref names one of
 // the driver's bases: then it is ErrBase, saying what to do instead of what a
 // command that needs an image cannot do with one.
 func (e *Engine) NotABase(ctx context.Context, ref string, err error) error {
-	if !errors.Is(err, image.ErrNotFound) {
+	if !errors.Is(err, ErrImageNotFound) {
 		return err
 	}
 	if _, found, _ := e.Base(ctx, ref); found {

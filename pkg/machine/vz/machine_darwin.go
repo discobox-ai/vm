@@ -21,11 +21,12 @@ import (
 
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // Check confirms the host can run macOS guests: Apple silicon, and a binary
 // signed with the virtualization entitlement.
-func (*Driver) Check(context.Context) error {
+func (*Hypervisor) Check(context.Context) error {
 	if runtime.GOARCH != "arm64" {
 		return errors.New("vz: macOS guests need an Apple silicon Mac")
 	}
@@ -42,7 +43,7 @@ func (*Driver) Check(context.Context) error {
 
 // Prepare clones the parent layer's bundle into the instance, with its own
 // machine identifier (and a MAC address on its first boot).
-func (*Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
+func (*Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 	if len(inst.Chain) == 0 {
 		return errors.New("vz: instance has no image")
 	}
@@ -59,7 +60,7 @@ func (*Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
 const pendingName = "resume.pending"
 
 // Boot starts a prepared instance from power-off and waits for its agent.
-func (*Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
+func (*Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (local.Machine, error) {
 	vm, err := bootInstance(inst, opts)
 	if err != nil {
 		return nil, err
@@ -71,7 +72,7 @@ func (*Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine
 	return vm, nil
 }
 
-func bootInstance(inst machine.InstanceSpec, opts machine.BootOptions) (*vmMachine, error) {
+func bootInstance(inst local.InstanceSpec, opts local.BootOptions) (*vmMachine, error) {
 	b := bundle(inst.Dir)
 	console := opts.Console
 	if console == nil {
@@ -111,7 +112,7 @@ func bootInstance(inst machine.InstanceSpec, opts machine.BootOptions) (*vmMachi
 // display opens a window on the guest's screen when the boot asks for one,
 // and closes it when the guest stops. A boot that asked for a window and
 // cannot have one fails, and takes its VM down with it.
-func (m *vmMachine) display(opts machine.BootOptions) error {
+func (m *vmMachine) display(opts local.BootOptions) error {
 	if !opts.GUI {
 		return nil
 	}
@@ -261,7 +262,7 @@ func (m *vmMachine) Dial(ctx context.Context, port uint32) (net.Conn, error) {
 
 var (
 	_ machine.HostListener = (*vmMachine)(nil)
-	_ machine.Dialer       = (*vmMachine)(nil)
+	_ local.Machine        = (*vmMachine)(nil)
 )
 
 // Listen accepts what guest processes open to the host (CID 2) on a vsock

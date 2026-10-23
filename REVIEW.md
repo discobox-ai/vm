@@ -24,9 +24,21 @@
   `Booted.Shutdown` bounds by the shutdown's whole timeout, not a short ask
   window; a failure is returned, so the caller falls back to `Kill`.
   (ADR 26-10-15-833.)
-- **On boxd, an instance of a base has no `vm.json` until its first Boot.**
-  Every path that reads it (Boot, Attach, Service, Commit, Destroy) says what
-  a never-started instance is, not "no such file". (ADR 26-10-15-833.)
+- **Nothing above the seam keeps state, and a driver keeps it only in its
+  provider.** A field an instance or a layer needs goes on the provider's
+  resource (a Docker label, a boxd name, a local driver's record beside its
+  disk), never in a file or a table of the engine's; a remote driver writes
+  nothing on the host. A fact boxd cannot keep (a layer's parent, the layer a
+  machine was restored from) is reported missing, not remembered elsewhere.
+  (ADR 26-10-23-417.)
+- **A listing that fails is no answer.** `rmi` reads a failed listing of
+  tags, layers, or instances as "in use", never as "unused", and a reaper
+  above the engine does the same. (ADR 26-10-23-417.)
+- **A local layer records its parent's generation.** A disk that differences
+  over its parent's (hcs) is not used over a parent made again, so every path
+  that publishes a layer (a commit, an install) keeps `ParentGeneration`, and a lookup that trusts a layer checks its chain
+  (`local.Driver.Layer`); a record with a parent and none is not trusted.
+  (ADR 26-10-23-417.)
 - **A change to a shared method in `pkg/guest` or `pkg/machine` needs a
   search of `pkg/machine/vz` by hand.** Its cgo files, its tests among them,
   compile only on a Mac, so neither Linux nor `GOOS=windows` vet sees a

@@ -145,11 +145,21 @@ type env struct {
 	root string
 }
 
+// projectEnv names the project every command runs in, "e2e" by default. A
+// driver whose provider is a service (docker) keeps everything there, not
+// in the root, and the suite removes all of a project's instances and images,
+// so it never runs in the project of someone's own.
+const projectEnv = "DISCO_VM_E2E_PROJECT"
+
 func (e env) run(args ...string) (string, int) {
 	e.t.Helper()
 	// Not t.Context(): cleanups call run too, after that is canceled.
 	cmd := exec.CommandContext(context.Background(), binary, args...)
-	cmd.Env = append(os.Environ(), "DISCO_VM_ROOT="+e.root, "DISCO_VM_DRIVER="+tg.driver)
+	project := os.Getenv(projectEnv)
+	if project == "" {
+		project = "e2e"
+	}
+	cmd.Env = append(os.Environ(), "DISCO_VM_ROOT="+e.root, "DISCO_VM_DRIVER="+tg.driver, "DISCO_VM_PROJECT="+project)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
@@ -375,9 +385,9 @@ layers:
 }
 
 // TestLostLayer loses a layer in the middle of a chain, as deleting a boxd
-// snapshot does, and checks that the next build makes it again under a new ID
-// and so makes every layer after it again too, while the layer before it and
-// the images already built stay as they were.
+// snapshot or a layer's directory does, and checks that the next build makes
+// it again under the same ID, and makes again the layer after it, which was
+// built on the disk that is gone, while the layer before it stays as it was.
 func TestLostLayer(t *testing.T) {
 	if tg.driver != "fake" {
 		t.Skip("only the fake driver keeps a layer where a test can lose it")
@@ -395,7 +405,7 @@ func TestLostLayer(t *testing.T) {
 	if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// ids are the layers a build's log names, in order: install, one, two, three.
+	// ids are the layers a build's log names, in order: one, two, three.
 	ids := func(out string) []string {
 		var ids []string
 		for line := range strings.SplitSeq(out, "\n") {
@@ -411,30 +421,35 @@ func TestLostLayer(t *testing.T) {
 		return ids
 	}
 	first := ids(e.ok("build", "-f", specPath, "-t", "test/lost"))
-
-	dirs, err := filepath.Glob(filepath.Join(e.root, "images", "layers", first[1]+"*", "payload", "*"))
-	if err != nil || len(dirs) == 0 {
-		t.Fatalf("layer %s holds %v, %v", first[1], dirs, err)
-	}
-	for _, dir := range dirs {
-		if err := os.RemoveAll(dir); err != nil {
+	lose := func(id string) {
+		t.Helper()
+		dirs, err := filepath.Glob(filepath.Join(e.root, "images", "layers", id+"*"))
+		if err != nil || len(dirs) != 1 {
+			t.Fatalf("layer %s is %v, %v", id, dirs, err)
+		}
+		if err := os.RemoveAll(dirs[0]); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	out := e.ok("build", "-f", specPath, "-t", "test/lost")
-	mustContain(t, out, "[1/3] one: CACHED "+first[0], "[2/3] two: fake no longer has "+first[1], "[3/3] three: committed")
-	second := ids(out)
-	if second[0] != first[0] || second[1] == first[1] || second[2] == first[2] {
-		t.Fatalf("layers %v became %v: want the first kept and the two after it new", first, second)
+	// A layer built on one that is gone cannot boot, and rmi still removes
+	// it, stopping at the gap.
+	lose(first[1])
+	mustContain(t, e.ok("rmi", "test/lost"), "untagged test/lost:latest", "deleted "+first[2][:12])
+	if images := e.ok("images", "-a"); strings.Contains(images, first[2][:12]) || !strings.Contains(images, first[0][:12]) {
+		t.Fatalf("rmi of a layer built on a lost one left:\n%s", images)
 	}
-	// The replacements are the cache from here on.
+	first = ids(e.ok("build", "-f", specPath, "-t", "test/lost"))
+	lose(first[1])
+
+	out := e.ok("build", "-f", specPath, "-t", "test/lost")
+	mustContain(t, out, "[1/3] one: CACHED "+first[0], "[2/3] two: committed "+first[1], "[3/3] three: committed "+first[2])
 	out = e.ok("build", "-f", specPath, "-t", "test/lost")
-	mustContain(t, out, "two: CACHED "+second[1], "three: CACHED "+second[2])
-	// The image built on the lost layer is still there, untagged, to remove.
-	mustContain(t, e.ok("images"), "test/lost:latest", "<none>", first[2])
-	e.ok("rmi", first[2])
+	mustContain(t, out, "two: CACHED "+first[1], "three: CACHED "+first[2])
 	e.ok("rmi", "test/lost")
+	if images := e.ok("images", "-a"); strings.Contains(images, first[0][:12]) {
+		t.Fatalf("rmi left the chain behind:\n%s", images)
+	}
 }
 
 // TestSnapshot commits a stopped instance as an image, which consumes the

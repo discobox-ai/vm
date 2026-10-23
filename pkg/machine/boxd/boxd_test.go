@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"os"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -20,8 +19,9 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// BaseEnv names a layer directory whose layer.json points at an installed
-// boxd snapshot, so the real-boxd test skips Install. Unset, it installs.
+// BaseEnv names an installed layer of the default project by its ID, a
+// snapshot dvm-default--<ID>, so the real-boxd test skips Install. Unset, it
+// installs.
 const BaseEnv = "DISCO_VM_BOXD_BASE"
 
 // TestConformance runs the conformance suite against boxd itself. It needs an
@@ -36,12 +36,10 @@ func TestConformance(t *testing.T) {
 		// back after one.
 		ScratchDir: "/var/lib",
 	}
-	if dir := os.Getenv(BaseEnv); dir != "" {
-		cfg.Base = &machine.Layer{ID: "base", Dir: dir}
-	} else {
+	if cfg.Base = os.Getenv(BaseEnv); cfg.Base == "" {
 		cfg.Install = machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Log: testLog{t}}
 	}
-	machinetest.Run(t, New(), cfg)
+	machinetest.Run(t, New(""), cfg)
 }
 
 // TestConformanceFakeAPI runs the conformance suite against an in-process fake
@@ -62,8 +60,9 @@ func TestConformanceFakeAPI(t *testing.T) {
 
 	machinetest.Run(t, d, machinetest.Config{
 		Install: machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Log: testLog{t}},
-		// Not the fake's default size, so every cold boot resizes.
-		Boot:       machine.BootOptions{CPUs: 4, Memory: 16 << 30},
+		// Not the fake's default size, so every clone is made at its own.
+		CPUs:       4,
+		Memory:     16 << 30,
 		Timeout:    30 * time.Second,
 		ScratchDir: "/scratch",
 	})
@@ -77,10 +76,11 @@ func TestConformanceFakeAPI(t *testing.T) {
 	}
 }
 
-// TestTagSnapshot checks that a tag is a snapshot of its own beside the
-// layer's, named so that a listing says what it is, and that untagging deletes
-// only it.
-func TestTagSnapshot(t *testing.T) {
+// TestTagsAreSnapshots checks that a tag is a snapshot of its own beside the
+// layer's, named so that a listing says what it is and the ref reads back,
+// that moving a tag deletes it from the other layer, and that untagging
+// deletes only it.
+func TestTagsAreSnapshots(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
@@ -92,11 +92,12 @@ func TestTagSnapshot(t *testing.T) {
 	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
-	base := machine.Layer{ID: "0123456789abcdef", Dir: filepath.Join(dir, "layer")}
-	if err := os.MkdirAll(base.Dir, 0o755); err != nil {
+	base, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, machine.Layer{ID: "0123456789abcdef"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, base); err != nil {
+	other, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, machine.Layer{ID: "fedcba9876543210"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	names := func() []string {
@@ -112,48 +113,81 @@ func TestTagSnapshot(t *testing.T) {
 		slices.Sort(names)
 		return names
 	}
-	layer := names()
+	if got, want := names(), []string{"dvm-default--0123456789abcdef", "dvm-default--fedcba9876543210"}; !slices.Equal(got, want) {
+		t.Fatalf("layer snapshots %v, want %v", got, want)
+	}
 	// Every call the tags make is reported, with its answer and its time.
 	var calls strings.Builder
 	machine.SetDebug(&calls)
 	t.Cleanup(func() { machine.SetDebug(nil) })
 	defer func() {
-		for _, want := range []string{"boxd CreateVmFromSnapshot {snapshot:", "boxd GetSnapshot {name:\"dvm-default--0123456789ab-tag-", "status:\"ready\"", "boxd DeleteSnapshot {name:"} {
+		for _, want := range []string{"boxd CreateVmFromSnapshot {snapshot:", "boxd GetSnapshot {name:\"dvm-default--0123456789abcdef--t-discobox-2fbase-3alatest\"", "status:\"ready\"", "boxd DeleteSnapshot {name:"} {
 			if !strings.Contains(calls.String(), want) {
 				t.Errorf("debug output lacks %q:\n%s", want, calls.String())
 			}
 		}
 	}()
-	for _, ref := range []string{"discobox/base:latest", "discobox-base:latest", "discobox/base:latest"} {
-		if err := d.TagLayer(ctx, base, ref); err != nil {
+	for _, tag := range []machine.Tag{
+		{Ref: "discobox/base:latest", Layer: other.ID},
+		{Ref: "discobox/base:latest", Layer: base.ID},
+		{Ref: "discobox-base:v1.0", Layer: base.ID},
+		{Ref: "discobox/base:latest", Layer: base.ID},
+	} {
+		if err := d.Tag(ctx, tag.Ref, tag.Layer); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got := names()
-	if len(got) != 3 || !slices.Contains(got, layer[0]) {
-		t.Fatalf("snapshots %v, want the layer's %v and one for each of two tags", got, layer)
+	want := []string{
+		"dvm-default--0123456789abcdef",
+		"dvm-default--0123456789abcdef--t-discobox-2dbase-3av1-2e0",
+		"dvm-default--0123456789abcdef--t-discobox-2fbase-3alatest",
+		"dvm-default--fedcba9876543210",
 	}
-	for _, name := range got {
-		if name != layer[0] && !strings.HasPrefix(name, "dvm-default--0123456789ab-tag-discobox-base-latest-") {
-			t.Fatalf("a tag's snapshot is named %s", name)
-		}
+	if got := names(); !slices.Equal(got, want) {
+		t.Fatalf("snapshots %v, want %v", got, want)
 	}
-	if err := d.UntagLayer(ctx, base, "discobox/base:latest"); err != nil {
+	tags, err := d.Tags(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := names(); len(got) != 2 || !slices.Contains(got, layer[0]) {
+	if want := []machine.Tag{{Ref: "discobox-base:v1.0", Layer: base.ID}, {Ref: "discobox/base:latest", Layer: base.ID}}; !slices.Equal(tags, want) {
+		t.Fatalf("tags %v, want %v", tags, want)
+	}
+	if layers, err := d.Layers(ctx); err != nil || len(layers) != 2 {
+		t.Fatalf("layers %v, %v; want the two, and no tag's", layers, err)
+	}
+	if err := d.Untag(ctx, "discobox/base:latest"); err != nil {
+		t.Fatal(err)
+	}
+	if got := names(); len(got) != 3 || slices.Contains(got, want[2]) {
 		t.Fatalf("snapshots %v after untagging one of two", got)
 	}
 
 	// A snapshot deleted behind the driver's back is a layer that is gone.
-	if ok, err := d.LayerExists(ctx, base); err != nil || !ok {
-		t.Fatalf("layer exists = %v, %v", ok, err)
-	}
 	fake.mu.Lock()
-	delete(fake.snapshots, layer[0])
+	delete(fake.snapshots, "dvm-default--fedcba9876543210")
 	fake.mu.Unlock()
-	if ok, err := d.LayerExists(ctx, base); err != nil || ok {
-		t.Fatalf("layer exists after its snapshot was deleted = %v, %v", ok, err)
+	if _, err := d.Layer(ctx, other.ID); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("a layer whose snapshot was deleted: %v, want ErrNotFound", err)
+	}
+}
+
+func TestEscapeRef(t *testing.T) {
+	for _, ref := range []string{"a:latest", "org/app_x:V1.0-rc", "x-y:z"} {
+		escaped := escapeRef(ref)
+		for _, r := range escaped {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				t.Fatalf("%q escapes to %q, which has %q", ref, escaped, r)
+			}
+		}
+		if back, ok := unescapeRef(escaped); !ok || back != ref {
+			t.Fatalf("%q escapes to %q, which reads back as %q, %v", ref, escaped, back, ok)
+		}
+	}
+	for _, bad := range []string{"a-", "a-z1", "-4"} {
+		if _, ok := unescapeRef(bad); ok {
+			t.Errorf("%q read back", bad)
+		}
 	}
 }
 
@@ -278,10 +312,9 @@ func TestShutdownFlushesFirst(t *testing.T) {
 	}
 }
 
-// TestFirstStartUndone leaves an instance of a base that failed its first
-// start as it was before it: no machine, and no vm.json, so the next start
-// makes one again, with its URL.
-func TestFirstStartUndone(t *testing.T) {
+// TestCreateUndone leaves nothing of an instance whose create failed partway,
+// so the name can be made again, with its URL.
+func TestCreateUndone(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
@@ -293,33 +326,30 @@ func TestFirstStartUndone(t *testing.T) {
 	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 	base := machine.Base{Name: "ubuntu-24.04", ID: "ubuntu-24.04", GuestOS: machine.Linux, Options: map[string]string{"image": "ubuntu-24.04"}}
-	inst := machine.InstanceSpec{ID: "first", Dir: filepath.Join(dir, "inst"), GuestOS: machine.Linux, Base: &base}
-	if err := d.Prepare(ctx, inst); err != nil {
-		t.Fatal(err)
-	}
+	spec := machine.InstanceSpec{Name: "first", GuestOS: machine.Linux, Base: &base}
 	fake.mu.Lock()
 	fake.proxyErr = errors.New("proxy unavailable")
 	fake.mu.Unlock()
-	if _, err := d.Boot(ctx, inst, machine.BootOptions{}); err == nil {
-		t.Fatal("a first start with no proxy succeeded")
+	if _, err := d.Create(ctx, spec); err == nil {
+		t.Fatal("a create with no proxy succeeded")
 	}
 	fake.mu.Lock()
 	left := len(fake.vms)
 	fake.proxyErr = nil
 	fake.mu.Unlock()
 	if left != 0 {
-		t.Fatalf("a failed first start left %d machines", left)
+		t.Fatalf("a failed create left %d machines", left)
 	}
-	if _, err := os.Stat(filepath.Join(inst.Dir, vmFile)); !os.IsNotExist(err) {
-		t.Fatalf("a failed first start left vm.json: %v", err)
-	}
-	m, err := d.Boot(ctx, inst, machine.BootOptions{})
+	inst, err := d.Create(ctx, spec)
 	if err != nil {
-		t.Fatalf("the next start: %v", err)
+		t.Fatalf("the next create: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Kill(context.Background()); _ = d.Destroy(context.Background(), inst) })
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
 	if svc, err := d.Service(ctx, inst); err != nil || svc.URL == "" {
-		t.Fatalf("the next start's service = %+v, %v", svc, err)
+		t.Fatalf("the next create's service = %+v, %v", svc, err)
+	}
+	if _, err := d.Create(ctx, spec); !errors.Is(err, machine.ErrExists) {
+		t.Fatalf("a second instance of the name: %v, want ErrExists", err)
 	}
 }
 
@@ -342,7 +372,7 @@ func fakeDriver(t *testing.T, dir string) (*Driver, *fakeAPI) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	d := &Driver{api: &client{}}
+	d := &Driver{api: &client{}, project: machine.DefaultProject}
 	d.api.once.Do(func() { d.api.api = boxdapi.NewBoxdApiClient(conn) })
 	return d, fake
 }

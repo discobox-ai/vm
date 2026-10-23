@@ -3,7 +3,6 @@ package machine
 import (
 	"context"
 	"io"
-	"net"
 )
 
 // Guest is what a caller does inside a running guest: run processes, copy
@@ -100,16 +99,4 @@ func Run(ctx context.Context, g Guest, req ExecRequest, stdin io.Reader, stdout,
 		return -1, ctx.Err()
 	}
 	return code, err
-}
-
-// Dialer is a running machine whose guest ports the host can reach. Every
-// machine of a driver that does not list Capabilities.Remote implements it:
-// the engine's shim serves the instance's URL through it. A remote driver's
-// service gives the URL itself, and keeps whatever channel it has to the
-// guest to itself.
-type Dialer interface {
-	// Dial opens a stream to a guest port: vsock on vz, hvsocket on HCS with
-	// the service ID derived from the port by the vsock template, the host's
-	// loopback on fake.
-	Dial(ctx context.Context, port uint32) (net.Conn, error)
 }

@@ -21,12 +21,13 @@ import (
 
 	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // Install creates a macOS base layer: it installs the restore image onto a new
 // bundle, then boots it once with guest provisioning to create an account and
 // bake in the agent, and shuts it down through the agent.
-func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst machine.Layer) error {
+func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) error {
 	if spec.GuestOS != machine.Darwin {
 		return fmt.Errorf("vz: can install darwin guests, not %s", spec.GuestOS)
 	}
@@ -52,7 +53,7 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst mach
 		return err
 	}
 	b := bundle(dst.Dir)
-	m, err := install(ctx, b, ipsw, spec, opts, log)
+	m, err := install(ctx, b, ipsw, spec.InstallSpec, opts, log)
 	if err != nil {
 		return err
 	}

@@ -32,19 +32,33 @@ type globals struct {
 	driver  string
 	project string
 	debug   bool
-	// opened is the engine a command opened, which Main closes.
+	// opened is the engine a command opened.
 	opened *engine.Engine
+}
+
+// dir is where a driver on this host's disk keeps its state.
+func (g *globals) dir() string {
+	if g.root != "" {
+		return g.root
+	}
+	return machine.DefaultDir()
+}
+
+// newDriver makes a driver of the name for a project, keeping its state, if
+// it keeps any on this host, under dir.
+func (g *globals) newDriver(name, project string) (machine.Driver, error) {
+	return machine.New(name, machine.Config{Dir: g.dir(), Project: project})
 }
 
 func (g *globals) engine() (*engine.Engine, error) {
 	if g.opened != nil {
 		return g.opened, nil
 	}
-	driver, err := machine.New(g.driver)
+	driver, err := g.newDriver(g.driver, g.project)
 	if err != nil {
 		return nil, err
 	}
-	g.opened, err = engine.Open(g.root, driver, nil, g.project)
+	g.opened, err = engine.Open(driver, g.project)
 	return g.opened, err
 }
 
@@ -67,7 +81,7 @@ func Main(args []string) int {
 			machine.SetDebug(os.Stderr)
 		}
 	}
-	root.PersistentFlags().StringVar(&g.root, "root", "", "state directory (default $"+engine.RootEnv+" or the per-OS data directory)")
+	root.PersistentFlags().StringVar(&g.root, "root", "", "where a driver on this host's disk (hcs, vz, fake) keeps its images and instances (default $"+machine.DirEnv+" or the per-OS data directory)")
 	root.PersistentFlags().StringVar(&g.project, "project", envOr("DISCO_VM_PROJECT", machine.DefaultProject), "project that scopes every image, instance, and driver resource (also $DISCO_VM_PROJECT)")
 	root.PersistentFlags().StringVar(&g.driver, "driver", os.Getenv("DISCO_VM_DRIVER"), "hypervisor driver (default "+machine.DefaultName()+"; also $DISCO_VM_DRIVER)")
 	root.AddCommand(
@@ -81,9 +95,6 @@ func Main(args []string) int {
 	)
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
-	if g.opened != nil {
-		_ = g.opened.Close()
-	}
 	var exit exitError
 	switch {
 	case err == nil:

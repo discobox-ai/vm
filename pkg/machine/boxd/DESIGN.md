@@ -2,19 +2,24 @@
 
 A layer is a snapshot, and the guest is reached through Exec.
 
-boxd offers machines and snapshots of running machines, not disk images, and
-no socket into a guest. The boxd driver maps the seam onto what it has, with
-nothing of disco-vm's in the guest. See
+boxd offers machines and snapshots of running machines, not disk images, no
+labels on either, and no socket into a guest. The boxd driver maps the seam
+onto what it has, with nothing of disco-vm's in the guest and nothing on the
+host: what it knows is in the names of its snapshots and machines (the root
+[DESIGN.md](../../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider)). See
 [docs/drivers/boxd.md](../../../docs/drivers/boxd.md).
 
 - **A layer is a snapshot** (memory and disk) of the guest booted from the
-  committed disk. Commit starts the stopped instance and snapshots it, because
+  committed disk, named `dvm-<project>--<layer ID>`; a tag is a second
+  snapshot of it, `dvm-<project>--<layer ID>--t-<ref>`, the ref's punctuation
+  escaped. Commit starts the stopped instance and snapshots it, because
   boxd only snapshots a running machine. The layer is still cut from an
   orderly shutdown: the snapshot's disk is the one the guest flushed.
-- **A clone** restores the layer's snapshot and stops it, so its first boot
-  is a cold boot of that disk. **An instance of a base** has no machine until
-  its first Boot makes one, from the image (`CreateVm`) or the snapshot
-  (`CreateVmFromSnapshot`), at the size that boot asks for.
+- **A clone** restores the layer's snapshot as the machine
+  `dvm-<project>--<name>`, at the instance's size, and stops it, so its first
+  boot is a cold boot of that disk. **An instance of a base** is made from the
+  image (`CreateVm`) or the snapshot (`CreateVmFromSnapshot`) and stopped the
+  same way, so a first `run` of one is two boots.
 - **The guest's operations are Exec streams.** Each is one command line run
   as boxd's own user: `sudo -n -H -u USER -- env -C DIR -- K=V... ARGV...`,
   every word quoted, root unless the request names a user. Stdin, stdout,
@@ -26,8 +31,7 @@ nothing of disco-vm's in the guest. See
   command runs in a booted system. boxd authenticates every stream. An image
   installed before this carries an agent that nothing reaches; it does no
   harm.
-- **The URL is the machine's default proxy.** Prepare (an instance of a
-  base's first Boot) pins the default proxy
+- **The URL is the machine's default proxy.** Create pins the default proxy
   at `<machine>.boxd.sh` to 7302 and turns off bot protection, which would
   put a browser challenge in front of a request that wakes the machine.
   Pinning it also stops the proxy forwarding to whichever common port the

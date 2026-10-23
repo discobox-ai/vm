@@ -42,9 +42,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   makes only `dvm-*` machines gets `--name` refused unless the instance's
   name starts with `dvm-` too (`run --name dvm-dev`), although the machine
   is named `dvm-<project>--...` either way.
-- Isolate state: `export DISCO_VM_ROOT=<a scratch directory>/dvm
-  DISCO_VM_DRIVER=boxd`. The image index lives there; the layers are boxd
-  snapshots.
+- Isolate state: `export DISCO_VM_PROJECT=<a scratch project, e.g. vtest>
+  DISCO_VM_DRIVER=boxd`. boxd keeps
+  everything (ADR 26-10-23-417): layers and tags are snapshots, instances are
+  machines, all named `dvm-<project>--...`, so the project is what keeps a
+  run apart.
 - A base image: `docs/examples/boxd.yaml`, or any spec with
   `from: {install: {os: linux, media: latest}}`. Install takes about a minute.
   A layer costs a shutdown, a cold boot, and a snapshot (~40s on top of its
@@ -58,10 +60,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   where it runs on the image's libc. A plain `go build` links glibc
   dynamically (the devShell's from `/nix/store`), and it fails at install or
   boot on an image without that libc.
-- Isolate state: `export DISCO_VM_ROOT=<a scratch directory>/dvm
-  DISCO_VM_DRIVER=docker`. Layers are images named `disco-vm-layer:<project>--*`, and
-  instances are containers named `dvm-<project>--*` (`--project`, default
-  `default`).
+- Isolate state: `export DISCO_VM_PROJECT=<a scratch project>
+  DISCO_VM_DRIVER=docker`. The daemon
+  keeps everything: layers are images named
+  `disco-vm-layer:<project>--<id>`, tags `disco-vm/<project>/<ref>`, and
+  instances containers named `dvm-<project>--<name>`, labeled
+  `ai.discobox.vm.*`.
 - Base image: `docs/examples/docker.yaml`. Install takes 30s to 2 minutes
   (apt installs systemd); a layer costs a shutdown and a `docker commit`.
 - Inside a discobox, build steps that use the network need the proxy in the
@@ -76,8 +80,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   (different), a guest's own `systemctl reboot` (back, still `running`), and
   `docker kill` or `docker rm -f` on the container behind disco-vm's back,
   then `ls -a`, `start`, `rm -f`. No `disco-vm shim` process should exist.
-- Clean up: `ls -a` and `images` list no `<orphan>` rows, and no `dvm-*` containers or `disco-vm-layer`
-  images left (`docker ps -a`, `docker images`). `rmi` keeps an image's
+- Clean up: `ls -a` and `images -a` list nothing, and no `dvm-*` containers
+  or `disco-vm-layer` images are left (`docker ps -a`, `docker images`). `rmi` keeps an image's
   layers while an instance uses them; tag and `rmi` a leftover layer by ID.
 
 ## Flows worth driving
@@ -91,6 +95,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   `exec`/`stop` a stopped one, `rm -f` twice, two `exec`s at once.
 - An instance started by the old binary: read its `instances/<id>/shim.json`,
   `ps -p <pid>`, then act on it with the new binary.
+- Statelessness: everything one root or host made is seen from another (a
+  second `DISCO_VM_ROOT`, the same project).
 
 ## Gotchas
 

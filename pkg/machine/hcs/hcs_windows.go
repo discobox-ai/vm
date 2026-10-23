@@ -18,22 +18,24 @@ import (
 	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 func init() {
-	machine.Register("hcs", func() (machine.Driver, error) { return &Driver{}, nil })
+	machine.Register("hcs", func(cfg machine.Config) (machine.Driver, error) { return local.New(cfg, &Hypervisor{}) })
 }
 
-// Driver runs Windows guests as HCS virtual machines.
-type Driver struct{}
+// Hypervisor runs Windows guests as HCS virtual machines, under a
+// local.Driver.
+type Hypervisor struct{}
 
-var _ machine.Driver = (*Driver)(nil)
+var _ local.Hypervisor = (*Hypervisor)(nil)
 
-func (*Driver) Name() string { return "hcs" }
+func (*Hypervisor) Name() string { return "hcs" }
 
 // Capabilities is what the driver offers on this host: Windows guests, and a
 // display: the VM's video console, shown by mstsc.
-func (*Driver) Capabilities() machine.Capabilities {
+func (*Hypervisor) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.Windows},
 		Display: true,
@@ -56,7 +58,7 @@ const (
 	forkDiskName = "template.vhdx"
 )
 
-func layerDisk(layer machine.Layer) string { return filepath.Join(layer.Dir, diskName) }
+func layerDisk(layer local.Layer) string { return filepath.Join(layer.Dir, diskName) }
 
 // instanceState is what the driver remembers about an instance between boots.
 type instanceState struct {
@@ -99,7 +101,7 @@ func newID() string {
 }
 
 // Check reports whether this host can run HCS virtual machines.
-func (*Driver) Check(context.Context) error {
+func (*Hypervisor) Check(context.Context) error {
 	if err := computecore.Load(); err != nil {
 		return fmt.Errorf("hcs: computecore.dll is missing: enable the Virtual Machine Platform Windows feature and reboot (%w)", err)
 	}
@@ -112,7 +114,7 @@ func (*Driver) Check(context.Context) error {
 	return nil
 }
 
-func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
+func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 	if len(inst.Chain) == 0 {
 		return errors.New("hcs: instance has no image")
 	}
@@ -126,7 +128,7 @@ func (d *Driver) Prepare(_ context.Context, inst machine.InstanceSpec) error {
 // open: its own, and every disk in its chain. A missing ACE anywhere in a
 // differencing chain fails Construct with an access denied that names no
 // path, so every layer is walked, not just the parent.
-func grantPaths(dir string, chain []machine.Layer) []string {
+func grantPaths(dir string, chain []local.Layer) []string {
 	paths := []string{dir}
 	entries, _ := os.ReadDir(dir)
 	for _, entry := range entries {
@@ -180,7 +182,7 @@ func terminateStale(id string) {
 // Boot starts the instance and waits for its agent. With opts.GUI it opens a
 // window on the VM's video console that closes when the VM stops. Closing the
 // window leaves the VM running.
-func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machine.BootOptions) (machine.Machine, error) {
+func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (local.Machine, error) {
 	m, err := d.boot(inst, opts)
 	if err != nil {
 		return nil, err
@@ -196,7 +198,7 @@ func (d *Driver) Boot(ctx context.Context, inst machine.InstanceSpec, opts machi
 }
 
 // view opens a window on the VM's video console.
-func (d *Driver) view(m *vm, inst machine.InstanceSpec, opts machine.BootOptions) {
+func (d *Hypervisor) view(m *vm, inst local.InstanceSpec, opts local.BootOptions) {
 	title := opts.Title
 	if title == "" {
 		title = inst.ID
@@ -215,7 +217,7 @@ func (d *Driver) view(m *vm, inst machine.InstanceSpec, opts machine.BootOptions
 	}()
 }
 
-func (d *Driver) boot(inst machine.InstanceSpec, opts machine.BootOptions) (*vm, error) {
+func (d *Hypervisor) boot(inst local.InstanceSpec, opts local.BootOptions) (*vm, error) {
 	if len(opts.Shares) > 0 {
 		return nil, fmt.Errorf("hcs: shared directories: %w", machine.ErrUnsupported)
 	}
@@ -256,7 +258,7 @@ func (d *Driver) boot(inst machine.InstanceSpec, opts machine.BootOptions) (*vm,
 // Commit moves the stopped instance's differencing disk into dst and points
 // it at its parent again, since a differencing disk moved across directories
 // cannot be trusted to find its parent by its old relative locator.
-func (d *Driver) Commit(_ context.Context, inst machine.InstanceSpec, dst machine.Layer) error {
+func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst local.Layer) error {
 	if sys, err := openSystem(vmID(inst.Dir)); err == nil {
 		sys.close()
 		return fmt.Errorf("hcs: instance %s is still running; it must be stopped to commit", inst.ID)
@@ -275,7 +277,7 @@ func (d *Driver) Commit(_ context.Context, inst machine.InstanceSpec, dst machin
 }
 
 // Destroy ends the instance's VM if one is running and removes its files.
-func (d *Driver) Destroy(_ context.Context, inst machine.InstanceSpec) error {
+func (d *Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {
 	if inst.Dir == "" {
 		return nil
 	}
@@ -300,26 +302,11 @@ func removeAll(dir string) error {
 	return err
 }
 
-func (*Driver) DeleteLayer(context.Context, machine.Layer) error { return nil }
-
-// LayerExists is true: a layer lives only in the store.
-func (*Driver) LayerExists(context.Context, machine.Layer) (bool, error) { return true, nil }
-
-// TagLayer and UntagLayer do nothing: a layer lives only in the store.
-func (*Driver) TagLayer(context.Context, machine.Layer, string) error   { return nil }
-func (*Driver) UntagLayer(context.Context, machine.Layer, string) error { return nil }
-
-// Orphans is empty: nothing the driver makes lives outside the store.
-func (*Driver) Orphans(context.Context, machine.Known) ([]machine.Orphan, error) { return nil, nil }
-
-// RemoveOrphan is never asked of a driver that lists no orphans.
-func (*Driver) RemoveOrphan(context.Context, machine.Orphan) error { return machine.ErrUnsupported }
-
 // Bases is empty: every base layer is installed from media.
-func (*Driver) Bases(context.Context) ([]machine.Base, error) { return nil, nil }
+func (*Hypervisor) Bases(context.Context) ([]machine.Base, error) { return nil, nil }
 
 // Service is the hvsocket service ID of guest.ServicePort, which every VM's
-// ServiceTable lists; the engine's shim serves it on the host's loopback.
-func (*Driver) Service(context.Context, machine.InstanceSpec) (machine.Service, error) {
-	return machine.Service{Listen: fmt.Sprintf("vsock:%d", guest.ServicePort), Port: guest.ServicePort}, nil
+// ServiceTable lists; the instance's shim serves it on the host's loopback.
+func (*Hypervisor) Service(local.InstanceSpec) (string, uint32, error) {
+	return fmt.Sprintf("vsock:%d", guest.ServicePort), guest.ServicePort, nil
 }

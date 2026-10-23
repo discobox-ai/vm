@@ -2,8 +2,6 @@ package boxd
 
 import (
 	"context"
-	"errors"
-	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,13 +15,12 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// TestEngineRunsRemoteInstancesWithoutAShim drives the engine's remote paths
-// against the fake boxd API: start, state, the guest through the engine,
-// stop, start again, a shutdown through the guest's operations (boxd's
-// StopVm) found by the next state, and
-// remove. No shim is started at any point, and a shim.json an older
-// disco-vm left behind is cleared.
-func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
+// TestEngineRunsInstances drives the engine against the fake boxd API: build,
+// start, state, the guest through the engine, stop, start again, a shutdown
+// through the guest's operations (boxd's StopVm) found by the next state, and
+// remove. Nothing is kept on the host: a second engine, as on another host,
+// sees the same image and instance, and drives them.
+func TestEngineRunsInstances(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
@@ -35,11 +32,10 @@ func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
 	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
-	e, err := engine.Open(t.TempDir(), d, nil, "")
+	e, err := engine.Open(d, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = e.Close() })
 	spec := filepath.Join(t.TempDir(), "disco-vm.yaml")
 	if err := os.WriteFile(spec, []byte("from:\n  install: {os: linux, media: latest}\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -54,18 +50,22 @@ func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
 
-	instDir := filepath.Join(e.Root, "instances", inst.ID)
-	// What an older disco-vm's shim left: a state file naming no live process.
-	if err := os.WriteFile(filepath.Join(instDir, "shim.json"), []byte(`{"pid":0,"addr":"127.0.0.1:1","token":"x"}`), 0o600); err != nil {
+	// Another engine, made from nothing but the API, as another host's is.
+	elsewhere, err := engine.Open(&Driver{api: d.api, project: machine.DefaultProject}, "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	start := func() {
+	if images, err := elsewhere.Images(ctx, false); err != nil || len(images) != 1 || images[0].Ref != "t/base:latest" {
+		t.Fatalf("another engine's images = %+v, %v", images, err)
+	}
+	if got, err := elsewhere.Get(ctx, "remote"); err != nil || got.ID != inst.ID {
+		t.Fatalf("another engine's instance remote = %+v, %v", got, err)
+	}
+
+	start := func(e *engine.Engine) {
 		t.Helper()
 		if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
 			t.Fatalf("start: %v", err)
-		}
-		if _, err := os.Stat(filepath.Join(instDir, "shim.json")); !os.IsNotExist(err) {
-			t.Fatalf("a remote instance has a shim.json after start: %v", err)
 		}
 		if got := e.State(ctx, inst); got != engine.Running {
 			t.Fatalf("state after start = %s", got)
@@ -89,13 +89,13 @@ func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
 		}
 	}
 
-	start()
-	if err := e.Stop(ctx, inst, 30*time.Second); err != nil {
-		t.Fatalf("stop: %v", err)
+	start(e)
+	if err := elsewhere.Stop(ctx, inst, 30*time.Second); err != nil {
+		t.Fatalf("stop from another engine: %v", err)
 	}
 	waitState(engine.Stopped)
 
-	start()
+	start(elsewhere)
 	// A shutdown through the guest's operations is boxd's stop, and nothing
 	// watches it: the next state reads it stopped.
 	g, err := e.Guest(ctx, inst)
@@ -110,30 +110,21 @@ func TestEngineRunsRemoteInstancesWithoutAShim(t *testing.T) {
 	if err := e.Remove(ctx, inst, true); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
+	if _, err := elsewhere.Get(ctx, "remote"); err == nil {
+		t.Fatal("another engine still finds a removed instance")
+	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	for _, v := range fake.vms {
-		if strings.Contains(v.name, inst.ID) {
+		if strings.HasSuffix(v.name, "--remote") {
 			t.Fatalf("machine %s outlived its instance", v.name)
 		}
 	}
 }
 
-// A driver that lists Remote without being an Attacher would leave the engine
-// running shims it says it does not need; Open refuses it.
-func TestEngineRefusesRemoteWithoutAttacher(t *testing.T) {
-	d, _ := fakeDriver(t, t.TempDir())
-	notAttacher := struct{ machine.Driver }{d}
-	if _, err := engine.Open(t.TempDir(), notAttacher, nil, ""); err == nil || !strings.Contains(err.Error(), "Attacher") {
-		t.Fatalf("open: %v", err)
-	}
-}
-
-// TestEngineListsOrphans checks that what boxd holds under disco-vm's names
-// and the store has no record of is listed, and nothing else: not what the
-// store records, and not the caller's own machines and snapshots. A store
-// that is lost leaves everything it made an orphan.
-func TestEngineListsOrphans(t *testing.T) {
+// TestEngineKeepsProjectsApart checks that a project lists only what it made,
+// and that what boxd holds under no project's name is not listed.
+func TestEngineKeepsProjectsApart(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
@@ -144,158 +135,45 @@ func TestEngineListsOrphans(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
-
-	e, err := engine.Open(t.TempDir(), d, nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = e.Close() })
-	spec := filepath.Join(t.TempDir(), "disco-vm.yaml")
-	if err := os.WriteFile(spec, []byte("from:\n  install: {os: linux, media: latest}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	builder := &build.Builder{Engine: e, Out: testLog{t}}
-	if _, err := builder.Build(ctx, build.Options{File: spec, Tags: []string{"t/base"}}); err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	inst, err := e.Create(ctx, "t/base", engine.CreateOptions{Name: "kept"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
-	layerID, err := e.Images.Resolve("t/base")
-	if err != nil {
-		t.Fatal(err)
-	}
-	chain, err := e.Images.MachineChain(layerID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	names := func(e *engine.Engine) map[string]machine.OrphanKind {
-		t.Helper()
-		orphans, err := e.Orphans(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		out := map[string]machine.OrphanKind{}
-		for _, o := range orphans {
-			out[o.Name] = o.Kind
-		}
-		return out
-	}
-	if got := names(e); len(got) != 0 {
-		t.Fatalf("orphans of a store that records everything: %v", got)
-	}
-
-	// Made behind the store's back: a machine and a snapshot under
-	// disco-vm's names, and the caller's own of each, which are not
-	// disco-vm's.
-	// One is named as before projects, which is the default project's; a
-	// third is another project's.
 	fake.mu.Lock()
-	lost := fake.newVM("dvm-default--lost-0000", 0, 0)
-	fake.newVM("mine", 0, 0)
-	fake.newVM("dvm-other--lost-0000", 0, 0)
-	fake.snapshots["dvm-lost-snap"] = &fakeSnapshot{id: "snap_lost", name: "dvm-lost-snap"}
-	fake.snapshots["my-snapshot"] = &fakeSnapshot{id: "snap_mine", name: "my-snapshot"}
+	fake.snapshots["my-snapshot"] = &fakeSnapshot{id: "snap_mine", name: "my-snapshot", dir: filepath.Join(dir, "mine")}
 	fake.mu.Unlock()
-	want := map[string]machine.OrphanKind{lost.name: machine.OrphanMachine, "dvm-lost-snap": machine.OrphanLayer}
-	if got := names(e); !maps.Equal(got, want) {
-		t.Fatalf("orphans = %v, want %v", got, want)
+	if _, err := fake.CreateVm(ctx, nil); err != nil {
+		t.Fatal(err)
 	}
-	otherProject, err := engine.Open(e.Root, d, nil, "other")
+
+	layer, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, machine.Layer{ID: "0123456789abcdef"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = otherProject.Close() })
-	if got, want := names(otherProject), map[string]machine.OrphanKind{"dvm-other--lost-0000": machine.OrphanMachine}; !maps.Equal(got, want) {
-		t.Fatalf("another project's orphans = %v, want %v", got, want)
-	}
-	fake.mu.Lock()
-	var vmNames []string
-	for _, v := range fake.vms {
-		if v.id != lost.id {
-			vmNames = append(vmNames, v.name)
-		}
-	}
-	fake.mu.Unlock()
-	for _, name := range vmNames {
-		if strings.HasPrefix(name, "dvm-") && !strings.HasPrefix(name, "dvm-default--") && !strings.HasPrefix(name, "dvm-other--") {
-			t.Fatalf("machine %s is not named for its project", name)
-		}
-	}
-
-	// A second store on the same account knows none of the first's: its
-	// instance's machine, its layer's snapshot, and its tag's are all
-	// orphans to it.
-	other, err := engine.Open(t.TempDir(), d, nil, "")
-	if err != nil {
+	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "web", Layer: layer.ID, GuestOS: machine.Linux}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = other.Close() })
-	got := names(other)
-	var machines, layers int
-	for _, kind := range got {
-		if kind == machine.OrphanMachine {
-			machines++
-		} else {
-			layers++
-		}
+	other := &Driver{api: d.api, project: "other"}
+	if layers, err := other.Layers(ctx); err != nil || len(layers) != 0 {
+		t.Fatalf("another project's layers = %+v, %v", layers, err)
 	}
-	if machines != 2 || layers != 3 {
-		t.Fatalf("a lost store's orphans = %v, want 2 machines (the instance's and the lost one) and 3 snapshots (layer, tag, lost)", got)
+	if list, err := other.Instances(ctx); err != nil || len(list) != 0 {
+		t.Fatalf("another project's instances = %+v, %v", list, err)
 	}
-	for name := range got {
-		if name != "dvm-lost-snap" && !strings.HasPrefix(name, "dvm-default--") {
-			t.Fatalf("%s is not named for the default project", name)
-		}
+	if _, err := other.Create(ctx, machine.InstanceSpec{Name: "web", Layer: layer.ID, GuestOS: machine.Linux}); err == nil {
+		t.Fatal("another project made an instance of the default's layer")
 	}
-
-	// An orphan is removed by its name; nothing the store records, and
-	// nothing of another project's, is.
-	if _, err := e.RemoveOrphan(ctx, machine.OrphanMachine, lost.name, false); err == nil || !strings.Contains(err.Error(), "running") {
-		t.Fatalf("removing a running orphan without force: %v", err)
+	list, err := d.Instances(ctx)
+	if err != nil || len(list) != 1 || list[0].Name != "web" {
+		t.Fatalf("the default project's instances = %+v, %v", list, err)
 	}
-	if _, err := e.RemoveOrphan(ctx, machine.OrphanMachine, lost.name, true); err != nil {
-		t.Fatalf("remove orphan machine: %v", err)
-	}
-	if _, err := e.RemoveOrphan(ctx, machine.OrphanLayer, "dvm-lost-snap", false); err != nil {
-		t.Fatalf("remove orphan snapshot: %v", err)
-	}
-	var layerSnap snapshotRef
-	if err := readJSON(filepath.Join(chain[0].Dir, layerFile), &layerSnap); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{layerSnap.Name, "dvm-other--lost-0000", "my-snapshot", "mine"} {
-		for _, kind := range []machine.OrphanKind{machine.OrphanMachine, machine.OrphanLayer} {
-			if _, err := e.RemoveOrphan(ctx, kind, name, true); !errors.Is(err, engine.ErrNotOrphan) {
-				t.Fatalf("remove %s %s: %v, want ErrNotOrphan", kind, name, err)
-			}
-		}
-	}
-	if got := names(e); len(got) != 0 {
-		t.Fatalf("orphans after removing them = %v", got)
-	}
-	fake.mu.Lock()
-	_, layerKept := fake.snapshots[layerSnap.Name]
-	kept := 0
-	for _, v := range fake.vms {
-		if v.name == "dvm-other--lost-0000" || v.name == "mine" {
-			kept++
-		}
-	}
-	fake.mu.Unlock()
-	if !layerKept || kept != 2 {
-		t.Fatalf("the store's snapshot kept = %v, other machines kept = %d of 2", layerKept, kept)
+	layers, err := d.Layers(ctx)
+	if err != nil || len(layers) != 1 || layers[0].ID != layer.ID {
+		t.Fatalf("the default project's layers = %+v, %v", layers, err)
 	}
 }
 
-// TestEngineRunsABase lists boxd's default image and a snapshot disco-vm did
-// not make as bases, and none of disco-vm's own snapshots of any project,
-// then runs an instance of each with no build and no layer: the first start
-// makes its machine, from the snapshot or the image, and an instance of a
-// base snapshots to an image like any other.
+// TestEngineRunsABase lists boxd's default image and the snapshots it did not
+// make as bases, and none of disco-vm's own snapshots of any project, then
+// runs an instance of each with no build and no layer, made from the snapshot
+// or the image at the size asked for; and an instance of a base snapshots to
+// an image like any other.
 func TestEngineRunsABase(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
@@ -317,21 +195,24 @@ func TestEngineRunsABase(t *testing.T) {
 	}
 	fake.mu.Lock()
 	fake.snapshots["my-snapshot"] = &fakeSnapshot{id: "snap_mine", name: "my-snapshot", dir: mine}
-	fake.snapshots["dvm-default--aaaa-0000"] = &fakeSnapshot{id: "snap_a", name: "dvm-default--aaaa-0000"}
-	fake.snapshots["dvm-other--bbbb-0000"] = &fakeSnapshot{id: "snap_b", name: "dvm-other--bbbb-0000"}
-	fake.snapshots["dvm-cccc-0000"] = &fakeSnapshot{id: "snap_c", name: "dvm-cccc-0000"}
+	fake.snapshots["dvm-default--aaaa"] = &fakeSnapshot{id: "snap_a", name: "dvm-default--aaaa"}
+	fake.snapshots["dvm-other--bbbb"] = &fakeSnapshot{id: "snap_b", name: "dvm-other--bbbb"}
 	fake.mu.Unlock()
-	machines := func() int {
+	machineOf := func(name string) *fakeVM {
+		t.Helper()
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
-		return len(fake.vms)
+		v, err := fake.vm("dvm-default--" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
 	}
 
-	e, err := engine.Open(t.TempDir(), d, nil, "")
+	e, err := engine.Open(d, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = e.Close() })
 	bases, err := d.Bases(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -349,60 +230,25 @@ func TestEngineRunsABase(t *testing.T) {
 		t.Fatalf("create from a base: %v", err)
 	}
 	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
-	if inst.Layer != "" || inst.Base == nil || inst.Base.ID != "snap_mine" {
-		t.Fatalf("an instance of a base is %+v", inst)
-	}
-	if n := machines(); n != 0 {
-		t.Fatalf("create made %d machines; the first start makes it", n)
+	if v := machineOf("by-hand"); v.vcpu != 8 || v.memory != 32<<30 || v.status != "stopped" {
+		t.Errorf("the snapshot's machine is %d CPUs, %d bytes, %s; want it made at 8 and 32 GiB, and stopped", v.vcpu, v.memory, v.status)
 	}
 	if got := e.State(ctx, inst); got != engine.Stopped {
 		t.Fatalf("state before the first start = %s", got)
 	}
-	if _, err := e.URL(ctx, inst); !errors.Is(err, machine.ErrNotRunning) {
-		t.Fatalf("the URL before the first start: %v", err)
+	if _, err := e.URL(ctx, inst); err != nil {
+		t.Fatalf("the URL of a stopped instance: %v", err)
 	}
 	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if n := machines(); n != 1 {
-		t.Fatalf("the first start made %d machines, want 1", n)
+	g, err := e.Guest(ctx, inst)
+	if err != nil {
+		t.Fatal(err)
 	}
-	fake.mu.Lock()
-	for _, v := range fake.vms {
-		if v.vcpu != 8 || v.memory != 32<<30 {
-			t.Errorf("the snapshot's machine is %d CPUs, %d bytes; want it made at 8 and 32 GiB", v.vcpu, v.memory)
-		}
-	}
-	fake.mu.Unlock()
-	if _, err := e.Snapshot(ctx, mustCreate(t, e, "my-snapshot", "never-started"), ""); err == nil || !strings.Contains(err.Error(), "never started") {
-		t.Fatalf("a snapshot of an instance of a base never started: %v", err)
-	}
-	read := func(name string) string {
-		t.Helper()
-		g, err := e.Guest(ctx, inst)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var out strings.Builder
-		if code, err := machine.Run(ctx, g, machine.ExecRequest{Argv: []string{"cat", name}}, nil, &out, &out); err != nil || code != 0 {
-			t.Fatalf("cat %s: %d, %v: %s", name, code, err, out.String())
-		}
-		return out.String()
-	}
-	if got := read("etc/made-by-hand"); got != "yes\n" {
-		t.Fatalf("the instance does not hold the snapshot's disk: %q", got)
-	}
-	if _, err := e.URL(ctx, inst); err != nil {
-		t.Fatalf("the URL after the first start: %v", err)
-	}
-	if err := e.Stop(ctx, inst, 30*time.Second); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
-		t.Fatalf("start again: %v", err)
-	}
-	if n := machines(); n != 1 {
-		t.Fatalf("a second start made a machine: %d", n)
+	var out strings.Builder
+	if code, err := machine.Run(ctx, g, machine.ExecRequest{Argv: []string{"cat", "etc/made-by-hand"}}, nil, &out, &out); err != nil || code != 0 || out.String() != "yes\n" {
+		t.Fatalf("the instance does not hold the snapshot's disk: %d, %v: %q", code, err, out.String())
 	}
 	if err := e.Stop(ctx, inst, 30*time.Second); err != nil {
 		t.Fatalf("stop: %v", err)
@@ -425,38 +271,15 @@ func TestEngineRunsABase(t *testing.T) {
 		t.Fatalf("create from the default image: %v", err)
 	}
 	t.Cleanup(func() { _ = e.Remove(context.Background(), stock, true) })
-	if err := e.Start(ctx, stock, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
-		t.Fatalf("start the default image: %v", err)
-	}
-	var ref vmRef
-	if err := readJSON(filepath.Join(e.Root, "instances", stock.ID, "machine", vmFile), &ref); err != nil {
-		t.Fatal(err)
-	}
-	fake.mu.Lock()
-	v, err := fake.vm(ref.ID)
-	fake.mu.Unlock()
-	if err != nil || v.vcpu != 4 || v.memory != 16<<30 {
-		t.Fatalf("the default image's machine = %+v, %v; want it made at 4 CPUs and 16 GiB", v, err)
+	if v := machineOf("stock"); v.vcpu != 4 || v.memory != 16<<30 {
+		t.Fatalf("the default image's machine = %+v; want it made at 4 CPUs and 16 GiB", v)
 	}
 
-	// The hand-made snapshot is untouched.
-	if got, err := e.Orphans(ctx); err != nil || len(got) != 2 {
-		t.Fatalf("orphans = %+v, %v; want the default project's two dvm- snapshots made behind the store's back", got, err)
-	}
+	// The hand-made snapshot is untouched, and disco-vm's own are no bases.
 	fake.mu.Lock()
 	_, kept := fake.snapshots["my-snapshot"]
 	fake.mu.Unlock()
 	if !kept {
 		t.Fatal("the hand-made snapshot went")
 	}
-}
-
-func mustCreate(t *testing.T, e *engine.Engine, ref, name string) *engine.Instance {
-	t.Helper()
-	inst, err := e.Create(context.Background(), ref, engine.CreateOptions{Name: name})
-	if err != nil {
-		t.Fatalf("create %s from %s: %v", name, ref, err)
-	}
-	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
-	return inst
 }

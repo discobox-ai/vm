@@ -10,6 +10,7 @@ import (
 
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/fake"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
@@ -29,7 +30,15 @@ func TestConformance(t *testing.T) {
 		}
 	}
 	catalog := []machine.Base{{Name: "stock", ID: "stock-1", GuestOS: machine.OS(runtime.GOOS), Options: map[string]string{"image": "stock"}}}
-	machinetest.Run(t, &fake.Driver{Agent: agent, Catalog: catalog}, machinetest.Config{
+	dir := t.TempDir()
+	driver, err := local.New(machine.Config{
+		Dir:         dir,
+		ShimCommand: []string{agent, "--root", dir, "--driver", "fake", "shim"},
+	}, &fake.Hypervisor{Agent: agent, Catalog: catalog})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machinetest.Run(t, driver, machinetest.Config{
 		Install:    machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"},
 		Timeout:    30 * time.Second,
 		ScratchDir: "/scratch",

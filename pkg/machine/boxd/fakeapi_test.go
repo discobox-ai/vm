@@ -98,6 +98,16 @@ func (f *fakeAPI) vm(id string) (*fakeVM, error) {
 	return nil, status.Errorf(codes.NotFound, "no machine %q", id)
 }
 
+// taken reports whether a machine has the name: boxd's names are unique.
+func (f *fakeAPI) taken(name string) bool {
+	for _, v := range f.vms {
+		if name != "" && v.name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeAPI) newVM(name string, vcpu uint32, memory uint64) *fakeVM {
 	id := "vm_" + fsutil.RandomHex(4)
 	if name == "" {
@@ -141,6 +151,9 @@ func (f *fakeAPI) Whoami(context.Context, *boxdapi.WhoamiRequest) (*boxdapi.Whoa
 func (f *fakeAPI) CreateVm(_ context.Context, req *boxdapi.CreateVmRequest) (*boxdapi.CreateVmResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.taken(req.GetName()) {
+		return nil, status.Errorf(codes.AlreadyExists, "a machine is named %q", req.GetName())
+	}
 	v := f.newVM(req.GetName(), req.GetConfig().GetVcpu(), req.GetConfig().GetMemoryBytes())
 	if err := os.MkdirAll(f.root(v), 0o755); err != nil {
 		return nil, err
@@ -154,6 +167,9 @@ func (f *fakeAPI) CreateVmFromSnapshot(_ context.Context, req *boxdapi.CreateVmF
 	snap, err := f.snapshot(req.GetSnapshot())
 	if err != nil {
 		return nil, err
+	}
+	if f.taken(req.GetName()) {
+		return nil, status.Errorf(codes.AlreadyExists, "a machine is named %q", req.GetName())
 	}
 	// The config is "optional overrides" of the snapshot's size, each field
 	// on its own: zero keeps the snapshot's.
@@ -400,14 +416,19 @@ func (f *fakeAPI) Exec(stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdap
 	if !running {
 		return status.Errorf(codes.FailedPrecondition, "%s is not running", v.name)
 	}
-	stdout := execWriter{stream: stream}
-	stderr := execWriter{stream: stream, stderr: true}
+	// A command's stdout and stderr are copied from goroutines of their own,
+	// and a gRPC stream takes one Send at a time.
+	var sends sync.Mutex
+	stdout := execWriter{stream: stream, mu: &sends}
+	stderr := execWriter{stream: stream, mu: &sends, stderr: true}
 	exit := func(code int32, msg string) error {
 		if msg != "" {
 			if _, err := stderr.Write([]byte(msg)); err != nil {
 				return err
 			}
 		}
+		sends.Lock()
+		defer sends.Unlock()
 		return stream.Send(&boxdapi.ExecChunk{ExitCode: code})
 	}
 
@@ -547,10 +568,13 @@ func shellWords(line string) ([]string, error) {
 
 type execWriter struct {
 	stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdapi.ExecChunk]
+	mu     *sync.Mutex
 	stderr bool
 }
 
 func (w execWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if err := w.stream.Send(&boxdapi.ExecChunk{Data: p, IsStderr: w.stderr}); err != nil {
 		return 0, err
 	}

@@ -26,15 +26,15 @@ type createFlags struct {
 }
 
 func (f *createFlags) register(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.name, "name", "", "instance name (default: its ID)")
+	cmd.Flags().StringVar(&f.name, "name", "", "instance name: lowercase letters, digits, and single hyphens (default: a random one)")
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "vCPUs (default: the driver's)")
 	cmd.Flags().StringVar(&f.memory, "memory", "", "memory, e.g. 8GiB (default: the driver's)")
 }
 
-func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) (*engine.Instance, error) {
+func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) (engine.Instance, error) {
 	memory, err := units.ParseBytes(f.memory)
 	if err != nil {
-		return nil, err
+		return engine.Instance{}, err
 	}
 	return e.Create(ctx, ref, engine.CreateOptions{
 		Name: f.name, CPUs: f.cpus, Memory: memory,
@@ -56,7 +56,7 @@ func createCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Println(inst.ID)
+			fmt.Println(inst.Name)
 			return nil
 		},
 	}
@@ -87,7 +87,7 @@ func runCommand(g *globals) *cobra.Command {
 			if err := e.Start(ctx, inst, engine.StartOptions{Timeout: timeout, GUI: gui}); err != nil {
 				return err
 			}
-			fmt.Println(inst.ID)
+			fmt.Println(inst.Name)
 			return nil
 		},
 	}
@@ -105,7 +105,7 @@ func startCommand(g *globals) *cobra.Command {
 		Short: "Start instances",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return eachInstance(g, args, func(e *engine.Engine, inst *engine.Instance) error {
+			return eachInstance(cmd.Context(), g, args, func(e *engine.Engine, inst engine.Instance) error {
 				return e.Start(cmd.Context(), inst, engine.StartOptions{Timeout: timeout, GUI: gui})
 			})
 		},
@@ -122,7 +122,7 @@ func stopCommand(g *globals) *cobra.Command {
 		Short: "Shut instances down in order, forcing them off after a timeout",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return eachInstance(g, args, func(e *engine.Engine, inst *engine.Instance) error {
+			return eachInstance(cmd.Context(), g, args, func(e *engine.Engine, inst engine.Instance) error {
 				return e.Stop(cmd.Context(), inst, timeout)
 			})
 		},
@@ -135,51 +135,26 @@ func rmCommand(g *globals) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "rm INSTANCE...",
-		Short: "Remove instances, or orphaned machines by the name ls shows",
+		Short: "Remove instances",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			e, err := g.engine()
-			if err != nil {
-				return err
-			}
-			var errs []error
-			for _, ref := range args {
-				inst, err := e.Get(ref)
-				switch {
-				case err == nil:
-					err = e.Remove(cmd.Context(), inst, force)
-				case errors.Is(err, engine.ErrNotFound):
-					// Not an instance: an orphaned machine of the project.
-					var o machine.Orphan
-					if o, err = e.RemoveOrphan(cmd.Context(), machine.OrphanMachine, ref, force); err == nil {
-						fmt.Printf("destroyed orphan %s\n", o.Name)
-						continue
-					}
-					if errors.Is(err, engine.ErrNotOrphan) {
-						err = fmt.Errorf("no instance or orphaned machine %q", ref)
-					}
-				}
-				if err != nil {
-					errs = append(errs, fmt.Errorf("%s: %w", ref, err))
-					continue
-				}
-				fmt.Println(inst.Name)
-			}
-			return errors.Join(errs...)
+			return eachInstance(cmd.Context(), g, args, func(e *engine.Engine, inst engine.Instance) error {
+				return e.Remove(cmd.Context(), inst, force)
+			})
 		},
 	}
-	cmd.Flags().BoolVarP(&force, "force", "f", false, "stop a running instance, or destroy a running orphan, first")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "stop a running instance first")
 	return cmd
 }
 
-func eachInstance(g *globals, refs []string, fn func(*engine.Engine, *engine.Instance) error) error {
+func eachInstance(ctx context.Context, g *globals, refs []string, fn func(*engine.Engine, engine.Instance) error) error {
 	e, err := g.engine()
 	if err != nil {
 		return err
 	}
 	var errs []error
 	for _, ref := range refs {
-		inst, err := e.Get(ref)
+		inst, err := e.Get(ctx, ref)
 		if err == nil {
 			err = fn(e, inst)
 		}
@@ -204,7 +179,7 @@ func lsCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			instances, err := e.List()
+			instances, err := e.List(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -215,12 +190,7 @@ func lsCommand(g *globals) *cobra.Command {
 				if state == engine.Stopped && !all {
 					continue
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", inst.ID, inst.Name, inst.Image, inst.GuestOS, state, ago(inst.Created))
-			}
-			// Machines the driver holds that no instance names are listed
-			// stopped or not, so nothing billed goes unseen.
-			for _, o := range orphans(cmd.Context(), e, machine.OrphanMachine) {
-				fmt.Fprintf(w, "<orphan>\t%s\t-\t-\t%s\t%s\n", o.Name, o.Status, ago(o.Created))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", engine.Short(inst.ID), inst.Name, inst.Image, inst.GuestOS, state, ago(inst.Created))
 			}
 			return w.Flush()
 		},
@@ -246,7 +216,7 @@ func urlCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			inst, err := e.Get(args[0])
+			inst, err := e.Get(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
@@ -270,12 +240,12 @@ func inspectCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			inst, err := e.Get(args[0])
+			inst, err := e.Get(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
 			out := struct {
-				*engine.Instance
+				engine.Instance
 				State engine.State       `json:"state"`
 				Guest *machine.GuestInfo `json:"guest,omitempty"`
 			}{Instance: inst, State: e.State(cmd.Context(), inst)}
@@ -311,7 +281,7 @@ func execCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			inst, err := e.Get(args[0])
+			inst, err := e.Get(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
@@ -330,7 +300,7 @@ func execCommand(g *globals) *cobra.Command {
 }
 
 // execIn runs a command in an instance and turns its exit code into ours.
-func execIn(ctx context.Context, e *engine.Engine, inst *engine.Instance, opts execOptions) error {
+func execIn(ctx context.Context, e *engine.Engine, inst engine.Instance, opts execOptions) error {
 	g, err := e.Guest(ctx, inst)
 	if err != nil {
 		return err
@@ -399,8 +369,8 @@ func infoCommand(g *globals) *cobra.Command {
 				check = err.Error()
 			}
 			caps, _ := json.MarshalIndent(e.Driver.Capabilities(), "  ", "  ")
-			fmt.Printf("version:  %s\nroot:     %s\ndriver:   %s (available: %s)\ncheck:    %s\ncapabilities:\n  %s\n",
-				version.String(), e.Root, e.Driver.Name(), strings.Join(machine.Names(), ", "), check, caps)
+			fmt.Printf("version:  %s\nroot:     %s\nproject:  %s\ndriver:   %s (available: %s)\ncheck:    %s\ncapabilities:\n  %s\n",
+				version.String(), g.dir(), e.Project, e.Driver.Name(), strings.Join(machine.Names(), ", "), check, caps)
 			return nil
 		},
 	}

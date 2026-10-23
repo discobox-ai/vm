@@ -6,9 +6,10 @@ above the `machine.Driver` seam that names the driver: `internal/cli` imports
 `pkg/machine/docker` for it, since the guest's init is the same binary (one
 binary, see [DESIGN.md](../../DESIGN.md#one-binary-three-roles)). It picks no behavior by OS or driver. Nothing else above
 the seam changed, and `internal/e2e` gained a `docker` target. Like
-boxd, the driver is remote (`Capabilities.Remote`): the Docker daemon owns a
-running guest, so the engine runs no shim, and every command attaches to the
-container.
+boxd, the daemon owns a running guest, so there is no shim, and every
+command attaches to the container; and the daemon keeps everything the
+driver knows, on its images and containers (ADR 26-10-23-417), so nothing is
+kept on the host.
 
 **Done means:**
 
@@ -125,18 +126,18 @@ The offset is in every layer, so all of an image store's guests share it.
 | seam | docker |
 |---|---|
 | `Install` | pull `options.image` (default `debian:trixie`) if the daemon lacks it; in a container from it, as root: install systemd and dbus if missing (apt-get, dnf, or zypper), install the agent as `disco-vm-guest.service`, mask units a container cannot run, remove Docker's `policy-rc.d`, empty `/etc/machine-id` and make D-Bus's copy a link to it, and shift; commit with `docker-init` as the entrypoint. Media must be `latest`. |
-| layer | `layer.json`: the committed image's ID and the tag (`disco-vm-layer:<project>--<id>-<rand>`) that keeps it from being pruned. `DeleteLayer` removes the tag, and the image with it. |
-| `Prepare` | create the container from the parent's image, with the settings above, named `dvm-<project>--<instance id>-<rand>`, publishing 7302/tcp on `127.0.0.1` at a port the daemon picks at each start. Cold only. |
+| layer | the committed image, tagged `disco-vm-layer:<project>--<layer id>` and labeled `ai.discobox.vm.layer`, `.project`, `.parent`, and `.comment` by the commit (`LABEL` changes, which also blank the instance's labels the container carried). `Layer` inspects the tag, `Layers` lists the repository, and `DeleteLayer` removes the tag, and the image with it unless another tag holds it. |
+| tag | a tag of the layer's image, `disco-vm/<project>/<ref>`, so a ref is Docker's grammar. `Tags` lists every image and reads its tags under the project's prefix; `Untag` removes the tag, which leaves the image to its layer's. |
+| `Create` | create the container from the layer's image, with the settings above, named `dvm-<project>--<name>`, with the instance's name as its hostname, labeled `ai.discobox.vm.instance` (the name), `.project`, `.layer`, `.image` (the reference), `.cpus`, and `.memory`, publishing 7302/tcp on `127.0.0.1` at a port the daemon picks at each start. A name the daemon has is `ErrExists`. Cold only. |
+| instance | `Instances` lists the containers named and labeled for the project; `Instance` inspects one by its name. An instance's layer is the one whose image its container runs. A container or image from before ADR 26-10-23-417, whose labels name no project and whose layer tag is `<project>--<id prefix>-<random>`, is not listed; remove it with `docker`. |
 | `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `http://127.0.0.1:<published port>` while the container runs. |
-| `Boot` | size the container (`docker update`: CPUs, and memory with no swap) and start it, then wait for the agent; a container that stops meanwhile (inspected every 2s) ends the wait. |
-| `Attach` | (`Capabilities.Remote`: the daemon owns the container, so the engine runs no shim.) Inspect the container: running is a machine, and stopped or gone is `ErrNotRunning`. A guest that powered itself off has already stopped its container, because Init exits with it. |
+| `Boot`, `Start` | size the container (`docker update`: CPUs, and memory with no swap) and start it, then wait for the agent; a container that stops meanwhile (inspected every 2s) ends the wait. The daemon owns the container, so `Start` is `Boot`. |
+| `Attach` | inspect the container: running is a machine, and stopped or gone is `ErrNotRunning`. A guest that powered itself off has already stopped its container, because Init exits with it. |
 | `Machine.Done` | waiting starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to run a command leaves nothing running. The daemon's `wait` on the container: exit 0 is a power-off. A failed wait (the daemon restarted) inspects and waits again. |
 | `Machine.Kill` | SIGKILL to the container. |
 | `Machine` guest operations | the agent (`guest.Client`), each connection a docker exec of `disco-vm pipe unix:/run/disco-vm-relay/guest/run/disco-vm/agent.sock`, on the container's side. |
-| `Commit` | empty the stopped container's `/etc/machine-id`, so every instance of the layer makes its own, and `docker commit` it. |
+| `Commit` | empty the stopped container's `/etc/machine-id`, so every instance of the layer makes its own, `docker commit` it as the layer, and remove the container. |
 | `Destroy` | `docker rm -f`. |
-| `Orphans` | every container with the driver's labels and every `disco-vm-layer` image, named for the project, that no instance's `container.json` or layer's `layer.json` names. A name from before projects (no `--`) is the default project's. |
-| `RemoveOrphan` | `docker rm -f` a container, and remove an image's tag, and the image with it (`disco-vm rm` / `rmi` with an orphan's name). |
 
 The driver talks to the Docker Engine API over `DOCKER_HOST` itself, not
 through the docker CLI or SDK, as boxd's does.

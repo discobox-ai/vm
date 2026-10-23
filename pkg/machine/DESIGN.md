@@ -3,19 +3,26 @@
 The driver seam: `machine.Driver` and the guest's operations,
 `machine.Guest`. Each hypervisor is a package below it, selected by build tags
 (`drivers`), and `machinetest` is the conformance suite every driver passes.
-boxd and docker have their own design notes:
-[boxd/DESIGN.md](boxd/DESIGN.md) and [docker/DESIGN.md](docker/DESIGN.md).
+boxd, docker, and local have their own design notes:
+[boxd/DESIGN.md](boxd/DESIGN.md), [docker/DESIGN.md](docker/DESIGN.md), and
+[local/DESIGN.md](local/DESIGN.md).
 
 ## The driver contract is the intersection, and differences are reported
 
-`machine.Driver` is Install, Prepare (clone), Boot, Commit, Destroy, and
-Service ([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-one-http-url)).
-Boot returns once the guest answers. A running
-`Machine` is the guest's operations (`machine.Guest`: Exec with stdio, a TTY
-and its resizes, a user, environment, and directory; CopyTo and CopyFrom, as
-tar; Info; Shutdown), and Kill and Done. A driver without a shim's URL to
-serve keeps its channel to the guest to itself; the others' machines are
-`machine.Dialer`s, which the shim dials. Anything only one hypervisor can do is a `Capabilities` field, never a faked method:
+`machine.Driver` is one project's (`machine.Config.Project`) layers (Install,
+Layer, Layers, DeleteLayer, Commit), tags (Tags, Tag, Untag), bases, and
+instances (Create, a clone; Instance, Instances, Destroy), as its provider
+keeps them ([the root DESIGN.md](../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider));
+and an instance's machine: Boot, in this process; Start, outliving it;
+Attach, from any process; and Service
+([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-one-http-url)).
+Boot and Start return once the guest answers. A running `Machine` is the
+guest's operations (`machine.Guest`: Exec with stdio, a TTY and its resizes,
+a user, environment, and directory; CopyTo and CopyFrom, as tar; Info;
+Shutdown), and Kill and Done. hcs, vz, and fake are `local.Hypervisor`s under
+one driver that keeps their state and runs their shims
+([local/DESIGN.md](local/DESIGN.md)). Anything only one hypervisor can do is
+a `Capabilities` field, never a faked method:
 
 | capability | hcs | vz | boxd | docker | fake |
 |---|---|---|---|---|---|
@@ -24,7 +31,6 @@ serve keeps its channel to the guest to itself; the others' machines are
 | shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | no |
 | display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no | no |
 | forward (guest to host) | hvsocket to the parent partition | vsock to the host, CID 2 | no | no | loopback |
-| remote (no shim; any process attaches) | no | no | **yes** | **yes** | no |
 | agent (Install bakes in `disco-vm guest`) | yes | yes | **no**: boxd's Exec | yes | yes |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
@@ -72,7 +78,7 @@ touches it.
 
 ## Every clone is cold, and an image is made fast by what is in it
 
-Prepare makes one kind of clone (ADR 26-10-15-851): a copy-on-write clone of
+Create makes one kind of clone (ADR 26-10-15-851): a copy-on-write clone of
 the image's disk, with a machine identity of its own, which Boot starts from
 power-off. There are no clone modes, no staged images, and no `warm`
 command. Work that every instance needs goes into the image, as a build step
@@ -87,10 +93,8 @@ What warming left behind is upgraded, not used:
   from its own disk. Then end the `disco-vm
   shim --warm <layer>` process (Task Manager, `Stop-Process`), which ends the
   template system with its last handle, and delete `warm/` by hand.
-- **A boxd stage's own snapshot** is no longer the store's, so `images` lists
-  it as an orphan and `rmi` deletes it by name. Delete it once no instance
-  resumed from it is left: that a restored machine outlives its snapshot is
-  not proven.
+- **A boxd stage's own snapshot** is no longer anything disco-vm lists. Delete
+  it with `boxd snap rm`; a machine resumed from it outlives it.
 - **An instance cloned fast** that has booted once is a cold instance on its
   own disk: a vz resume clone gets an identity of its own at its next boot,
   and an hcs fork clone's disk differences over the template disk in its own

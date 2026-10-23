@@ -10,7 +10,7 @@ brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
 
 - **Platform code lives below the seam.** Hypervisor code belongs only in
   `pkg/machine/<driver>`. Guest-OS code belongs only in `pkg/guest/*_windows.go`
-  or `*_unix.go`. Nothing in `pkg/engine`, `pkg/build`, `pkg/image`, or
+  or `*_unix.go`. Nothing in `pkg/engine`, `pkg/build`, or
   `internal/cli` may be build-tagged or check `runtime.GOOS` to pick a
   hypervisor behavior. If a driver seems to need an engine change, make it
   OS-neutral, express it through `machine.Capabilities`, and update
@@ -32,9 +32,11 @@ brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
 - The root holds only top-level containers (`cmd`, `pkg`, `internal`, `docs`,
   `test`, `scripts`), never packages.
 - `cmd/disco-vm`: the `disco-vm` binary: CLI, guest agent, and shim.
-- `pkg/engine`, `pkg/build`, `pkg/image`: the OS-neutral core above the seam.
+- `pkg/engine`, `pkg/build`: the OS-neutral core above the seam. It keeps no
+  state: every layer, tag, and instance is the driver's (ADR 26-10-23-417).
 - `pkg/machine`: the driver seam; `pkg/machine/<driver>` holds each
-  hypervisor, and `machinetest` its conformance suite.
+  hypervisor, `pkg/machine/local` the store and shim that hcs, vz, and fake
+  share, and `machinetest` the conformance suite.
 - `pkg/guest`: the guest agent.
 - `internal/cli`: the command line. `internal/e2e`: the CLI lifecycle test.
 - `scripts/codesign-exec`: the `go test -exec` wrapper vz tests need.

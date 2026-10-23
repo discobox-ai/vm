@@ -11,6 +11,7 @@ import (
 	"github.com/discobox-ai/vm/internal/version"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine/docker"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // guestCommand is the agent. It is the same binary, built for the guest's OS
@@ -105,7 +106,8 @@ func dockerInitCommand() *cobra.Command {
 	return cmd
 }
 
-// shimCommand is one instance's supervisor, started by `start` and `run`.
+// shimCommand is one instance's supervisor, which a driver on this host's
+// disk starts for `start` and `run`.
 func shimCommand(g *globals) *cobra.Command {
 	var gui bool
 	cmd := &cobra.Command{
@@ -114,7 +116,7 @@ func shimCommand(g *globals) *cobra.Command {
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			e, err := g.engine()
+			driver, err := g.newDriver(g.driver, g.project)
 			if err != nil {
 				return err
 			}
@@ -122,7 +124,7 @@ func shimCommand(g *globals) *cobra.Command {
 			if gui {
 				shimArgs = append([]string{"--gui"}, shimArgs...)
 			}
-			return e.ShimMain(cmd.Context(), shimArgs)
+			return local.ShimMain(cmd.Context(), driver, shimArgs)
 		},
 	}
 	cmd.Flags().BoolVar(&gui, "gui", false, "show the guest's display in a window")

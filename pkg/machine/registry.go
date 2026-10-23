@@ -7,9 +7,10 @@ import (
 	"sync"
 )
 
-// Factory constructs a driver. Construction must be cheap and must not touch
-// the hypervisor: `disco-vm info` constructs every driver to list it.
-type Factory func() (Driver, error)
+// Factory constructs a driver for a project. Construction must be cheap and
+// must not touch the hypervisor or its service: `disco-vm info` constructs
+// every driver to list it.
+type Factory func(Config) (Driver, error)
 
 var (
 	registryMu sync.Mutex
@@ -39,10 +40,17 @@ func Names() []string {
 // fake driver anywhere else.
 func DefaultName() string { return defaultDriver }
 
-// New constructs the named driver, or the default one for an empty name.
-func New(name string) (Driver, error) {
+// New constructs the named driver, or the default one for an empty name, for
+// cfg's project, which it checks.
+func New(name string, cfg Config) (Driver, error) {
 	if name == "" {
 		name = defaultDriver
+	}
+	if cfg.Project == "" {
+		cfg.Project = DefaultProject
+	}
+	if err := ValidateProject(cfg.Project); err != nil {
+		return nil, err
 	}
 	registryMu.Lock()
 	factory, ok := registry[name]
@@ -50,5 +58,5 @@ func New(name string) (Driver, error) {
 	if !ok {
 		return nil, fmt.Errorf("machine: no driver %q in this build (have %v)", name, Names())
 	}
-	return factory()
+	return factory(cfg)
 }

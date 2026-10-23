@@ -17,7 +17,9 @@ import (
 	"github.com/discobox-ai/vm/pkg/build"
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/guest"
+	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/fake"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // Every instance has one service, where the driver picks: the engine writes
@@ -82,7 +84,7 @@ func TestURL(t *testing.T) {
 }
 
 // serviceAddress reads the guest's service file.
-func serviceAddress(ctx context.Context, t *testing.T, e *engine.Engine, inst *engine.Instance) string {
+func serviceAddress(ctx context.Context, t *testing.T, e *engine.Engine, inst engine.Instance) string {
 	t.Helper()
 	g, err := e.Guest(ctx, inst)
 	if err != nil {
@@ -117,18 +119,24 @@ func fakeEngine(t *testing.T) (*engine.Engine, string) {
 	if out, err := exec.CommandContext(ctx, "go", "build", "-o", binary, "../../cmd/disco-vm").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	e, err := engine.Open(filepath.Join(dir, "root"), &fake.Driver{Agent: binary}, nil, "")
+	root := filepath.Join(dir, "root")
+	driver, err := local.New(machine.Config{
+		Dir:         root,
+		ShimCommand: []string{binary, "--root", root, "--driver", "fake", "shim"},
+	}, &fake.Hypervisor{Agent: binary})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = e.Close() })
-	e.Exe = binary
+	e, err := engine.Open(driver, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	file := filepath.Join(dir, "app.yaml")
 	spec := "from:\n  install: {os: " + runtime.GOOS + ", media: latest}\nlayers:\n  - name: a\n    steps:\n      - run: echo app\n"
 	if err := os.WriteFile(file, []byte(spec), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (&build.Builder{Engine: e, Out: io.Discard}).Build(ctx, build.Options{File: file, Tags: []string{"app"}}); err != nil {
+	if _, err := (&build.Builder{Engine: e, Out: io.Discard}).Build(ctx, build.Options{File: file, Tags: []string{"app"}, Agent: binary}); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	return e, binary

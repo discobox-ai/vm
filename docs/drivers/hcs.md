@@ -2,11 +2,16 @@
 
 **Scope:** `pkg/machine/hcs` and the Windows-only parts of `pkg/guest`. Nothing
 above the `machine.Driver` seam should need to change. If it does, that is a
-design finding: raise it rather than work around it.
+design finding: raise it rather than work around it. `hcs.Hypervisor` is a
+`local.Hypervisor`: `pkg/machine/local` keeps its layers, tags, and
+instances in its directory (`--root`, `$DISCO_VM_ROOT`, or
+`%LOCALAPPDATA%\disco-vm`) and runs each started instance under a shim, so
+the hypervisor installs, clones (Prepare), boots, commits, and destroys disks
+in the directories it is given (ADR 26-10-23-417).
 
 **Done means:**
 
-1. `machinetest.Run` passes against `hcs.Driver` on a real Windows host.
+1. `machinetest.Run` passes against the hcs driver on a real Windows host.
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=hcs` and a real image.
 3. `docs/examples/windows.yaml` builds.
 
@@ -15,8 +20,9 @@ design finding: raise it rather than work around it.
 Implemented. On a Windows 11 Pro host (elevated, Virtual Machine Platform, no
 Hyper-V role needed) with a Windows 11 Pro 25H2 guest:
 
-- (1) passes: `DISCO_VM_HCS_BASE=<layer>\payload go test ./pkg/machine/hcs`
-  runs the whole suite in about 45 s.
+- (1) passed before ADR 26-10-23-417: the suite ran in about 45 s. Since, it
+  is `DISCO_VM_HCS_BASE=<installed layer's ID> DISCO_VM_TEST_BINARY=<a
+  disco-vm.exe> go test ./pkg/machine/hcs`, and has not run.
 - (2) passes: `DISCO_VM_DRIVER=hcs DISCO_VM_E2E_ROOT=<root>
   DISCO_VM_E2E_ISO=<iso> go test ./internal/e2e` from an elevated shell. The
   first run installs and tags `e2e/base` (about 15 min in all); later runs
@@ -156,9 +162,10 @@ volume, rewriting nothing. Then Destroy. Mind the rename rule above: create the
 child in a place from which the final move is a same-directory rename, or
 merge/copy it.
 
-**Destroy / DeleteLayer:** remove files. For a running or orphaned compute
-system, terminate it by ID first. A crashed shim can orphan a registered
-system, so do an orphan sweep in Check or at shim start.
+**Destroy:** remove files. For a running or orphaned compute system,
+terminate it by ID first. A crashed shim can orphan a registered system, so
+do an orphan sweep in Check or at shim start. A layer is deleted by the local
+driver, which removes its directory.
 
 ## No fast clones
 
