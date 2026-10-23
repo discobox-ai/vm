@@ -1,0 +1,10 @@
+# The dev loop: rebuild build/disco-vm whenever its source changes. disco-vm
+# is a CLI with nothing long-running to serve, so there is no run command.
+watch:
+  extensions: [go]
+  include: [go.mod, go.sum, "*.entitlements"]
+  exclude: ["*_test.go"]
+  exclude_dirs: [build]
+
+build:
+  command: go tool task build

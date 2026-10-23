@@ -138,7 +138,8 @@ require (
 	github.com/dave/dst v0.27.3 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/denis-tingaikin/go-header v0.5.0 // indirect
-	github.com/discobox-ai/repostd v0.0.0-20261015052039-ed20cf47eac2 // indirect
+	github.com/discobox-ai/repostd v0.0.0-20261017030812-71cf38c7b5f7 // indirect
+	github.com/discobox-ai/watchnbuild v0.1.1-0.20260919045642-dfdfac09bda9 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.7.1 // indirect
 	github.com/docker/cli v29.8.0+incompatible // indirect
@@ -398,6 +399,7 @@ replace github.com/Code-Hex/vz/v3 => github.com/discobox-ai/vz/v3 v3.7.2-0.20260
 tool (
 	github.com/bufbuild/buf/cmd/buf
 	github.com/discobox-ai/repostd/cmd/repocheck
+	github.com/discobox-ai/watchnbuild
 	github.com/go-task/task/v3/cmd/task
 	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc
