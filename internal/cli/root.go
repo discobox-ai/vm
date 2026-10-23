@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -69,6 +71,7 @@ func Main(args []string) int {
 	root.PersistentFlags().StringVar(&g.project, "project", envOr("DISCO_VM_PROJECT", machine.DefaultProject), "project that scopes every image, instance, and driver resource (also $DISCO_VM_PROJECT)")
 	root.PersistentFlags().StringVar(&g.driver, "driver", os.Getenv("DISCO_VM_DRIVER"), "hypervisor driver (default "+machine.DefaultName()+"; also $DISCO_VM_DRIVER)")
 	root.AddCommand(
+		driversCommand(g),
 		buildCommand(g),
 		imagesCommand(g), rmiCommand(g), tagCommand(g), snapshotCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
@@ -90,6 +93,35 @@ func Main(args []string) int {
 	default:
 		fmt.Fprintln(os.Stderr, "disco-vm:", err)
 		return 1
+	}
+}
+
+func driversCommand(g *globals) *cobra.Command {
+	return &cobra.Command{
+		Use:   "drivers",
+		Short: "List the hypervisor drivers in this build",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			// The selected driver is named, not constructed: listing must not
+			// fail on what a driver needs only to run.
+			selected := g.driver
+			if selected == "" {
+				selected = machine.DefaultName()
+			}
+			if !slices.Contains(machine.Names(), selected) {
+				return fmt.Errorf("machine: no driver %q in this build (have %v)", selected, machine.Names())
+			}
+			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "DRIVER\tSELECTED")
+			for _, name := range machine.Names() {
+				marker := ""
+				if name == selected {
+					marker = "*"
+				}
+				fmt.Fprintf(w, "%s\t%s\n", name, marker)
+			}
+			return w.Flush()
+		},
 	}
 }
 
