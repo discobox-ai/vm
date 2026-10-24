@@ -27,11 +27,11 @@ func TestServiceFakeAPI(t *testing.T) {
 	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
-	base, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, machine.Layer{ID: "0123456789abcdef"})
+	base, err := snapshotOfBase(ctx, d, "0123456789abcdef")
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "cold", Layer: base.ID, GuestOS: machine.Linux})
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "cold", ImageID: base.ID, GuestOS: machine.Linux})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestServiceFakeAPI(t *testing.T) {
 	fake.mu.Lock()
 	fake.proxyErr = status.Error(codes.NotFound, "no such proxy")
 	fake.mu.Unlock()
-	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "noproxy", Layer: base.ID, GuestOS: machine.Linux}); err == nil {
+	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "noproxy", ImageID: base.ID, GuestOS: machine.Linux}); err == nil {
 		t.Fatal("create with a proxy that cannot be found succeeded")
 	}
 	fake.mu.Lock()

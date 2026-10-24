@@ -19,16 +19,18 @@
 //   - writable-cgroups=true (with a private cgroup namespace): Init hands the
 //     container's cgroup subtree to the guest's root, for systemd.
 //
-// The guest's files must belong to its uids, so Install shifts the base image
-// once (Shift), and commits it as the base layer. A layer is a Docker image,
-// committed from a stopped container, and every layer after the base is
+// A base is any image the daemon has or can pull (Base). The guest's files
+// must belong to its uids, so Create of an instance of a base readies it:
+// installs systemd and the agent, shifts its files once (Shift), and commits
+// that as the instance's own Docker image, which Destroy removes. An image
+// (ADR 26-10-23-410) is a Docker image committed from a stopped container,
 // written by the guest, in its uids already.
 //
 // The daemon owns a running guest, so every command attaches to the container
 // (Attach), and the daemon keeps everything the driver knows (ADR
-// 26-10-23-417): a layer is an image tagged disco-vm-layer:<project>--<id>
-// and labeled with its parent and comment, a tag is a tag of that image in
-// disco-vm/<project>/, and an instance is a container named
+// 26-10-23-417): an image is a Docker image tagged
+// disco-vm-layer:<project>--<id> and labeled with its comment, a tag is a tag
+// of that image in disco-vm/<project>/, and an instance is a container named
 // dvm-<project>--<name> and labeled with what it was made from. Nothing is
 // kept on the host.
 //
@@ -50,6 +52,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -65,7 +68,7 @@ func init() {
 
 const (
 	// UIDBase is where the guest's uids start on the host: guest uid N is
-	// host uid UIDBase+N. It is baked into every layer, so it is fixed. It is
+	// host uid UIDBase+N. It is baked into every image, so it is fixed. It is
 	// far above the ranges shadow-utils hands out in /etc/subuid, which start
 	// at 100000, so a guest's files never share an owner with a rootless
 	// container's.
@@ -82,11 +85,11 @@ const (
 	// root directory there.
 	relayDir = "/run/disco-vm-relay"
 
-	// defaultImage is the image installed when options.image is not given.
-	defaultImage = "debian:trixie"
-	// layerRepo names the images the driver commits, each tagged
-	// `<project>--<layer id>`.
-	layerRepo = "disco-vm-layer"
+	// imageRepo names the images the driver commits, each tagged
+	// `<project>--<image id>`, and the image readied from a base for an
+	// instance, `<project>--base-<instance name>--<random>`. It keeps the name it had
+	// when images were layers.
+	imageRepo = "disco-vm-layer"
 	// tagRepo starts the repository of every tag, before the project:
 	// disco-vm/<project>/<name>:<tag>.
 	tagRepo = "disco-vm/"
@@ -95,11 +98,10 @@ const (
 
 	// labelInstance is an instance's name, on its container.
 	labelInstance = "ai.discobox.vm.instance"
-	// labelLayer is a layer's ID, on its image, and on the install container
-	// that makes a base layer.
-	labelLayer   = "ai.discobox.vm.layer"
+	// labelID is an image's ID, on its Docker image and on the container of
+	// an instance of it. It keeps the name it had when images were layers.
+	labelID      = "ai.discobox.vm.layer"
 	labelProject = "ai.discobox.vm.project"
-	labelParent  = "ai.discobox.vm.parent"
 	labelComment = "ai.discobox.vm.comment"
 	// labelImage is the reference an instance was made from, and labelCPUs
 	// and labelMemory its size, on its container.
@@ -108,21 +110,33 @@ const (
 	labelMemory = "ai.discobox.vm.memory"
 )
 
+// AgentEnv names the disco-vm binary, built for linux and the daemon's CPU,
+// that Create puts in a base's image. It is this binary when unset on a linux
+// host.
+const AgentEnv = "DISCO_VM_AGENT"
+
 // Driver is the docker driver.
 type Driver struct {
 	api     *api
 	project string
+	// Agent is the disco-vm binary Create puts in a base's image.
+	Agent string
 }
 
 var _ machine.Driver = (*Driver)(nil)
 
 // New returns a driver for the daemon $DOCKER_HOST names, for a project
-// (machine.DefaultProject when empty). It dials nothing until it is used.
+// (machine.DefaultProject when empty), whose agent is $DISCO_VM_AGENT or, on
+// linux, this binary. It dials nothing until it is used.
 func New(project string) *Driver {
 	if project == "" {
 		project = machine.DefaultProject
 	}
-	return &Driver{api: newAPI(), project: project}
+	agent := os.Getenv(AgentEnv)
+	if agent == "" && runtime.GOOS == "linux" {
+		agent, _ = os.Executable()
+	}
+	return &Driver{api: newAPI(), project: project, Agent: agent}
 }
 
 func (*Driver) Name() string { return "docker" }
@@ -161,63 +175,50 @@ type containerRef struct {
 	Name string `json:"name"`
 }
 
-// Install pulls an image, installs systemd in it if it has none, installs the
-// agent as a systemd service, shifts its files into the guest's uids, and
-// commits it as the base layer.
-func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst machine.Layer) (machine.Layer, error) {
-	if spec.GuestOS != machine.Linux {
-		return machine.Layer{}, fmt.Errorf("docker: guests are linux, not %s", spec.GuestOS)
-	}
-	if spec.Media != "" && spec.Media != "latest" {
-		return machine.Layer{}, fmt.Errorf("docker: install from media \"latest\"; pick an image with options.image, not media %q", spec.Media)
-	}
-	for key := range spec.Options {
-		if key != "image" {
-			return machine.Layer{}, fmt.Errorf("docker: unknown install option %q (have: image)", key)
-		}
-	}
-	dst.Parent, dst.GuestOS = "", machine.Linux
-	if err := d.install(ctx, spec, dst); err != nil {
-		return machine.Layer{}, err
-	}
-	return d.Layer(ctx, dst.ID)
+// Install is not offered: any image the daemon can pull is a base instead.
+func (*Driver) Install(context.Context, machine.InstallSpec, machine.Image) (machine.Image, error) {
+	return machine.Image{}, fmt.Errorf("docker: run an image from a registry, such as debian:trixie: %w", machine.ErrUnsupported)
 }
 
-func (d *Driver) install(ctx context.Context, spec machine.InstallSpec, dst machine.Layer) error {
-	image := spec.Options["image"]
-	if image == "" {
-		image = defaultImage
-	}
-	log := logger(spec.Log)
+// ready makes the image an instance of a base runs: it pulls the base's
+// image, installs systemd in it if it has none, installs the agent as a
+// systemd service, shifts its files into the guest's uids, and commits it as
+// tag, `<project>--base-<name>--<random>`, labeled with nothing of an image's,
+// so no listing of images takes it for one. The container that readies it is
+// an instance of the project's while it runs (`base-<random>`), so one a
+// crash leaves is listed, and `rm` removes it.
+func (d *Driver) ready(ctx context.Context, b machine.Base, name, tag string) error {
+	image := b.Options["image"]
 	in, err := d.api.info(ctx)
 	if err != nil {
 		return err
 	}
-	if err := checkArch(spec.Agent, in.Architecture); err != nil {
+	if d.Agent == "" {
+		return fmt.Errorf("docker: a guest needs the disco-vm agent built for linux: set %s to one", AgentEnv)
+	}
+	if err := checkArch(d.Agent, in.Architecture); err != nil {
 		return err
 	}
 	if _, err := d.api.inspectImage(ctx, image); isNotFound(err) {
-		log("docker: pulling %s", image)
-		if err := d.api.pull(ctx, image, log); err != nil {
+		if err := d.api.pull(ctx, image); err != nil {
 			return err
 		}
 	} else if err != nil {
 		return err
 	}
-
-	log("docker: installing systemd and the agent in %s", image)
-	id, err := d.api.createContainer(ctx, containerName(d.project, machine.TemporaryPrefix+"install-"+fsutil.RandomHex(3)), containerConfig{
+	readying := "base-" + fsutil.RandomHex(3)
+	id, err := d.api.createContainer(ctx, containerName(d.project, readying), containerConfig{
 		Image:      image,
 		Entrypoint: []string{"/bin/sh", "-c", installScript},
 		Cmd:        []string{},
 		User:       "0",
-		Labels:     map[string]string{labelLayer: dst.ID},
+		Labels:     map[string]string{labelInstance: readying, labelProject: d.project, labelImage: image},
 	})
 	if err != nil {
-		return fmt.Errorf("docker: create install container: %w", err)
+		return fmt.Errorf("docker: create a container to ready %s: %w", image, err)
 	}
 	defer d.removeContainer(id)
-	agent, err := agentTar(spec.Agent)
+	agent, err := agentTar(d.Agent)
 	if err != nil {
 		return err
 	}
@@ -225,30 +226,33 @@ func (d *Driver) install(ctx context.Context, spec machine.InstallSpec, dst mach
 		return fmt.Errorf("docker: copy the agent in: %w", err)
 	}
 	if err := d.api.start(ctx, id); err != nil {
-		return fmt.Errorf("docker: start install container: %w", err)
+		return fmt.Errorf("docker: start the container that readies %s: %w", image, err)
 	}
 	code, err := d.api.wait(ctx, id)
 	if err != nil {
 		return err
 	}
-	if out, _ := d.api.logs(context.Background(), id); out != "" {
-		log("%s", strings.TrimRight(out, "\n"))
-	}
 	if code != 0 {
-		return fmt.Errorf("docker: install in %s exited %d", image, code)
+		out, _ := d.api.logs(context.Background(), id)
+		return fmt.Errorf("docker: readying %s for %s exited %d:\n%s", image, name, code, strings.TrimRight(out, "\n"))
 	}
-
-	log("docker: committing the base layer")
-	return d.commit(ctx, id, dst, []string{
+	changes := []string{
 		`ENTRYPOINT ["` + agentPath + `", "docker-init"]`,
 		`CMD []`,
 		`USER 0`,
 		`WORKDIR /`,
 		`STOPSIGNAL SIGTERM`,
-	})
+	}
+	for _, key := range []string{labelInstance, labelImage, labelProject} {
+		changes = append(changes, "LABEL "+key+`=""`)
+	}
+	if _, err := d.api.commit(ctx, id, imageRepo, tag, changes); err != nil {
+		return fmt.Errorf("docker: commit %s readied: %w", image, err)
+	}
+	return nil
 }
 
-// installScript runs as the install container's root, before the shift, so
+// installScript runs as root in the container that readies a base, before the shift, so
 // that a package manager works as it always does.
 var installScript = `set -e
 if [ ! -x /lib/systemd/systemd ] && [ ! -x /usr/lib/systemd/systemd ]; then
@@ -322,18 +326,19 @@ func agentTar(agent string) (io.Reader, error) {
 	return &buf, tw.Close()
 }
 
-// commit commits a stopped container as the layer dst, its image labeled
-// with what the layer is, and with no instance's labels, which the container
-// carried.
-func (d *Driver) commit(ctx context.Context, container string, dst machine.Layer, changes []string) error {
+// commit commits a stopped container as the image dst, its Docker image
+// labeled with what the image is, and with no instance's labels, which the
+// container carried.
+func (d *Driver) commit(ctx context.Context, container string, dst machine.Image) error {
 	labels := map[string]string{
-		labelLayer: dst.ID, labelProject: d.project, labelParent: dst.Parent, labelComment: dst.Comment,
+		labelID: dst.ID, labelProject: d.project, labelComment: dst.Comment,
 		labelInstance: "", labelImage: "", labelCPUs: "", labelMemory: "",
 	}
+	var changes []string
 	for _, key := range sortedKeys(labels) {
 		changes = append(changes, "LABEL "+key+"="+strconv.Quote(labels[key]))
 	}
-	if _, err := d.api.commit(ctx, container, layerRepo, layerTag(d.project, dst.ID), changes); err != nil {
+	if _, err := d.api.commit(ctx, container, imageRepo, imageTag(d.project, dst.ID), changes); err != nil {
 		return fmt.Errorf("docker: commit: %w", err)
 	}
 	return nil
@@ -343,28 +348,46 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if err := machine.ValidateName(spec.Name); err != nil {
 		return machine.Instance{}, err
 	}
-	if spec.Base != nil || spec.Layer == "" {
-		return machine.Instance{}, errors.New("docker: an instance needs a layer; the driver has no bases")
+	if spec.Base == nil && spec.ImageID == "" {
+		return machine.Instance{}, errors.New("docker: an instance needs an image or a base")
 	}
 	if len(spec.Forwards) > 0 {
 		return machine.Instance{}, fmt.Errorf("docker: forwards: %w", machine.ErrUnsupported)
 	}
-	image, err := d.api.inspectImage(ctx, layerRepo+":"+layerTag(d.project, spec.Layer))
-	if isNotFound(err) {
-		return machine.Instance{}, fmt.Errorf("docker: layer %s: %w", spec.Layer, machine.ErrNotFound)
-	} else if err != nil {
+	name := containerName(d.project, spec.Name)
+	from, base := imageRepo+":"+imageTag(d.project, spec.ImageID), ""
+	if spec.Base != nil {
+		// Refused before the base is readied, which takes a minute.
+		if _, err := d.api.inspectContainer(ctx, name); err == nil {
+			return machine.Instance{}, fmt.Errorf("docker: an instance named %q: %w", spec.Name, machine.ErrExists)
+		}
+		// Named for the instance, with a random end, so two creates racing
+		// for one name never share it.
+		base = baseTag(d.project, spec.Name) + fsutil.RandomHex(3)
+		if err := d.ready(ctx, *spec.Base, spec.Name, base); err != nil {
+			return machine.Instance{}, err
+		}
+		from = imageRepo + ":" + base
+	}
+	image, err := d.api.inspectImage(ctx, from)
+	switch {
+	case isNotFound(err) && spec.Base != nil:
+		return machine.Instance{}, fmt.Errorf("docker: %s, readied for %s, is gone: %w", from, spec.Name, machine.ErrNotFound)
+	case isNotFound(err):
+		return machine.Instance{}, fmt.Errorf("docker: image %s: %w", spec.ImageID, machine.ErrNotFound)
+	case err != nil:
+		d.removeImage(base)
 		return machine.Instance{}, err
 	}
 	none := []string{}
-	name := containerName(d.project, spec.Name)
 	id, err := d.api.createContainer(ctx, name, containerConfig{
 		Image:    image.ID,
 		Hostname: spec.Name,
 		Cmd:      []string{},
 		Labels: map[string]string{
-			labelInstance: spec.Name, labelProject: d.project, labelLayer: spec.Layer, labelImage: spec.Image,
+			labelInstance: spec.Name, labelProject: d.project, labelID: spec.ImageID, labelImage: spec.Image,
 			labelCPUs: strconv.Itoa(spec.CPUs), labelMemory: strconv.FormatUint(spec.Memory, 10),
-			labelParent: "", labelComment: "",
+			labelComment: "",
 		},
 		// The service is published on the host's loopback, on a port the
 		// daemon picks at every start.
@@ -381,17 +404,22 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		},
 	})
 	if isConflict(err) {
+		d.removeImage(base)
 		return machine.Instance{}, fmt.Errorf("docker: an instance named %q: %w", spec.Name, machine.ErrExists)
 	}
 	if err != nil {
+		d.removeImage(base)
 		return machine.Instance{}, fmt.Errorf("docker: create %s: %w", name, err)
 	}
 	c, err := d.api.inspectContainer(ctx, id)
 	if err != nil {
 		d.removeContainer(id)
+		d.removeImage(base)
 		return machine.Instance{}, fmt.Errorf("docker: container %s: %w", name, err)
 	}
-	return d.instance(c, map[string]string{image.ID: spec.Layer}), nil
+	inst := d.instance(c, map[string]string{image.ID: spec.ImageID})
+	inst.Base = spec.Base
+	return inst, nil
 }
 
 // Start is Boot: the daemon owns the container, whatever process started it.
@@ -476,32 +504,34 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 
 // Commit commits the stopped instance's container as a new image, and
 // removes the container. The image keeps the container's config, which is its
-// parent layer's.
-func (d *Driver) Commit(ctx context.Context, inst machine.Instance, dst machine.Layer) (machine.Layer, error) {
+// image's.
+func (d *Driver) Commit(ctx context.Context, inst machine.Instance, dst machine.Image) (machine.Image, error) {
 	ref := containerRef{ID: inst.ID, Name: containerName(d.project, inst.Name)}
 	c, err := d.api.inspectContainer(ctx, ref.ID)
 	if err != nil {
-		return machine.Layer{}, fmt.Errorf("docker: container %s: %w", ref.Name, err)
+		return machine.Image{}, fmt.Errorf("docker: container %s: %w", ref.Name, err)
 	}
 	if c.State.Running {
-		return machine.Layer{}, fmt.Errorf("docker: commit needs a stopped container; %s is %s", ref.Name, c.State.Status)
+		return machine.Image{}, fmt.Errorf("docker: commit needs a stopped container; %s is %s", ref.Name, c.State.Status)
 	}
-	// systemd wrote the guest's machine ID at its first boot; a layer that
-	// kept it would give it to every instance built on the layer. (D-Bus's
-	// copy is a link to it, from Install.)
+	// systemd wrote the guest's machine ID at its first boot; an image that
+	// kept it would give it to every instance of the image. (D-Bus's copy is
+	// a link to it, from installScript.)
 	if err := d.api.putArchive(ctx, ref.ID, "/", emptyMachineID()); err != nil {
-		return machine.Layer{}, fmt.Errorf("docker: clear %s's machine ID: %w", ref.Name, err)
+		return machine.Image{}, fmt.Errorf("docker: clear %s's machine ID: %w", ref.Name, err)
 	}
-	dst.Parent, dst.GuestOS = inst.Layer, machine.Linux
-	if err := d.commit(ctx, ref.ID, dst, nil); err != nil {
-		return machine.Layer{}, err
+	dst.GuestOS = machine.Linux
+	if err := d.commit(ctx, ref.ID, dst); err != nil {
+		return machine.Image{}, err
 	}
-	layer, err := d.Layer(ctx, dst.ID)
+	img, err := d.Image(ctx, dst.ID)
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
-	d.removeContainer(ref.ID)
-	return layer, nil
+	if err := d.Destroy(ctx, inst); err != nil {
+		return img, err
+	}
+	return img, nil
 }
 
 // emptyMachineID is /etc/machine-id, empty and the guest root's, as a tar
@@ -514,9 +544,43 @@ func emptyMachineID() io.Reader {
 	return &buf
 }
 
+// staleBase is how old an image readied from a base must be before Destroy
+// takes it for one a failed Destroy, or a create that lost a race, left: a
+// readying takes minutes, and one that is younger may be a create of the same
+// name still under way.
+const staleBase = 30 * time.Minute
+
+// Destroy removes the instance's container, then the image readied from a
+// base for it, the one its container ran, and every other one of its name no
+// container runs that is older than staleBase. One a later instance of the
+// name runs is in use, and the daemon keeps it. An image snapshotted from the
+// instance keeps what it needs of its own: the daemon only untags an image
+// another is built on.
 func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
+	own := ""
+	if c, err := d.api.inspectContainer(ctx, inst.ID); err == nil {
+		own = c.Image
+	}
 	if err := d.api.removeContainer(ctx, inst.ID); err != nil {
 		return fmt.Errorf("docker: remove %s: %w", containerName(d.project, inst.Name), err)
+	}
+	images, err := d.api.images(ctx, imageRepo)
+	if err != nil {
+		return fmt.Errorf("docker: list images: %w", err)
+	}
+	prefix := imageRepo + ":" + baseTag(d.project, inst.Name)
+	for _, img := range images {
+		if img.ID != own && time.Since(time.Unix(img.Created, 0)) < staleBase {
+			continue
+		}
+		for _, tag := range img.RepoTags {
+			if !strings.HasPrefix(tag, prefix) {
+				continue
+			}
+			if err := d.api.removeImage(ctx, tag); err != nil && !isConflict(err) {
+				return fmt.Errorf("docker: remove image %s: %w", tag, err)
+			}
+		}
 	}
 	return nil
 }
@@ -551,6 +615,17 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 
 // removeContainer is best-effort cleanup of a container the driver made for
 // itself.
+// removeImage is best-effort cleanup of an image tag the driver made for
+// itself in imageRepo; an empty tag is none.
+func (d *Driver) removeImage(tag string) {
+	if tag == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_ = d.api.removeImage(ctx, imageRepo+":"+tag)
+}
+
 func (d *Driver) removeContainer(id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -568,7 +643,7 @@ func dialAgent(ctx context.Context, a *api, container string) (net.Conn, error) 
 func checkArch(agent, arch string) error {
 	f, err := elf.Open(agent)
 	if err != nil {
-		return fmt.Errorf("docker: the agent %s is not a linux binary (build disco-vm with GOOS=linux and pass --agent): %w", agent, err)
+		return fmt.Errorf("docker: the agent %s is not a linux binary (build disco-vm with GOOS=linux and set DISCO_VM_AGENT to it): %w", agent, err)
 	}
 	defer f.Close()
 	want := map[elf.Machine]string{elf.EM_X86_64: "x86_64", elf.EM_AARCH64: "aarch64"}[f.Machine]
@@ -583,13 +658,10 @@ func containerName(project, name string) string {
 	return machine.ResourcePrefix(namePrefix, project) + name
 }
 
-// layerTag is a layer's image's tag in layerRepo: `<project>--<id>`.
-func layerTag(project, id string) string { return machine.ResourcePrefix("", project) + id }
+// imageTag is an image's Docker image's tag in imageRepo: `<project>--<id>`.
+func imageTag(project, id string) string { return machine.ResourcePrefix("", project) + id }
 
-func logger(w io.Writer) func(string, ...any) {
-	return func(format string, args ...any) {
-		if w != nil {
-			fmt.Fprintf(w, format+"\n", args...)
-		}
-	}
-}
+// baseTag starts the tag of every image readied from a base for an instance
+// of a name: `<project>--base-<name>--`, which a random end completes. No
+// name has "--" in it, so no other name's tags start the same way.
+func baseTag(project, name string) string { return imageTag(project, "base-"+name+"--") }

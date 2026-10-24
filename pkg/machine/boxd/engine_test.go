@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/discobox-ai/vm/pkg/build"
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
@@ -36,14 +35,7 @@ func TestEngineRunsInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := filepath.Join(t.TempDir(), "disco-vm.yaml")
-	if err := os.WriteFile(spec, []byte("from:\n  install: {os: linux, media: latest}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	builder := &build.Builder{Engine: e, Out: testLog{t}}
-	if _, err := builder.Build(ctx, build.Options{File: spec, Tags: []string{"t/base"}}); err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	snapshotImage(t, e, "t/base")
 	inst, err := e.Create(ctx, "t/base", engine.CreateOptions{Name: "remote"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -55,7 +47,7 @@ func TestEngineRunsInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if images, err := elsewhere.Images(ctx, false); err != nil || len(images) != 1 || images[0].Ref != "t/base:latest" {
+	if images, err := elsewhere.Images(ctx); err != nil || len(images) != 1 || images[0].Ref != "t/base:latest" {
 		t.Fatalf("another engine's images = %+v, %v", images, err)
 	}
 	if got, err := elsewhere.Get(ctx, "remote"); err != nil || got.ID != inst.ID {
@@ -142,36 +134,36 @@ func TestEngineKeepsProjectsApart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	layer, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, machine.Layer{ID: "0123456789abcdef"})
+	layer, err := snapshotOfBase(ctx, d, "0123456789abcdef")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "web", Layer: layer.ID, GuestOS: machine.Linux}); err != nil {
+	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "web", ImageID: layer.ID, GuestOS: machine.Linux}); err != nil {
 		t.Fatal(err)
 	}
 	other := &Driver{api: d.api, project: "other"}
-	if layers, err := other.Layers(ctx); err != nil || len(layers) != 0 {
-		t.Fatalf("another project's layers = %+v, %v", layers, err)
+	if images, err := other.Images(ctx); err != nil || len(images) != 0 {
+		t.Fatalf("another project's images = %+v, %v", images, err)
 	}
 	if list, err := other.Instances(ctx); err != nil || len(list) != 0 {
 		t.Fatalf("another project's instances = %+v, %v", list, err)
 	}
-	if _, err := other.Create(ctx, machine.InstanceSpec{Name: "web", Layer: layer.ID, GuestOS: machine.Linux}); err == nil {
-		t.Fatal("another project made an instance of the default's layer")
+	if _, err := other.Create(ctx, machine.InstanceSpec{Name: "web", ImageID: layer.ID, GuestOS: machine.Linux}); err == nil {
+		t.Fatal("another project made an instance of the default's image")
 	}
 	list, err := d.Instances(ctx)
 	if err != nil || len(list) != 1 || list[0].Name != "web" {
 		t.Fatalf("the default project's instances = %+v, %v", list, err)
 	}
-	layers, err := d.Layers(ctx)
-	if err != nil || len(layers) != 1 || layers[0].ID != layer.ID {
-		t.Fatalf("the default project's layers = %+v, %v", layers, err)
+	images, err := d.Images(ctx)
+	if err != nil || len(images) != 1 || images[0].ID != layer.ID {
+		t.Fatalf("the default project's images = %+v, %v", images, err)
 	}
 }
 
 // TestEngineRunsABase lists boxd's default image and the snapshots it did not
 // make as bases, and none of disco-vm's own snapshots of any project, then
-// runs an instance of each with no build and no layer, made from the snapshot
+// runs an instance of each with no image, made from the snapshot
 // or the image at the size asked for; and an instance of a base snapshots to
 // an image like any other.
 func TestEngineRunsABase(t *testing.T) {
@@ -253,12 +245,8 @@ func TestEngineRunsABase(t *testing.T) {
 	if err := e.Stop(ctx, inst, 30*time.Second); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	layer, err := e.Snapshot(ctx, inst, "t/by-hand")
-	if err != nil {
+	if _, err := e.Snapshot(ctx, inst, "t/by-hand"); err != nil {
 		t.Fatalf("snapshot an instance of a base: %v", err)
-	}
-	if layer.Parent != "" {
-		t.Fatalf("a snapshot of an instance of a base has parent %s", layer.Parent)
 	}
 	from, err := e.Create(ctx, "t/by-hand", engine.CreateOptions{Name: "again"})
 	if err != nil {
@@ -281,5 +269,19 @@ func TestEngineRunsABase(t *testing.T) {
 	fake.mu.Unlock()
 	if !kept {
 		t.Fatal("the hand-made snapshot went")
+	}
+}
+
+// snapshotImage makes an image tagged ref, as every boxd image is made: an
+// instance of boxd's default image, snapshotted.
+func snapshotImage(t *testing.T, e *engine.Engine, ref string) {
+	t.Helper()
+	ctx := context.Background()
+	inst, err := e.Create(ctx, "ubuntu-24.04", engine.CreateOptions{Name: "for-" + strings.ReplaceAll(ref, "/", "-")})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := e.Snapshot(ctx, inst, ref); err != nil {
+		t.Fatalf("snapshot: %v", err)
 	}
 }

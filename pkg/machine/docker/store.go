@@ -16,58 +16,59 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Layer is the layer's image, as its tag and its labels say.
-func (d *Driver) Layer(ctx context.Context, id string) (machine.Layer, error) {
-	img, err := d.api.inspectImage(ctx, layerRepo+":"+layerTag(d.project, id))
-	if isNotFound(err) || (err == nil && !validLayerID(id)) {
-		return machine.Layer{}, fmt.Errorf("docker: layer %s: %w", id, machine.ErrNotFound)
+// Image is the image's Docker image, as its tag and its labels say.
+func (d *Driver) Image(ctx context.Context, id string) (machine.Image, error) {
+	img, err := d.api.inspectImage(ctx, imageRepo+":"+imageTag(d.project, id))
+	if isNotFound(err) || (err == nil && !validImageID(id)) {
+		return machine.Image{}, fmt.Errorf("docker: image %s: %w", id, machine.ErrNotFound)
 	}
 	if err != nil {
-		return machine.Layer{}, fmt.Errorf("docker: layer %s: %w", id, err)
+		return machine.Image{}, fmt.Errorf("docker: image %s: %w", id, err)
 	}
 	created, _ := time.Parse(time.RFC3339Nano, img.Created)
-	return layerOf(id, img.Config.Labels, created), nil
+	return imageOf(id, img.Config.Labels, created), nil
 }
 
-// layerOf is a layer as its image's labels describe it. Every layer is a
-// linux guest's.
-func layerOf(id string, labels map[string]string, created time.Time) machine.Layer {
-	layer := machine.Layer{ID: id, GuestOS: machine.Linux, Created: created}
-	// An image whose labels name another layer inherited them from its
-	// parent: it was made before images were labeled.
-	if labels[labelLayer] == id {
-		layer.Parent, layer.Comment = labels[labelParent], labels[labelComment]
+// imageOf is an image as its Docker image's labels describe it. Every image
+// is a linux guest's.
+func imageOf(id string, labels map[string]string, created time.Time) machine.Image {
+	img := machine.Image{ID: id, GuestOS: machine.Linux, Created: created}
+	// An image whose labels name another inherited them from the image it
+	// was committed over: it was made before images were labeled.
+	if labels[labelID] == id {
+		img.Comment = labels[labelComment]
 	}
-	return layer
+	return img
 }
 
-// validLayerID refuses a tag of layerRepo that is not a layer's whole ID, as
-// a tag from before ADR 26-10-23-417, `<project>--<id prefix>-<random>`, is
-// not.
-func validLayerID(id string) bool { return id != "" && !strings.Contains(id, "-") }
+// validImageID refuses a tag of imageRepo that is not an image's whole ID:
+// a tag from before ADR 26-10-23-417, `<project>--<id prefix>-<random>`, and
+// an instance's readied base, `<project>--base-<name>`, are not.
+func validImageID(id string) bool { return id != "" && !strings.Contains(id, "-") }
 
-// Layers lists the images tagged in layerRepo for the project.
-func (d *Driver) Layers(ctx context.Context) ([]machine.Layer, error) {
-	images, err := d.api.images(ctx, layerRepo)
+// Images lists the Docker images tagged in imageRepo for the project.
+func (d *Driver) Images(ctx context.Context) ([]machine.Image, error) {
+	images, err := d.api.images(ctx, imageRepo)
 	if err != nil {
 		return nil, fmt.Errorf("docker: list images: %w", err)
 	}
-	var out []machine.Layer
+	var out []machine.Image
 	for _, img := range images {
 		for _, tag := range img.RepoTags {
-			id, ok := strings.CutPrefix(tag, layerRepo+":"+layerTag(d.project, ""))
-			if ok && validLayerID(id) {
-				out = append(out, layerOf(id, img.Labels, time.Unix(img.Created, 0)))
+			id, ok := strings.CutPrefix(tag, imageRepo+":"+imageTag(d.project, ""))
+			if ok && validImageID(id) {
+				out = append(out, imageOf(id, img.Labels, time.Unix(img.Created, 0)))
 			}
 		}
 	}
 	return out, nil
 }
 
-// DeleteLayer removes the layer's tag, and with it the image, unless another
-// tag holds it.
-func (d *Driver) DeleteLayer(ctx context.Context, id string) error {
-	ref := layerRepo + ":" + layerTag(d.project, id)
+// DeleteImage removes the image's tag, and with it the Docker image unless
+// another tag holds it. The daemon keeps what another image is built on, so
+// no image needs another's.
+func (d *Driver) DeleteImage(ctx context.Context, id string) error {
+	ref := imageRepo + ":" + imageTag(d.project, id)
 	if err := d.api.removeImage(ctx, ref); err != nil {
 		return fmt.Errorf("docker: remove image %s: %w", ref, err)
 	}
@@ -77,8 +78,8 @@ func (d *Driver) DeleteLayer(ctx context.Context, id string) error {
 // tagPrefix starts every tag of the project: disco-vm/<project>/.
 func (d *Driver) tagPrefix() string { return tagRepo + d.project + "/" }
 
-// Tags lists the images tagged under disco-vm/<project>/, each the image of
-// the layer its labels or its layerRepo tag name.
+// Tags lists the images tagged under disco-vm/<project>/, each the Docker
+// image of the image its labels or its imageRepo tag name.
 func (d *Driver) Tags(ctx context.Context) ([]machine.Tag, error) {
 	images, err := d.api.images(ctx, "")
 	if err != nil {
@@ -86,15 +87,15 @@ func (d *Driver) Tags(ctx context.Context) ([]machine.Tag, error) {
 	}
 	var out []machine.Tag
 	for _, img := range images {
-		layer := img.Labels[labelLayer]
+		image := img.Labels[labelID]
 		for _, tag := range img.RepoTags {
-			if id, ok := strings.CutPrefix(tag, layerRepo+":"+layerTag(d.project, "")); ok && validLayerID(id) {
-				layer = id
+			if id, ok := strings.CutPrefix(tag, imageRepo+":"+imageTag(d.project, "")); ok && validImageID(id) {
+				image = id
 			}
 		}
 		for _, tag := range img.RepoTags {
-			if ref, ok := strings.CutPrefix(tag, d.tagPrefix()); ok && layer != "" {
-				out = append(out, machine.Tag{Ref: ref, Layer: layer})
+			if ref, ok := strings.CutPrefix(tag, d.tagPrefix()); ok && image != "" {
+				out = append(out, machine.Tag{Ref: ref, Image: image})
 			}
 		}
 	}
@@ -102,12 +103,12 @@ func (d *Driver) Tags(ctx context.Context) ([]machine.Tag, error) {
 	return out, nil
 }
 
-// Tag tags the layer's image disco-vm/<project>/<ref>.
-func (d *Driver) Tag(ctx context.Context, ref, layer string) error {
+// Tag tags the image's Docker image disco-vm/<project>/<ref>.
+func (d *Driver) Tag(ctx context.Context, ref, image string) error {
 	name, tag, _ := strings.Cut(ref, ":")
-	err := d.api.tagImage(ctx, layerRepo+":"+layerTag(d.project, layer), d.tagPrefix()+name, tag)
+	err := d.api.tagImage(ctx, imageRepo+":"+imageTag(d.project, image), d.tagPrefix()+name, tag)
 	if isNotFound(err) {
-		return fmt.Errorf("docker: layer %s: %w", layer, machine.ErrNotFound)
+		return fmt.Errorf("docker: image %s: %w", image, machine.ErrNotFound)
 	}
 	if err != nil {
 		return fmt.Errorf("docker: tag %s: %w", ref, err)
@@ -115,7 +116,7 @@ func (d *Driver) Tag(ctx context.Context, ref, layer string) error {
 	return nil
 }
 
-// Untag removes the tag, which leaves the image to its layer's tag.
+// Untag removes the tag, which leaves the Docker image to its image's tag.
 func (d *Driver) Untag(ctx context.Context, ref string) error {
 	if err := d.api.removeImage(ctx, d.tagPrefix()+ref); err != nil {
 		return fmt.Errorf("docker: untag %s: %w", ref, err)
@@ -123,8 +124,47 @@ func (d *Driver) Untag(ctx context.Context, ref string) error {
 	return nil
 }
 
-// Bases is empty: a base layer is installed from an image a spec names.
+// Bases is empty: the bases are every image of every registry, which no one
+// lists. Base finds one by name.
 func (*Driver) Bases(context.Context) ([]machine.Base, error) { return nil, nil }
+
+// Base is ref as a base when the daemon has the image, or its registry
+// answers for it. Nothing is pulled until Create. An image or a tag of the
+// driver's, of any project, is never a base, nor is a Docker image ID.
+func (d *Driver) Base(ctx context.Context, ref string) (machine.Base, bool, error) {
+	// A project's images and tags are its own, so neither they nor a Docker
+	// image ID, which could name another project's, are a base.
+	if ref == "" || strings.HasPrefix(ref, imageRepo+":") || strings.HasPrefix(ref, tagRepo) ||
+		strings.HasPrefix(ref, "sha256:") || strings.ToLower(ref) != ref {
+		return machine.Base{}, false, nil
+	}
+	b := machine.Base{Name: ref, ID: ref, GuestOS: machine.Linux, Options: map[string]string{"image": ref}}
+	if img, err := d.api.inspectImage(ctx, ref); err == nil {
+		// The daemon takes an image ID's prefix for a name, and more than one
+		// spelling of a name (docker.io/...), so what it found decides: a
+		// Docker image tagged as one of the driver's, of any project, is never
+		// a base. Its labels do not decide, since an image built on a
+		// snapshot elsewhere inherits them, and would be a base until pulled.
+		if strings.HasPrefix(img.ID, "sha256:"+ref) || slices.ContainsFunc(img.RepoTags, func(tag string) bool {
+			return strings.HasPrefix(tag, imageRepo+":") || strings.HasPrefix(tag, tagRepo)
+		}) {
+			return machine.Base{}, false, nil
+		}
+		return b, true, nil
+	} else if !isNotFound(err) {
+		return machine.Base{}, false, err
+	}
+	switch err := d.api.distribution(ctx, ref); {
+	case err == nil:
+		return b, true, nil
+	case isUnknownToRegistry(err):
+		return machine.Base{}, false, nil
+	default:
+		// The registry could not be asked (DNS, a proxy, a timeout): say
+		// so, rather than that the image does not exist.
+		return machine.Base{}, false, fmt.Errorf("docker: ask the registry for %s: %w", ref, err)
+	}
+}
 
 // Instance is the project's container of the name.
 func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, error) {
@@ -138,15 +178,15 @@ func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, e
 	if err != nil {
 		return machine.Instance{}, err
 	}
-	layers, err := d.layerImages(ctx)
+	images, err := d.imageIDs(ctx)
 	if err != nil {
 		return machine.Instance{}, err
 	}
-	return d.instance(c, layers), nil
+	return d.instance(c, images), nil
 }
 
 // managed reports whether a container is an instance of the project's, not an
-// install's, something else of the daemon's, or one from before ADR
+// readying base's, something else of the daemon's, or one from before ADR
 // 26-10-23-417, whose labels name no project.
 func (d *Driver) managed(labels map[string]string) bool {
 	return labels[labelInstance] != "" && labels[labelProject] == d.project
@@ -158,7 +198,7 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 	if err != nil {
 		return nil, fmt.Errorf("docker: list containers: %w", err)
 	}
-	layers, err := d.layerImages(ctx)
+	images, err := d.imageIDs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -174,22 +214,22 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 		info := containerInfo{ID: c.ID, Name: "/" + name, Image: c.ImageID}
 		info.Config.Labels = c.Labels
 		info.Created = time.Unix(c.Created, 0).UTC().Format(time.RFC3339Nano)
-		out = append(out, d.instance(info, layers))
+		out = append(out, d.instance(info, images))
 	}
 	slices.SortFunc(out, func(a, b machine.Instance) int { return a.Created.Compare(b.Created) })
 	return out, nil
 }
 
-// layerImages maps each layer image's ID to its layer.
-func (d *Driver) layerImages(ctx context.Context) (map[string]string, error) {
-	images, err := d.api.images(ctx, layerRepo)
+// imageIDs maps each image's Docker image ID to the image's ID.
+func (d *Driver) imageIDs(ctx context.Context) (map[string]string, error) {
+	images, err := d.api.images(ctx, imageRepo)
 	if err != nil {
 		return nil, fmt.Errorf("docker: list images: %w", err)
 	}
 	out := map[string]string{}
 	for _, img := range images {
 		for _, tag := range img.RepoTags {
-			if id, ok := strings.CutPrefix(tag, layerRepo+":"+layerTag(d.project, "")); ok && validLayerID(id) {
+			if id, ok := strings.CutPrefix(tag, imageRepo+":"+imageTag(d.project, "")); ok && validImageID(id) {
 				out[img.ID] = id
 			}
 		}
@@ -198,22 +238,22 @@ func (d *Driver) layerImages(ctx context.Context) (map[string]string, error) {
 }
 
 // instance is a container as an instance: its name is the container's, less
-// the project's prefix, and its layer the one whose image it runs.
-func (d *Driver) instance(c containerInfo, layers map[string]string) machine.Instance {
+// the project's prefix, and its image the one whose Docker image it runs.
+func (d *Driver) instance(c containerInfo, images map[string]string) machine.Instance {
 	labels := c.Config.Labels
 	inst := machine.Instance{
 		ID:      c.ID,
 		Name:    strings.TrimPrefix(strings.TrimPrefix(c.Name, "/"), machine.ResourcePrefix(namePrefix, d.project)),
 		Image:   labels[labelImage],
-		Layer:   layers[c.Image],
+		ImageID: images[c.Image],
 		GuestOS: machine.Linux,
 	}
 	inst.Created, _ = time.Parse(time.RFC3339Nano, c.Created)
-	if inst.Layer == "" {
-		inst.Layer = labels[labelLayer]
+	if inst.ImageID == "" {
+		inst.ImageID = labels[labelID]
 	}
-	if inst.Image == "" && inst.Layer != "" {
-		inst.Image = inst.Layer[:min(12, len(inst.Layer))]
+	if inst.Image == "" && inst.ImageID != "" {
+		inst.Image = inst.ImageID[:min(12, len(inst.ImageID))]
 	}
 	inst.CPUs, _ = strconv.Atoi(labels[labelCPUs])
 	inst.Memory, _ = strconv.ParseUint(labels[labelMemory], 10, 64)

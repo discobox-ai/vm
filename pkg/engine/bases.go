@@ -8,37 +8,23 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// ErrBase reports a base where a command needs an image: a base has no layer
-// to tag or remove.
+// ErrBase reports a base where a command needs an image: a base is the
+// driver's, with no image to tag or remove.
 var ErrBase = errors.New("not an image")
 
-// Base finds the driver's base that ref names, by name or by ID
-// (machine.Driver.Bases). Images come first everywhere a reference is taken,
-// so a tag of the same name hides a base; its ID still reaches it.
-func (e *Engine) Base(ctx context.Context, ref string) (machine.Base, bool, error) {
-	bases, err := e.Driver.Bases(ctx)
-	if err != nil {
-		return machine.Base{}, false, err
-	}
-	for _, b := range bases {
-		if b.Name == ref || b.ID == ref {
-			return b, true, nil
-		}
-	}
-	return machine.Base{}, false, nil
-}
-
-// ResolveBase is the base ref names when there is no image of that name
-// (err, from Resolve, is ErrImageNotFound). Any other error, or a
-// ref that is no base either, is returned as it came. Everything that takes a
-// ref resolves a base this way, after the images.
+// ResolveBase is the driver's base ref names, by name or ID
+// (machine.Driver.Base), when there is no image of that name (err, from
+// Resolve, is ErrImageNotFound). Any other error, or a ref that is no base
+// either, is returned as it came. Everything that takes a ref resolves a base
+// this way, after the images, so a tag of the same name hides a base; its ID
+// still reaches it.
 func (e *Engine) ResolveBase(ctx context.Context, ref string, err error) (machine.Base, error) {
 	if !errors.Is(err, ErrImageNotFound) {
 		return machine.Base{}, err
 	}
-	b, found, listErr := e.Base(ctx, ref)
+	b, found, listErr := e.Driver.Base(ctx, ref)
 	if listErr != nil {
-		return machine.Base{}, fmt.Errorf("%w; and listing %s's bases: %w", err, e.Driver.Name(), listErr)
+		return machine.Base{}, fmt.Errorf("%w; and asking %s for a base of that name: %w", err, e.Driver.Name(), listErr)
 	}
 	if !found {
 		return machine.Base{}, err
@@ -53,8 +39,8 @@ func (e *Engine) NotABase(ctx context.Context, ref string, err error) error {
 	if !errors.Is(err, ErrImageNotFound) {
 		return err
 	}
-	if _, found, _ := e.Base(ctx, ref); found {
-		return fmt.Errorf("%s is one of %s's bases, %w; run it, stop the instance, and `disco-vm snapshot` that to make one", ref, e.Driver.Name(), ErrBase)
+	if _, found, _ := e.Driver.Base(ctx, ref); found {
+		return fmt.Errorf("%s is one of %s's bases, %w; run it, stop the instance, and `disco-vm snapshot` it to make one", ref, e.Driver.Name(), ErrBase)
 	}
 	return err
 }

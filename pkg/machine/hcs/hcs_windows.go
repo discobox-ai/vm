@@ -41,10 +41,15 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		Display: true,
 		Forward: true,
 		Agent:   true,
+		Install: true,
 	}
 }
 
-// The files the driver keeps. A layer's Dir holds its disk; an instance's Dir
+// Chains is true: a snapshot is the instance's differencing disk, over the
+// disk of the image the instance ran from.
+func (*Hypervisor) Chains() bool { return true }
+
+// The files the driver keeps. An image's Dir holds its disk; an instance's Dir
 // holds its differencing disk, its guest and runtime state, and state.json.
 const (
 	diskName      = "disk.vhdx"
@@ -58,7 +63,7 @@ const (
 	forkDiskName = "template.vhdx"
 )
 
-func layerDisk(layer local.Layer) string { return filepath.Join(layer.Dir, diskName) }
+func imageDisk(img local.Layer) string { return filepath.Join(img.Dir, diskName) }
 
 // instanceState is what the driver remembers about an instance between boots.
 type instanceState struct {
@@ -121,13 +126,13 @@ func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 	if err := os.MkdirAll(inst.Dir, 0o755); err != nil {
 		return err
 	}
-	return createDiff(filepath.Join(inst.Dir, diskName), layerDisk(inst.Parent()))
+	return createDiff(filepath.Join(inst.Dir, diskName), imageDisk(inst.Parent()))
 }
 
 // grantPaths is every file and directory a VM booting inst must be able to
 // open: its own, and every disk in its chain. A missing ACE anywhere in a
 // differencing chain fails Construct with an access denied that names no
-// path, so every layer is walked, not just the parent.
+// path, so every image of the chain is walked, not just the instance's.
 func grantPaths(dir string, chain []local.Layer) []string {
 	paths := []string{dir}
 	entries, _ := os.ReadDir(dir)
@@ -269,11 +274,11 @@ func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst loca
 	if err := os.MkdirAll(dst.Dir, 0o755); err != nil {
 		return err
 	}
-	disk := layerDisk(dst)
+	disk := imageDisk(dst)
 	if err := os.Rename(filepath.Join(inst.Dir, diskName), disk); err != nil {
-		return fmt.Errorf("hcs: move the instance disk into the layer: %w", err)
+		return fmt.Errorf("hcs: move the instance disk into the image: %w", err)
 	}
-	return setParent(disk, layerDisk(inst.Parent()))
+	return setParent(disk, imageDisk(inst.Parent()))
 }
 
 // Destroy ends the instance's VM if one is running and removes its files.
@@ -302,7 +307,7 @@ func removeAll(dir string) error {
 	return err
 }
 
-// Bases is empty: every base layer is installed from media.
+// Bases is empty: every first image is installed from media.
 func (*Hypervisor) Bases(context.Context) ([]machine.Base, error) { return nil, nil }
 
 // Service is the hvsocket service ID of guest.ServicePort, which every VM's

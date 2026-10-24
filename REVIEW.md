@@ -25,20 +25,26 @@
   window; a failure is returned, so the caller falls back to `Kill`.
   (ADR 26-10-15-833.)
 - **Nothing above the seam keeps state, and a driver keeps it only in its
-  provider.** A field an instance or a layer needs goes on the provider's
+  provider.** A field an instance or an image needs goes on the provider's
   resource (a Docker label, a boxd name, a local driver's record beside its
   disk), never in a file or a table of the engine's; a remote driver writes
-  nothing on the host. A fact boxd cannot keep (a layer's parent, the layer a
-  machine was restored from) is reported missing, not remembered elsewhere.
+  nothing on the host. A fact boxd cannot keep (an image's comment, the image
+  a machine was restored from) is reported missing, not remembered elsewhere.
   (ADR 26-10-23-417.)
 - **A listing that fails is no answer.** `rmi` reads a failed listing of
-  tags, layers, or instances as "in use", never as "unused", and a reaper
+  tags or instances as "in use", never as "unused", and a reaper
   above the engine does the same. (ADR 26-10-23-417.)
-- **A local layer records its parent's generation.** A disk that differences
-  over its parent's (hcs) is not used over a parent made again, so every path
-  that publishes a layer (a commit, an install) keeps `ParentGeneration`, and a lookup that trusts a layer checks its chain
-  (`local.Driver.Layer`); a record with a parent and none is not trusted.
-  (ADR 26-10-23-417.)
+- **No image names another above the seam.** An image has no parent, an
+  instance runs from one image, and `rmi` deletes one image. A hypervisor
+  whose disks chain (hcs, `local.Hypervisor.Chains`) has `local` record the
+  parent beside its disk and refuse `DeleteImage` with `machine.ErrInUse`
+  while another image's record, in any project, names it; nothing above the
+  seam may record or walk a chain. (ADR 26-10-23-410.)
+- **`local` reads every image record before it deletes a disk.** A record
+  it cannot read (a parse error, a permission) makes the listing an error,
+  never a record left out: `DeleteImage` learns from it which disks another
+  image differences over, and a record skipped is a parent deleted from
+  under its child. (ADR 26-10-23-410.)
 - **A change to a shared method in `pkg/guest` or `pkg/machine` needs a
   search of `pkg/machine/vz` by hand.** Its cgo files, its tests among them,
   compile only on a Mac, so neither Linux nor `GOOS=windows` vet sees a

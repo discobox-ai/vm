@@ -30,16 +30,16 @@ func TestService(t *testing.T) {
 	}
 	d := New("")
 	ctx := context.Background()
-	layer := os.Getenv(BaseEnv)
-	if layer == "" {
-		installed, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Log: testLog{t}}, machine.Layer{ID: randomID()})
+	image := os.Getenv(BaseEnv)
+	if image == "" {
+		installed, err := snapshotOfBase(ctx, d, randomID())
 		if err != nil {
 			t.Fatal(err)
 		}
-		layer = installed.ID
-		t.Cleanup(func() { _ = d.DeleteLayer(context.Background(), layer) })
+		image = installed.ID
+		t.Cleanup(func() { _ = d.DeleteImage(context.Background(), image) })
 	}
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "service-" + randomID()[:8], Layer: layer, GuestOS: machine.Linux})
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "service-" + randomID()[:8], ImageID: image, GuestOS: machine.Linux})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func httpGet(ctx context.Context, url string) (string, error) {
 	return string(body), err
 }
 
-// randomID is a layer ID no build makes.
+// randomID is an image ID nothing else has.
 func randomID() string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)

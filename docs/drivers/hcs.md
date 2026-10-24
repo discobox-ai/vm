@@ -3,17 +3,25 @@
 **Scope:** `pkg/machine/hcs` and the Windows-only parts of `pkg/guest`. Nothing
 above the `machine.Driver` seam should need to change. If it does, that is a
 design finding: raise it rather than work around it. `hcs.Hypervisor` is a
-`local.Hypervisor`: `pkg/machine/local` keeps its layers, tags, and
+`local.Hypervisor`: `pkg/machine/local` keeps its images, tags, and
 instances in its directory (`--root`, `$DISCO_VM_ROOT`, or
 `%LOCALAPPDATA%\disco-vm`) and runs each started instance under a shim, so
 the hypervisor installs, clones (Prepare), boots, commits, and destroys disks
-in the directories it is given (ADR 26-10-23-417).
+in the directories it is given (ADR 26-10-23-417). Its disks chain
+(`Chains`): a snapshot is a differencing VHDX over the disk of the image its
+instance ran from, so `local` records the snapshot's parent, hands Prepare,
+Boot, and Destroy the whole chain, and refuses to delete a disk another
+image's still needs (ADR 26-10-23-410). Above the seam every image stands
+alone.
 
 **Done means:**
 
 1. `machinetest.Run` passes against the hcs driver on a real Windows host.
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=hcs` and a real image.
-3. `docs/examples/windows.yaml` builds.
+3. `disco-vm install` makes a Windows image from a retail ISO, an instance of
+   it is shaped through `exec` and snapshotted, and a snapshot of an
+   instance of that snapshot outlives `rmi` of the first, which `local`
+   keeps, untagged, while the second's disk differences over it.
 
 ## Status
 
@@ -21,16 +29,18 @@ Implemented. On a Windows 11 Pro host (elevated, Virtual Machine Platform, no
 Hyper-V role needed) with a Windows 11 Pro 25H2 guest:
 
 - (1) passed before ADR 26-10-23-417: the suite ran in about 45 s. Since, it
-  is `DISCO_VM_HCS_BASE=<installed layer's ID> DISCO_VM_TEST_BINARY=<a
+  is `DISCO_VM_HCS_BASE=<installed image's ID> DISCO_VM_TEST_BINARY=<a
   disco-vm.exe> go test ./pkg/machine/hcs`, and has not run.
-- (2) passes: `DISCO_VM_DRIVER=hcs DISCO_VM_E2E_ROOT=<root>
+- (2) passed before ADR 26-10-23-417: `DISCO_VM_DRIVER=hcs DISCO_VM_E2E_ROOT=<root>
   DISCO_VM_E2E_ISO=<iso> go test ./internal/e2e` from an elevated shell. The
   first run installs and tags `e2e/base` (about 15 min in all); later runs
   reuse it.
-- (3) passes: `docs/examples/windows.yaml` builds from the retail ISO (the 128 GiB
-  fixed disk alone takes over ten minutes to allocate), its OpenSSH step
-  downloads from Windows Update through the guest's NIC, and a second build
-  is fully cached.
+- (3) a build of the since-removed `docs/examples/windows.yaml` installed
+  from the retail ISO (the 128 GiB fixed disk alone takes over ten minutes
+  to allocate), and its OpenSSH step downloaded from Windows Update through
+  the guest's NIC. `disco-vm install` and the snapshot chain have not run
+  here; `local`'s refusal of a disk another image needs is proven with a
+  chaining stand-in on the fake (`TestDeleteImageKeepsADiskAnotherNeeds`).
 
 What building it found, beyond the recipes below:
 
@@ -52,9 +62,9 @@ What building it found, beyond the recipes below:
   then a minute to settle. The desktop is not the end of OOBE: at the first
   networked logon it installs a Zero Day Patch and reboots
   (`CloudExperienceHostBroker`, event 1074). A base cut before that made every
-  instance reboot itself a minute or ten after starting, which killed the
-  `docs/examples/windows.yaml` build mid-step. Windows Update policy does not stop
-  it; waiting for it does.
+  instance reboot itself a minute or ten after starting, which killed a
+  build's step midway. Windows Update policy does not stop it; waiting for it
+  does.
 - **Run as user is LogonUser**, with the blank password Install's unattend
   gives the account (`LimitBlankPasswordUse` is turned off in the offline
   hive), the linked elevated token, the profile loaded, and the account
@@ -69,8 +79,9 @@ What building it found, beyond the recipes below:
   stops, and closing it leaves the VM running. `InstallSpec.GUI` shows the
   install's first boot, Windows Setup included. Checked through the CLI:
   `run --gui` and `start --gui` (window in the shim; a plain `start` opens
-  none) and `build --gui` with a reboot step (one window per boot, never two
-  at once, none left after). `TestConsole` checks the console answers RDP.
+  none) and the since-removed `build --gui` with a reboot step (one window
+  per boot, never two at once, none left after), which `install --gui`'s
+  boots follow. `TestConsole` checks the console answers RDP.
   Not checked by a machine: the pixels after clicking through
   mstsc's warning about the unsigned `.rdp` file, which sandboxi did by hand.
 - **A TTY session ignores end of input.** The client closes stdin when it has
@@ -78,9 +89,9 @@ What building it found, beyond the recipes below:
   process started (0xC0000142 again). This was a neutral server bug; on Unix it
   hung up the pty.
 
-Add `pkg/machine/hcs/hcs_test.go`, gated on an env var naming a base layer (so
-CI skips it), that calls `machinetest.Run` with `Config.Base`. That way an OS
-install isn't redone on every run.
+`pkg/machine/hcs/hcs_windows_test.go` is gated on an env var naming an
+installed image (so CI skips it), and calls `machinetest.Run` with
+`Config.Image`. That way an OS install isn't redone on every run.
 
 **Prior art:** every recipe below is proven in Rust in the sandboxi repository
 (`crates/sandboxw-core`, `crates/hcs-sys`, `crates/guestexec`, `crates/guestfb`).
@@ -122,11 +133,11 @@ the one sandboxi's `build-image.ps1` proved:
    hive, the same way guestexec was baked in.
 
 Then boot once through Windows Setup (about 4.6 min) and commit only after an
-orderly shutdown through the agent, so the base layer is past Setup. Do the
+orderly shutdown through the agent, so the image is past Setup. Do the
 PowerShell by embedding scripts (`//go:embed`), as sandboxi does.
 
 **Prepare(inst):** create a differencing VHDX in `inst.Dir` whose parent is
-`inst.Parent().Dir`'s disk.
+`inst.Parent().Dir`'s disk: the instance's image, last in `inst.Chain`.
 
 - Parents record absolute paths. Never `os.Rename` a differencing VHDX across
   directories: the moved file names itself as its parent and the chain breaks
@@ -164,8 +175,9 @@ merge/copy it.
 
 **Destroy:** remove files. For a running or orphaned compute system,
 terminate it by ID first. A crashed shim can orphan a registered system, so
-do an orphan sweep in Check or at shim start. A layer is deleted by the local
-driver, which removes its directory.
+do an orphan sweep in Check or at shim start. An image is deleted by the
+local driver, which removes its directory once no other image's disk
+differences over it.
 
 ## No fast clones
 

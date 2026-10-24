@@ -3,50 +3,56 @@ package docker
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// ImageEnv names the image to install a base layer from, and BaseEnv the ID
-// of an installed layer in the default project, which skips Install. Either
-// runs the conformance suite against the Docker daemon $DOCKER_HOST names.
-const (
-	ImageEnv = "DISCO_VM_DOCKER_IMAGE"
-	BaseEnv  = "DISCO_VM_DOCKER_BASE"
-)
+// ImageEnv names a registry image, such as debian:trixie, to run the
+// conformance suite from, as a base, against the Docker daemon $DOCKER_HOST
+// names.
+const ImageEnv = "DISCO_VM_DOCKER_IMAGE"
 
 // TestConformance runs the conformance suite against a real Docker daemon. It
 // needs a rootful daemon on a cgroup v2 host, so it runs only where ImageEnv
-// or BaseEnv is set.
+// is set.
 func TestConformance(t *testing.T) {
-	image, base := os.Getenv(ImageEnv), os.Getenv(BaseEnv)
-	if image == "" && base == "" {
-		t.Skipf("set %s (an image, such as debian:trixie) or %s to run the conformance suite against docker", ImageEnv, BaseEnv)
+	image := os.Getenv(ImageEnv)
+	if image == "" {
+		t.Skipf("set %s (an image, such as debian:trixie) to run the conformance suite against docker", ImageEnv)
 	}
-	cfg := machinetest.Config{
+	d := New("")
+	d.Agent = linuxAgent(t)
+	b, found, err := d.Base(t.Context(), image)
+	if err != nil || !found {
+		t.Fatalf("base %s: found %v, %v", image, found, err)
+	}
+	machinetest.Run(t, d, machinetest.Config{
+		Base:    &b,
 		CPUs:    2,
 		Memory:  2 << 30,
 		Timeout: 2 * time.Minute,
 		// Not /tmp, which the guest's systemd may clean at boot.
 		ScratchDir: "/var/lib",
-		Base:       base,
-	}
-	if base == "" {
-		cfg.Install = machine.InstallSpec{
-			GuestOS: machine.Linux, Media: "latest", Agent: linuxAgent(t),
-			Options: map[string]string{"image": image}, Log: testLog{t},
+	})
+}
+
+func TestUnknownToRegistry(t *testing.T) {
+	for status, want := range map[int]bool{404: true, 401: true, 403: true, 500: false, 502: false} {
+		if got := isUnknownToRegistry(&apiError{Status: status}); got != want {
+			t.Errorf("status %d: unknown = %v, want %v", status, got, want)
 		}
 	}
-	machinetest.Run(t, New(""), cfg)
+	if isUnknownToRegistry(errors.New("dial unix: no such file")) {
+		t.Error("no answer at all is an unknown image")
+	}
 }
 
 func TestDemux(t *testing.T) {
@@ -101,11 +107,4 @@ func linuxAgent(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return agent
-}
-
-type testLog struct{ t *testing.T }
-
-func (l testLog) Write(p []byte) (int, error) {
-	l.t.Log(strings.TrimRight(string(p), "\n"))
-	return len(p), nil
 }

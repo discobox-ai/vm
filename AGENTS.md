@@ -10,7 +10,7 @@ brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
 
 - **Platform code lives below the seam.** Hypervisor code belongs only in
   `pkg/machine/<driver>`. Guest-OS code belongs only in `pkg/guest/*_windows.go`
-  or `*_unix.go`. Nothing in `pkg/engine`, `pkg/build`, or
+  or `*_unix.go`. Nothing in `pkg/engine` or
   `internal/cli` may be build-tagged or check `runtime.GOOS` to pick a
   hypervisor behavior. If a driver seems to need an engine change, make it
   OS-neutral, express it through `machine.Capabilities`, and update
@@ -26,22 +26,22 @@ brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
 
 ## Project Structure
 
-- Root module `github.com/discobox-ai/vm`: disco-vm, which builds OS images and
-  runs them as VMs on Host Compute Service (hcs), Virtualization.framework
-  (vz), or boxd, or as Docker containers that boot systemd (docker).
+- Root module `github.com/discobox-ai/vm`: disco-vm, which runs OS images as
+  VMs on Host Compute Service (hcs), Virtualization.framework (vz), or boxd,
+  or as Docker containers that boot systemd (docker), and snapshots them as
+  new images.
 - The root holds only top-level containers (`cmd`, `pkg`, `internal`, `docs`,
   `test`, `scripts`), never packages.
 - `cmd/disco-vm`: the `disco-vm` binary: CLI, guest agent, and shim.
-- `pkg/engine`, `pkg/build`: the OS-neutral core above the seam. It keeps no
-  state: every layer, tag, and instance is the driver's (ADR 26-10-23-417).
+- `pkg/engine`: the OS-neutral core above the seam. It keeps no state: every
+  image, tag, and instance is the driver's (ADR 26-10-23-417).
 - `pkg/machine`: the driver seam; `pkg/machine/<driver>` holds each
   hypervisor, `pkg/machine/local` the store and shim that hcs, vz, and fake
   share, and `machinetest` the conformance suite.
 - `pkg/guest`: the guest agent.
 - `internal/cli`: the command line. `internal/e2e`: the CLI lifecycle test.
 - `scripts/codesign-exec`: the `go test -exec` wrapper vz tests need.
-- `docs`: driver briefs (`docs/drivers`), the build spec, example specs
-  (`docs/examples`), and ADRs (`docs/adr`).
+- `docs`: driver briefs (`docs/drivers`) and ADRs (`docs/adr`).
 - `DESIGN.md` / `REVIEW.md`: package-local design and review notes.
 
 ## Shared Libraries
@@ -79,7 +79,7 @@ At the end of a code-changing task, run `go tool task ci`. Add Taskfile
 targets instead of documenting ad hoc commands here.
 
 A test that needs a real hypervisor is gated on an environment variable naming
-an installed base layer, so CI skips it and a developer machine runs it.
+an installed image or a base, so CI skips it and a developer machine runs it.
 
 ## Implementation Quality
 

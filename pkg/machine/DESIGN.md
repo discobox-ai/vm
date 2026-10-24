@@ -9,8 +9,9 @@ boxd, docker, and local have their own design notes:
 
 ## The driver contract is the intersection, and differences are reported
 
-`machine.Driver` is one project's (`machine.Config.Project`) layers (Install,
-Layer, Layers, DeleteLayer, Commit), tags (Tags, Tag, Untag), bases, and
+`machine.Driver` is one project's (`machine.Config.Project`) images (Install,
+Image, Images, DeleteImage, Commit; each stands alone, ADR 26-10-23-410),
+tags (Tags, Tag, Untag), bases (Bases, Base), and
 instances (Create, a clone; Instance, Instances, Destroy), as its provider
 keeps them ([the root DESIGN.md](../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider));
 and an instance's machine: Boot, in this process; Start, outliving it;
@@ -31,7 +32,9 @@ a `Capabilities` field, never a faked method:
 | shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | no |
 | display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no | no |
 | forward (guest to host) | hvsocket to the parent partition | vsock to the host, CID 2 | no | no | loopback |
-| agent (Install bakes in `disco-vm guest`) | yes | yes | **no**: boxd's Exec | yes | yes |
+| agent (`disco-vm guest` in the guest) | yes, from Install | yes, from Install | **no**: boxd's Exec | yes, from Create of a base | yes |
+| install (an image from media) | yes: a retail ISO | yes: an IPSW, or `latest` | **no**: boxd's images and snapshots are bases | **no**: registry images are bases | yes |
+| disks chain below the seam (`local.Hypervisor.Chains`) | yes: a snapshot is a differencing VHDX | no | no | no | no |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
 ([below](#every-clone-is-cold-and-an-image-is-made-fast-by-what-is-in-it)).
@@ -60,12 +63,12 @@ socket. `disco-vm dial-host PORT` does the same from a shell in the guest.
 
 ## A window is per boot, and lives with the VM
 
-`run --gui`, `start --gui`, and `build --gui` ask for a window on the guest's
+`run --gui`, `start --gui`, and `install --gui` ask for a window on the guest's
 display. It is a property of one boot, not of the instance: the engine passes
 `BootOptions.GUI` (and `InstallSpec.GUI` for an install's boots), and the
 driver opens the window in the process that called `Boot`, which is the one
-that owns the VM. For `run` and `start` that is the shim (`shim --gui`); for a
-build it is the CLI. The window closes when the VM stops, and closing it leaves
+that owns the VM. For `run` and `start` that is the shim (`shim --gui`); for
+an install it is the CLI. The window closes when the VM stops, and closing it leaves
 the VM running. A driver without `Capabilities.Display` refuses GUI with
 `ErrUnsupported` rather than ignoring it.
 
@@ -81,9 +84,8 @@ touches it.
 Create makes one kind of clone (ADR 26-10-15-851): a copy-on-write clone of
 the image's disk, with a machine identity of its own, which Boot starts from
 power-off. There are no clone modes, no staged images, and no `warm`
-command. Work that every instance needs goes into the image, as a build step
-or by shaping a guest and taking a `snapshot` of it, so an instance starts
-with it done.
+command. Work that every instance needs goes into the image, by shaping a
+guest and taking a `snapshot` of it, so an instance starts with it done.
 
 What warming left behind is upgraded, not used:
 
@@ -102,5 +104,5 @@ What warming left behind is upgraded, not used:
   prepared fast and never booted (vz's `resume.pending`, an hcs fork ticket)
   is refused at start: remove it and run the image again.
 
-Fast clones may come back once every driver's builds and snapshots are proven
+Fast clones may come back once every driver's snapshots are proven
 (the ADR's Deferred section), with a design of their own.

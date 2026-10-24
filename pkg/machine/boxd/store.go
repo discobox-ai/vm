@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
 )
@@ -18,14 +17,14 @@ import (
 // driver's. The project follows it.
 const namePrefix = "dvm-"
 
-// tagMark parts a tag's snapshot's layer from its ref:
-// dvm-<project>--<layer id>--t-<ref>.
+// tagMark parts a tag's snapshot's image from its ref:
+// dvm-<project>--<image id>--t-<ref>.
 const tagMark = "--t-"
 
-// layerID is the layer a snapshot name is of, or "" for any other name: a
+// imageID is the image a snapshot name is of, or "" for any other name: a
 // tag's, another project's, or one from before ADR 26-10-23-417, which is
-// dvm-<project>--<layer id prefix>-<random>.
-func (d *Driver) layerID(name string) string {
+// dvm-<project>--<image id prefix>-<random>.
+func (d *Driver) imageID(name string) string {
 	id, ok := strings.CutPrefix(name, d.prefix())
 	if !ok || !isHex(id) {
 		return ""
@@ -45,9 +44,9 @@ func isHex(s string) bool {
 	return true
 }
 
-// tagName is a tag's snapshot of a layer.
-func (d *Driver) tagName(layer, ref string) string {
-	return d.layerName(layer) + tagMark + escapeRef(ref)
+// tagName is a tag's snapshot of an image.
+func (d *Driver) tagName(image, ref string) string {
+	return d.imageName(image) + tagMark + escapeRef(ref)
 }
 
 // parseTag is the tag a snapshot name is, if it is one of the project's.
@@ -56,12 +55,12 @@ func (d *Driver) parseTag(name string) (machine.Tag, bool) {
 	if !ok {
 		return machine.Tag{}, false
 	}
-	layer, escaped, ok := strings.Cut(rest, tagMark)
-	if !ok || !isHex(layer) {
+	image, escaped, ok := strings.Cut(rest, tagMark)
+	if !ok || !isHex(image) {
 		return machine.Tag{}, false
 	}
 	ref, ok := unescapeRef(escaped)
-	return machine.Tag{Ref: ref, Layer: layer}, ok
+	return machine.Tag{Ref: ref, Image: image}, ok
 }
 
 // escapeRef spells a ref in what a snapshot name allows, and can be read
@@ -109,28 +108,28 @@ func unixTime(n int64, unit time.Duration) time.Time {
 	return time.Unix(0, 0).Add(time.Duration(n) * unit)
 }
 
-// layerOf is a ready snapshot as a layer: boxd keeps no parent or comment.
-func layerOf(id string, snap *boxdapi.SnapshotInfo) machine.Layer {
-	return machine.Layer{ID: id, GuestOS: machine.Linux, Created: unixTime(snap.GetCreatedAt(), time.Millisecond)}
+// imageOf is a ready snapshot as an image: boxd keeps no comment.
+func imageOf(id string, snap *boxdapi.SnapshotInfo) machine.Image {
+	return machine.Image{ID: id, GuestOS: machine.Linux, Created: unixTime(snap.GetCreatedAt(), time.Millisecond)}
 }
 
-// Layer is the layer's snapshot, once it is ready.
-func (d *Driver) Layer(ctx context.Context, id string) (machine.Layer, error) {
+// Image is the image's snapshot, once it is ready.
+func (d *Driver) Image(ctx context.Context, id string) (machine.Image, error) {
 	if !isHex(id) {
-		return machine.Layer{}, fmt.Errorf("boxd: layer %s: %w", id, machine.ErrNotFound)
+		return machine.Image{}, fmt.Errorf("boxd: image %s: %w", id, machine.ErrNotFound)
 	}
 	api, err := d.api.API()
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
-	got, err := api.GetSnapshot(ctx, &boxdapi.GetSnapshotRequest{Name: d.layerName(id)})
+	got, err := api.GetSnapshot(ctx, &boxdapi.GetSnapshotRequest{Name: d.imageName(id)})
 	if isNotFound(err) || (err == nil && got.GetSnapshot().GetStatus() != "ready") {
-		return machine.Layer{}, fmt.Errorf("boxd: layer %s: %w", id, machine.ErrNotFound)
+		return machine.Image{}, fmt.Errorf("boxd: image %s: %w", id, machine.ErrNotFound)
 	}
 	if err != nil {
-		return machine.Layer{}, fmt.Errorf("boxd: snapshot %s: %w", d.layerName(id), err)
+		return machine.Image{}, fmt.Errorf("boxd: snapshot %s: %w", d.imageName(id), err)
 	}
-	return layerOf(id, got.GetSnapshot()), nil
+	return imageOf(id, got.GetSnapshot()), nil
 }
 
 // snapshots lists the caller's snapshots.
@@ -146,16 +145,16 @@ func (d *Driver) snapshots(ctx context.Context) ([]*boxdapi.SnapshotInfo, error)
 	return listed.GetSnapshots(), nil
 }
 
-// Layers lists the project's ready layer snapshots.
-func (d *Driver) Layers(ctx context.Context) ([]machine.Layer, error) {
+// Images lists the project's ready image snapshots.
+func (d *Driver) Images(ctx context.Context) ([]machine.Image, error) {
 	snaps, err := d.snapshots(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var out []machine.Layer
+	var out []machine.Image
 	for _, snap := range snaps {
-		if id := d.layerID(snap.GetName()); id != "" && snap.GetStatus() == "ready" {
-			out = append(out, layerOf(id, snap))
+		if id := d.imageID(snap.GetName()); id != "" && snap.GetStatus() == "ready" {
+			out = append(out, imageOf(id, snap))
 		}
 	}
 	return out, nil
@@ -177,23 +176,23 @@ func (d *Driver) Tags(ctx context.Context) ([]machine.Tag, error) {
 	return out, nil
 }
 
-// Tag saves a second snapshot of the layer, named for the layer and the tag,
-// then deletes the snapshots of the tag on any other layer. boxd has no way to
+// Tag saves a second snapshot of the image, named for the image and the tag,
+// then deletes the snapshots of the tag on any other image. boxd has no way to
 // name or label a snapshot after the fact, and snapshots only a running
-// machine, so the layer's snapshot is restored into a machine and that machine
+// machine, so the image's snapshot is restored into a machine and that machine
 // is snapshotted. Nothing restores from a tag's snapshot.
-func (d *Driver) Tag(ctx context.Context, ref, layer string) error {
-	if _, err := d.Layer(ctx, layer); err != nil {
+func (d *Driver) Tag(ctx context.Context, ref, image string) error {
+	if _, err := d.Image(ctx, image); err != nil {
 		return err
 	}
 	snaps, err := d.snapshots(ctx)
 	if err != nil {
 		return err
 	}
-	name := d.tagName(layer, ref)
+	name := d.tagName(image, ref)
 	have := slices.ContainsFunc(snaps, func(s *boxdapi.SnapshotInfo) bool { return s.GetName() == name && s.GetStatus() == "ready" })
 	if !have {
-		if err := d.saveAs(ctx, d.layerName(layer), name); err != nil {
+		if err := d.saveAs(ctx, d.imageName(image), name); err != nil {
 			return fmt.Errorf("boxd: tag %s: %w", ref, err)
 		}
 	}
@@ -215,7 +214,7 @@ func (d *Driver) saveAs(ctx context.Context, from, to string) error {
 		return err
 	}
 	created, err := api.CreateVmFromSnapshot(ctx, &boxdapi.CreateVmFromSnapshotRequest{
-		Snapshot: from, Name: d.machineName(machine.TemporaryPrefix + "save-" + fsutil.RandomHex(3)),
+		Snapshot: from, Name: d.transientName("save"),
 	})
 	if err != nil {
 		return fmt.Errorf("restore %s: %w", from, err)
@@ -253,13 +252,14 @@ func (d *Driver) Untag(ctx context.Context, ref string) error {
 }
 
 // instanceName is the instance a machine name is of, in the driver's project:
-// `dvm-<project>--<name>`.
+// `dvm-<project>--<name>`. A machine of the driver's own (transientName) is
+// one too, so that none is out of sight.
 func (d *Driver) instanceName(vmName string) (string, bool) {
 	return strings.CutPrefix(vmName, d.prefix())
 }
 
 // instance is a machine as an instance. boxd says which image a machine was
-// made from, but not which snapshot, so an instance of a layer has none.
+// made from, but not which snapshot, so an instance of an image has none.
 func (d *Driver) instance(vm *boxdapi.GetVmResponse) machine.Instance {
 	name, _ := d.instanceName(vm.GetName())
 	return machine.Instance{

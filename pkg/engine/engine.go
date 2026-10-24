@@ -16,7 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -68,21 +70,19 @@ type CreateOptions struct {
 	Name   string
 	CPUs   int
 	Memory uint64
-	// Temporary makes a build's instance, which listings leave out.
-	Temporary bool
 	// Forwards are served whenever the instance runs; the driver must list
 	// Capabilities.Forward.
 	Forwards []machine.Forward
 }
 
-// Create makes an instance from an image reference or layer ID, or from one of
-// the driver's bases by its name or ID, which it runs from with no layer.
+// Create makes an instance from an image reference or ID, or from one of the
+// driver's bases by its name or ID, which it runs from with no image.
 func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (Instance, error) {
 	if err := e.checkForwards(opts.Forwards); err != nil {
 		return Instance{}, err
 	}
 	spec := machine.InstanceSpec{Name: opts.Name, Image: ref, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: opts.Forwards}
-	layer, err := e.Resolve(ctx, ref)
+	img, err := e.Resolve(ctx, ref)
 	if err != nil {
 		b, err := e.ResolveBase(ctx, ref, err)
 		if err != nil {
@@ -90,15 +90,10 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (In
 		}
 		spec.Base, spec.GuestOS = &b, b.GuestOS
 	} else {
-		spec.Layer, spec.GuestOS = layer.ID, layer.GuestOS
+		spec.ImageID, spec.GuestOS = img.ID, img.GuestOS
 	}
-	switch {
-	case opts.Temporary:
-		spec.Name = machine.TemporaryPrefix + fsutil.RandomHex(6)
-	case spec.Name == "":
+	if spec.Name == "" {
 		spec.Name = fsutil.RandomHex(6)
-	case strings.HasPrefix(spec.Name, machine.TemporaryPrefix):
-		return Instance{}, fmt.Errorf("instance name %q starts with %q, which names a build's instances", spec.Name, machine.TemporaryPrefix)
 	}
 	return e.Driver.Create(ctx, spec)
 }
@@ -136,19 +131,9 @@ func (e *Engine) Get(ctx context.Context, ref string) (Instance, error) {
 	}
 }
 
-// List returns the instances, excluding a build's temporary ones.
+// List returns the project's instances.
 func (e *Engine) List(ctx context.Context) ([]Instance, error) {
-	all, err := e.Driver.Instances(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []Instance
-	for _, inst := range all {
-		if !inst.Temporary() {
-			out = append(out, inst)
-		}
-	}
-	return out, nil
+	return e.Driver.Instances(ctx)
 }
 
 // State reports whether an instance is running, as its driver finds it.
@@ -331,7 +316,8 @@ func (e *Engine) announceService(ctx context.Context, inst Instance, g machine.G
 	return nil
 }
 
-// Booted is a machine running in this process. The builder boots this way.
+// Booted is a machine running in this process, or one attached to for as long
+// as one call holds it.
 type Booted struct {
 	Machine machine.Machine
 }
@@ -365,8 +351,8 @@ func (e *Engine) Boot(ctx context.Context, inst Instance, opts BootOptions) (*Bo
 
 // Shutdown powers a booted machine off in order: the guest is asked, and the
 // machine is killed only if it will not answer or will not stop in time. A
-// hard stop is a dirty unmount of the guest's disk, and a layer cut from one
-// is not trustworthy, so the builder always comes through here. timeout
+// hard stop is a dirty unmount of the guest's disk, and an image cut from one
+// is not trustworthy, so every stop comes through here. timeout
 // bounds the request and the stop together: a driver may do real work before
 // its guest accepts (boxd flushes the guest's disks, then asks StopVm).
 func (b *Booted) Shutdown(ctx context.Context, timeout time.Duration) error {
@@ -395,44 +381,108 @@ func (b *Booted) Shutdown(ctx context.Context, timeout time.Duration) error {
 	return fmt.Errorf("forced off: %w", err)
 }
 
-// Commit captures a stopped instance as the layer layer, on the instance's
-// own, and removes the instance.
-func (e *Engine) Commit(ctx context.Context, inst Instance, layer machine.Layer) (machine.Layer, error) {
-	layer.Parent, layer.GuestOS = inst.Layer, inst.GuestOS
-	return e.Driver.Commit(ctx, inst, layer)
+// InstallOptions is an image installed from installation media.
+type InstallOptions struct {
+	// GuestOS is the OS to install; empty is the driver's only one.
+	GuestOS machine.OS
+	// Media is a Windows ISO or a macOS IPSW, or "latest" where the driver
+	// can fetch one itself. A relative path is the working directory's.
+	Media string
+	// Edition selects an image inside multi-image media (install.wim).
+	Edition   string
+	DiskBytes int64
+	CPUs      int
+	Memory    uint64
+	// Options are the driver's own, passed through untouched.
+	Options map[string]string
+	// GUI shows every boot of the install in a native window.
+	GUI bool
+	// Log receives the driver's progress.
+	Log io.Writer
 }
 
-// Snapshot commits a stopped instance's disk as a new layer on its image's
-// layer, removes the instance, and tags the layer ref when ref is not empty.
-// The instance is consumed, as a build's is, so there is one way a layer is
-// cut; to go on from a snapshot, create an instance of it. The layer's ID is
-// random: nothing reproducible made it, so it is never a cache hit.
-func (e *Engine) Snapshot(ctx context.Context, inst Instance, ref string) (machine.Layer, error) {
-	if inst.Temporary() {
-		return machine.Layer{}, fmt.Errorf("instance %s belongs to a build", inst.Name)
+// Install makes an image from installation media, on a driver that lists
+// Capabilities.Install, and tags it with each of refs. Where the driver puts
+// the agent in the guest, it is this binary, so the guest's OS must be this
+// host's.
+func (e *Engine) Install(ctx context.Context, opts InstallOptions, refs ...string) (machine.Image, error) {
+	caps := e.Driver.Capabilities()
+	if !caps.Install {
+		return machine.Image{}, fmt.Errorf("driver %s installs nothing from media; run one of its bases by name instead: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
-	if ref != "" {
+	if opts.GuestOS == "" && len(caps.GuestOS) == 1 {
+		opts.GuestOS = caps.GuestOS[0]
+	}
+	if !caps.SupportsOS(opts.GuestOS) {
+		return machine.Image{}, fmt.Errorf("driver %s cannot install %q guests (it runs %v)", e.Driver.Name(), opts.GuestOS, caps.GuestOS)
+	}
+	for _, ref := range refs {
 		if err := ValidateRef(ref); err != nil {
-			return machine.Layer{}, err
+			return machine.Image{}, err
+		}
+	}
+	if err := e.CheckGUI(opts.GUI); err != nil {
+		return machine.Image{}, err
+	}
+	agent := ""
+	if caps.Agent {
+		if opts.GuestOS != machine.OS(runtime.GOOS) {
+			return machine.Image{}, fmt.Errorf("a %s guest's agent is disco-vm built for %s, and this one is built for %s", opts.GuestOS, opts.GuestOS, runtime.GOOS)
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return machine.Image{}, err
+		}
+		agent = exe
+	}
+	media := opts.Media
+	if media == "" {
+		media = "latest"
+	}
+	if media != "latest" {
+		abs, err := filepath.Abs(media)
+		if err != nil {
+			return machine.Image{}, err
+		}
+		media = abs
+	}
+	img, err := e.Driver.Install(ctx, machine.InstallSpec{
+		GuestOS: opts.GuestOS, Media: media, Edition: opts.Edition,
+		DiskBytes: opts.DiskBytes, CPUs: opts.CPUs, Memory: opts.Memory,
+		Agent: agent, Options: opts.Options, GUI: opts.GUI, Log: opts.Log,
+	}, machine.Image{ID: fsutil.RandomHex(32), GuestOS: opts.GuestOS, Comment: "install " + string(opts.GuestOS)})
+	if err != nil {
+		return machine.Image{}, fmt.Errorf("install %s: %w", opts.GuestOS, err)
+	}
+	return img, e.tagAll(ctx, img, refs)
+}
+
+// tagAll tags a new image with each of refs.
+func (e *Engine) tagAll(ctx context.Context, img machine.Image, refs []string) error {
+	for _, ref := range refs {
+		if err := e.Tag(ctx, ref, img.ID); err != nil {
+			return fmt.Errorf("image %s is made, but tag %s: %w", Short(img.ID), ref, err)
+		}
+	}
+	return nil
+}
+
+// Snapshot commits a stopped instance's disk as a new image, removes the
+// instance, and tags the image with each of refs. The instance is consumed, so
+// an image is always cut the same way, from a stopped guest that is then
+// destroyed; to go on from a snapshot, create an instance of it.
+func (e *Engine) Snapshot(ctx context.Context, inst Instance, refs ...string) (machine.Image, error) {
+	for _, ref := range refs {
+		if err := ValidateRef(ref); err != nil {
+			return machine.Image{}, err
 		}
 	}
 	if state := e.State(ctx, inst); state != Stopped {
-		return machine.Layer{}, fmt.Errorf("instance %s is %s; stop it first", inst.Name, state)
+		return machine.Image{}, fmt.Errorf("instance %s is %s; stop it first", inst.Name, state)
 	}
-	layer, err := e.Commit(ctx, inst, machine.Layer{ID: fsutil.RandomHex(32), Comment: "snapshot " + inst.Name})
+	img, err := e.Driver.Commit(ctx, inst, machine.Image{ID: fsutil.RandomHex(32), GuestOS: inst.GuestOS, Comment: "snapshot " + inst.Name})
 	if err != nil {
-		return machine.Layer{}, fmt.Errorf("snapshot %s: %w", inst.Name, err)
+		return machine.Image{}, fmt.Errorf("snapshot %s: %w", inst.Name, err)
 	}
-	if ref != "" {
-		if err := e.Tag(ctx, ref, layer.ID); err != nil {
-			return layer, fmt.Errorf("snapshot %s is layer %s, but tag %s: %w", inst.Name, Short(layer.ID), ref, err)
-		}
-	}
-	return layer, nil
-}
-
-// Discard removes an instance without asking its state; the builder uses it
-// on temporary instances it knows are stopped.
-func (e *Engine) Discard(ctx context.Context, inst Instance) {
-	_ = e.Driver.Destroy(ctx, inst)
+	return img, e.tagAll(ctx, img, refs)
 }

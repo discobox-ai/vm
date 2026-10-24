@@ -12,19 +12,28 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   16777216 and up, and ends the container when systemd powers off. The
   container runs with seccomp, AppArmor, and Docker's masked `/proc` paths
   off, and a writable cgroup: what protects the host is the user namespace.
-- **The base layer is shifted once.** Install chowns the base image's files
-  into the guest's uids and commits it. Every later layer is written by the
-  guest, in its uids already, so `docker commit` is the layer commit.
-  The container's root directory is the exception: Docker makes it for each
-  container, as the host's root, so docker-init chowns it at every start.
+- **A base is any image a registry has, shifted once per instance.** There
+  is no install. `Base` finds a ref the daemon has or its registry answers
+  for (`/distribution`; only a 401, 403, or 404 is "none"), without pulling;
+  Create of an instance of it pulls the image, adds systemd and the agent
+  (`$DISCO_VM_AGENT`, or this binary on linux), chowns its files into the
+  guest's uids, and commits that as the instance's own Docker image,
+  `disco-vm-layer:<project>--base-<name>--<random>`, which Destroy removes
+  with every other such tag of the name older than a readying could be that
+  no container runs; the `-` in
+  its tag keeps it out of the images. The container that readies it is
+  listed as an instance while it runs, so one a crash leaves can be removed. An image is written by the guest, in its uids already,
+  so `docker commit` is the snapshot. The container's root directory is the
+  exception: Docker makes it for each container, as the host's root, so
+  docker-init chowns it at every start.
 - **The daemon owns everything.** It owns a running guest, so there is no
   shim, and every command attaches by inspecting the container. A machine
   waits on the container only once something asks whether it stopped. And it
-  keeps what the driver knows (ADR 26-10-23-417): a layer is an image tagged
-  `disco-vm-layer:<project>--<id>` and labeled with its parent and comment, a
-  tag an image tag under `disco-vm/<project>/`, and an instance a container
+  keeps what the driver knows (ADR 26-10-23-417): an image is a Docker image
+  tagged `disco-vm-layer:<project>--<id>` and labeled with its comment, a tag
+  a Docker image tag under `disco-vm/<project>/`, and an instance a container
   `dvm-<project>--<name>` labeled with its image reference and size, whose
-  layer is the image it runs. Nothing is kept on the host.
+  image is the one whose Docker image it runs. Nothing is kept on the host.
 - **The guest's operations are the agent's**, reached by a docker exec of
   `disco-vm pipe` for each connection, on the container's side of the
   namespace, which reaches the agent's root-only socket through the guest's

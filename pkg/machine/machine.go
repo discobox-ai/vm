@@ -1,12 +1,12 @@
 // Package machine is the seam between disco-vm and a hypervisor.
 //
 // A Driver is the only code in disco-vm that knows which hypervisor it talks
-// to. Everything above it — the builder, the engine, the CLI, and a discobox
-// provider — speaks only the types in this package, so one program runs on
+// to. Everything above it — the engine, the CLI, and a discobox provider —
+// speaks only the types in this package, so one program runs on
 // Windows (hcs) and macOS (vz) with nothing but the driver differing.
 //
 // A driver is also the only place anything is kept (ADR 26-10-23-417). The
-// engine holds no state: every layer, tag, and instance is read from the
+// engine holds no state: every image, tag, and instance is read from the
 // driver, which reads it from its provider every time, and keeps what it knows
 // about each on the provider's own resources, in the provider's way: labels on
 // Docker's images and containers, the names of boxd's snapshots and machines,
@@ -43,12 +43,16 @@ var ErrUnsupported = errors.New("machine: not supported by this driver")
 // differently in an error message and in a test.
 var ErrNotImplemented = errors.New("machine: not implemented yet")
 
-// ErrNotFound reports a layer, a tag, or an instance the provider does not
+// ErrNotFound reports an image, a tag, or an instance the provider does not
 // have.
 var ErrNotFound = errors.New("not found")
 
 // ErrExists reports an instance name the provider already has in the project.
 var ErrExists = errors.New("already exists")
+
+// ErrInUse reports an image the driver will not delete because another
+// image's disk still needs it (Driver.DeleteImage).
+var ErrInUse = errors.New("its disk is still another image's")
 
 // ErrNotRunning reports that an instance has no running machine to attach to.
 var ErrNotRunning = errors.New("machine: the instance is not running")
@@ -64,10 +68,10 @@ const (
 )
 
 // Capabilities is what a driver can do on this host. It is reported, never
-// assumed, so that pools, the builder, and a discobox provider plan around the
-// real limits of each hypervisor.
+// assumed, so that pools and a discobox provider plan around the real limits
+// of each hypervisor.
 type Capabilities struct {
-	// GuestOS is every guest OS this driver can install and boot.
+	// GuestOS is every guest OS this driver can boot.
 	GuestOS []OS `json:"guestOS"`
 	// MaxRunning caps concurrently running guests per guest OS. Zero means no
 	// cap. Virtualization.framework allows two macOS guests per host.
@@ -79,10 +83,14 @@ type Capabilities struct {
 	// Forward reports that guest processes can connect out to the host: an
 	// instance created with Forwards has them served whenever it runs.
 	Forward bool `json:"forward"`
-	// Agent reports that Install bakes the disco-vm agent into the guest
-	// (InstallSpec.Agent), because the driver reaches the guest's operations
-	// through it. boxd reaches them through its own API, and needs none.
+	// Agent reports that the driver puts the disco-vm agent in the guest and
+	// reaches the guest's operations through it: Install bakes it in
+	// (InstallSpec.Agent) on hcs and vz, and docker adds it to a base's image
+	// at Create. boxd reaches them through its own API, and needs none.
 	Agent bool `json:"agent"`
+	// Install reports that the driver makes an image from installation
+	// media (Install). One that does not has bases instead (Bases, Base).
+	Install bool `json:"install"`
 }
 
 // SupportsOS reports whether the driver can run the given guest OS.
@@ -90,12 +98,12 @@ func (c Capabilities) SupportsOS(os OS) bool { return slices.Contains(c.GuestOS,
 
 // Config is what a driver is made with.
 type Config struct {
-	// Project scopes every layer, tag, and instance the driver lists and
+	// Project scopes every image, tag, and instance the driver lists and
 	// makes: it is in the name of each, or on its label. Empty is
 	// DefaultProject.
 	Project string
 	// Dir is where a driver whose provider is this host's disk (hcs, vz,
-	// fake) keeps its layers, instances, and the media it downloads. Empty
+	// fake) keeps its images, instances, and the media it downloads. Empty
 	// is DefaultDir(). A driver whose provider is a service (boxd, docker)
 	// keeps nothing on the host and ignores it.
 	Dir string
@@ -155,21 +163,12 @@ func ValidateProject(project string) error {
 	return nil
 }
 
-// TemporaryPrefix starts the name of an instance a build makes, which a
-// listing leaves out. ValidateName accepts it, since a build's instances go
-// through a driver's Create, and the engine refuses it in any name it is
-// given (engine.Create).
-const TemporaryPrefix = "build--"
-
 // ValidateName checks an instance's name: 1 to 63 lowercase letters, digits,
 // and single hyphens, starting and ending with a letter or digit. It is in
 // the name of what the driver makes for the instance (a boxd machine, a
 // container), which must be a DNS label in a proxy's domain, so a driver may
 // refuse a name that is valid here but too long beside its project.
 func ValidateName(name string) error {
-	if strings.HasPrefix(name, TemporaryPrefix) && label(strings.TrimPrefix(name, TemporaryPrefix), 63-len(TemporaryPrefix)) {
-		return nil
-	}
 	if !label(name, 63) || strings.Contains(name, "--") {
 		return fmt.Errorf("machine: instance name %q is not 1 to 63 lowercase letters, digits, and single hyphens, starting and ending with a letter or digit", name)
 	}
@@ -217,42 +216,39 @@ func ResourceProject(prefix, name string) string {
 	return project
 }
 
-// Layer is one immutable, committed disk state: a differencing VHDX, an
-// APFS-cloned macOS bundle, a boxd snapshot, a Docker image. Its ID is the
-// build's cache key, so a layer is never made twice.
-type Layer struct {
-	ID string `json:"id"`
-	// Parent is the layer this one was built on, or empty for a base layer
-	// or a layer built on one of the driver's bases. A driver whose
-	// provider cannot keep it (boxd) reports none, and its layers do not
-	// need one to boot.
-	Parent  string `json:"parent,omitempty"`
+// Image is one immutable, committed disk state: an install from media, or a
+// snapshot of a stopped instance (ADR 26-10-23-410). It is a differencing
+// VHDX, an APFS-cloned macOS bundle, a boxd snapshot, a Docker image. Above
+// the seam every image stands alone: it has no parent, an instance runs from
+// one image, and removing one never touches another. A driver whose disks
+// chain below the seam (an hcs snapshot differences over the disk of the
+// image its instance ran from) keeps the chain to itself. Its ID is random:
+// nothing reproducible made it.
+type Image struct {
+	ID      string `json:"id"`
 	GuestOS OS     `json:"guestOS"`
-	// Comment says what made the layer: "install windows", "build
-	// base:toolchains". A driver that cannot keep it reports none.
+	// Comment says what made the image: "install windows", "snapshot dev".
+	// A driver that cannot keep it reports none.
 	Comment string    `json:"comment,omitempty"`
 	Created time.Time `json:"created,omitzero"`
 }
 
-// Tag is one name:tag, normalized, and the layer it names.
+// Tag is one name:tag, normalized, and the image it names.
 type Tag struct {
 	Ref   string `json:"ref"`
-	Layer string `json:"layer"`
+	Image string `json:"image"`
 }
 
 // Base is something a driver already has that an instance can run from with
-// no layer.
+// no image.
 type Base struct {
 	// Name is what `images` lists, and a reference may name the base by it.
 	Name string `json:"name"`
 	// ID is the service's own ID for it, which a reference may name too.
-	ID string `json:"id"`
-	// Version changes whenever what the base holds does (a boxd snapshot
-	// captured again), so that a layer built on a new version is built again.
-	Version string `json:"version,omitempty"`
+	ID      string `json:"id"`
 	GuestOS OS     `json:"guestOS"`
 	// Options are the driver's own: what it makes a machine from (boxd: an
-	// image or a snapshot).
+	// image or a snapshot; docker: an image).
 	Options map[string]string `json:"options,omitempty"`
 	Created time.Time         `json:"created,omitzero"`
 }
@@ -273,10 +269,11 @@ type InstanceSpec struct {
 	Name string
 	// Image is the reference it was asked for by, kept to be shown.
 	Image string
-	// Layer is the layer it is a clone of, or empty for an instance of Base.
-	Layer string
-	// Base is the driver's base it runs from instead of a layer: one Bases
-	// listed.
+	// ImageID is the image it is a clone of, or empty for an instance of
+	// Base.
+	ImageID string
+	// Base is the driver's base it runs from instead of an image: one Bases
+	// listed or Base found.
 	Base    *Base
 	GuestOS OS
 	// CPUs and Memory size every boot; zero is the driver's default.
@@ -287,7 +284,7 @@ type InstanceSpec struct {
 	Forwards []Forward
 }
 
-// Instance is one machine made from a layer or a base, as its provider has
+// Instance is one machine made from an image or a base, as its provider has
 // it.
 type Instance struct {
 	// ID is the provider's own: a container's ID, a boxd machine's, the
@@ -297,9 +294,9 @@ type Instance struct {
 	// Image is the reference it was made from, or what the provider says it
 	// was made from when it kept no reference.
 	Image string `json:"image"`
-	// Layer is its layer, or empty for an instance of a base, or where the
+	// ImageID is its image, or empty for an instance of a base, or where the
 	// provider does not say.
-	Layer   string    `json:"layer,omitempty"`
+	ImageID string    `json:"imageID,omitempty"`
 	Base    *Base     `json:"base,omitempty"`
 	GuestOS OS        `json:"guestOS"`
 	CPUs    int       `json:"cpus,omitempty"`
@@ -309,10 +306,7 @@ type Instance struct {
 	Forwards []Forward `json:"forwards,omitempty"`
 }
 
-// Temporary reports whether the instance is a build's.
-func (i Instance) Temporary() bool { return strings.HasPrefix(i.Name, TemporaryPrefix) }
-
-// InstallSpec creates a base layer from installation media.
+// InstallSpec creates an image from installation media.
 type InstallSpec struct {
 	GuestOS OS
 	// Media is the installer: a Windows ISO, a macOS IPSW, or "latest" where
@@ -373,7 +367,7 @@ type BootOptions struct {
 }
 
 // Driver is one hypervisor, and the provider that keeps everything disco-vm
-// knows: the layers, tags, and instances of the project it was made for
+// knows: the images, tags, and instances of the project it was made for
 // (Config.Project). Every listing and lookup reads the provider; nothing is
 // cached between calls.
 type Driver interface {
@@ -384,44 +378,50 @@ type Driver interface {
 	// fix.
 	Check(ctx context.Context) error
 
-	// Install creates the base layer layer (its ID, GuestOS, and Comment)
-	// from installation media, and returns it as the provider keeps it. A
-	// layer of that ID made meanwhile by another process is identical by
-	// construction, and either may be the one kept.
-	Install(ctx context.Context, spec InstallSpec, layer Layer) (Layer, error)
-	// Layer is the layer of an ID, or ErrNotFound. A layer whose disk the
+	// Install creates the image img (its ID, GuestOS, and Comment) from
+	// installation media, and returns it as the provider keeps it. A driver
+	// that does not list Capabilities.Install returns ErrUnsupported.
+	Install(ctx context.Context, spec InstallSpec, img Image) (Image, error)
+	// Image is the image of an ID, or ErrNotFound. An image whose disk the
 	// provider no longer has (a snapshot deleted behind disco-vm's back) is
 	// not found.
-	Layer(ctx context.Context, id string) (Layer, error)
-	// Layers lists the project's layers.
-	Layers(ctx context.Context) ([]Layer, error)
-	// DeleteLayer deletes a layer. The caller deletes one only when no
-	// layer, tag, or instance needs it. A layer already gone is not an
+	Image(ctx context.Context, id string) (Image, error)
+	// Images lists the project's images.
+	Images(ctx context.Context) ([]Image, error)
+	// DeleteImage deletes an image. The caller deletes one only when no tag
+	// or instance names it. A driver whose disks chain below the seam (hcs)
+	// refuses, with ErrInUse, an image whose disk another image's still
+	// differences over, and deletes nothing. An image already gone is not an
 	// error.
-	DeleteLayer(ctx context.Context, id string) error
+	DeleteImage(ctx context.Context, id string) error
 
 	// Tags lists the project's tags.
 	Tags(ctx context.Context) ([]Tag, error)
-	// Tag points ref, a normalized name:tag, at a layer, moving it from any
+	// Tag points ref, a normalized name:tag, at an image, moving it from any
 	// other.
-	Tag(ctx context.Context, ref, layer string) error
+	Tag(ctx context.Context, ref, image string) error
 	// Untag drops a tag. A tag that is not there is not an error.
 	Untag(ctx context.Context, ref string) error
 
 	// Bases lists what the driver already has that an instance can run from
-	// with no layer (InstanceSpec.Base): boxd's default image, and the
+	// with no image (InstanceSpec.Base): boxd's default image, and the
 	// snapshots in the account that disco-vm did not make. A driver with
-	// nothing of the kind returns none.
+	// nothing of the kind, or nothing it can list (docker's registries),
+	// returns none.
 	Bases(ctx context.Context) ([]Base, error)
+	// Base is the base ref names, by its name or ID, or found false. A
+	// driver may know bases it cannot list: docker's is any image the daemon
+	// has or its registry answers for, which Create pulls. It never pulls or
+	// makes anything itself.
+	Base(ctx context.Context, ref string) (base Base, found bool, err error)
 
-	// Create makes a stopped instance: a copy-on-write clone of its layer, or
-	// a machine made from its base, that boots from power-off with a machine
+	// Create makes a stopped instance: a copy-on-write clone of its image,
+	// or a machine made from its base, that boots from power-off with a machine
 	// identity of its own. A name the project already has is ErrExists.
 	Create(ctx context.Context, spec InstanceSpec) (Instance, error)
 	// Instance is the project's instance of a name, or ErrNotFound.
 	Instance(ctx context.Context, name string) (Instance, error)
-	// Instances lists the project's instances, a build's temporary ones
-	// too.
+	// Instances lists the project's instances.
 	Instances(ctx context.Context) ([]Instance, error)
 	// Destroy removes an instance and everything made for it, stopping it
 	// first if it runs. One already gone is not an error.
@@ -445,16 +445,26 @@ type Driver interface {
 	// Err, or Kill is called, so attaching to run a command costs nothing
 	// that outlives the call.
 	Attach(ctx context.Context, inst Instance) (Machine, error)
-	// Commit captures a stopped instance's disk as the layer layer (its ID,
-	// Parent, GuestOS, and Comment), and removes the instance. It returns
-	// the layer as the provider keeps it. As with Install, a layer of that
-	// ID made meanwhile is identical, and either may be kept.
-	Commit(ctx context.Context, inst Instance, layer Layer) (Layer, error)
+	// Commit captures a stopped instance's disk as the image img (its ID,
+	// GuestOS, and Comment): a snapshot. It removes the instance, and returns
+	// the image as the provider keeps it.
+	Commit(ctx context.Context, inst Instance, img Image) (Image, error)
 	// Service is the instance's service. A URL that exists only while the
 	// instance runs (a port the daemon publishes, a shim's) is asked for
 	// while it is stopped: then the driver returns ErrNotRunning. A URL
 	// that outlives a stop (boxd's) is the same across stop and start.
 	Service(ctx context.Context, inst Instance) (Service, error)
+}
+
+// FindBase is the base in bases that ref names, by name or ID: Driver.Base
+// for a driver that knows only the bases it lists.
+func FindBase(bases []Base, ref string) (Base, bool) {
+	for _, b := range bases {
+		if b.Name == ref || b.ID == ref {
+			return b, true
+		}
+	}
+	return Base{}, false
 }
 
 // HostListener is a running machine whose guest processes can connect out to

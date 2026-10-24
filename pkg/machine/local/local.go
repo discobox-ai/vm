@@ -5,8 +5,8 @@
 // else, in a directory of its own (machine.Config.Dir), the way a Docker
 // daemon keeps /var/lib/docker:
 //
-//	images/layers/<id>/payload/      the hypervisor's disk (Layer.Dir)
-//	images/layers/<id>/layer.json    the layer: project, parent, guest OS
+//	images/layers/<id>/payload/      an image's disk (Layer.Dir)
+//	images/layers/<id>/layer.json    the image: project, guest OS, parent
 //	images/tags/<project>/<ref>.json a tag, named by its ref in hex
 //	instances/<id>/machine/          the hypervisor's instance (InstanceSpec.Dir)
 //	instances/<id>/instance.json     the instance: project, name, image, size
@@ -14,7 +14,7 @@
 //	instances/.names/<project>/<name> the name's claim, holding the ID
 //	cache/<hypervisor>/              media the hypervisor downloads
 //
-// Nothing is kept anywhere else, and nothing needs a lock: a layer is
+// Nothing is kept anywhere else, and nothing needs a lock: an image is
 // published by renaming its directory into place, a tag by renaming its file,
 // and a name is claimed by creating its file exclusively.
 //
@@ -33,12 +33,12 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Layer is a committed layer's disk, in the directory the hypervisor wrote it
-// to. Dir is final once the layer is committed, but a layer is written under
-// a temporary name and renamed into place, so a hypervisor must not record
-// the layer's own Dir inside the layer's files. Recording a parent's Dir (a
-// differencing disk's parent path) is fine: parents are final before children
-// are written.
+// Layer is a committed image's disk, in the directory the hypervisor wrote it
+// to: one link of a chain, for a hypervisor that Chains. Dir is final once
+// the image is committed, but an image is written under a temporary name and
+// renamed into place, so a hypervisor must not record the image's own Dir
+// inside its files. Recording a parent's Dir (a differencing disk's parent
+// path) is fine: a parent is final before its child is written.
 type Layer struct {
 	ID  string
 	Dir string
@@ -58,15 +58,17 @@ type InstanceSpec struct {
 	// Dir is the hypervisor's for this instance. Prepare creates it.
 	Dir     string
 	GuestOS machine.OS
-	// Chain is the instance's image, base layer first and parent layer last.
-	// It is empty when the instance runs from Base.
+	// Chain is the instance's image last, after the images its disk
+	// differences over, for a hypervisor that Chains; a hypervisor that does
+	// not gets the image alone. It is empty when the instance runs from
+	// Base.
 	Chain []Layer
-	// Base is the hypervisor's base the instance runs from instead of a
-	// layer: one Bases listed.
+	// Base is the hypervisor's base the instance runs from instead of an
+	// image: one Bases listed.
 	Base *machine.Base
 }
 
-// Parent is the layer the instance is derived from. An instance of a Base has
+// Parent is the image the instance is a clone of. An instance of a Base has
 // none.
 func (s InstanceSpec) Parent() Layer { return s.Chain[len(s.Chain)-1] }
 
@@ -99,7 +101,14 @@ type Hypervisor interface {
 	Name() string
 	Capabilities() machine.Capabilities
 	Check(ctx context.Context) error
-	// Install creates a base layer in dst.Dir from installation media.
+	// Chains reports that a committed image's disk differences over the disk
+	// of the image its instance ran from (hcs's VHDX), so that one must
+	// outlive the other: the driver records the parent, gives Prepare, Boot,
+	// and Destroy the whole chain, and refuses to delete a disk another
+	// image's still needs. A hypervisor whose images are copies of their own
+	// (vz's APFS clones, fake's trees) reports false.
+	Chains() bool
+	// Install creates an image in dst.Dir from installation media.
 	Install(ctx context.Context, spec InstallSpec, dst Layer) error
 	// Prepare creates the instance's disk from its chain in inst.Dir: a
 	// copy-on-write clone of the image that boots from power-off with a fresh
@@ -109,14 +118,14 @@ type Hypervisor interface {
 	// answer. The returned machine lives until it powers off or is killed; it
 	// is not bound to ctx, which only bounds starting it.
 	Boot(ctx context.Context, inst InstanceSpec, opts BootOptions) (Machine, error)
-	// Commit captures a stopped instance's disk as the new layer dst. The
+	// Commit captures a stopped instance's disk as the new image dst. The
 	// instance is destroyed afterwards, so a hypervisor may move rather than
 	// copy.
 	Commit(ctx context.Context, inst InstanceSpec, dst Layer) error
 	// Destroy removes everything Prepare and Boot created for the instance.
 	Destroy(ctx context.Context, inst InstanceSpec) error
 	// Bases lists what the hypervisor already has that an instance can run
-	// from with no layer.
+	// from with no image.
 	Bases(ctx context.Context) ([]machine.Base, error)
 	// Service is where a prepared instance's service listens in its guest
 	// (machine.Service.Listen), and the guest port the shim dials it on.

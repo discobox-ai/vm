@@ -14,9 +14,9 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// BaseEnv names an installed layer, by its ID, in the driver's directory
-// ($DISCO_VM_ROOT, or the per-OS data directory): a layer an install made,
-// which `disco-vm images -a` lists. The conformance suite clones it rather
+// BaseEnv names an installed image, by its ID, in the driver's directory
+// ($DISCO_VM_ROOT, or the per-OS data directory): an image `disco-vm install`
+// made, which `disco-vm images` lists. The conformance suite clones it rather
 // than installing macOS on every run, and skips without it.
 const BaseEnv = "DISCO_VM_VZ_BASE"
 
@@ -27,7 +27,7 @@ const BaseEnv = "DISCO_VM_VZ_BASE"
 func TestConformance(t *testing.T) {
 	base := os.Getenv(BaseEnv)
 	if base == "" {
-		t.Skipf("$%s names no installed layer", BaseEnv)
+		t.Skipf("$%s names no installed image", BaseEnv)
 	}
 	binary := os.Getenv("DISCO_VM_TEST_BINARY")
 	if binary == "" {
@@ -42,7 +42,7 @@ func TestConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	machinetest.Run(t, driver, machinetest.Config{
-		Base:       base,
+		Image:      base,
 		CPUs:       4,
 		Memory:     8 << 30,
 		Timeout:    10 * time.Minute,

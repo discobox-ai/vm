@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -29,8 +28,6 @@ func (d *Driver) Bases(ctx context.Context) ([]machine.Base, error) {
 		return nil, fmt.Errorf("boxd: list snapshots: %w", err)
 	}
 	var out []machine.Base
-	// boxd reports no version of an image, so a build on the default image
-	// is cached while its name stays the same.
 	if image := config.GetDefaultImage(); image != "" {
 		out = append(out, machine.Base{
 			Name: image, ID: image, GuestOS: machine.Linux,
@@ -43,8 +40,7 @@ func (d *Driver) Bases(ctx context.Context) ([]machine.Base, error) {
 			continue
 		}
 		snapshots = append(snapshots, machine.Base{
-			Name: snap.GetName(), ID: snap.GetSnapshotId(),
-			Version: strconv.FormatUint(snap.GetVersion(), 10), GuestOS: machine.Linux,
+			Name: snap.GetName(), ID: snap.GetSnapshotId(), GuestOS: machine.Linux,
 			// By ID: a name can be deleted and given to another snapshot.
 			Options: map[string]string{"snapshot": snap.GetSnapshotId()},
 			Created: unixTime(snap.GetCreatedAt(), time.Millisecond),
@@ -52,4 +48,14 @@ func (d *Driver) Bases(ctx context.Context) ([]machine.Base, error) {
 	}
 	slices.SortFunc(snapshots, func(a, b machine.Base) int { return a.Created.Compare(b.Created) })
 	return append(out, snapshots...), nil
+}
+
+// Base is the base Bases lists that ref names.
+func (d *Driver) Base(ctx context.Context, ref string) (machine.Base, bool, error) {
+	bases, err := d.Bases(ctx)
+	if err != nil {
+		return machine.Base{}, false, err
+	}
+	b, found := machine.FindBase(bases, ref)
+	return b, found, nil
 }
