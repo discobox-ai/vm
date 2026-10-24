@@ -1,6 +1,6 @@
 ---
 name: verify-recipes
-description: How to verify a disco-vm change at runtime — the CLI against real boxd or a real Docker daemon (run, exec, cp, stop, start, ps, rm, build), including from inside a discobox whose boxd credential is a five-minute sentinel. Read before verifying anything that touches the engine, the CLI, or the boxd or docker driver.
+description: How to verify a disco-vm change at runtime — the CLI against real boxd or a real Docker daemon (run, exec, cp, stop, start, ps, rm, snapshot, rmi), including from inside a discobox whose boxd credential is a five-minute sentinel. Read before verifying anything that touches the engine, the CLI, or the boxd or docker driver.
 ---
 
 # Verifying disco-vm
@@ -44,45 +44,54 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   is named `dvm-<project>--...` either way.
 - Isolate state: `export DISCO_VM_PROJECT=<a scratch project, e.g. vtest>
   DISCO_VM_DRIVER=boxd`. boxd keeps
-  everything (ADR 26-10-23-417): layers and tags are snapshots, instances are
+  everything (ADR 26-10-23-417): images and tags are snapshots, instances are
   machines, all named `dvm-<project>--...`, so the project is what keeps a
   run apart.
-- A base image: `docs/examples/boxd.yaml`, or any spec with
-  `from: {install: {os: linux, media: latest}}`. Install takes about a minute.
-  A layer costs a shutdown, a cold boot, and a snapshot (~40s on top of its
-  steps).
+- Start from a base: `images` lists boxd's default image and the account's
+  own snapshots, and `run --name dvm-dev <that name>` takes one (about 6s).
+  An image is `stop` then `snapshot dvm-dev NAME`: a cold boot and a
+  snapshot (~40s).
 
 ## docker
 
 - Needs a rootful Docker daemon on cgroup v2; a discobox has one. Build with
-  `go tool task build:linux-agent`, static, as for boxd: install copies the
-  CLI binary into the image as the guest's agent and the container's init,
-  where it runs on the image's libc. A plain `go build` links glibc
-  dynamically (the devShell's from `/nix/store`), and it fails at install or
-  boot on an image without that libc.
+  `go tool task build:linux-agent`, static, as for boxd: creating an
+  instance of a registry image copies the CLI binary into it as the guest's
+  agent and the container's init, where it runs on the image's libc. A plain
+  `go build` links glibc dynamically (the devShell's from `/nix/store`), and
+  it fails at create or boot on an image without that libc. Off linux,
+  `DISCO_VM_AGENT` names the linux build.
 - Isolate state: `export DISCO_VM_PROJECT=<a scratch project>
   DISCO_VM_DRIVER=docker`. The daemon
-  keeps everything: layers are images named
-  `disco-vm-layer:<project>--<id>`, tags `disco-vm/<project>/<ref>`, and
+  keeps everything: images are Docker images named
+  `disco-vm-layer:<project>--<id>` (and an instance's readied base
+  `...--base-<name>--<random>`), tags `disco-vm/<project>/<ref>`, and
   instances containers named `dvm-<project>--<name>`, labeled
   `ai.discobox.vm.*`.
-- Base image: `docs/examples/docker.yaml`. Install takes 30s to 2 minutes
-  (apt installs systemd); a layer costs a shutdown and a `docker commit`.
-- Inside a discobox, build steps that use the network need the proxy in the
-  spec, because the guest's systemd starts services with a clean environment.
-  Use a copy of the spec with `env: {http_proxy: http://172.17.0.1:17008,
-  https_proxy: http://172.17.0.1:17008}`. The install itself needs nothing:
-  the box's runc injects its CA and proxy into every container. Fedora is the
-  exception, where that injection fails and `dnf` hangs.
+- Start from any registry image: `run --name dev debian:trixie`. Create
+  takes 30s to 2 minutes (apt installs systemd); a snapshot costs a shutdown
+  and a `docker commit`.
+- `internal/e2e` against docker takes the static binary too:
+  `DISCO_VM_TEST_BINARY=$PWD/build/linux-amd64/disco-vm DISCO_VM_DRIVER=docker
+  go test ./internal/e2e` (about 3 minutes). Its own `go build` is dynamic,
+  and readying debian fails with `exec: /usr/local/libexec/disco-vm: not
+  found`.
+- Inside a discobox, `exec` of anything that uses the network needs the
+  proxy, because the guest's systemd starts services with a clean
+  environment: `exec -e http_proxy=http://172.17.0.1:17008 -e
+  https_proxy=http://172.17.0.1:17008 dev ...`. Readying the image needs
+  nothing: the box's runc injects its CA and proxy into every container.
+  Fedora is the exception, where that injection fails and `dnf` hangs.
 - Worth driving beyond the common flows: `exec dev systemctl
   is-system-running` (`running`), `ps -eo uid,comm` on the host (the guest's
   processes at uid 16777216 and up), `cat /etc/machine-id` in two instances
   (different), a guest's own `systemctl reboot` (back, still `running`), and
   `docker kill` or `docker rm -f` on the container behind disco-vm's back,
   then `ls -a`, `start`, `rm -f`. No `disco-vm shim` process should exist.
-- Clean up: `ls -a` and `images -a` list nothing, and no `dvm-*` containers
-  or `disco-vm-layer` images are left (`docker ps -a`, `docker images`). `rmi` keeps an image's
-  layers while an instance uses them; tag and `rmi` a leftover layer by ID.
+- Clean up: `ls -a` and `images` list nothing, and no `dvm-*` containers or
+  `disco-vm-layer` images are left (`docker ps -a`, `docker images`). `rmi`
+  untags an image an instance runs and keeps it; `rmi` an untagged leftover
+  by its ID.
 
 ## Flows worth driving
 
@@ -104,9 +113,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   unquoted `$CMD` holding spaces is one word. Use `${VAR}` and functions.
 - `pgrep -f '<pattern>'` matches the wrapper shell whose command line contains
   the pattern. Check a PID with `ps -p` instead.
-- A build longer than five minutes can outlive its sentinel, and a wait on a
-  guest that cannot be asked can hang rather than fail. Run long builds with a
-  watchdog that kills a build whose log has been quiet for six minutes, and
-  re-run: cached layers make the retry cheap.
+- A command longer than five minutes can outlive its sentinel, and a wait on
+  a guest that cannot be asked can hang rather than fail. Run long ones with
+  a watchdog that kills a command whose output has been quiet for six
+  minutes, and re-run.
 - Clean up: `ls -a` should be empty at the end. A boxd machine left running is
   billed.

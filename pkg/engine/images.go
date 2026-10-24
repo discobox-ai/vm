@@ -10,14 +10,14 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// ErrImageNotFound reports a reference that names no tag and no layer.
+// ErrImageNotFound reports a reference that names no tag and no image.
 var ErrImageNotFound = errors.New("not found")
 
-// Image is a tag and the layer it names, or an untagged layer.
-type Image struct {
-	// Ref is the tag, or empty for an untagged image, named by its layer ID.
+// Entry is a tag and the image it names, or an untagged image.
+type Entry struct {
+	// Ref is the tag, or empty for an untagged image, named by its ID.
 	Ref   string        `json:"ref"`
-	Layer machine.Layer `json:"layer"`
+	Image machine.Image `json:"image"`
 }
 
 // NormalizeRef adds ":latest" to a reference without a tag.
@@ -83,7 +83,7 @@ func validComponent(c string) bool {
 	return true
 }
 
-// Short is the 12-character form of a layer ID people read.
+// Short is the 12-character form of an image ID people read.
 func Short(id string) string {
 	if len(id) > 12 {
 		return id[:12]
@@ -91,183 +91,164 @@ func Short(id string) string {
 	return id
 }
 
-// Resolve is the layer a reference names: name:tag, a bare name (meaning
-// :latest), a full layer ID, or an unambiguous layer ID prefix of at least six
+// Resolve is the image a reference names: name:tag, a bare name (meaning
+// :latest), a full image ID, or an unambiguous image ID prefix of at least six
 // characters.
-func (e *Engine) Resolve(ctx context.Context, ref string) (machine.Layer, error) {
+func (e *Engine) Resolve(ctx context.Context, ref string) (machine.Image, error) {
 	tags, err := e.Driver.Tags(ctx)
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
 	normalized := NormalizeRef(ref)
 	for _, t := range tags {
 		if t.Ref == normalized {
-			layer, err := e.Driver.Layer(ctx, t.Layer)
+			img, err := e.Driver.Image(ctx, t.Image)
 			if errors.Is(err, machine.ErrNotFound) {
-				return machine.Layer{}, fmt.Errorf("image %s names layer %s, which %s no longer has: %w", ref, Short(t.Layer), e.Driver.Name(), ErrImageNotFound)
+				return machine.Image{}, fmt.Errorf("image %s names %s, which %s no longer has: %w", ref, Short(t.Image), e.Driver.Name(), ErrImageNotFound)
 			}
-			return layer, err
+			return img, err
 		}
 	}
 	if len(ref) < 6 || strings.ContainsAny(ref, ":/") {
-		return machine.Layer{}, fmt.Errorf("image %q: %w", ref, ErrImageNotFound)
+		return machine.Image{}, fmt.Errorf("image %q: %w", ref, ErrImageNotFound)
 	}
-	if layer, err := e.Driver.Layer(ctx, ref); err == nil || !errors.Is(err, machine.ErrNotFound) {
-		return layer, err
+	if img, err := e.Driver.Image(ctx, ref); err == nil || !errors.Is(err, machine.ErrNotFound) {
+		return img, err
 	}
-	layers, err := e.Driver.Layers(ctx)
+	images, err := e.Driver.Images(ctx)
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
-	var match []machine.Layer
-	for _, layer := range layers {
-		if strings.HasPrefix(layer.ID, ref) {
-			match = append(match, layer)
+	var match []machine.Image
+	for _, img := range images {
+		if strings.HasPrefix(img.ID, ref) {
+			match = append(match, img)
 		}
 	}
 	switch len(match) {
 	case 1:
 		return match[0], nil
 	case 0:
-		return machine.Layer{}, fmt.Errorf("image %q: %w", ref, ErrImageNotFound)
+		return machine.Image{}, fmt.Errorf("image %q: %w", ref, ErrImageNotFound)
 	default:
-		return machine.Layer{}, fmt.Errorf("image %q matches %d layers", ref, len(match))
+		return machine.Image{}, fmt.Errorf("image %q matches %d images", ref, len(match))
 	}
 }
 
-// Tag points ref at a layer, moving it from any other.
-func (e *Engine) Tag(ctx context.Context, ref, layer string) error {
+// Tag points ref at an image, moving it from any other.
+func (e *Engine) Tag(ctx context.Context, ref, image string) error {
 	if err := ValidateRef(ref); err != nil {
 		return err
 	}
-	return e.Driver.Tag(ctx, NormalizeRef(ref), layer)
+	return e.Driver.Tag(ctx, NormalizeRef(ref), image)
 }
 
-// Images lists every tag, then every untagged image: a layer that has no tag
-// and is no other layer's parent, which is what a build without -t leaves. all
-// lists every untagged layer, the intermediate layers of a chain too, as
-// `docker images -a` does.
-func (e *Engine) Images(ctx context.Context, all bool) ([]Image, error) {
+// Images lists every tag, then every untagged image, newest first.
+func (e *Engine) Images(ctx context.Context) ([]Entry, error) {
 	tags, err := e.Driver.Tags(ctx)
 	if err != nil {
 		return nil, err
 	}
-	layers, err := e.Driver.Layers(ctx)
+	images, err := e.Driver.Images(ctx)
 	if err != nil {
 		return nil, err
 	}
-	byID := make(map[string]machine.Layer, len(layers))
+	byID := make(map[string]machine.Image, len(images))
+	for _, img := range images {
+		byID[img.ID] = img
+	}
 	named := map[string]bool{}
-	for _, layer := range layers {
-		byID[layer.ID] = layer
-		if !all {
-			named[layer.Parent] = true
-		}
-	}
-	images := make([]Image, 0, len(tags))
+	entries := make([]Entry, 0, len(tags))
 	for _, t := range tags {
-		layer, ok := byID[t.Layer]
+		img, ok := byID[t.Image]
 		if !ok {
-			layer = machine.Layer{ID: t.Layer}
+			img = machine.Image{ID: t.Image}
 		}
-		named[t.Layer] = true
-		images = append(images, Image{Ref: t.Ref, Layer: layer})
+		named[t.Image] = true
+		entries = append(entries, Entry{Ref: t.Ref, Image: img})
 	}
-	slices.SortFunc(images, func(a, b Image) int { return strings.Compare(a.Ref, b.Ref) })
-	var untagged []Image
-	for _, layer := range layers {
-		if !named[layer.ID] {
-			untagged = append(untagged, Image{Layer: layer})
+	slices.SortFunc(entries, func(a, b Entry) int { return strings.Compare(a.Ref, b.Ref) })
+	var untagged []Entry
+	for _, img := range images {
+		if !named[img.ID] {
+			untagged = append(untagged, Entry{Image: img})
 		}
 	}
-	slices.SortFunc(untagged, func(a, b Image) int { return b.Layer.Created.Compare(a.Layer.Created) })
-	return append(images, untagged...), nil
+	slices.SortFunc(untagged, func(a, b Entry) int { return b.Image.Created.Compare(a.Image.Created) })
+	return append(entries, untagged...), nil
 }
 
-// RemoveImage untags ref, then deletes every layer that the removal left
-// unused — the layer itself, then its parents in turn — as `docker rmi` does.
-// A ref that is a layer ID removes an untagged image; a tagged one is removed
-// by name. A layer is used while a tag names it, a layer is built on it, or
-// an instance was made from it. untagged is the tag that was removed, or
-// empty for a layer ID.
-func (e *Engine) RemoveImage(ctx context.Context, ref string) (untagged string, removed []string, err error) {
+// Removal is what RemoveImage did.
+type Removal struct {
+	// Untagged is the tag removed, or empty for an image named by its ID.
+	Untagged string
+	// Deleted is the image deleted, or empty when it is still tagged, in
+	// use, or Kept.
+	Deleted string
+	// Kept is why the driver kept an image whose last tag was removed: its
+	// disk is still another image's (machine.ErrInUse). The image stays,
+	// untagged, until that one is removed.
+	Kept error
+}
+
+// RemoveImage untags ref, then deletes the image if nothing else tags or
+// runs it, as `docker rmi` does, and touches no other image. A ref that is an
+// image ID removes an untagged image; a tagged one is removed by name.
+func (e *Engine) RemoveImage(ctx context.Context, ref string) (Removal, error) {
+	var r Removal
 	tags, err := e.Driver.Tags(ctx)
 	if err != nil {
-		return "", nil, err
+		return r, err
 	}
 	normalized := NormalizeRef(ref)
 	var id string
 	for _, t := range tags {
 		if t.Ref == normalized {
-			id, untagged = t.Layer, normalized
+			id, r.Untagged = t.Image, normalized
 		}
 	}
-	if untagged != "" {
+	if r.Untagged != "" {
 		if err := e.Driver.Untag(ctx, normalized); err != nil {
-			return "", nil, err
+			return Removal{}, err
 		}
 	} else {
-		layer, err := e.Resolve(ctx, ref)
+		img, err := e.Resolve(ctx, ref)
 		if err != nil {
-			return "", nil, err
+			return r, err
 		}
-		id = layer.ID
-		used, err := e.layerUsed(ctx, id)
-		if err != nil {
-			return "", nil, err
-		}
-		if used {
-			return "", nil, fmt.Errorf("image %s is tagged, has layers built on it, or is in use; remove what names it first", Short(id))
-		}
+		id = img.ID
 	}
-	// The listing, not Layer, says what each layer's parent is: a layer that
-	// cannot boot (a local one whose parent is gone) is still listed, and is
-	// deleted like any other.
-	layers, err := e.Driver.Layers(ctx)
+	used, err := e.imageUsed(ctx, id)
 	if err != nil {
-		return untagged, removed, err
+		return r, err
 	}
-	parents := map[string]string{}
-	for _, layer := range layers {
-		parents[layer.ID] = layer.Parent
+	if used {
+		if r.Untagged != "" {
+			return r, nil
+		}
+		return r, fmt.Errorf("image %s is tagged or in use; remove what names it first", Short(id))
 	}
-	for id != "" {
-		used, err := e.layerUsed(ctx, id)
-		if err != nil || used {
-			return untagged, removed, err
-		}
-		parent, listed := parents[id]
-		if !listed {
-			return untagged, removed, nil
-		}
-		if err := e.Driver.DeleteLayer(ctx, id); err != nil {
-			return untagged, removed, err
-		}
-		removed = append(removed, id)
-		id = parent
+	err = e.Driver.DeleteImage(ctx, id)
+	switch {
+	case errors.Is(err, machine.ErrInUse) && r.Untagged != "":
+		r.Kept = err
+		return r, nil
+	case err != nil:
+		return r, err
 	}
-	return untagged, removed, nil
+	r.Deleted = id
+	return r, nil
 }
 
-// layerUsed reports whether a tag names a layer, a layer is built on it, or
-// an instance, a build's too, was made from it. A listing that fails is no
-// answer, and never read as "unused".
-func (e *Engine) layerUsed(ctx context.Context, id string) (bool, error) {
+// imageUsed reports whether a tag names an image, or an instance was made
+// from it. A listing that fails is no answer, and never read as "unused".
+func (e *Engine) imageUsed(ctx context.Context, id string) (bool, error) {
 	tags, err := e.Driver.Tags(ctx)
 	if err != nil {
 		return true, err
 	}
 	for _, t := range tags {
-		if t.Layer == id {
-			return true, nil
-		}
-	}
-	layers, err := e.Driver.Layers(ctx)
-	if err != nil {
-		return true, err
-	}
-	for _, layer := range layers {
-		if layer.Parent == id {
+		if t.Image == id {
 			return true, nil
 		}
 	}
@@ -276,7 +257,7 @@ func (e *Engine) layerUsed(ctx context.Context, id string) (bool, error) {
 		return true, err
 	}
 	for _, inst := range instances {
-		if inst.Layer == id {
+		if inst.ImageID == id {
 			return true, nil
 		}
 	}

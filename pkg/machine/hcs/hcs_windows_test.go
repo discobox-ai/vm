@@ -16,9 +16,9 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// BaseEnv names an installed hcs base layer, by its ID, in the driver's
-// directory ($DISCO_VM_ROOT, or %LOCALAPPDATA%\disco-vm): a layer an install
-// made, which `disco-vm images -a` lists. It gates the tests that need a real
+// BaseEnv names an installed hcs image, by its ID, in the driver's directory
+// ($DISCO_VM_ROOT, or %LOCALAPPDATA%\disco-vm): an image `disco-vm install`
+// made, which `disco-vm images` lists. It gates the tests that need a real
 // hypervisor and an installed Windows.
 const BaseEnv = "DISCO_VM_HCS_BASE"
 
@@ -28,7 +28,7 @@ func basePayload(t *testing.T) string {
 	t.Helper()
 	id := os.Getenv(BaseEnv)
 	if id == "" {
-		t.Skipf("set %s to an installed hcs base layer to run on HCS", BaseEnv)
+		t.Skipf("set %s to an installed hcs image to run on HCS", BaseEnv)
 	}
 	return filepath.Join(machine.DefaultDir(), "images", "layers", id, "payload")
 }
@@ -38,7 +38,7 @@ func basePayload(t *testing.T) string {
 func TestConformance(t *testing.T) {
 	base := os.Getenv(BaseEnv)
 	if base == "" {
-		t.Skipf("set %s to an installed hcs base layer to run the conformance suite on HCS", BaseEnv)
+		t.Skipf("set %s to an installed hcs image to run the conformance suite on HCS", BaseEnv)
 	}
 	binary := os.Getenv("DISCO_VM_TEST_BINARY")
 	if binary == "" {
@@ -53,7 +53,7 @@ func TestConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	machinetest.Run(t, driver, machinetest.Config{
-		Base:       base,
+		Image:      base,
 		CPUs:       4,
 		Memory:     4 << 30,
 		Timeout:    10 * time.Minute,

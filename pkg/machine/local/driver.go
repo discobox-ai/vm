@@ -17,7 +17,7 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Driver keeps a Hypervisor's layers, tags, and instances in a directory.
+// Driver keeps a Hypervisor's images, tags, and instances in a directory.
 type Driver struct {
 	hv      Hypervisor
 	dir     string
@@ -58,58 +58,75 @@ func (d *Driver) Check(ctx context.Context) error    { return d.hv.Check(ctx) }
 // Bases is the hypervisor's.
 func (d *Driver) Bases(ctx context.Context) ([]machine.Base, error) { return d.hv.Bases(ctx) }
 
+// Base is the base the hypervisor lists that ref names.
+func (d *Driver) Base(ctx context.Context, ref string) (machine.Base, bool, error) {
+	bases, err := d.hv.Bases(ctx)
+	if err != nil {
+		return machine.Base{}, false, err
+	}
+	b, found := machine.FindBase(bases, ref)
+	return b, found, nil
+}
+
 const (
-	layerFile    = "layer.json"
+	// imageFile is an image's record. It keeps the name it had when images
+	// were layers, as does the directory the images are in.
+	imageFile    = "layer.json"
 	instanceFile = "instance.json"
 	payloadDir   = "payload"
 	machineDir   = "machine"
 )
 
-func (d *Driver) layersDir() string            { return filepath.Join(d.dir, "images", "layers") }
-func (d *Driver) layerDir(id string) string    { return filepath.Join(d.layersDir(), id) }
+func (d *Driver) imagesDir() string            { return filepath.Join(d.dir, "images", "layers") }
+func (d *Driver) imageDir(id string) string    { return filepath.Join(d.imagesDir(), id) }
 func (d *Driver) tagsDir() string              { return filepath.Join(d.dir, "images", "tags", d.project) }
 func (d *Driver) instancesDir() string         { return filepath.Join(d.dir, "instances") }
 func (d *Driver) instanceDir(id string) string { return filepath.Join(d.instancesDir(), id) }
 func (d *Driver) namesDir() string             { return filepath.Join(d.instancesDir(), ".names", d.project) }
 
-// layerRecord is a layer's layer.json.
-type layerRecord struct {
-	machine.Layer
+// imageRecord is an image's layer.json.
+type imageRecord struct {
+	machine.Image
 	Project string `json:"project"`
-	// Generation is made at random when the layer is published, and
-	// ParentGeneration is its parent's when it was: a child of a parent made
-	// again, after one was lost, was built on a disk that is gone.
-	Generation       string `json:"generation,omitempty"`
-	ParentGeneration string `json:"parentGeneration,omitempty"`
+	// Parent is the image whose disk this one's differences over, kept only
+	// for a hypervisor that Chains. It is the driver's alone: above the
+	// seam an image has no parent.
+	Parent string `json:"parent,omitempty"`
 }
 
 // instanceRecord is an instance's instance.json.
 type instanceRecord struct {
 	machine.Instance
 	Project string `json:"project"`
+	// Layer is the image of an instance made when images were layers,
+	// read as its ImageID.
+	Layer string `json:"layer,omitempty"`
 }
 
-// readLayer reads a published layer of the driver's project.
-func (d *Driver) readLayer(id string) (machine.Layer, error) {
-	rec, err := d.readRecord(id)
-	return rec.Layer, err
-}
-
-func (d *Driver) readRecord(id string) (layerRecord, error) {
+func (d *Driver) readRecord(id string) (imageRecord, error) {
 	if !validID(id) {
-		return layerRecord{}, fmt.Errorf("layer %s: %w", id, machine.ErrNotFound)
+		return imageRecord{}, fmt.Errorf("image %s: %w", id, machine.ErrNotFound)
 	}
-	var rec layerRecord
-	if err := fsutil.ReadJSON(filepath.Join(d.layerDir(id), layerFile), &rec); err != nil {
+	var rec imageRecord
+	if err := fsutil.ReadJSON(filepath.Join(d.imageDir(id), imageFile), &rec); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return layerRecord{}, fmt.Errorf("layer %s: %w", id, machine.ErrNotFound)
+			return imageRecord{}, fmt.Errorf("image %s: %w", id, machine.ErrNotFound)
 		}
-		return layerRecord{}, err
+		return imageRecord{}, err
 	}
-	if rec.Project != d.project || rec.ID != id {
-		return layerRecord{}, fmt.Errorf("layer %s: %w", id, machine.ErrNotFound)
+	if rec.ID != id {
+		return imageRecord{}, fmt.Errorf("image %s: %w", id, machine.ErrNotFound)
 	}
 	return rec, nil
+}
+
+// readImage reads a published image of the driver's project.
+func (d *Driver) readImage(id string) (machine.Image, error) {
+	rec, err := d.readRecord(id)
+	if err == nil && rec.Project != d.project {
+		err = fmt.Errorf("image %s: %w", id, machine.ErrNotFound)
+	}
+	return rec.Image, err
 }
 
 // validID refuses an ID that is not a plain directory name.
@@ -117,158 +134,171 @@ func validID(id string) bool {
 	return id != "" && !strings.ContainsAny(id, `/\.:`) && filepath.Base(id) == id
 }
 
-// Layer is a layer whose disk can boot: its own and its ancestors' are all
-// there. A layer whose parent was deleted behind the driver's back is not
-// found, so a build makes it again, since a disk that differences over its
-// parent's (hcs) cannot be trusted over a parent made again.
-func (d *Driver) Layer(_ context.Context, id string) (machine.Layer, error) {
-	layer, err := d.readLayer(id)
+// Image is an image whose disk can boot: its own, and, for a hypervisor that
+// Chains, every disk it differences over, are all there.
+func (d *Driver) Image(_ context.Context, id string) (machine.Image, error) {
+	img, err := d.readImage(id)
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
 	if _, err := d.chain(id); err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
-	return layer, nil
+	return img, nil
 }
 
-func (d *Driver) Layers(context.Context) ([]machine.Layer, error) {
-	entries, err := os.ReadDir(d.layersDir())
+func (d *Driver) Images(context.Context) ([]machine.Image, error) {
+	records, err := d.records()
+	if err != nil {
+		return nil, err
+	}
+	var out []machine.Image
+	for _, rec := range records {
+		if rec.Project == d.project {
+			out = append(out, rec.Image)
+		}
+	}
+	return out, nil
+}
+
+// records reads every published image's record, of every project: the disks
+// of every project share the directory. A record that cannot be read is an
+// error, not one left out: DeleteImage reads this list to learn which disks
+// another image needs, and a listing that fails is no answer.
+func (d *Driver) records() ([]imageRecord, error) {
+	entries, err := os.ReadDir(d.imagesDir())
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var out []machine.Layer
+	var out []imageRecord
 	for _, entry := range entries {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
-		// A directory with no record is one being made or deleted.
-		if layer, err := d.readLayer(entry.Name()); err == nil {
-			out = append(out, layer)
+		rec, err := d.readRecord(entry.Name())
+		switch {
+		case err == nil:
+			out = append(out, rec)
+		case errors.Is(err, machine.ErrNotFound):
+			// A directory with no record is one being made or deleted.
+		default:
+			return nil, err
 		}
 	}
 	return out, nil
 }
 
-// chain is a layer and its ancestors as the hypervisor sees them, base first.
-// A layer whose parent is gone, or was made again since, is not found.
+// chain is an image and the images its disk differences over, as the
+// hypervisor sees them, base first. An image whose parent is gone is not
+// found.
 func (d *Driver) chain(id string) ([]Layer, error) {
 	var chain []Layer
 	child := ""
-	want := ""
 	for id != "" {
 		rec, err := d.readRecord(id)
 		if err != nil {
 			if child != "" {
-				return nil, fmt.Errorf("layer %s: its parent %s: %w", short(child), short(id), err)
+				return nil, fmt.Errorf("image %s: the image its disk differences over, %s: %w", short(child), short(id), err)
 			}
 			return nil, err
 		}
-		// A record with a parent and no generation of it is from nowhere a
-		// layer is published: not trusted.
-		if (child != "" && want == "") || (want != "" && rec.Generation != want) {
-			return nil, fmt.Errorf("layer %s was not built on the parent %s there now: %w", short(child), short(id), machine.ErrNotFound)
-		}
-		chain = append([]Layer{{ID: id, Dir: filepath.Join(d.layerDir(id), payloadDir)}}, chain...)
-		child, want, id = id, rec.ParentGeneration, rec.Parent
+		chain = append([]Layer{{ID: id, Dir: filepath.Join(d.imageDir(id), payloadDir)}}, chain...)
+		child, id = id, d.parent(rec)
 	}
 	return chain, nil
 }
 
-// pending is a layer being written, under a temporary name.
-type pending struct {
-	d    *Driver
-	meta machine.Layer
-	tmp  string
+// parent is the image a record's disk differences over, for a hypervisor
+// that Chains. A record from when images were layers names a parent for every
+// hypervisor, which one that does not chain never needed.
+func (d *Driver) parent(rec imageRecord) string {
+	if !d.hv.Chains() {
+		return ""
+	}
+	return rec.Parent
 }
 
-func (d *Driver) begin(meta machine.Layer) (*pending, error) {
-	if !validID(meta.ID) {
-		return nil, fmt.Errorf("local: layer ID %q is not a directory name", meta.ID)
+// pending is an image being written, under a temporary name.
+type pending struct {
+	d   *Driver
+	rec imageRecord
+	tmp string
+}
+
+func (d *Driver) begin(img machine.Image, parent string) (*pending, error) {
+	if !validID(img.ID) {
+		return nil, fmt.Errorf("local: image ID %q is not a directory name", img.ID)
 	}
-	tmp := filepath.Join(d.layersDir(), ".tmp-"+short(meta.ID)+"-"+fsutil.RandomHex(4))
+	tmp := filepath.Join(d.imagesDir(), ".tmp-"+short(img.ID)+"-"+fsutil.RandomHex(4))
 	if err := os.MkdirAll(filepath.Join(tmp, payloadDir), 0o755); err != nil {
 		return nil, err
 	}
-	return &pending{d: d, meta: meta, tmp: tmp}, nil
+	rec := imageRecord{Image: img, Project: d.project}
+	if d.hv.Chains() {
+		rec.Parent = parent
+	}
+	return &pending{d: d, rec: rec, tmp: tmp}, nil
 }
 
-func (p *pending) layer() Layer { return Layer{ID: p.meta.ID, Dir: filepath.Join(p.tmp, payloadDir)} }
+func (p *pending) layer() Layer { return Layer{ID: p.rec.ID, Dir: filepath.Join(p.tmp, payloadDir)} }
 
-// publish records the layer and renames it into place. A layer of the same ID
-// published first is identical by construction, and is the one kept.
-func (p *pending) publish() (machine.Layer, error) {
-	if p.meta.Created.IsZero() {
-		p.meta.Created = time.Now().UTC()
+// publish records the image and renames it into place.
+func (p *pending) publish() (machine.Image, error) {
+	if p.rec.Created.IsZero() {
+		p.rec.Created = time.Now().UTC()
 	}
-	rec := layerRecord{Layer: p.meta, Project: p.d.project, Generation: fsutil.RandomHex(8)}
-	if p.meta.Parent != "" {
-		parent, err := p.d.readRecord(p.meta.Parent)
-		if err != nil {
-			p.abort()
-			return machine.Layer{}, err
-		}
-		rec.ParentGeneration = parent.Generation
-	}
-	if err := fsutil.WriteJSON(filepath.Join(p.tmp, layerFile), rec); err != nil {
+	if err := fsutil.WriteJSON(filepath.Join(p.tmp, imageFile), p.rec); err != nil {
 		p.abort()
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
-	dir := p.d.layerDir(p.meta.ID)
-	if _, err := p.d.Layer(context.Background(), p.meta.ID); errors.Is(err, machine.ErrNotFound) {
-		// A layer recorded here whose parent is gone is made again, so the
-		// one there is moved out of the way first.
-		if _, err := p.d.readLayer(p.meta.ID); err == nil {
-			if err := p.d.DeleteLayer(context.Background(), p.meta.ID); err != nil {
-				p.abort()
-				return machine.Layer{}, err
-			}
-		}
-	}
-	if err := os.Rename(p.tmp, dir); err != nil {
+	if err := os.Rename(p.tmp, p.d.imageDir(p.rec.ID)); err != nil {
 		p.abort()
-		if layer, readErr := p.d.readLayer(p.meta.ID); readErr == nil {
-			return layer, nil
-		}
-		// A directory there with no record is what a crash left between
-		// writing a layer and recording it, or a deletion that stopped
-		// partway; nothing can be using it.
-		if _, statErr := os.Stat(filepath.Join(dir, layerFile)); errors.Is(statErr, fs.ErrNotExist) {
-			return machine.Layer{}, fmt.Errorf("local: %s holds a layer with no record; remove it and build again: %w", dir, err)
-		}
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
-	return p.meta, nil
+	return p.rec.Image, nil
 }
 
 func (p *pending) abort() { _ = os.RemoveAll(p.tmp) }
 
-func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, layer machine.Layer) (machine.Layer, error) {
-	layer.Parent = ""
-	p, err := d.begin(layer)
+func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, img machine.Image) (machine.Image, error) {
+	if !d.hv.Capabilities().Install {
+		return machine.Image{}, fmt.Errorf("%s installs nothing from media: %w", d.hv.Name(), machine.ErrUnsupported)
+	}
+	p, err := d.begin(img, "")
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
 	err = d.hv.Install(ctx, InstallSpec{InstallSpec: spec, CacheDir: filepath.Join(d.dir, "cache", d.hv.Name())}, p.layer())
 	if err != nil {
 		p.abort()
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
 	return p.publish()
 }
 
-// DeleteLayer renames the layer out of the listing, then removes it.
-func (d *Driver) DeleteLayer(_ context.Context, id string) error {
-	if _, err := d.readLayer(id); errors.Is(err, machine.ErrNotFound) {
+// DeleteImage refuses an image whose disk another image's differences over,
+// in any project, since every project's disks share the directory; otherwise
+// it renames the image out of the listing, then removes it.
+func (d *Driver) DeleteImage(_ context.Context, id string) error {
+	if _, err := d.readImage(id); errors.Is(err, machine.ErrNotFound) {
 		return nil
 	} else if err != nil {
 		return err
 	}
-	gone := filepath.Join(d.layersDir(), ".del-"+short(id)+"-"+fsutil.RandomHex(4))
-	if err := os.Rename(d.layerDir(id), gone); err != nil {
+	records, err := d.records()
+	if err != nil {
+		return err
+	}
+	for _, rec := range records {
+		if d.parent(rec) == id {
+			return fmt.Errorf("image %s: image %s's disk differences over its disk; remove that one first: %w", short(id), short(rec.ID), machine.ErrInUse)
+		}
+	}
+	gone := filepath.Join(d.imagesDir(), ".del-"+short(id)+"-"+fsutil.RandomHex(4))
+	if err := os.Rename(d.imageDir(id), gone); err != nil {
 		return err
 	}
 	return os.RemoveAll(gone)
@@ -293,23 +323,30 @@ func (d *Driver) Tags(context.Context) ([]machine.Tag, error) {
 		if !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		var t machine.Tag
+		// A tag from when images were layers names its image "layer".
+		var t struct {
+			machine.Tag
+			Layer string `json:"layer"`
+		}
 		if err := fsutil.ReadJSON(filepath.Join(d.tagsDir(), entry.Name()), &t); err == nil && t.Ref != "" {
-			out = append(out, t)
+			if t.Image == "" {
+				t.Image = t.Layer
+			}
+			out = append(out, t.Tag)
 		}
 	}
 	slices.SortFunc(out, func(a, b machine.Tag) int { return strings.Compare(a.Ref, b.Ref) })
 	return out, nil
 }
 
-func (d *Driver) Tag(_ context.Context, ref, layer string) error {
-	if _, err := d.readLayer(layer); err != nil {
+func (d *Driver) Tag(_ context.Context, ref, image string) error {
+	if _, err := d.readImage(image); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(d.tagsDir(), 0o755); err != nil {
 		return err
 	}
-	return fsutil.WriteJSON(d.tagFile(ref), machine.Tag{Ref: ref, Layer: layer})
+	return fsutil.WriteJSON(d.tagFile(ref), machine.Tag{Ref: ref, Image: image})
 }
 
 func (d *Driver) Untag(_ context.Context, ref string) error {
@@ -326,7 +363,7 @@ func (d *Driver) spec(inst machine.Instance) (InstanceSpec, error) {
 	}
 	spec := InstanceSpec{ID: inst.ID, Dir: filepath.Join(d.instanceDir(inst.ID), machineDir), GuestOS: inst.GuestOS, Base: inst.Base}
 	if inst.Base == nil {
-		chain, err := d.chain(inst.Layer)
+		chain, err := d.chain(inst.ImageID)
 		if err != nil {
 			return InstanceSpec{}, err
 		}
@@ -377,12 +414,12 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("%s cannot forward a guest's connections to the host: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
 	inst := machine.Instance{
-		ID: fsutil.RandomHex(6), Name: spec.Name, Image: spec.Image, Layer: spec.Layer, Base: spec.Base,
+		ID: fsutil.RandomHex(6), Name: spec.Name, Image: spec.Image, ImageID: spec.ImageID, Base: spec.Base,
 		GuestOS: spec.GuestOS, CPUs: spec.CPUs, Memory: spec.Memory,
 		Created: time.Now().UTC(), Forwards: spec.Forwards,
 	}
 	if inst.Base != nil {
-		inst.Layer = ""
+		inst.ImageID = ""
 	}
 	if err := d.claim(inst.Name, inst.ID); err != nil {
 		return machine.Instance{}, err
@@ -423,6 +460,9 @@ func (d *Driver) readInstance(id string) (machine.Instance, error) {
 	}
 	if rec.Project != d.project || rec.ID != id {
 		return machine.Instance{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
+	}
+	if rec.ImageID == "" {
+		rec.ImageID = rec.Layer
 	}
 	return rec.Instance, nil
 }
@@ -484,7 +524,7 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 		return d.release(inst)
 	}
 	hs := InstanceSpec{ID: inst.ID, Dir: filepath.Join(dir, machineDir), GuestOS: inst.GuestOS, Base: inst.Base}
-	if chain, err := d.chain(inst.Layer); err == nil && inst.Base == nil {
+	if chain, err := d.chain(inst.ImageID); err == nil && inst.Base == nil {
 		hs.Chain = chain
 	}
 	if err := d.hv.Destroy(ctx, hs); err != nil {
@@ -538,28 +578,29 @@ func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.B
 	return d.hv.Boot(ctx, hs, BootOptions{CPUs: inst.CPUs, Memory: inst.Memory, GUI: opts.GUI, Title: title, Console: opts.Console})
 }
 
-// Commit moves the stopped instance's disk into a new layer, publishes it, and
-// removes the instance.
-func (d *Driver) Commit(ctx context.Context, inst machine.Instance, layer machine.Layer) (machine.Layer, error) {
+// Commit moves the stopped instance's disk into a new image, publishes it,
+// and removes the instance. For a hypervisor that Chains, the new image's
+// disk differences over the instance's image's, which it records as its
+// parent.
+func (d *Driver) Commit(ctx context.Context, inst machine.Instance, img machine.Image) (machine.Image, error) {
 	if shim, err := d.openShim(inst.ID); err == nil && shim.status(ctx) == nil {
-		return machine.Layer{}, fmt.Errorf("instance %s is running; stop it first", inst.Name)
+		return machine.Image{}, fmt.Errorf("instance %s is running; stop it first", inst.Name)
 	}
 	hs, err := d.spec(inst)
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
-	layer.Parent = inst.Layer
-	p, err := d.begin(layer)
+	p, err := d.begin(img, inst.ImageID)
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
 	if err := d.hv.Commit(ctx, hs, p.layer()); err != nil {
 		p.abort()
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
 	committed, err := p.publish()
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
 	_ = d.Destroy(ctx, inst)
 	return committed, nil

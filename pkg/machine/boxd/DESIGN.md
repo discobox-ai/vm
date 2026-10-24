@@ -1,6 +1,6 @@
 # pkg/machine/boxd
 
-A layer is a snapshot, and the guest is reached through Exec.
+An image is a snapshot, and the guest is reached through Exec.
 
 boxd offers machines and snapshots of running machines, not disk images, no
 labels on either, and no socket into a guest. The boxd driver maps the seam
@@ -9,13 +9,17 @@ host: what it knows is in the names of its snapshots and machines (the root
 [DESIGN.md](../../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider)). See
 [docs/drivers/boxd.md](../../../docs/drivers/boxd.md).
 
-- **A layer is a snapshot** (memory and disk) of the guest booted from the
-  committed disk, named `dvm-<project>--<layer ID>`; a tag is a second
-  snapshot of it, `dvm-<project>--<layer ID>--t-<ref>`, the ref's punctuation
+- **An image is a snapshot** (memory and disk) of the guest booted from the
+  committed disk, named `dvm-<project>--<image ID>`; a tag is a second
+  snapshot of it, `dvm-<project>--<image ID>--t-<ref>`, the ref's punctuation
   escaped. Commit starts the stopped instance and snapshots it, because
-  boxd only snapshots a running machine. The layer is still cut from an
-  orderly shutdown: the snapshot's disk is the one the guest flushed.
-- **A clone** restores the layer's snapshot as the machine
+  boxd only snapshots a running machine. The image is still cut from an
+  orderly shutdown: the snapshot's disk is the one the guest flushed. There
+  is no install: boxd's images and snapshots are bases. A machine the driver
+  makes for a moment (to save a tag's snapshot) is named as an instance of
+  the project's, `save-<random>`, so one a killed process leaves, which boxd
+  bills, is listed and `rm` removes it.
+- **A clone** restores the image's snapshot as the machine
   `dvm-<project>--<name>`, at the instance's size, and stops it, so its first
   boot is a cold boot of that disk. **An instance of a base** is made from the
   image (`CreateVm`) or the snapshot (`CreateVmFromSnapshot`) and stopped the
@@ -26,8 +30,8 @@ host: what it knows is in the names of its snapshots and machines (the root
   stderr, the exit code, and a TTY with its size and resizes are Exec's own.
   A copy in is `tar -x` reading the stream, and a copy out writes one ready
   byte once it has found the path and then `tar -c`, so a missing path is an
-  error, not an empty tar. Info is `uname -m` and `hostname`. Boot, Commit,
-  and Install wait until `systemctl is-system-running --wait` answers, so a
+  error, not an empty tar. Info is `uname -m` and `hostname`. Boot and
+  Commit wait until `systemctl is-system-running --wait` answers, so a
   command runs in a booted system. boxd authenticates every stream. An image
   installed before this carries an agent that nothing reaches; it does no
   harm.

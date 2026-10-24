@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -14,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/discobox-ai/vm/pkg/build"
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -131,13 +129,8 @@ func fakeEngine(t *testing.T) (*engine.Engine, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	file := filepath.Join(dir, "app.yaml")
-	spec := "from:\n  install: {os: " + runtime.GOOS + ", media: latest}\nlayers:\n  - name: a\n    steps:\n      - run: echo app\n"
-	if err := os.WriteFile(file, []byte(spec), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := (&build.Builder{Engine: e, Out: io.Discard}).Build(ctx, build.Options{File: file, Tags: []string{"app"}, Agent: binary}); err != nil {
-		t.Fatalf("build: %v", err)
+	if _, err := e.Install(ctx, engine.InstallOptions{}, "app"); err != nil {
+		t.Fatalf("install: %v", err)
 	}
 	return e, binary
 }

@@ -3,28 +3,28 @@
 The driver whose provider is this host's disk: the store and the shim that
 hcs, vz, and fake share (ADR 26-10-23-417). Each of them is a
 `local.Hypervisor`, which installs, clones, boots, commits, and destroys a
-disk in a directory it is given; this package keeps everything else.
+disk in a directory it is given, and says whether its disks chain; this
+package keeps everything else.
 
 ## A directory of its own is the store
 
 `machine.Config.Dir` (`--root`, `$DISCO_VM_ROOT`, or the per-OS data
 directory) is the driver's, as `/var/lib/docker` is Docker's:
 
-- `images/layers/<id>/payload` (the hypervisor's disk) and `layer.json`
-  (project, parent, guest OS, comment, generations);
+- `images/layers/<id>/payload` (an image's disk) and `layer.json` (project,
+  guest OS, comment, and, for a hypervisor that chains, the parent), their
+  names from when images were layers;
 - `images/tags/<project>/<ref in hex>.json`;
 - `instances/<id>/machine` (the hypervisor's) and `instance.json` (project,
-  name, image, layer or base, size, forwards), and while a shim holds it,
+  name, image, image ID or base, size, forwards), and while a shim holds it,
   `shim.json` and `shim.log`;
 - `instances/.names/<project>/<name>`, the name's claim, holding the ID;
 - `cache/<hypervisor>/`, media the hypervisor downloads.
 
 Nothing takes a lock:
 
-- **A layer is published by renaming its directory into place**, written
-  under a temporary name with its record inside. Two builds of one key are
-  identical by construction; the first rename wins and the other is
-  discarded.
+- **An image is published by renaming its directory into place**, written
+  under a temporary name with its record inside, under a random ID.
 - **A tag is a file**, replaced by a rename.
 - **A name is claimed by creating its file exclusively.** A claim with no
   instance behind it for ten minutes is what a crash left, and is taken.
@@ -33,14 +33,19 @@ Nothing takes a lock:
   instance listed to remove again, and a crash while making one leaves a
   directory nothing lists.
 
-## A layer records its parent's generation
+## A chain is the driver's, below the seam
 
-A hcs layer is a differencing disk over its parent's, so it boots only over
-the parent it was built on. Each layer gets a random generation when it is
-published and records its parent's (`ParentGeneration`). `Layer` reports a
-layer not found when an ancestor is gone, or was made again since, or has a
-parent and no recorded generation, so a build makes it again, replacing the
-broken one; `Layers` still lists it, so `rmi` can remove it.
+Above the seam an image has no parent (ADR 26-10-23-410). An hcs snapshot,
+though, is a differencing disk over the disk of the image its instance ran
+from, so a hypervisor that `Chains` gets the parent recorded: Commit writes
+the instance's image ID as the snapshot's `parent`, Prepare, Boot, and
+Destroy get the whole chain (`InstanceSpec.Chain`, base first), and
+`DeleteImage` refuses with `machine.ErrInUse` while any image's record, in
+any project, names the image as its parent, so a disk another still needs is
+never deleted. `Image` reports an image not found when an ancestor is gone
+(deleted behind the driver's back); `Images` still lists it, so `rmi` can
+remove it. vz and fake do not chain: their images record no parent, and each
+is a copy of its own.
 
 ## A shim per running VM
 

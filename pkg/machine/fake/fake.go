@@ -88,8 +88,12 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		GuestOS: []machine.OS{machine.OS(runtime.GOOS)},
 		Forward: true,
 		Agent:   true,
+		Install: true,
 	}
 }
+
+// Chains is false: an image is a tree of its own.
+func (*Hypervisor) Chains() bool { return false }
 
 func (*Hypervisor) Check(context.Context) error { return nil }
 
@@ -140,7 +144,7 @@ func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 			return err
 		}
 		var marker strings.Builder
-		fmt.Fprintf(&marker, "os=%s\nbase=%s\nversion=%s\n", b.GuestOS, b.ID, b.Version)
+		fmt.Fprintf(&marker, "os=%s\nbase=%s\n", b.GuestOS, b.ID)
 		for _, key := range slices.Sorted(maps.Keys(b.Options)) {
 			fmt.Fprintf(&marker, "option.%s=%s\n", key, b.Options[key])
 		}

@@ -1,16 +1,15 @@
-// Package e2e drives the real disco-vm binary through its whole lifecycle: build
-// (install, layers, cache), images, run, exec, cp, stop, start, snapshot, rm,
-// rmi.
+// Package e2e drives the real disco-vm binary through its whole lifecycle:
+// install, images, run, exec, cp, stop, start, snapshot, tag, rm, rmi.
 // On the fake driver it is the neutral proof of everything above the driver
 // seam, and it runs on every OS.
 //
 // $DISCO_VM_DRIVER runs it against a real driver instead. That needs a signed
 // binary on macOS ($DISCO_VM_TEST_BINARY) and a persistent state root
-// ($DISCO_VM_E2E_ROOT), where the base install is built once, tagged
-// e2e/base, and found in the build cache by every later run. On hcs it also
-// needs a Windows ISO ($DISCO_VM_E2E_ISO) and an elevated shell. The docker
-// driver installs in seconds, so its state root is optional; it installs from
-// debian:trixie, or the image $DISCO_VM_E2E_IMAGE names.
+// ($DISCO_VM_E2E_ROOT), where the base install is made once, tagged
+// e2e/base, and found by every later run. On hcs it also needs a Windows ISO
+// ($DISCO_VM_E2E_ISO) and an elevated shell. The docker driver installs
+// nothing: e2e/base is a snapshot of an instance of debian:trixie, or of the
+// image $DISCO_VM_E2E_IMAGE names, so its state root is optional.
 package e2e
 
 import (
@@ -40,9 +39,12 @@ var (
 // target is the driver the suite drives, and what its guest looks like.
 type target struct {
 	driver string
-	// install is the from.install every spec uses, so every build shares one
-	// cached base layer.
-	install string
+	// install is the arguments of the `disco-vm install` that makes
+	// e2e/base, on a driver that installs.
+	install []string
+	// base is the driver's base that e2e/base is a snapshot of, on a driver
+	// that does not.
+	base string
 	// dir is where the suite writes in the guest. The fake guest's is its
 	// root, and a command there runs in it.
 	dir string
@@ -54,7 +56,7 @@ type target struct {
 	slow bool
 }
 
-// file is a guest path for the file API and for a spec's copy destination.
+// file is a guest path for the file API.
 func (t target) file(p string) string {
 	if t.dir == "" {
 		return "/" + p
@@ -73,11 +75,11 @@ func (t target) cmd(p string) string {
 func targetFromEnv() target {
 	switch driver := os.Getenv("DISCO_VM_DRIVER"); driver {
 	case "", "fake":
-		return target{driver: "fake", install: fmt.Sprintf("{os: %s, media: latest}", runtime.GOOS)}
+		return target{driver: "fake", install: []string{}}
 	case "vz":
 		return target{
 			driver:  "vz",
-			install: "{os: darwin, media: latest, disk: 64GiB}",
+			install: []string{"--disk", "64GiB"},
 			dir:     "/Users/Shared",
 			root:    os.Getenv("DISCO_VM_E2E_ROOT"),
 			slow:    true,
@@ -88,10 +90,10 @@ func targetFromEnv() target {
 			image = "debian:trixie"
 		}
 		return target{
-			driver:  "docker",
-			install: fmt.Sprintf("{os: linux, media: latest, options: {image: '%s'}}", image),
-			dir:     "/srv",
-			root:    os.Getenv("DISCO_VM_E2E_ROOT"),
+			driver: "docker",
+			base:   image,
+			dir:    "/srv",
+			root:   os.Getenv("DISCO_VM_E2E_ROOT"),
 		}
 	case "hcs":
 		iso := os.Getenv("DISCO_VM_E2E_ISO")
@@ -101,7 +103,7 @@ func targetFromEnv() target {
 		}
 		return target{
 			driver:  "hcs",
-			install: fmt.Sprintf("{os: windows, media: '%s', edition: Windows 11 Pro, disk: 64GiB}", strings.ReplaceAll(iso, "'", "''")),
+			install: []string{"--media", iso, "--edition", "Windows 11 Pro", "--disk", "64GiB"},
 			dir:     "C:/Users/Public",
 			root:    os.Getenv("DISCO_VM_E2E_ROOT"),
 			slow:    true,
@@ -190,31 +192,47 @@ func mustContain(t *testing.T, out string, wants ...string) {
 	}
 }
 
-// newEnv is a state root for one test: a fresh one on the fake driver, and on
-// a real driver the persistent one, with its base install built and tagged.
+// newEnv is a state root for one test, holding e2e/base: a fresh one on the
+// fake driver, and on a real driver the persistent one, where e2e/base is
+// made once.
 func newEnv(t *testing.T) env {
 	t.Helper()
+	e := env{t: t, root: tg.root}
 	if tg.root == "" {
-		e := env{t: t, root: t.TempDir()}
+		e.root = t.TempDir()
 		if tg.driver != "fake" {
-			// A real driver may hold layers outside the state root (docker
+			// A real driver may hold images outside the state root (docker
 			// images), which a root thrown away would leave behind.
 			t.Cleanup(e.release)
 		}
-		return e
+	} else {
+		// Whatever a failed run left, so that this one makes its images anew.
+		e.run("rm", "-f", "dev", "dev2", "svc", "snap", "snap2", "for-base", "solo")
+		for _, ref := range []string{"test/app:v1", "test/app:latest", "test/snap:v2", "test/snap:v1"} {
+			e.run("rmi", ref)
+		}
 	}
-	e := env{t: t, root: tg.root}
-	// Whatever a failed run left, so that this one builds its layers anew.
-	e.run("rm", "-f", "dev", "dev2", "fw", "svc", "nosvc", "snap", "snap2")
-	for _, ref := range []string{"test/app:v1", "test/app:latest", "test/app:other", "test/fwd", "test/svc", "test/nosvc", "test/snap:v2", "test/snap:v1", "test/snap:base"} {
-		e.run("rmi", ref)
+	if !strings.Contains(e.ok("images"), "e2e/base:latest") {
+		if tg.base != "" {
+			e.snapshotOf(tg.base, "for-base", "e2e/base")
+		} else {
+			e.ok(append([]string{"install", "-t", "e2e/base"}, tg.install...)...)
+		}
 	}
-	spec := filepath.Join(t.TempDir(), "base.yaml")
-	if err := os.WriteFile(spec, []byte("from:\n  install: "+tg.install+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	e.ok("build", "-f", spec, "-t", "e2e/base")
 	return e
+}
+
+// snapshotOf runs an instance of ref named name, stops it, and snapshots it
+// as tag, or untagged when tag is empty, and returns the image's ID.
+func (e env) snapshotOf(ref, name, tag string) string {
+	e.t.Helper()
+	e.ok("run", "--name", name, ref)
+	e.ok("stop", name)
+	args := []string{"snapshot", name}
+	if tag != "" {
+		args = append(args, tag)
+	}
+	return strings.TrimSpace(e.ok(args...))
 }
 
 // release removes every instance and image in the state root.
@@ -234,7 +252,7 @@ func (e env) release() {
 	for _, ref := range rows(e.ok("images")) {
 		e.run("rmi", ref)
 	}
-	// What is left is untagged, and named by its layer.
+	// What is left is untagged, and named by its ID.
 	for _, line := range strings.Split(strings.TrimSpace(e.ok("images")), "\n")[1:] {
 		if f := strings.Fields(line); len(f) > 1 {
 			e.run("rmi", f[1])
@@ -252,65 +270,30 @@ func catArgv(path string) []string {
 
 func TestLifecycle(t *testing.T) {
 	e := newEnv(t)
-	contextDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(contextDir, "payload"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(contextDir, "payload", "tool.txt"), []byte("tool v1"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// The guest's OS, which is the host's except on a driver that runs another.
-	guestOS := runtime.GOOS
-	switch tg.driver {
-	case "hcs":
-		guestOS = "windows"
-	case "vz":
-		guestOS = "darwin"
-	case "docker":
-		guestOS = "linux"
-	}
-	shell := `["/bin/sh", "-c"]`
-	other := "windows"
+	mustContain(t, e.ok("images"), "e2e/base:latest")
+	exitArgv := []string{"/bin/sh", "-c", "exit 7"}
+	writeArgv := []string{"/bin/sh", "-c", "echo hi > " + tg.cmd("greeting.txt")}
 	if runtime.GOOS == "windows" {
-		shell, other = `["cmd", "/c"]`, "darwin"
-	}
-	spec := fmt.Sprintf(`
-args:
-  MSG: hello
-from:
-  install: %s
-shell: %s
-layers:
-  - name: files
-    steps:
-      - copy: {src: payload, dst: %s}
-      - run: echo ${MSG}> %s
-  - name: elsewhere
-    when: {os: %s}
-    steps:
-      - run: exit 1
-`, tg.install, shell, tg.file("opt/app"), tg.cmd("greeting.txt"), other)
-	specPath := filepath.Join(contextDir, "disco-vm.yaml")
-	if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
-		t.Fatal(err)
+		exitArgv = []string{"cmd", "/c", "exit 7"}
+		writeArgv = []string{"cmd", "/c", "echo hi> " + strings.ReplaceAll(tg.cmd("greeting.txt"), "/", `\`)}
 	}
 
-	// Build, then build again from cache. The spec names nothing; -t does.
-	out := e.ok("build", "-f", specPath, "--build-arg", "MSG=hi", "-t", "test/app", "-t", "test/app:v1")
-	mustContain(t, out, "==> install "+guestOS, "[1/1] files", "committed", "elsewhere: skipped", "tagged test/app:latest", "tagged test/app:v1")
-	out = e.ok("build", "-f", specPath, "--build-arg", "MSG=hi")
-	mustContain(t, out, "install "+guestOS+": CACHED", "files: CACHED", "untagged")
-	// A different arg is a different layer.
-	out = e.ok("build", "-f", specPath, "--build-arg", "MSG=other", "-t", "test/app:other")
-	mustContain(t, out, "install "+guestOS+": CACHED", "committed")
-	if _, code := e.run("build", "-f", specPath, "--build-arg", "NOPE=1"); code == 0 {
-		t.Fatal("an undeclared build arg was accepted")
+	// Shape an instance of the base, and snapshot it as the app's image.
+	local := t.TempDir()
+	if err := os.WriteFile(filepath.Join(local, "tool.txt"), []byte("tool v1"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	mustContain(t, e.ok("images"), "test/app:latest", "test/app:v1", "test/app:other")
-	// A build without -t is still an image: listed, and removed by its ID.
-	out = e.ok("build", "-f", specPath, "--build-arg", "MSG=solo")
-	fields := strings.Fields(out)
-	solo := fields[len(fields)-1]
+	e.ok("run", "--name", "dev", "e2e/base")
+	e.ok("cp", filepath.Join(local, "tool.txt"), "dev:"+tg.file("opt/app"))
+	e.ok(append([]string{"exec", "dev"}, writeArgv...)...)
+	e.ok("stop", "dev")
+	app := strings.TrimSpace(e.ok("snapshot", "dev", "test/app:v1"))
+	e.ok("tag", "test/app:v1", "test/app")
+	mustContain(t, e.ok("images"), "test/app:latest", "test/app:v1", app[:12], "e2e/base:latest")
+
+	// A snapshot without a tag is still an image: listed, and removed by its
+	// ID.
+	solo := e.snapshotOf("test/app:v1", "solo", "")
 	mustContain(t, e.ok("images"), "<none>", solo[:12])
 	mustContain(t, e.ok("rmi", solo), "deleted "+solo[:12])
 	if out := e.ok("images"); strings.Contains(out, "<none>") {
@@ -327,24 +310,20 @@ layers:
 	mustContain(t, e.ok("ps"), "dev", "running")
 	mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("greeting.txt")...)...), "hi")
 	mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("opt/app/tool.txt")...)...), "tool v1")
-	exitArgv := []string{"/bin/sh", "-c", "exit 7"}
-	if runtime.GOOS == "windows" {
-		exitArgv = []string{"cmd", "/c", "exit 7"}
-	}
 	if _, code := e.run(append([]string{"exec", "dev"}, exitArgv...)...); code != 7 {
 		t.Fatalf("exec exit code = %d, want 7", code)
 	}
-	mustContain(t, e.ok("inspect", "dev"), `"state": "running"`)
+	mustContain(t, e.ok("inspect", "dev"), `"state": "running"`, `"imageID": "`+app)
 	if tg.driver == "fake" {
 		mustContain(t, e.ok("inspect", "dev"), `"fake": true`)
 	}
 
 	// Copy both ways.
-	local := filepath.Join(t.TempDir(), "note.txt")
-	if err := os.WriteFile(local, []byte("from host"), 0o644); err != nil {
+	note := filepath.Join(t.TempDir(), "note.txt")
+	if err := os.WriteFile(note, []byte("from host"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	e.ok("cp", local, "dev:"+tg.file("drop"))
+	e.ok("cp", note, "dev:"+tg.file("drop"))
 	mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("drop/note.txt")...)...), "from host")
 	outDir := t.TempDir()
 	e.ok("cp", "dev:"+tg.file("opt/app"), outDir)
@@ -366,102 +345,39 @@ layers:
 	e.ok("start", "dev")
 	mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("drop/note.txt")...)...), "from host")
 
-	// An image in use cannot lose its layers; after removal it can.
+	// An image in use is untagged but kept; once nothing runs it, its last
+	// tag deletes it.
+	if out := e.ok("rmi", "test/app:latest"); !strings.Contains(out, "untagged test/app:latest") || strings.Contains(out, "deleted") {
+		t.Fatalf("rmi of one of two tags:\n%s", out)
+	}
+	if _, code := e.run("rmi", app); code == 0 {
+		t.Fatal("rmi deleted a tagged image by its ID")
+	}
 	e.ok("rm", "-f", "dev", "dev2")
 	if strings.Contains(e.ok("ls", "-a"), "dev") {
 		t.Fatal("removed instances are still listed")
 	}
-	out = e.ok("rmi", "test/app:v1", "test/app:latest")
-	mustContain(t, out, "untagged test/app:v1", "deleted")
-	mustContain(t, e.ok("images"), "test/app:other")
+	mustContain(t, e.ok("rmi", "test/app:v1"), "untagged test/app:v1", "deleted "+app[:12])
+	if strings.Contains(e.ok("images"), app[:12]) {
+		t.Fatal("a deleted image is still listed")
+	}
 
 	// run takes an image and nothing else; a command goes through exec.
-	if _, code := e.run(append([]string{"run", "test/app:other"}, catArgv("greeting.txt")...)...); code == 0 {
+	if _, code := e.run(append([]string{"run", "e2e/base"}, catArgv("greeting.txt")...)...); code == 0 {
 		t.Fatal("run took a command")
 	}
-	if _, code := e.run("run", "--rm", "test/app:other"); code == 0 {
+	if _, code := e.run("run", "--rm", "e2e/base"); code == 0 {
 		t.Fatal("run took --rm")
-	}
-}
-
-// TestLostLayer loses a layer in the middle of a chain, as deleting a boxd
-// snapshot or a layer's directory does, and checks that the next build makes
-// it again under the same ID, and makes again the layer after it, which was
-// built on the disk that is gone, while the layer before it stays as it was.
-func TestLostLayer(t *testing.T) {
-	if tg.driver != "fake" {
-		t.Skip("only the fake driver keeps a layer where a test can lose it")
-	}
-	e := newEnv(t)
-	shell := `["/bin/sh", "-c"]`
-	if runtime.GOOS == "windows" {
-		shell = `["cmd", "/c"]`
-	}
-	specPath := filepath.Join(t.TempDir(), "disco-vm.yaml")
-	spec := fmt.Sprintf("from:\n  install: %s\nshell: %s\nlayers:\n", tg.install, shell)
-	for _, name := range []string{"one", "two", "three"} {
-		spec += fmt.Sprintf("  - name: %s\n    steps:\n      - run: echo %s> %s\n", name, name, tg.cmd(name+".txt"))
-	}
-	if err := os.WriteFile(specPath, []byte(spec), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// ids are the layers a build's log names, in order: one, two, three.
-	ids := func(out string) []string {
-		var ids []string
-		for line := range strings.SplitSeq(out, "\n") {
-			for _, mark := range []string{": CACHED ", ": committed "} {
-				if _, after, ok := strings.Cut(line, mark); ok && strings.HasPrefix(line, "==> [") {
-					ids = append(ids, strings.Fields(after)[0])
-				}
-			}
-		}
-		if len(ids) != 3 {
-			t.Fatalf("a build of three layers named %v:\n%s", ids, out)
-		}
-		return ids
-	}
-	first := ids(e.ok("build", "-f", specPath, "-t", "test/lost"))
-	lose := func(id string) {
-		t.Helper()
-		dirs, err := filepath.Glob(filepath.Join(e.root, "images", "layers", id+"*"))
-		if err != nil || len(dirs) != 1 {
-			t.Fatalf("layer %s is %v, %v", id, dirs, err)
-		}
-		if err := os.RemoveAll(dirs[0]); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// A layer built on one that is gone cannot boot, and rmi still removes
-	// it, stopping at the gap.
-	lose(first[1])
-	mustContain(t, e.ok("rmi", "test/lost"), "untagged test/lost:latest", "deleted "+first[2][:12])
-	if images := e.ok("images", "-a"); strings.Contains(images, first[2][:12]) || !strings.Contains(images, first[0][:12]) {
-		t.Fatalf("rmi of a layer built on a lost one left:\n%s", images)
-	}
-	first = ids(e.ok("build", "-f", specPath, "-t", "test/lost"))
-	lose(first[1])
-
-	out := e.ok("build", "-f", specPath, "-t", "test/lost")
-	mustContain(t, out, "[1/3] one: CACHED "+first[0], "[2/3] two: committed "+first[1], "[3/3] three: committed "+first[2])
-	out = e.ok("build", "-f", specPath, "-t", "test/lost")
-	mustContain(t, out, "two: CACHED "+first[1], "three: CACHED "+first[2])
-	e.ok("rmi", "test/lost")
-	if images := e.ok("images", "-a"); strings.Contains(images, first[0][:12]) {
-		t.Fatalf("rmi left the chain behind:\n%s", images)
 	}
 }
 
 // TestSnapshot commits a stopped instance as an image, which consumes the
 // instance, then snapshots an instance of that image in turn: each snapshot
-// keeps what the instance wrote, on top of the image it came from.
+// keeps what the instance wrote, and the second stands alone once the first
+// is removed. A driver whose second snapshot still needs the first's disk
+// (hcs) keeps the first, untagged, and says so.
 func TestSnapshot(t *testing.T) {
 	e := newEnv(t)
-	base := filepath.Join(t.TempDir(), "base.yaml")
-	if err := os.WriteFile(base, []byte("from:\n  install: "+tg.install+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	e.ok("build", "-f", base, "-t", "test/snap:base")
 	dir := t.TempDir()
 	// write copies a file named name into the instance's snap directory.
 	write := func(inst, name string) {
@@ -477,7 +393,7 @@ func TestSnapshot(t *testing.T) {
 		mustContain(t, e.ok(append([]string{"exec", inst}, catArgv("snap/"+name)...)...), name)
 	}
 
-	e.ok("run", "--name", "snap", "test/snap:base")
+	e.ok("run", "--name", "snap", "e2e/base")
 	write("snap", "first")
 	if out, code := e.run("snapshot", "snap", "test/snap:v1"); code == 0 || !strings.Contains(out, "stop it first") {
 		t.Fatalf("a running instance was snapshotted (exit %d):\n%s", code, out)
@@ -503,18 +419,29 @@ func TestSnapshot(t *testing.T) {
 	// Untagged, it is known by the ID it prints.
 	second := strings.TrimSpace(e.ok("snapshot", "snap2"))
 	if second == first {
-		t.Fatal("two snapshots share a layer")
+		t.Fatal("two snapshots share an ID")
 	}
 	mustContain(t, e.ok("images"), "<none>", second[:12])
 	e.ok("tag", second, "test/snap:v2")
+
+	// The first goes, or is kept untagged for the second; either way the
+	// second runs with both writes.
+	out := e.ok("rmi", "test/snap:v1")
+	mustContain(t, out, "untagged test/snap:v1")
+	kept := strings.Contains(out, "kept it, untagged")
+	if !kept {
+		mustContain(t, out, "deleted "+first[:12])
+	}
 	e.ok("run", "--name", "snap", "test/snap:v2")
 	read("snap", "first")
 	read("snap", "second")
 
-	// The snapshots are layers like any other: kept while in use, then removed.
 	e.ok("rm", "-f", "snap")
-	e.ok("rmi", "test/snap:v2", "test/snap:v1", "test/snap:base")
-	if out := e.ok("images", "-a"); strings.Contains(out, first[:12]) || strings.Contains(out, second[:12]) {
+	e.ok("rmi", "test/snap:v2")
+	if kept {
+		e.ok("rmi", first)
+	}
+	if out := e.ok("images"); strings.Contains(out, first[:12]) || strings.Contains(out, second[:12]) {
 		t.Fatalf("a removed snapshot is still listed:\n%s", out)
 	}
 }
@@ -524,9 +451,9 @@ func TestInfo(t *testing.T) {
 	mustContain(t, e.ok("info"), "driver:   "+tg.driver, "check:    ok", "fake")
 	if tg.driver == "fake" {
 		// A driver with no display refuses a window rather than ignoring it.
-		out, code := e.run("build", "--gui", "-f", "nonexistent.yaml")
+		out, code := e.run("install", "--gui")
 		if code == 0 || !strings.Contains(out, "no display") {
-			t.Fatalf("build --gui on the fake driver: exit %d\n%s", code, out)
+			t.Fatalf("install --gui on the fake driver: exit %d\n%s", code, out)
 		}
 	}
 }
@@ -571,12 +498,7 @@ func driverSelected(out, name string) bool {
 // guest is a host process, so the service is this test's server.
 func TestURL(t *testing.T) {
 	e := newEnv(t)
-	specPath := filepath.Join(t.TempDir(), "svc.yaml")
-	if err := os.WriteFile(specPath, []byte("from:\n  install: "+tg.install+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	e.ok("build", "-f", specPath, "-t", "test/svc")
-	e.ok("create", "--name", "svc", "test/svc")
+	e.ok("create", "--name", "svc", "e2e/base")
 	t.Cleanup(func() { e.run("rm", "-f", "svc") })
 	if out, code := e.run("url", "svc"); code == 0 || !strings.Contains(out, "not running") {
 		t.Fatalf("url of a stopped instance: exit %d\n%s", code, out)
@@ -630,17 +552,16 @@ func TestURL(t *testing.T) {
 		}
 	}
 	e.ok("rm", "-f", "svc")
-	e.ok("rmi", "test/svc")
 }
 
-// TestBases lists a driver's base among the images, runs it with no build and
-// no layer, builds an image on it, and snapshots an instance of it; a base is
-// not an image, so tag and rmi refuse it.
+// TestBases lists a driver's base among the images, runs it with no image,
+// and snapshots an instance of it; a base is not an image, so tag and rmi
+// refuse it.
 func TestBases(t *testing.T) {
 	if tg.driver != "fake" {
 		t.Skip("only the fake driver is given its bases by the test")
 	}
-	t.Setenv("DISCO_VM_FAKE_BASES", fmt.Sprintf(`[{"name":"stock","id":"stock-1","version":"7","guestOS":%q,"options":{"image":"stock"}}]`, runtime.GOOS))
+	t.Setenv("DISCO_VM_FAKE_BASES", fmt.Sprintf(`[{"name":"stock","id":"stock-1","guestOS":%q,"options":{"image":"stock"}}]`, runtime.GOOS))
 	e := newEnv(t)
 	row := func() []string {
 		t.Helper()
@@ -654,12 +575,12 @@ func TestBases(t *testing.T) {
 		return nil
 	}
 	if r := row(); r[1] != "-" {
-		t.Fatalf("a base has a layer: %v", r)
+		t.Fatalf("a base has an image ID: %v", r)
 	}
 	// A base runs with no image made of it.
 	e.ok("run", "--name", "b", "stock")
 	mustContain(t, e.ok(append([]string{"exec", "b"}, catArgv(".disco-vm-install")...)...), "base=stock-1", "option.image=stock")
-	if images := e.ok("images", "-a"); strings.Contains(images, "<none>") {
+	if images := e.ok("images"); strings.Contains(images, "<none>") {
 		t.Fatalf("running a base made an image:\n%s", images)
 	}
 	for _, args := range [][]string{{"tag", "stock", "test/stock"}, {"rmi", "stock"}} {
@@ -668,32 +589,13 @@ func TestBases(t *testing.T) {
 		}
 	}
 
-	// A build on a base: its first layer has no parent, and a second build
-	// of it is cached.
-	shell := `["/bin/sh", "-c"]`
-	if runtime.GOOS == "windows" {
-		shell = `["cmd", "/c"]`
-	}
-	spec := filepath.Join(t.TempDir(), "disco-vm.yaml")
-	if err := os.WriteFile(spec, fmt.Appendf(nil, "from:\n  image: stock\nshell: %s\nlayers:\n  - name: one\n    steps:\n      - run: echo built> %s\n", shell, tg.cmd("built.txt")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mustContain(t, e.ok("build", "-f", spec, "-t", "test/on-stock"), "one of fake's bases", "[1/1] one: committed")
-	mustContain(t, e.ok("build", "-f", spec, "-t", "test/on-stock"), "[1/1] one: CACHED")
-	e.ok("run", "--name", "built", "test/on-stock")
-	mustContain(t, e.ok(append([]string{"exec", "built"}, catArgv("built.txt")...)...), "built")
-	mustContain(t, e.ok(append([]string{"exec", "built"}, catArgv(".disco-vm-install")...)...), "base=stock-1")
-	// A new version of the base builds the layer on it again.
-	t.Setenv("DISCO_VM_FAKE_BASES", fmt.Sprintf(`[{"name":"stock","id":"stock-1","version":"8","guestOS":%q,"options":{"image":"stock"}}]`, runtime.GOOS))
-	mustContain(t, e.ok("build", "-f", spec, "-t", "test/on-stock"), "[1/1] one: committed")
-
 	// An instance of a base snapshots to an image like any other.
 	e.ok("stop", "b")
 	e.ok("snapshot", "b", "test/from-b")
 	e.ok("run", "--name", "b2", "test/from-b")
 	mustContain(t, e.ok(append([]string{"exec", "b2"}, catArgv(".disco-vm-install")...)...), "base=stock-1")
-	e.ok("rm", "-f", "built", "b2")
-	e.ok("rmi", "test/on-stock", "test/from-b")
+	e.ok("rm", "-f", "b2")
+	e.ok("rmi", "test/from-b")
 	if r := row(); r[1] != "-" {
 		t.Fatalf("the base is not listed as it was: %v", r)
 	}

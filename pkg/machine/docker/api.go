@@ -157,6 +157,28 @@ type imageInfo struct {
 	} `json:"Config"`
 }
 
+// distribution asks the image's registry, through the daemon, whether it
+// has ref, without pulling it (isUnknownToRegistry).
+func (a *api) distribution(ctx context.Context, ref string) error {
+	return a.call(ctx, http.MethodGet, "/distribution/"+ref+"/json", nil, nil, nil)
+}
+
+// isUnknownToRegistry reports the daemon's answer, from /distribution, that
+// the registry has no such image: 404 for a tag it lacks, and 401 or 403,
+// which Docker Hub gives a repository that does not exist. Any other error
+// is the registry not being reached.
+func isUnknownToRegistry(err error) bool {
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.Status {
+	case http.StatusNotFound, http.StatusUnauthorized, http.StatusForbidden:
+		return true
+	}
+	return false
+}
+
 func (a *api) inspectImage(ctx context.Context, ref string) (imageInfo, error) {
 	var out imageInfo
 	return out, a.call(ctx, http.MethodGet, "/images/"+ref+"/json", nil, nil, &out)
@@ -164,7 +186,7 @@ func (a *api) inspectImage(ctx context.Context, ref string) (imageInfo, error) {
 
 // pull fetches an image, following its progress stream to the end: the
 // daemon reports a failed pull inside a 200 answer.
-func (a *api) pull(ctx context.Context, ref string, log func(string, ...any)) error {
+func (a *api) pull(ctx context.Context, ref string) error {
 	name, tag := splitRef(ref)
 	resp, err := a.do(ctx, http.MethodPost, "/images/create", url.Values{"fromImage": {name}, "tag": {tag}}, nil, "")
 	if err != nil {
@@ -172,11 +194,9 @@ func (a *api) pull(ctx context.Context, ref string, log func(string, ...any)) er
 	}
 	defer resp.Body.Close()
 	dec := json.NewDecoder(resp.Body)
-	last := ""
 	for {
 		var msg struct {
-			Status string `json:"status"`
-			Error  string `json:"error"`
+			Error string `json:"error"`
 		}
 		if err := dec.Decode(&msg); errors.Is(err, io.EOF) {
 			return nil
@@ -185,12 +205,6 @@ func (a *api) pull(ctx context.Context, ref string, log func(string, ...any)) er
 		}
 		if msg.Error != "" {
 			return fmt.Errorf("docker: pull %s: %s", ref, msg.Error)
-		}
-		// Per-layer progress is noise in a build log; the overall status
-		// lines (pulling, digest, downloaded) are not.
-		if msg.Status != last && !strings.HasPrefix(msg.Status, "Downloading") && !strings.HasPrefix(msg.Status, "Extracting") {
-			last = msg.Status
-			log("docker: %s", msg.Status)
 		}
 	}
 }

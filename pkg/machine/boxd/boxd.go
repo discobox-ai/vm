@@ -6,14 +6,16 @@
 // and keeps no labels on either, so the driver maps the seam onto their names
 // and keeps nothing on the host (ADR 26-10-23-417):
 //
-//   - A layer is a boxd snapshot (memory and disk) of the guest booted from
-//     the committed disk, named dvm-<project>--<layer id>. boxd keeps no
-//     parent and no comment for it, and needs none: a snapshot is whole.
-//   - A tag is a second snapshot of its layer's, named
-//     dvm-<project>--<layer id>--t-<ref>, with the ref's punctuation escaped.
+//   - An image is a boxd snapshot (memory and disk) of the guest booted from
+//     the committed disk, named dvm-<project>--<image id>. boxd keeps no
+//     comment for it, and a snapshot is whole: no image needs another.
+//   - A tag is a second snapshot of its image's, named
+//     dvm-<project>--<image id>--t-<ref>, with the ref's punctuation escaped.
 //   - An instance is a boxd machine named dvm-<project>--<name>, restored from
-//     its layer's snapshot or made from a base, and powered off in order once
-//     made, so its first boot is a cold boot of the layer's disk.
+//     its image's snapshot or made from a base, and powered off in order once
+//     made, so its first boot is a cold boot of its disk.
+//
+// There is no install: boxd's images and snapshots are bases.
 //
 // There is no hypervisor socket to the guest, and no disco-vm agent in it.
 // The guest's operations (machine.Guest) are boxd's authenticated Exec stream:
@@ -46,9 +48,6 @@ func init() {
 }
 
 const (
-	// maxDisk is boxd's fixed disk: every machine has 100 GiB.
-	maxDisk = 100 << 30
-
 	// waitLimit bounds each wait for a machine or snapshot to change state.
 	waitLimit = 10 * time.Minute
 
@@ -102,68 +101,26 @@ type vmRef struct {
 // prefix starts the name of everything the driver makes for its project.
 func (d *Driver) prefix() string { return machine.ResourcePrefix(namePrefix, d.project) }
 
-// layerName is a layer's snapshot.
-func (d *Driver) layerName(id string) string { return d.prefix() + id }
+// imageName is an image's snapshot.
+func (d *Driver) imageName(id string) string { return d.prefix() + id }
+
+// transientName is a machine the driver makes for a moment of its own (to save
+// a tag's snapshot), named as an instance of the project's, `<what>-<random>`,
+// so that one a process killed meanwhile leaves, which boxd bills, is listed,
+// and `rm` removes it.
+func (d *Driver) transientName(what string) string {
+	return d.prefix() + what + "-" + fsutil.RandomHex(3)
+}
 
 // machineName is an instance's machine.
 func (d *Driver) machineName(name string) string { return d.prefix() + name }
 
-// Install creates a machine from one of boxd's own images and snapshots it as
-// the base layer. It puts nothing of disco-vm's in the guest, so spec.Agent is
-// not used.
-func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, dst machine.Layer) (machine.Layer, error) {
-	if spec.GuestOS != machine.Linux {
-		return machine.Layer{}, fmt.Errorf("boxd: guests are linux, not %s", spec.GuestOS)
-	}
-	if spec.Media != "" && spec.Media != "latest" {
-		return machine.Layer{}, fmt.Errorf("boxd: install from media \"latest\"; pick a boxd image with options.image, not media %q", spec.Media)
-	}
-	for key := range spec.Options {
-		if key != "image" {
-			return machine.Layer{}, fmt.Errorf("boxd: unknown install option %q (have: image)", key)
-		}
-	}
-	if spec.DiskBytes > maxDisk {
-		return machine.Layer{}, fmt.Errorf("boxd: every machine has a 100 GiB disk; %d bytes were asked for", spec.DiskBytes)
-	}
-	api, err := d.api.API()
-	if err != nil {
-		return machine.Layer{}, err
-	}
-	log := logger(spec.Log)
-
-	created, err := api.CreateVm(ctx, &boxdapi.CreateVmRequest{
-		Name:          d.machineName(machine.TemporaryPrefix + "install-" + fsutil.RandomHex(3)),
-		ImageRef:      spec.Options["image"],
-		RestartPolicy: "never",
-		Config:        &boxdapi.VmConfig{Vcpu: uint32(spec.CPUs), MemoryBytes: spec.Memory},
-	})
-	if err != nil {
-		return machine.Layer{}, fmt.Errorf("boxd: create machine: %w", err)
-	}
-	vm := created.GetVmId()
-	defer d.destroyVM(vm)
-	log("boxd: created %s (%s)", created.GetName(), vm)
-	if err := d.settle(ctx, api, vm); err != nil {
-		return machine.Layer{}, err
-	}
-	if _, err := waitVM(ctx, api, vm, "running"); err != nil {
-		return machine.Layer{}, err
-	}
-	if err := waitGuest(ctx, api, vm, nil); err != nil {
-		return machine.Layer{}, err
-	}
-
-	// The base layer is snapshotted running, and a cold clone boots its
-	// disk: what the guest wrote must be on it.
-	if err := syncDisks(ctx, api, vm); err != nil {
-		return machine.Layer{}, err
-	}
-	log("boxd: snapshotting the base layer")
-	return d.snapshot(ctx, api, vm, dst.ID)
+// Install is not offered: boxd's images and snapshots are bases instead.
+func (*Driver) Install(context.Context, machine.InstallSpec, machine.Image) (machine.Image, error) {
+	return machine.Image{}, fmt.Errorf("boxd: run one of boxd's images or snapshots (disco-vm images): %w", machine.ErrUnsupported)
 }
 
-// Create makes the instance's machine: restored from its layer's snapshot, or
+// Create makes the instance's machine: restored from its image's snapshot, or
 // made from its base, at the size it asks for, with its proxy pinned to the
 // service port; then powered off in order, so its first boot is a cold boot.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
@@ -174,7 +131,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if len(name) > maxMachineName {
 		return machine.Instance{}, fmt.Errorf("boxd: instance name %q is too long: its machine %s must be at most %d characters", spec.Name, name, maxMachineName)
 	}
-	if spec.Base == nil && spec.Layer == "" {
+	if spec.Base == nil && spec.ImageID == "" {
 		return machine.Instance{}, errors.New("boxd: instance has no image")
 	}
 	if len(spec.Forwards) > 0 {
@@ -193,7 +150,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	var created *boxdapi.CreateVmResponse
 	switch {
 	case spec.Base == nil:
-		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: d.layerName(spec.Layer), Name: name}
+		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: d.imageName(spec.ImageID), Name: name}
 		if spec.CPUs != 0 || spec.Memory != 0 {
 			req.Config = config
 		}
@@ -238,7 +195,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("boxd: machine %s: %w", name, err)
 	}
 	inst := d.instance(info)
-	inst.Image, inst.Layer, inst.Base = spec.Image, spec.Layer, spec.Base
+	inst.Image, inst.ImageID, inst.Base = spec.Image, spec.ImageID, spec.Base
 	return inst, nil
 }
 
@@ -367,36 +324,36 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 }
 
 // Commit boots the stopped instance from its committed disk, snapshots it as
-// the layer, and destroys the machine: a boxd snapshot can only be taken of a
+// the image, and destroys the machine: a boxd snapshot can only be taken of a
 // running machine.
-func (d *Driver) Commit(ctx context.Context, inst machine.Instance, dst machine.Layer) (machine.Layer, error) {
+func (d *Driver) Commit(ctx context.Context, inst machine.Instance, dst machine.Image) (machine.Image, error) {
 	api, err := d.api.API()
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
 	ref := vmRef{ID: inst.ID, Name: d.machineName(inst.Name)}
 	info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: ref.ID})
 	if err != nil {
-		return machine.Layer{}, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
+		return machine.Image{}, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
 	}
 	if info.GetStatus() != "stopped" {
-		return machine.Layer{}, fmt.Errorf("boxd: commit needs a stopped machine; %s is %s", ref.Name, info.GetStatus())
+		return machine.Image{}, fmt.Errorf("boxd: commit needs a stopped machine; %s is %s", ref.Name, info.GetStatus())
 	}
 	if _, err := api.StartVm(ctx, &boxdapi.StartVmRequest{VmId: ref.ID}); err != nil {
-		return machine.Layer{}, fmt.Errorf("boxd: start %s: %w", ref.Name, err)
+		return machine.Image{}, fmt.Errorf("boxd: start %s: %w", ref.Name, err)
 	}
 	if _, err := waitVM(ctx, api, ref.ID, "running"); err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
 	if err := waitGuest(ctx, api, ref.ID, nil); err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
-	layer, err := d.snapshot(ctx, api, ref.ID, dst.ID)
+	img, err := d.snapshot(ctx, api, ref.ID, dst.ID)
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
 	d.destroyVM(ref.ID)
-	return layer, nil
+	return img, nil
 }
 
 func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
@@ -410,25 +367,25 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	return nil
 }
 
-// DeleteLayer deletes the layer's snapshot.
-func (d *Driver) DeleteLayer(ctx context.Context, id string) error {
-	return d.deleteSnapshot(ctx, d.layerName(id))
+// DeleteImage deletes the image's snapshot. No other image needs it: a
+// machine restored from a snapshot has a disk of its own.
+func (d *Driver) DeleteImage(ctx context.Context, id string) error {
+	return d.deleteSnapshot(ctx, d.imageName(id))
 }
 
-// snapshot captures a running machine as the layer id, and waits until the
-// snapshot can be restored. A snapshot of the same name already there is the
-// same layer, made meanwhile; boxd saves this one over it.
-func (d *Driver) snapshot(ctx context.Context, api boxdapi.BoxdApiClient, vm, id string) (machine.Layer, error) {
-	name := d.layerName(id)
+// snapshot captures a running machine as the image id, and waits until the
+// snapshot can be restored.
+func (d *Driver) snapshot(ctx context.Context, api boxdapi.BoxdApiClient, vm, id string) (machine.Image, error) {
+	name := d.imageName(id)
 	created, err := api.CreateSnapshot(ctx, &boxdapi.CreateSnapshotRequest{Vm: vm, Name: name})
 	if err != nil {
-		return machine.Layer{}, fmt.Errorf("boxd: snapshot %s: %w", vm, err)
+		return machine.Image{}, fmt.Errorf("boxd: snapshot %s: %w", vm, err)
 	}
 	snap, err := waitSnapshot(ctx, api, name, created.GetVersion())
 	if err != nil {
-		return machine.Layer{}, err
+		return machine.Image{}, err
 	}
-	return machine.Layer{ID: id, GuestOS: machine.Linux, Created: unixTime(snap.GetCreatedAt(), time.Millisecond)}, nil
+	return machine.Image{ID: id, GuestOS: machine.Linux, Created: unixTime(snap.GetCreatedAt(), time.Millisecond)}, nil
 }
 
 // waitSnapshot waits until a snapshot can be restored.
@@ -470,7 +427,7 @@ func (d *Driver) deleteSnapshot(ctx context.Context, name string) error {
 // StopVm, and the wait until boxd says it stopped. A guest that cannot be
 // asked to flush is still stopped, so it costs nothing, but powerOff fails: a
 // disk cut off mid-write is not one to boot clones from, which is the rule a
-// layer commit follows too.
+// snapshot follows too.
 func powerOff(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 	flushed := syncDisks(ctx, api, vm)
 	if _, err := api.StopVm(ctx, &boxdapi.StopVmRequest{VmId: vm}); err != nil && !isNotFound(err) {
@@ -484,7 +441,7 @@ func powerOff(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 
 // syncDisks flushes the guest's writes to its disk, once it answers. boxd does
 // not say whether StopVm shuts a guest down in order or cuts its power, so
-// every stop that keeps the disk (Shutdown, a cold clone's, a layer's install)
+// every stop that keeps the disk (Shutdown, a cold clone's)
 // flushes it first.
 func syncDisks(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 	ready, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -565,14 +522,6 @@ func run(ctx context.Context, api boxdapi.BoxdApiClient, vm, command string) (st
 		out.Write(msg.GetData())
 		if msg.GetExitCode() != 0 {
 			code = msg.GetExitCode()
-		}
-	}
-}
-
-func logger(w io.Writer) func(string, ...any) {
-	return func(format string, args ...any) {
-		if w != nil {
-			fmt.Fprintf(w, format+"\n", args...)
 		}
 	}
 }

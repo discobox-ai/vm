@@ -3,16 +3,17 @@
 // every OS, and the hcs and vz drivers run it on real hardware.
 //
 // The suite speaks only the machine interfaces, so it checks exactly the
-// contract the engine relies on: a layer can be installed, found, listed,
-// cloned, booted, and reached; an instance is found and listed by its name,
-// which no second instance can take; a booted machine's guest operations
-// answer, and exec carries stdin, stdout, stderr, the environment, the working
-// directory, and the exit code; an orderly shutdown stops the machine; a
-// committed layer carries its writes to clones of it and to no one else; an
-// instance runs from a base the driver lists, and commits a layer; a tag is
-// set, moved, and dropped; clones run side by side; Kill always works; and a
-// started machine is attached to from another call, and found stopped once
-// its guest powers off.
+// contract the engine relies on: an image can be installed (or an instance
+// run from a base), found, listed, cloned, booted, and reached; an instance
+// is found and listed by its name, which no second instance can take; a
+// booted machine's guest operations answer, and exec carries stdin, stdout,
+// stderr, the environment, the working directory, and the exit code; an
+// orderly shutdown stops the machine; a snapshot carries its writes to clones
+// of it and to no one else, and stands alone once the image it came from is
+// deleted; an instance runs from a base the driver lists or finds, and is
+// snapshotted; a tag is set, moved, and dropped; clones run side by side;
+// Kill always works; and a started machine is attached to from another call,
+// and found stopped once its guest powers off.
 package machinetest
 
 import (
@@ -32,14 +33,17 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Config adapts the suite to a driver.
+// Config adapts the suite to a driver. The suite starts from Image, else
+// from an Install on a driver that lists Capabilities.Install, else from
+// Base, else from the first base the driver lists.
 type Config struct {
-	// Install creates the base layer. Leave Install.GuestOS empty and set Base
-	// instead to reuse an installed layer, which is how a real driver keeps
-	// the suite from reinstalling an OS on every run.
+	// Install makes the image the suite starts from.
 	Install machine.InstallSpec
-	// Base is the ID of an already-installed layer to start from.
-	Base string
+	// Image is the ID of an image already made to start from, which is how
+	// a real driver keeps the suite from reinstalling an OS on every run.
+	Image string
+	// Base is a base to start from, on a driver that installs nothing.
+	Base *machine.Base
 	// CPUs and Memory size every instance the suite makes.
 	CPUs   int
 	Memory uint64
@@ -50,7 +54,7 @@ type Config struct {
 }
 
 // Run runs the suite. The driver is one project's, and the suite makes and
-// removes layers, tags, and instances in it, every name its own.
+// removes images, tags, and instances in it, every name its own.
 func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	t.Helper()
 	if cfg.Timeout == 0 {
@@ -68,25 +72,43 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		t.Fatalf("check: %v", err)
 	}
 
+	suite := t
 	run := randomHex(4)
 	newID := func() string { return randomHex(32) }
-	var base machine.Layer
-	if cfg.Base != "" {
-		var err error
-		if base, err = driver.Layer(ctx, cfg.Base); err != nil {
-			t.Fatalf("base layer %s: %v", cfg.Base, err)
+	// start is what the first instances run from: an image or a base.
+	var start machine.InstanceSpec
+	switch {
+	case cfg.Image != "":
+		img, err := driver.Image(ctx, cfg.Image)
+		if err != nil {
+			t.Fatalf("image %s: %v", cfg.Image, err)
 		}
-	} else {
-		var err error
-		base, err = driver.Install(ctx, cfg.Install, machine.Layer{ID: newID(), GuestOS: cfg.Install.GuestOS, Comment: "conformance install"})
+		start = machine.InstanceSpec{ImageID: img.ID, GuestOS: img.GuestOS}
+	case caps.Install && cfg.Install.GuestOS != "":
+		img, err := driver.Install(ctx, cfg.Install, machine.Image{ID: newID(), GuestOS: cfg.Install.GuestOS, Comment: "conformance install"})
 		if err != nil {
 			t.Fatalf("install: %v", err)
 		}
-		t.Cleanup(func() { _ = driver.DeleteLayer(context.Background(), base.ID) })
+		t.Cleanup(func() { _ = driver.DeleteImage(context.Background(), img.ID) })
+		start = machine.InstanceSpec{ImageID: img.ID, GuestOS: img.GuestOS}
+	default:
+		b := cfg.Base
+		if b == nil {
+			bases, err := driver.Bases(ctx)
+			if err != nil || len(bases) == 0 {
+				t.Fatalf("no Image, Install, or Base to start from, and the driver lists no bases: %v", err)
+			}
+			b = &bases[0]
+		}
+		start = machine.InstanceSpec{Base: b, GuestOS: b.GuestOS}
 	}
-	guestOS := base.GuestOS
-	if guestOS == "" {
-		guestOS = caps.GuestOS[0]
+	if start.GuestOS == "" {
+		start.GuestOS = caps.GuestOS[0]
+	}
+	start.Image = "conformance"
+	guestOS := start.GuestOS
+	of := func(id string) machine.InstanceSpec {
+		return machine.InstanceSpec{Image: "conformance", ImageID: id, GuestOS: guestOS}
 	}
 	names := 0
 	create := func(t *testing.T, spec machine.InstanceSpec) machine.Instance {
@@ -136,25 +158,29 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatal("the guest did not power off after an orderly shutdown")
 		}
 	}
+	snapshot := func(t *testing.T, inst machine.Instance, comment string) machine.Image {
+		t.Helper()
+		want := machine.Image{ID: newID(), GuestOS: inst.GuestOS, Comment: comment}
+		img, err := driver.Commit(ctx, inst, want)
+		if err != nil {
+			t.Fatalf("commit %s: %v", inst.Name, err)
+		}
+		// The suite's, not the subtest's: later subtests run from it.
+		suite.Cleanup(func() { _ = driver.DeleteImage(context.Background(), img.ID) })
+		if img.ID != want.ID || img.GuestOS != inst.GuestOS {
+			t.Fatalf("committed %+v, want %+v", img, want)
+		}
+		if _, err := driver.Instance(ctx, inst.Name); !errors.Is(err, machine.ErrNotFound) {
+			t.Fatalf("an instance committed is still there: %v", err)
+		}
+		return img
+	}
 	marker := strings.TrimRight(cfg.ScratchDir, `/\`) + "/disco-vm-conformance"
 
-	t.Run("a-layer-is-found-and-listed", func(t *testing.T) {
-		got, err := driver.Layer(ctx, base.ID)
-		if err != nil || got.ID != base.ID {
-			t.Fatalf("layer %s: %+v, %v", base.ID, got, err)
-		}
-		if _, err := driver.Layer(ctx, newID()); !errors.Is(err, machine.ErrNotFound) {
-			t.Fatalf("a layer never made: %v, want ErrNotFound", err)
-		}
-		if !hasLayer(t, driver, base.ID) {
-			t.Fatalf("layers do not list %s", base.ID)
-		}
-	})
-
-	// Boot a clone of the base, write a marker, shut down, and commit.
-	var committed machine.Layer
+	// Boot an instance of the start, write a marker, shut down, and commit.
+	var committed machine.Image
 	t.Run("boot-write-commit", func(t *testing.T) {
-		inst := create(t, machine.InstanceSpec{Image: "conformance", Layer: base.ID})
+		inst := create(t, start)
 		m := boot(t, inst)
 		info, err := m.Info(ctx)
 		if err != nil {
@@ -168,25 +194,27 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		checkExec(t, m, guestOS, marker)
 		shutdown(t, m)
-		want := machine.Layer{ID: newID(), Parent: base.ID, GuestOS: guestOS, Comment: "conformance commit"}
-		committed, err = driver.Commit(ctx, inst, want)
-		if err != nil {
-			t.Fatalf("commit: %v", err)
-		}
-		if committed.ID != want.ID || committed.GuestOS != guestOS || (committed.Parent != "" && committed.Parent != base.ID) {
-			t.Fatalf("committed %+v, want %+v", committed, want)
-		}
-		if _, err := driver.Instance(ctx, inst.Name); !errors.Is(err, machine.ErrNotFound) {
-			t.Fatalf("an instance committed is still there: %v", err)
-		}
+		committed = snapshot(t, inst, "conformance commit")
 	})
 	if committed.ID == "" {
 		t.FailNow()
 	}
-	t.Cleanup(func() { _ = driver.DeleteLayer(context.Background(), committed.ID) })
+
+	t.Run("an-image-is-found-and-listed", func(t *testing.T) {
+		got, err := driver.Image(ctx, committed.ID)
+		if err != nil || got.ID != committed.ID {
+			t.Fatalf("image %s: %+v, %v", committed.ID, got, err)
+		}
+		if _, err := driver.Image(ctx, newID()); !errors.Is(err, machine.ErrNotFound) {
+			t.Fatalf("an image never made: %v, want ErrNotFound", err)
+		}
+		if !hasImage(t, driver, committed.ID) {
+			t.Fatalf("images do not list %s", committed.ID)
+		}
+	})
 
 	t.Run("an-instance-is-found-listed-and-its-name-taken", func(t *testing.T) {
-		inst := create(t, machine.InstanceSpec{Image: "conformance", Layer: committed.ID})
+		inst := create(t, of(committed.ID))
 		got, err := driver.Instance(ctx, inst.Name)
 		if err != nil || got.ID != inst.ID || got.Name != inst.Name || got.GuestOS != guestOS {
 			t.Fatalf("instance %s: %+v, %v; created %+v", inst.Name, got, err, inst)
@@ -198,7 +226,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if !slices.ContainsFunc(list, func(i machine.Instance) bool { return i.Name == inst.Name && i.ID == inst.ID }) {
 			t.Fatalf("instances do not list %s: %+v", inst.Name, list)
 		}
-		if _, err := driver.Create(ctx, machine.InstanceSpec{Name: inst.Name, Layer: base.ID, GuestOS: guestOS}); !errors.Is(err, machine.ErrExists) {
+		again := of(committed.ID)
+		again.Name = inst.Name
+		if _, err := driver.Create(ctx, again); !errors.Is(err, machine.ErrExists) {
 			t.Fatalf("a second instance named %s: %v, want ErrExists", inst.Name, err)
 		}
 		if _, err := driver.Attach(ctx, inst); !errors.Is(err, machine.ErrNotRunning) {
@@ -215,8 +245,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 	})
 
-	// Every base the driver lists names itself, and an instance of the first
-	// runs from it with no layer, and commits a layer, as a build from it does.
+	// Every base the driver lists names itself and is found by its name,
+	// and an instance of the first runs from it with no image, and is
+	// snapshotted.
 	t.Run("an-instance-of-a-base", func(t *testing.T) {
 		bases, err := driver.Bases(ctx)
 		if err != nil {
@@ -226,6 +257,12 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			if b.Name == "" || b.ID == "" || !caps.SupportsOS(b.GuestOS) {
 				t.Fatalf("base %+v has no name, no ID, or a guest OS the driver does not run", b)
 			}
+			if found, ok, err := driver.Base(ctx, b.Name); err != nil || !ok || found.ID != b.ID {
+				t.Fatalf("base %s by name = %+v, %v, %v", b.Name, found, ok, err)
+			}
+		}
+		if _, ok, err := driver.Base(ctx, "disco-vm-conformance/no-such-base:none"); err != nil || ok {
+			t.Fatalf("a base no one has: found %v, %v", ok, err)
 		}
 		if len(bases) == 0 {
 			t.Skip("the driver lists no bases")
@@ -244,31 +281,28 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("write marker: %v", err)
 		}
 		shutdown(t, m)
-		layer, err := driver.Commit(ctx, inst, machine.Layer{ID: newID(), GuestOS: b.GuestOS, Comment: "conformance on a base"})
-		if err != nil {
-			t.Fatalf("commit an instance of a base: %v", err)
-		}
-		t.Cleanup(func() { _ = driver.DeleteLayer(context.Background(), layer.ID) })
-		if layer.Parent != "" {
-			t.Fatalf("a layer committed from a base has parent %s", layer.Parent)
-		}
-		if _, err := driver.Layer(ctx, layer.ID); err != nil {
-			t.Fatalf("the layer committed from a base: %v", err)
+		img := snapshot(t, inst, "conformance on a base")
+		if _, err := driver.Image(ctx, img.ID); err != nil {
+			t.Fatalf("the image snapshotted from a base: %v", err)
 		}
 	})
 
 	// A tag is set, moved, listed, and dropped any number of times, and a tag
 	// never set is dropped without complaint.
 	t.Run("tag-move-and-untag", func(t *testing.T) {
+		other := committed.ID
+		if start.ImageID != "" {
+			other = start.ImageID
+		}
 		ref := "conformance/" + run + ":latest"
 		t.Cleanup(func() { _ = driver.Untag(context.Background(), ref) })
 		for range 2 {
-			if err := driver.Tag(ctx, ref, base.ID); err != nil {
+			if err := driver.Tag(ctx, ref, other); err != nil {
 				t.Fatalf("tag: %v", err)
 			}
 		}
-		if got := tagged(t, driver, ref); got != base.ID {
-			t.Fatalf("%s names %q, want %s", ref, got, base.ID)
+		if got := tagged(t, driver, ref); got != other {
+			t.Fatalf("%s names %q, want %s", ref, got, other)
 		}
 		if err := driver.Tag(ctx, ref, committed.ID); err != nil {
 			t.Fatalf("move a tag: %v", err)
@@ -286,11 +320,11 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 	})
 
-	// A clone of the committed layer sees the marker; a clone of the base does
+	// A clone of the snapshot sees the marker; a clone of the start does
 	// not; both run at once.
 	t.Run("clones-are-isolated-and-concurrent", func(t *testing.T) {
-		child := create(t, machine.InstanceSpec{Image: "conformance", Layer: committed.ID})
-		sibling := create(t, machine.InstanceSpec{Image: "conformance", Layer: base.ID})
+		child := create(t, of(committed.ID))
+		sibling := create(t, start)
 		limit := caps.MaxRunning[guestOS]
 		childM := boot(t, child)
 		if limit == 1 {
@@ -300,16 +334,16 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 
 		if limit != 1 {
 			if got := readMarker(t, childM, marker+"/proof.txt"); got != "committed" {
-				t.Fatalf("the committed layer's clone reads %q", got)
+				t.Fatalf("the snapshot's clone reads %q", got)
 			}
 		}
 		if _, err := siblingM.CopyFrom(ctx, marker+"/proof.txt"); err == nil {
-			t.Fatal("a clone of the base saw a write committed to another layer")
+			t.Fatal("a clone of the start saw a write committed to a snapshot")
 		}
 	})
 
 	t.Run("kill", func(t *testing.T) {
-		m := boot(t, create(t, machine.InstanceSpec{Image: "conformance", Layer: base.ID}))
+		m := boot(t, create(t, of(committed.ID)))
 		if err := m.Kill(ctx); err != nil {
 			t.Fatalf("kill: %v", err)
 		}
@@ -324,7 +358,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// attaches to it, its service has a URL, and a guest that powers itself
 	// off while nothing watches is found stopped.
 	t.Run("start-attach-and-stop", func(t *testing.T) {
-		inst := create(t, machine.InstanceSpec{Image: "conformance", Layer: base.ID})
+		inst := create(t, of(committed.ID))
 		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
 		started, err := driver.Start(startCtx, inst, machine.BootOptions{})
@@ -358,18 +392,50 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			time.Sleep(time.Second)
 		}
 	})
+
+	// A snapshot of an instance of a snapshot keeps both writes, and stands
+	// alone: once the image it came from is deleted, it still boots with
+	// both. A driver whose snapshot still needs the other's disk refuses the
+	// delete with ErrInUse instead. Last, since it deletes the snapshot the
+	// others run from.
+	t.Run("a-snapshot-stands-alone", func(t *testing.T) {
+		inst := create(t, of(committed.ID))
+		m := boot(t, inst)
+		if err := m.CopyTo(ctx, marker, tarOf(t, "second.txt", "second")); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+		shutdown(t, m)
+		second := snapshot(t, inst, "conformance second")
+		switch err := driver.DeleteImage(ctx, committed.ID); {
+		case errors.Is(err, machine.ErrInUse):
+			t.Logf("the driver keeps %s for %s: %v", committed.ID, second.ID, err)
+		case err != nil:
+			t.Fatalf("delete %s: %v", committed.ID, err)
+		default:
+			if _, err := driver.Image(ctx, committed.ID); !errors.Is(err, machine.ErrNotFound) {
+				t.Fatalf("a deleted image: %v, want ErrNotFound", err)
+			}
+		}
+		m = boot(t, create(t, of(second.ID)))
+		if got := readMarker(t, m, marker+"/proof.txt"); got != "committed" {
+			t.Fatalf("a clone of the second snapshot reads %q from the first", got)
+		}
+		if got := readMarker(t, m, marker+"/second.txt"); got != "second" {
+			t.Fatalf("a clone of the second snapshot reads %q from its own", got)
+		}
+	})
 }
 
-func hasLayer(t *testing.T, driver machine.Driver, id string) bool {
+func hasImage(t *testing.T, driver machine.Driver, id string) bool {
 	t.Helper()
-	layers, err := driver.Layers(context.Background())
+	images, err := driver.Images(context.Background())
 	if err != nil {
-		t.Fatalf("layers: %v", err)
+		t.Fatalf("images: %v", err)
 	}
-	return slices.ContainsFunc(layers, func(l machine.Layer) bool { return l.ID == id })
+	return slices.ContainsFunc(images, func(img machine.Image) bool { return img.ID == id })
 }
 
-// tagged is the layer ref names, or empty.
+// tagged is the image ref names, or empty.
 func tagged(t *testing.T, driver machine.Driver, ref string) string {
 	t.Helper()
 	tags, err := driver.Tags(context.Background())
@@ -378,7 +444,7 @@ func tagged(t *testing.T, driver machine.Driver, ref string) string {
 	}
 	for _, tag := range tags {
 		if tag.Ref == ref {
-			return tag.Layer
+			return tag.Image
 		}
 	}
 	return ""

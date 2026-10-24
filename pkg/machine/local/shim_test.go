@@ -40,11 +40,11 @@ func TestShimCommand(t *testing.T) {
 	}
 	ctx := context.Background()
 	guestOS := machine.OS(runtime.GOOS)
-	layer, err := d.Install(ctx, machine.InstallSpec{GuestOS: guestOS, Media: "latest"}, machine.Layer{ID: "0123456789abcdef", GuestOS: guestOS})
+	img, err := d.Install(ctx, machine.InstallSpec{GuestOS: guestOS, Media: "latest"}, machine.Image{ID: "0123456789abcdef", GuestOS: guestOS})
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "one", Layer: layer.ID, GuestOS: guestOS})
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "one", ImageID: img.ID, GuestOS: guestOS})
 	if err != nil {
 		t.Fatal(err)
 	}

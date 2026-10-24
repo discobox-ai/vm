@@ -5,81 +5,100 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/discobox-ai/vm/pkg/build"
+	"github.com/discobox-ai/vm/internal/units"
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-func buildCommand(g *globals) *cobra.Command {
+func installCommand(g *globals) *cobra.Command {
 	var (
-		file, contextDir, agent string
-		buildArgs, tags         []string
-		noCache, gui            bool
+		guestOS, media, edition, disk, memory string
+		cpus                                  int
+		options, tags                         []string
+		gui                                   bool
 	)
 	cmd := &cobra.Command{
-		Use:   "build [-f spec.yaml] [context]",
-		Short: "Build an image from a YAML build spec",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Use:   "install [-t NAME[:TAG]] [--os OS] [--media MEDIA]",
+		Short: "Make an image by installing an OS from media (hcs, vz)",
+		Long: `Make an image by installing an OS from installation media, on a driver
+that installs (hcs: a Windows ISO; vz: a macOS IPSW, or "latest"). It prints
+the image's ID. A driver that does not install has bases instead, which run
+takes by name. Shape an image further by running it, changing the guest,
+stopping it, and taking a ` + "`disco-vm snapshot`" + `.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			e, err := g.engine()
 			if err != nil {
 				return err
 			}
-			if len(args) == 1 {
-				contextDir = args[0]
+			diskBytes, err := units.ParseBytes(disk)
+			if err != nil {
+				return fmt.Errorf("--disk: %w", err)
 			}
-			parsed, err := build.ParseArgs(buildArgs)
+			memoryBytes, err := units.ParseBytes(memory)
+			if err != nil {
+				return fmt.Errorf("--memory: %w", err)
+			}
+			opts := map[string]string{}
+			for _, kv := range options {
+				key, value, ok := strings.Cut(kv, "=")
+				if !ok || key == "" {
+					return fmt.Errorf("--option %q is not KEY=VALUE", kv)
+				}
+				opts[key] = value
+			}
+			img, err := e.Install(cmd.Context(), engine.InstallOptions{
+				GuestOS: machine.OS(guestOS), Media: media, Edition: edition,
+				DiskBytes: int64(diskBytes), CPUs: cpus, Memory: memoryBytes,
+				Options: opts, GUI: gui, Log: os.Stderr,
+			}, tags...)
 			if err != nil {
 				return err
 			}
-			builder := &build.Builder{Engine: e, Out: os.Stdout}
-			result, err := builder.Build(cmd.Context(), build.Options{
-				File: file, Context: contextDir, Args: parsed, Tags: tags, NoCache: noCache, Agent: agent, GUI: gui,
-			})
-			if err != nil {
-				return err
-			}
-			fmt.Println(result.Layer)
+			fmt.Println(img.ID)
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&file, "file", "f", "disco-vm.yaml", "build spec")
-	cmd.Flags().StringArrayVar(&buildArgs, "build-arg", nil, "override a spec arg (KEY=VALUE)")
-	cmd.Flags().StringArrayVarP(&tags, "tag", "t", nil, "name the result NAME[:TAG] (repeatable); without it the build is known by its ID")
-	cmd.Flags().BoolVar(&noCache, "no-cache", false, "rebuild every layer")
-	cmd.Flags().BoolVar(&gui, "gui", false, "show each build VM's display in a native window")
-	cmd.Flags().StringVar(&agent, "agent", "", "disco-vm binary for the guest OS (default: this one)")
+	cmd.Flags().StringArrayVarP(&tags, "tag", "t", nil, "name the image NAME[:TAG] (repeatable); without it the image is known by its ID")
+	cmd.Flags().StringVar(&guestOS, "os", "", "guest OS: windows, darwin, linux (default: the driver's only one)")
+	cmd.Flags().StringVar(&media, "media", "latest", `installer: an ISO or IPSW path, or "latest" where the driver fetches one`)
+	cmd.Flags().StringVar(&edition, "edition", "", "image inside multi-image media (install.wim)")
+	cmd.Flags().StringVar(&disk, "disk", "", "disk size, e.g. 128GiB (default: the driver's)")
+	cmd.Flags().IntVar(&cpus, "cpus", 0, "vCPUs for the install (default: the driver's)")
+	cmd.Flags().StringVar(&memory, "memory", "", "memory for the install, e.g. 8GiB (default: the driver's)")
+	cmd.Flags().StringArrayVar(&options, "option", nil, "driver option KEY=VALUE (repeatable)")
+	cmd.Flags().BoolVar(&gui, "gui", false, "show each of the install's boots in a native window")
 	return cmd
 }
 
 func imagesCommand(g *globals) *cobra.Command {
-	var all bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "images",
-		Short: "List images, and the driver's bases, which run and build take by name with no image",
+		Short: "List images, and the driver's bases, which run takes by name with no image",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			e, err := g.engine()
 			if err != nil {
 				return err
 			}
-			images, err := e.Images(cmd.Context(), all)
+			entries, err := e.Images(cmd.Context())
 			if err != nil {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "IMAGE\tLAYER\tOS\tDRIVER\tCREATED")
-			for _, img := range images {
-				ref := img.Ref
+			fmt.Fprintln(w, "IMAGE\tID\tOS\tDRIVER\tCREATED")
+			for _, entry := range entries {
+				ref := entry.Ref
 				if ref == "" {
 					ref = "<none>"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ref, engine.Short(img.Layer.ID), img.Layer.GuestOS, e.Driver.Name(), ago(img.Layer.Created))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", ref, engine.Short(entry.Image.ID), entry.Image.GuestOS, e.Driver.Name(), ago(entry.Image.Created))
 			}
 			for _, b := range bases(cmd.Context(), e) {
 				fmt.Fprintf(w, "%s\t-\t%s\t%s\t%s\n", b.Name, b.GuestOS, e.Driver.Name(), ago(b.Created))
@@ -87,14 +106,12 @@ func imagesCommand(g *globals) *cobra.Command {
 			return w.Flush()
 		},
 	}
-	cmd.Flags().BoolVarP(&all, "all", "a", false, "include intermediate layers, the parents of other layers, untagged")
-	return cmd
 }
 
 func rmiCommand(g *globals) *cobra.Command {
 	return &cobra.Command{
 		Use:   "rmi IMAGE...",
-		Short: "Untag images, or remove untagged ones by ID, and delete layers nothing else uses",
+		Short: "Untag images, or remove untagged ones by ID, and delete those nothing else tags or runs",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
@@ -108,15 +125,18 @@ func rmiCommand(g *globals) *cobra.Command {
 						return err
 					}
 				}
-				untagged, removed, err := e.RemoveImage(cmd.Context(), ref)
+				r, err := e.RemoveImage(cmd.Context(), ref)
 				if err != nil {
 					return err
 				}
-				if untagged != "" {
-					fmt.Printf("untagged %s\n", untagged)
+				if r.Untagged != "" {
+					fmt.Printf("untagged %s\n", r.Untagged)
 				}
-				for _, id := range removed {
-					fmt.Printf("deleted %s\n", engine.Short(id))
+				if r.Deleted != "" {
+					fmt.Printf("deleted %s\n", engine.Short(r.Deleted))
+				}
+				if r.Kept != nil {
+					fmt.Fprintf(os.Stderr, "disco-vm: kept it, untagged: %v\n", r.Kept)
 				}
 			}
 			return nil
@@ -134,11 +154,11 @@ func tagCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			layer, err := e.Resolve(cmd.Context(), args[0])
+			img, err := e.Resolve(cmd.Context(), args[0])
 			if err != nil {
 				return e.NotABase(cmd.Context(), args[0], err)
 			}
-			return e.Tag(cmd.Context(), args[1], layer.ID)
+			return e.Tag(cmd.Context(), args[1], img.ID)
 		},
 	}
 }
@@ -147,9 +167,9 @@ func snapshotCommand(g *globals) *cobra.Command {
 	return &cobra.Command{
 		Use:   "snapshot INSTANCE [NAME[:TAG]]",
 		Short: "Commit a stopped instance as an image, and remove the instance",
-		Long: `Commit a stopped instance's disk as a new image layer on its image, and
-remove the instance. To go on from the snapshot, create an instance of it.
-Without NAME the image is known by the layer ID it prints.`,
+		Long: `Commit a stopped instance's disk as a new image, and remove the instance.
+To go on from the snapshot, create an instance of it. Without NAME the image
+is known by the ID it prints.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
@@ -160,15 +180,11 @@ Without NAME the image is known by the layer ID it prints.`,
 			if err != nil {
 				return err
 			}
-			ref := ""
-			if len(args) == 2 {
-				ref = args[1]
-			}
-			layer, err := e.Snapshot(cmd.Context(), inst, ref)
+			img, err := e.Snapshot(cmd.Context(), inst, args[1:]...)
 			if err != nil {
 				return err
 			}
-			fmt.Println(layer.ID)
+			fmt.Println(img.ID)
 			return nil
 		},
 	}

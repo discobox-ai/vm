@@ -277,7 +277,7 @@ func (m *vm) Info(ctx context.Context) (machine.GuestInfo, error) {
 // stop; Done closes when it says the machine stopped. Nothing in the guest is
 // asked to power off, since boxd leaves a guest that halts itself running. A
 // flush that fails is an error, and no StopVm is asked: the caller's fallback
-// is Kill, and a layer is not cut from the disk.
+// is Kill, and no snapshot is cut from the disk.
 func (m *vm) Shutdown(ctx context.Context, reboot bool) error {
 	if reboot {
 		if _, err := m.api.RebootVm(ctx, &boxdapi.RebootVmRequest{VmId: m.ref.ID}); err != nil {

@@ -43,7 +43,7 @@ const (
 
 // Install lays Windows from a retail ISO onto a new disk in dst.Dir, bakes in
 // the agent as a boot-start service, and boots it once through Windows Setup,
-// so the base layer is a Windows that has already been set up. It commits only
+// so the image is a Windows that has already been set up. It commits only
 // after an orderly shutdown through the agent.
 //
 // Options: user and password name the local administrator Setup creates and
@@ -120,7 +120,7 @@ func needSpace(dir string, need uint64) error {
 }
 
 // sweepAttached detaches disks that installs which lost power left attached.
-// Installs run in sibling layer directories of the same shape as dst's.
+// Installs run in sibling image directories of the same shape as dst's.
 func sweepAttached(dir string, log io.Writer) {
 	pattern := filepath.Join(filepath.Dir(filepath.Dir(dir)), "*", filepath.Base(dir), breadcrumb)
 	crumbs, _ := filepath.Glob(pattern)

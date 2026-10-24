@@ -4,7 +4,7 @@
 Above the `machine.Driver` seam, the driver needed only neutral additions:
 for windows `BootOptions.Title`, `InstallSpec.GUI`, and `machine.Main` (see
 GUI). `vz.Hypervisor` is a `local.Hypervisor`: `pkg/machine/local` keeps its
-layers, tags, and instances in its directory (`--root`, `$DISCO_VM_ROOT`, or
+images, tags, and instances in its directory (`--root`, `$DISCO_VM_ROOT`, or
 `~/Library/Application Support/disco-vm`), gives it a media cache there
 (`local.InstallSpec.CacheDir`, see Install), and runs each started instance
 under a shim, since a VM dies with the process that made it (ADR
@@ -13,11 +13,12 @@ under a shim, since a VM dies with the process that made it (ADR
 **Done means:**
 
 1. `machinetest.Run` passes against the vz driver on an Apple silicon Mac
-   (`go tool task test:vz`: `DISCO_VM_VZ_BASE` names an installed layer's
+   (`go tool task test:vz`: `DISCO_VM_VZ_BASE` names an installed image's
    ID, and `DISCO_VM_TEST_BINARY` the signed disco-vm each started
    instance's shim runs).
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=vz` (`go tool task test:e2e:vz`).
-3. `docs/examples/macos.yaml` builds.
+3. `disco-vm install` makes a macOS image (media `latest`), and an instance of
+   it runs, is shaped through `exec`, and is snapshotted.
 
 Where each stands is in the proof table in [DESIGN.md](../../DESIGN.md).
 
@@ -45,7 +46,7 @@ structure is not.
 
 A macOS guest is a **bundle**: files that belong together in one directory.
 
-| file | layer | instance |
+| file | image | instance |
 |---|---|---|
 | `disk.img` | ✓ | ✓ |
 | `aux.img` (NVRAM) | ✓ | ✓ |
@@ -54,9 +55,10 @@ A macOS guest is a **bundle**: files that belong together in one directory.
 | `machineidentifier` | | its own |
 | `macaddress` | | its own, from its first boot |
 
-There are no chains. Every bundle is a full APFS clone (`clonefile`) of its
-parent, so a driver only ever reads a chain's last layer. A clone across
-volumes is an error that says so, never a silent 100 GiB copy.
+There are no chains (`Chains` is false). An instance is a full APFS clone
+(`clonefile`) of its image, and a snapshot is the instance's files renamed,
+so each image's files are its own and deleting one never touches another. A
+clone across volumes is an error that says so, never a silent 100 GiB copy.
 
 ## Method by method
 
@@ -89,13 +91,14 @@ volumes is an error that says so, never a silent 100 GiB copy.
    account 501, which is also the first account on the host, so the bootstrap
    moves it to `uid` (default 600) and chowns its files. That freed 501 for
    the host's user in a warm stage; disco-vm makes no such account since warm
-   stages were removed (ADR 26-10-15-851), and one made by a build step or
-   `exec` gets another uid (see below). It keeps its SecureToken, so it
+   stages were removed (ADR 26-10-15-851), and one made by `exec` gets
+   another uid (see below). It keeps its SecureToken, so it
    stays the disk's volume owner.
-5. Options (`from.install.options`, with build args substituted): `username`
-   (default `admin`), `password` (default random, recorded in the layer's
-   `vz.json`, which is private to the owner), `fullname`, `uid` (default 600),
+5. Options (`disco-vm install --option KEY=VALUE`): `username` (default
+   `admin`), `password` (default random, recorded in the image's `vz.json`,
+   which is private to the owner), `fullname`, `uid` (default 600),
    `autologin` (default true), and `disk-format`. An unknown key is an error.
+   `--disk` is required.
 
 Learned the hard way:
 
@@ -104,7 +107,7 @@ Learned the hard way:
   from it `dscl` fails with `-14120` and `sysadminctl -addUser -UID` silently
   picks another uid; SSH has it. So everything that touches accounts (moving
   the install account) goes over SSH as the
-  install account with `sudo`, whose password the layer records.
+  install account with `sudo`, whose password the image records.
 
 - **A new guest restarts itself during first-boot setup, and to the framework
   a restart is a stop.** A guest that stops cleanly before the agent is in is
@@ -114,11 +117,11 @@ Learned the hard way:
   stopped.** The bindings free it from a finalizer, so booting a bundle again
   in the process that last booted it fails with "Failed to lock auxiliary
   storage" (EAGAIN) until a garbage collection. Examples are the install's
-  provisioning boot and a build's `reboot` step. A start retries
+  provisioning boot after its first. A start retries
   behind `runtime.GC()` with a **new VM object each time**: a VM whose start
   failed goes straight to the error state if it is started again.
 
-**Prepare(inst):** clone the parent layer's files, then write a new machine
+**Prepare(inst):** clone the image's files, then write a new machine
 identifier. The MAC is created on the first boot.
 
 **Boot(inst, opts):** one configuration for install and every boot: the Mac
@@ -143,19 +146,19 @@ VM starts, the driver opens an `NSWindow` whose content is a
 `VZVirtualMachineView` on it, capturing system keys and resizing the guest's
 display to the window. It is our own window (`window_darwin.go`), not the
 bindings' `StartGraphicApplication`, because theirs calls `[NSApp terminate:]`
-when its VM stops, which ends the process: a build boots several VMs in a row,
-and a shim must outlive its window. AppKit is started lazily on the main thread
-that `machine.Main` lends. The app refuses to quit, since quitting would take
-every VM in the process down with it. With `build --gui` an install shows the installer VM too, and closes that
-window when the installer finishes, before the first boot. The window closes
-when the VM stops,
-which also releases the view's hold on the VM, so a build's `reboot` step can
-lock the bundle again. The bindings don't export the `VZVirtualMachine` behind
+when its VM stops, which ends the process: an install boots several VMs in a
+row, and a shim must outlive its window. AppKit is started lazily on the main
+thread that `machine.Main` lends. The app refuses to quit, since quitting
+would take every VM in the process down with it. With `install --gui` the
+installer VM shows too, and its window closes when the installer finishes,
+before the first boot. The window closes when the VM stops, which also
+releases the view's hold on the VM, so the next boot can lock the bundle
+again. The bindings don't export the `VZVirtualMachine` behind
 a `vz.VirtualMachine`, so `vmObject` reads it by reflection, and the C side
 checks its class before using it. The clean fix is an exported accessor in
 discobox's fork.
 
-**Commit(inst, dst):** rename the stopped instance's layer files into
+**Commit(inst, dst):** rename the stopped instance's image files into
 `dst.Dir`. The identifier and MAC stay behind.
 
 **Destroy:** remove the bundle.
@@ -183,7 +186,7 @@ works).
   every test here reaches the agent.
 - A launchd daemon's PATH is only the system's. So the agent rebuilds each
   process's PATH the way `path_helper` does, from `/etc/paths` and
-  `/etc/paths.d`, and a toolchain one build step installs there is on PATH for
+  `/etc/paths.d`, and a toolchain one `exec` installs there is on PATH for
   the next (`env_darwin.go`). This mirrors the Windows agent reading the
   registry.
 - `runAs` with Homebrew, which checks both the uid and HOME, is not verified

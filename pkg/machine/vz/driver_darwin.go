@@ -32,12 +32,17 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		Display:           true,
 		Forward:           true,
 		Agent:             true,
+		Install:           true,
 	}
 }
 
-// Commit moves the stopped instance's disk into the layer. The MAC address and
+// Chains is false: an instance is an APFS clone of its image, and a snapshot
+// is the instance's bundle moved, so each image's files are its own.
+func (*Hypervisor) Chains() bool { return false }
+
+// Commit moves the stopped instance's disk into the image. The MAC address and
 // the machine identifier stay behind: they are the running machine's identity,
-// and every clone of the layer gets its own.
+// and every clone of the image gets its own.
 func (*Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst local.Layer) error {
 	return moveLayer(bundle(inst.Dir), bundle(dst.Dir))
 }
@@ -46,7 +51,7 @@ func (*Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {
 	return os.RemoveAll(inst.Dir)
 }
 
-// Bases is empty: every base layer is installed from media.
+// Bases is empty: every first image is installed from media.
 func (*Hypervisor) Bases(context.Context) ([]machine.Base, error) { return nil, nil }
 
 // Service is guest.ServicePort over vsock; the instance's shim serves it on

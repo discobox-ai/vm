@@ -1,5 +1,4 @@
-// Package cli is disco-vm's command line: a thin layer over pkg/engine and
-// pkg/build.
+// Package cli is disco-vm's command line: a thin layer over pkg/engine.
 package cli
 
 import (
@@ -70,7 +69,7 @@ func Main(args []string) int {
 	g := &globals{}
 	root := &cobra.Command{
 		Use:           "disco-vm",
-		Short:         "Build OS images and run them as VMs, on Windows and macOS",
+		Short:         "Run OS images as VMs, and snapshot them as new images",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.String(),
@@ -86,7 +85,7 @@ func Main(args []string) int {
 	root.PersistentFlags().StringVar(&g.driver, "driver", os.Getenv("DISCO_VM_DRIVER"), "hypervisor driver (default "+machine.DefaultName()+"; also $DISCO_VM_DRIVER)")
 	root.AddCommand(
 		driversCommand(g),
-		buildCommand(g),
+		installCommand(g),
 		imagesCommand(g), rmiCommand(g), tagCommand(g), snapshotCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
 		lsCommand(g), inspectCommand(g), urlCommand(g), execCommand(g), cpCommand(g),

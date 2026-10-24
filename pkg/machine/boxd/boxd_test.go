@@ -3,6 +3,7 @@ package boxd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"runtime"
@@ -19,9 +20,9 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// BaseEnv names an installed layer of the default project by its ID, a
-// snapshot dvm-default--<ID>, so the real-boxd test skips Install. Unset, it
-// installs.
+// BaseEnv names an image of the default project by its ID, a snapshot
+// dvm-default--<ID>, for the real-boxd test to start from. Unset, it starts
+// from boxd's default image.
 const BaseEnv = "DISCO_VM_BOXD_BASE"
 
 // TestConformance runs the conformance suite against boxd itself. It needs an
@@ -36,9 +37,7 @@ func TestConformance(t *testing.T) {
 		// back after one.
 		ScratchDir: "/var/lib",
 	}
-	if cfg.Base = os.Getenv(BaseEnv); cfg.Base == "" {
-		cfg.Install = machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Log: testLog{t}}
-	}
+	cfg.Image = os.Getenv(BaseEnv)
 	machinetest.Run(t, New(""), cfg)
 }
 
@@ -59,7 +58,6 @@ func TestConformanceFakeAPI(t *testing.T) {
 	d, fake := fakeDriver(t, dir)
 
 	machinetest.Run(t, d, machinetest.Config{
-		Install: machine.InstallSpec{GuestOS: machine.Linux, Media: "latest", Log: testLog{t}},
 		// Not the fake's default size, so every clone is made at its own.
 		CPUs:       4,
 		Memory:     16 << 30,
@@ -71,14 +69,29 @@ func TestConformanceFakeAPI(t *testing.T) {
 	if left := len(fake.vms); left != 0 {
 		t.Errorf("%d machines were left behind", left)
 	}
+	// The first snapshot was deleted to show the second stands alone.
 	if left := len(fake.snapshots); left != 2 {
-		t.Errorf("%d snapshots remain, want the 2 layers'", left)
+		t.Errorf("%d snapshots remain, want the 2 the suite has yet to delete", left)
 	}
 }
 
+// snapshotOfBase makes the image id, as every boxd image is made: a snapshot
+// of an instance of boxd's default image.
+func snapshotOfBase(ctx context.Context, d *Driver, id string) (machine.Image, error) {
+	bases, err := d.Bases(ctx)
+	if err != nil || len(bases) == 0 {
+		return machine.Image{}, fmt.Errorf("bases = %v, %w", bases, err)
+	}
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "for-" + id[:8], Base: &bases[0], GuestOS: machine.Linux})
+	if err != nil {
+		return machine.Image{}, err
+	}
+	return d.Commit(ctx, inst, machine.Image{ID: id, GuestOS: machine.Linux})
+}
+
 // TestTagsAreSnapshots checks that a tag is a snapshot of its own beside the
-// layer's, named so that a listing says what it is and the ref reads back,
-// that moving a tag deletes it from the other layer, and that untagging
+// image's, named so that a listing says what it is and the ref reads back,
+// that moving a tag deletes it from the other image, and that untagging
 // deletes only it.
 func TestTagsAreSnapshots(t *testing.T) {
 	if runtime.GOOS != "linux" {
@@ -92,11 +105,11 @@ func TestTagsAreSnapshots(t *testing.T) {
 	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
-	base, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, machine.Layer{ID: "0123456789abcdef"})
+	base, err := snapshotOfBase(ctx, d, "0123456789abcdef")
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.Linux}, machine.Layer{ID: "fedcba9876543210"})
+	other, err := snapshotOfBase(ctx, d, "fedcba9876543210")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +127,7 @@ func TestTagsAreSnapshots(t *testing.T) {
 		return names
 	}
 	if got, want := names(), []string{"dvm-default--0123456789abcdef", "dvm-default--fedcba9876543210"}; !slices.Equal(got, want) {
-		t.Fatalf("layer snapshots %v, want %v", got, want)
+		t.Fatalf("image snapshots %v, want %v", got, want)
 	}
 	// Every call the tags make is reported, with its answer and its time.
 	var calls strings.Builder
@@ -128,12 +141,12 @@ func TestTagsAreSnapshots(t *testing.T) {
 		}
 	}()
 	for _, tag := range []machine.Tag{
-		{Ref: "discobox/base:latest", Layer: other.ID},
-		{Ref: "discobox/base:latest", Layer: base.ID},
-		{Ref: "discobox-base:v1.0", Layer: base.ID},
-		{Ref: "discobox/base:latest", Layer: base.ID},
+		{Ref: "discobox/base:latest", Image: other.ID},
+		{Ref: "discobox/base:latest", Image: base.ID},
+		{Ref: "discobox-base:v1.0", Image: base.ID},
+		{Ref: "discobox/base:latest", Image: base.ID},
 	} {
-		if err := d.Tag(ctx, tag.Ref, tag.Layer); err != nil {
+		if err := d.Tag(ctx, tag.Ref, tag.Image); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -150,11 +163,11 @@ func TestTagsAreSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []machine.Tag{{Ref: "discobox-base:v1.0", Layer: base.ID}, {Ref: "discobox/base:latest", Layer: base.ID}}; !slices.Equal(tags, want) {
+	if want := []machine.Tag{{Ref: "discobox-base:v1.0", Image: base.ID}, {Ref: "discobox/base:latest", Image: base.ID}}; !slices.Equal(tags, want) {
 		t.Fatalf("tags %v, want %v", tags, want)
 	}
-	if layers, err := d.Layers(ctx); err != nil || len(layers) != 2 {
-		t.Fatalf("layers %v, %v; want the two, and no tag's", layers, err)
+	if images, err := d.Images(ctx); err != nil || len(images) != 2 {
+		t.Fatalf("images %v, %v; want the two, and no tag's", images, err)
 	}
 	if err := d.Untag(ctx, "discobox/base:latest"); err != nil {
 		t.Fatal(err)
@@ -163,12 +176,12 @@ func TestTagsAreSnapshots(t *testing.T) {
 		t.Fatalf("snapshots %v after untagging one of two", got)
 	}
 
-	// A snapshot deleted behind the driver's back is a layer that is gone.
+	// A snapshot deleted behind the driver's back is an image that is gone.
 	fake.mu.Lock()
 	delete(fake.snapshots, "dvm-default--fedcba9876543210")
 	fake.mu.Unlock()
-	if _, err := d.Layer(ctx, other.ID); !errors.Is(err, machine.ErrNotFound) {
-		t.Fatalf("a layer whose snapshot was deleted: %v, want ErrNotFound", err)
+	if _, err := d.Image(ctx, other.ID); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("an image whose snapshot was deleted: %v, want ErrNotFound", err)
 	}
 }
 
@@ -267,7 +280,7 @@ func TestKillGivesUp(t *testing.T) {
 
 // TestShutdownFlushesFirst stops a machine only once the guest's writes are
 // flushed. A flush that fails is Shutdown's error, with no stop asked, so the
-// caller falls back to Kill and cuts no layer from the disk.
+// caller falls back to Kill and cuts no snapshot from the disk.
 func TestShutdownFlushesFirst(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
@@ -375,11 +388,4 @@ func fakeDriver(t *testing.T, dir string) (*Driver, *fakeAPI) {
 	d := &Driver{api: &client{}, project: machine.DefaultProject}
 	d.api.once.Do(func() { d.api.api = boxdapi.NewBoxdApiClient(conn) })
 	return d, fake
-}
-
-type testLog struct{ t *testing.T }
-
-func (l testLog) Write(p []byte) (int, error) {
-	l.t.Log(strings.TrimRight(string(p), "\n"))
-	return len(p), nil
 }

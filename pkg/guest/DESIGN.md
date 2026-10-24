@@ -23,7 +23,7 @@ and macOS answers it by sleeping. HCS has no graceful path for a stock Windows
 guest at all. So Kill is only the fallback.
 
 The agent is a boot-start service (SYSTEM on Windows, root launchd daemon on
-macOS). It is up before any user logs on, and steps can drop to a user with
-`user:`. On Windows it builds each process's environment from the registry
-(`CreateEnvironmentBlock`), so a toolchain installed by one build step is on
+macOS). It is up before any user logs on, and a command can drop to a user
+with `exec -u`. On Windows it builds each process's environment from the registry
+(`CreateEnvironmentBlock`), so a toolchain one `exec` installs is on
 PATH for the next.
