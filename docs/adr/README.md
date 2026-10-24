@@ -26,4 +26,5 @@ Follow `template.md` and the `repostd` skill.
 | [26-10-15-882](26-10-15-882-a-snapshot-consumes-its-instance.md) | A snapshot commits a stopped instance as an image, and consumes the instance | Accepted |
 | [26-10-23-410](26-10-23-410-images-are-snapshots-and-stand-alone.md) | Images are snapshots and stand alone; there is no build | Accepted (supersedes in part 26-10-15-851, its images made by `build`; 0002, its docker base layer installed and shifted once; and 26-10-23-417, its layers as a build's cache) |
 | [26-10-23-417](26-10-23-417-the-engine-is-stateless-and-a-driver-keeps-its-state-in-its-provider.md) | The engine is stateless, and a driver keeps its state in its provider | Accepted (supersedes in part 0004, its orphan listing; its layers as a build's cache superseded by 26-10-23-410) |
+| [26-10-24-562](26-10-24-562-a-driver-is-given-its-key-and-issues-keys-that-expire-and-cannot-issue.md) | A driver is given its key, and issues keys that expire and cannot issue | Proposed |
 <!-- /repostd:adr-index -->
