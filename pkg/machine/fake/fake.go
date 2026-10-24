@@ -40,8 +40,12 @@ func init() {
 			return nil, err
 		}
 		return local.New(cfg, hv)
-	})
+	}, KeyEnv)
 }
+
+// KeyEnv is the key the command line calls the fake driver with: one it
+// issued. Unset, the caller is the root directory's owner.
+const KeyEnv = "DISCO_VM_FAKE_KEY" //nolint:gosec // G101: an environment variable's name, not a credential
 
 // AgentEnv overrides the agent binary; by default it is the running disco-vm.
 const AgentEnv = "DISCO_VM_AGENT"
@@ -89,6 +93,7 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		Forward: true,
 		Agent:   true,
 		Install: true,
+		Keys:    machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopeProject},
 	}
 }
 
@@ -172,7 +177,7 @@ func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 	if err := os.MkdirAll(hostPorts, 0o755); err != nil {
 		return nil, err
 	}
-	cmd.Env = append(os.Environ(), guest.HostPortsEnv+"="+hostPorts)
+	cmd.Env = append(machine.WithoutKeys(os.Environ()), guest.HostPortsEnv+"="+hostPorts)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("fake: start guest agent %s: %w", d.Agent, err)
 	}

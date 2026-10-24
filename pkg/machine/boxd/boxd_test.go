@@ -28,7 +28,7 @@ const BaseEnv = "DISCO_VM_BOXD_BASE"
 // TestConformance runs the conformance suite against boxd itself. It needs an
 // account, so it runs only where BOXD_API_KEY is set.
 func TestConformance(t *testing.T) {
-	if os.Getenv(APIKeyEnv) == "" && os.Getenv(tokenEnv) == "" {
+	if os.Getenv(APIKeyEnv) == "" && os.Getenv(TokenEnv) == "" {
 		t.Skipf("set %s to run the conformance suite against boxd", APIKeyEnv)
 	}
 	cfg := machinetest.Config{
@@ -38,7 +38,7 @@ func TestConformance(t *testing.T) {
 		ScratchDir: "/var/lib",
 	}
 	cfg.Image = os.Getenv(BaseEnv)
-	machinetest.Run(t, New(""), cfg)
+	machinetest.Run(t, New(machine.Config{Keys: machine.KeyFromEnv("boxd")}), cfg)
 }
 
 // TestConformanceFakeAPI runs the conformance suite against an in-process fake
@@ -63,6 +63,9 @@ func TestConformanceFakeAPI(t *testing.T) {
 		Memory:     16 << 30,
 		Timeout:    30 * time.Second,
 		ScratchDir: "/scratch",
+		Keyed: func(keys machine.KeySource) machine.Driver {
+			return fakeKeyed(t, fake, machine.DefaultProject, keys)
+		},
 	})
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
@@ -367,7 +370,7 @@ func TestCreateUndone(t *testing.T) {
 }
 
 // fakeDriver serves a fake boxd API on loopback and returns a driver bound to
-// it.
+// it, which calls it as the owner's interactive session.
 func fakeDriver(t *testing.T, dir string) (*Driver, *fakeAPI) {
 	t.Helper()
 	fake := newFakeAPI(dir)
@@ -375,17 +378,26 @@ func fakeDriver(t *testing.T, dir string) (*Driver, *fakeAPI) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := grpc.NewServer()
+	server := grpc.NewServer(grpc.UnaryInterceptor(fake.unaryAuth), grpc.StreamInterceptor(fake.streamAuth))
 	boxdapi.RegisterBoxdApiServer(server, fake)
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
+	tokens := fake.tokenServer()
+	t.Cleanup(tokens.Close)
+	fake.addr, fake.tokenURL = listener.Addr().String(), tokens.URL
+	return fakeKeyed(t, fake, machine.DefaultProject, machine.StaticKey(machine.Key{Driver: "boxd", Secret: fakeSession})), fake
+}
 
-	conn, err := grpc.NewClient(listener.Addr().String(), append(debugOptions(), grpc.WithTransportCredentials(insecure.NewCredentials()))...)
+// fakeKeyed is a driver of the fake API for a project, with a key.
+func fakeKeyed(t *testing.T, fake *fakeAPI, project string, keys machine.KeySource) *Driver {
+	t.Helper()
+	c := &client{tokenURL: fake.tokenURL, keys: keys}
+	opts := append(debugOptions(), c.authOptions()...)
+	conn, err := grpc.NewClient(fake.addr, append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	d := &Driver{api: &client{}, project: machine.DefaultProject}
-	d.api.once.Do(func() { d.api.api = boxdapi.NewBoxdApiClient(conn) })
-	return d, fake
+	c.once.Do(func() { c.api = boxdapi.NewBoxdApiClient(conn) })
+	return &Driver{api: c, project: project}
 }

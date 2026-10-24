@@ -25,10 +25,10 @@ const IntegrationEnv = "DISCO_VM_INTEGRATION"
 // start. It makes billable machines,
 // so it runs only when asked for and given an account.
 func TestService(t *testing.T) {
-	if os.Getenv(IntegrationEnv) != "1" || (os.Getenv(APIKeyEnv) == "" && os.Getenv(tokenEnv) == "") {
+	if os.Getenv(IntegrationEnv) != "1" || (os.Getenv(APIKeyEnv) == "" && os.Getenv(TokenEnv) == "") {
 		t.Skipf("set %s=1 and %s to reach a service on boxd, which bills the account", IntegrationEnv, APIKeyEnv)
 	}
-	d := New("")
+	d := New(machine.Config{Keys: machine.KeyFromEnv("boxd")})
 	ctx := context.Background()
 	image := os.Getenv(BaseEnv)
 	if image == "" {

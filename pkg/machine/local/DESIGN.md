@@ -19,7 +19,12 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   name, image, image ID or base, size, forwards), and while a shim holds it,
   `shim.json` and `shim.log`;
 - `instances/.names/<project>/<name>`, the name's claim, holding the ID;
-- `cache/<hypervisor>/`, media the hypervisor downloads.
+- `cache/<hypervisor>/`, media the hypervisor downloads;
+- `keys/<hash>.json`, a key the driver issued, named for the SHA-256 of its
+  secret (ID, name, project, expiry, and that hash, never the secret), for a
+  hypervisor whose capabilities issue keys. A call reads its own key's
+  record and no other; one that cannot be read authorizes nothing and is
+  not listed.
 
 Nothing takes a lock:
 
@@ -46,6 +51,20 @@ never deleted. `Image` reports an image not found when an ancestor is gone
 (deleted behind the driver's back); `Images` still lists it, so `rmi` can
 remove it. vz and fake do not chain: their images record no parent, and each
 is a copy of its own.
+
+## Keys are the fake's, and checked on every call
+
+A hypervisor that lists `Capabilities.Keys` as `issue` (fake) has its
+driver issue keys bound to the project, and check `Config.Keys` at every
+call: the key must be one it issued for the project that has not expired or
+been revoked (its record removed). A name is issued once per project while
+a key of it lives (`machine.ErrExists`); expired records go when the next key
+is issued. A method that takes an instance refuses one whose record is
+another project's. Only the owner, the driver given no
+key, issues, lists, or revokes keys. A shim the driver starts runs as the
+owner, and neither a shim nor a fake guest is handed the variables a key is
+read from (`machine.WithoutKeys`). hcs and vz issue none (`machine.ErrNoKey`): whoever can read the
+directory owns it, and a key source is not asked.
 
 ## A shim per running VM
 

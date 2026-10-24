@@ -145,6 +145,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.Linux},
 		Agent:   true,
+		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
 	}
 }
 
@@ -353,6 +354,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	}
 	if len(spec.Forwards) > 0 {
 		return machine.Instance{}, fmt.Errorf("docker: forwards: %w", machine.ErrUnsupported)
+	}
+	if spec.Isolated || len(spec.Networks) > 0 {
+		return machine.Instance{}, fmt.Errorf("docker: isolation: %w", machine.ErrUnsupported)
 	}
 	name := containerName(d.project, spec.Name)
 	from, base := imageRepo+":"+imageTag(d.project, spec.ImageID), ""

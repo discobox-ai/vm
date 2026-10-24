@@ -44,9 +44,13 @@ func (g *globals) dir() string {
 }
 
 // newDriver makes a driver of the name for a project, keeping its state, if
-// it keeps any on this host, under dir.
+// it keeps any on this host, under dir, with the key the environment holds
+// for it.
 func (g *globals) newDriver(name, project string) (machine.Driver, error) {
-	return machine.New(name, machine.Config{Dir: g.dir(), Project: project})
+	if name == "" {
+		name = machine.DefaultName()
+	}
+	return machine.New(name, machine.Config{Dir: g.dir(), Project: project, Keys: machine.KeyFromEnv(name)})
 }
 
 func (g *globals) engine() (*engine.Engine, error) {
@@ -89,7 +93,7 @@ func Main(args []string) int {
 		imagesCommand(g), rmiCommand(g), tagCommand(g), snapshotCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
 		lsCommand(g), inspectCommand(g), urlCommand(g), execCommand(g), cpCommand(g),
-		infoCommand(g),
+		infoCommand(g), keyCommand(g),
 		guestCommand(), pipeCommand(), shimCommand(g), dialHostCommand(), dockerInitCommand(),
 	)
 	root.SetArgs(args)

@@ -123,7 +123,7 @@ boxd's and never deleted.
 
 | env | default | |
 |---|---|---|
-| `BOXD_API_KEY` | | an API key. `BOXD_TOKEN`, which the boxd CLI reads, also works, and may hold a JWT. |
+| `BOXD_API_KEY` | | an API key. `BOXD_TOKEN`, which the boxd CLI reads, also works, and may hold a JWT. The command line reads them (`machine.KeyFromEnv`); a program that embeds the engine gives the driver a `machine.KeySource` instead, and the driver reads neither. |
 | `BOXD_GRPC_ADDR` | `boxd.sh:9443` | another cluster |
 | `BOXD_TOKEN_URL` | `https://app.boxd.sh/api/v1/auth/token` | its key exchange |
 | `HTTPS_PROXY` | | gRPC goes through it with HTTP CONNECT, as does the key exchange. A proxy that intercepts TLS has to offer HTTP/2 (ALPN `h2`) for gRPC to work through it. A discobox's egress proxy does, and the conformance suite passes through it (2026-10-08). |
@@ -141,6 +141,53 @@ nothing would hold the forwards' listeners. A shim an older disco-vm started for
 the next time the instance is started, stopped or removed: it is asked for its
 status with its token first, so a reused PID is never signaled, and the
 machine is left as it is.
+
+## Keys
+
+`disco-vm key issue --ttl D` (`Driver.IssueKey`) creates a `member` API key
+named `dvm-<project>--<name>`, fenced to the engine's key's org, expiring
+after the TTL. `key ls` and `key revoke ID` read `ListApiKeys` and delete
+only such a key of the caller's. What boxd's kinds reach, from its API's
+documentation:
+
+- **`member`** acts as its maker within one org: every machine of theirs
+  there, not only this project's. disco-vm reports it as scope `org`. It is
+  the narrowest key that reaches disco-vm's machines.
+- **`org`** is a userless key for the org's shared fleet only, and needs an
+  org admin. disco-vm's machines are private to their maker, so it reaches
+  none of them.
+
+Against boxd (by hand, 2026-10-24, from an API key): `CreateApiKey` and
+`ListApiKeys` answered `PermissionDenied`, "this operation requires an
+interactive session (`boxd login`) — API keys are fenced to one org and
+cannot manage the account". So:
+
+- **An issued key cannot issue another.** It is an API key, and boxd refuses
+  key management to every API key.
+- **The driver issues only from a `boxd login` session.** From an API key,
+  `key issue` is `ErrCannotIssue`, with boxd's reason. A program that holds
+  an API key in configuration can open an engine with it, but issues nothing
+  from it.
+
+Not run yet: issuing from a `boxd login` session, and an engine on another
+host running the project's machines with the key it issued. Nor whether
+boxd stops honoring the JWT an issued key was exchanged for (an hour's)
+once the key is revoked or expires: until that is shown, a holder who
+exchanged it may keep working for up to that hour, whatever the TTL.
+
+## Isolation
+
+`run --isolated` and `--network N` (`InstanceSpec.Isolated`, `Networks`)
+are `CreateVm`'s `isolated` and `networks`. `isolated` strips the in-VM boxd
+CLI, the git credential helper, the integrations, and the default network's
+peers. It is immutable, and a restore from a snapshot of an isolated machine
+is isolated (boxd's API docs). A restore takes no networks of its own, so the
+driver sets them with `SetVmNetworks`, and refuses networks on a restore that
+is not asked `--isolated`: until they are set it would peer on the default
+network. An isolated machine with networks
+peers with exactly the non-isolated machines on them, which is how a machine
+that holds no token reaches one that does. Against boxd (2026-10-24): `run
+--isolated` of the default image made a machine `GetVm` reports `isolated`.
 
 ## The URL
 

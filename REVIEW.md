@@ -55,3 +55,13 @@
   declared is erased on the next write, along with whatever it held: a warm
   user's only password, in vz's case. Keep it opaque, with a comment saying
   why. (ADR 26-10-15-851.)
+- **A driver reads its key from its source, on every call, and nowhere
+  else.** Not from the environment (only `machine.KeyFromEnv`, which the
+  command line passes, reads it), and not cached past a call except as the
+  provider's own exchange of that same key (boxd's JWT, dropped when the key
+  changes). A `machine.Key` reaching a log or an error prints without its
+  secret; never format `Key.Secret` itself. (ADR 26-10-24-562.)
+- **An issued key expires and cannot issue keys, or the driver issues
+  none.** A provider whose keys could mint more is `ErrCannotIssue`; a
+  driver never hands back the caller's own key in place of one it issued.
+  (ADR 26-10-24-562.)

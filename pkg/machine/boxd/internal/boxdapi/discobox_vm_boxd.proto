@@ -52,6 +52,17 @@ service BoxdApi {
   // Bot protection challenges an HTTPS request that would wake a sleeping
   // machine on <machine>.<zone>. On by default.
   rpc SetBotProtection(SetBotProtectionRequest) returns (SetBotProtectionResponse);
+  // `networks` is the complete set, replacing the machine's. Empty moves it
+  // into the org's default network.
+  rpc SetVmNetworks(SetVmNetworksRequest)   returns (SetVmNetworksResponse);
+  // A key is fenced to exactly one org and never grants account-wide access.
+  rpc CreateApiKey(CreateApiKeyRequest)     returns (CreateApiKeyResponse);
+  // The keys the caller made, and the org-kind keys of every org the caller
+  // administers.
+  rpc ListApiKeys(ListApiKeysRequest)       returns (ListApiKeysResponse);
+  // Revokes a key the caller made, or an org-kind key of an org the caller
+  // administers.
+  rpc DeleteApiKey(DeleteApiKeyRequest)     returns (DeleteApiKeyResponse);
 }
 
 message VmConfig {
@@ -66,6 +77,12 @@ message CreateVmRequest {
   string          restart_policy = 7;  // "always" | "never"
   VmConfig        config         = 8;
   string          org            = 9;
+  // Network tags: east-west reachability within the org. Empty = the org's
+  // implicit default network; naming one opts out of it.
+  repeated string networks       = 11;
+  // A sandbox: never in the default network, never a peer of another
+  // isolated machine, and stripped of the in-VM boxd CLI, the git credential
+  // helper, and the integrations. Immutable; a restore inherits it.
   bool            isolated       = 12;
 }
 
@@ -122,6 +139,8 @@ message GetVmResponse {
   uint32 vcpu           = 15;
   uint64 memory_bytes   = 16;
   int64  created_at     = 17;  // epoch seconds
+  repeated string networks = 25;
+  bool   isolated       = 26;
 }
 
 message ListVmsRequest {
@@ -202,6 +221,7 @@ message CreateVmFromSnapshotRequest {
   string   name     = 2;
   VmConfig config   = 3;  // optional overrides
   string   org      = 4;
+  // One-way: the restore is `snapshot.isolated || isolated`.
   bool     isolated = 5;
 }
 
@@ -243,3 +263,39 @@ message SetBotProtectionRequest {
   bool   enabled = 2;
 }
 message SetBotProtectionResponse {}
+
+message SetVmNetworksRequest  { string vm_id = 1; repeated string networks = 2; }
+message SetVmNetworksResponse { repeated string networks = 1; }
+
+message CreateApiKeyRequest {
+  string name            = 1;
+  uint64 expires_in_secs = 2;  // 0 = no expiry
+  // Org (by name) the key is fenced to; "" = your own org.
+  string org             = 3;
+  // "member" (default): acts as you within the org. "org": userless service
+  // credential for the org's SHARED fleet only; requires org admin.
+  string kind            = 4;
+}
+
+message CreateApiKeyResponse {
+  string id         = 1;
+  string api_key    = 2;  // raw key, shown once and never stored
+  int64  expires_at = 3;  // 0 = no expiry
+}
+
+message ListApiKeysRequest {}
+message ListApiKeysResponse { repeated ApiKeyInfo keys = 1; }
+
+message ApiKeyInfo {
+  string id         = 1;
+  string name       = 2;
+  string key_prefix = 3;
+  int64  created_at = 4;
+  int64  expires_at = 6;  // 0 = no expiry
+  string org        = 7;  // org name the key is fenced to
+  string kind       = 8;  // "member" | "org"
+  bool   mine       = 10; // the caller made it
+}
+
+message DeleteApiKeyRequest  { string id = 1; }
+message DeleteApiKeyResponse {}

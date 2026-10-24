@@ -23,12 +23,16 @@ import (
 type createFlags struct {
 	name, memory string
 	cpus         int
+	isolated     bool
+	networks     []string
 }
 
 func (f *createFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.name, "name", "", "instance name: lowercase letters, digits, and single hyphens (default: a random one)")
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "vCPUs (default: the driver's)")
 	cmd.Flags().StringVar(&f.memory, "memory", "", "memory, e.g. 8GiB (default: the driver's)")
+	cmd.Flags().BoolVar(&f.isolated, "isolated", false, "strip the machine of what its provider gives one by default (boxd: the in-VM CLI and token, git credentials, integrations, default-network peers), for good")
+	cmd.Flags().StringSliceVar(&f.networks, "network", nil, "a provider network the machine peers on, in place of its default one (repeatable)")
 }
 
 func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) (engine.Instance, error) {
@@ -37,7 +41,7 @@ func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) 
 		return engine.Instance{}, err
 	}
 	return e.Create(ctx, ref, engine.CreateOptions{
-		Name: f.name, CPUs: f.cpus, Memory: memory,
+		Name: f.name, CPUs: f.cpus, Memory: memory, Isolated: f.isolated, Networks: f.networks,
 	})
 }
 

@@ -73,6 +73,11 @@ type CreateOptions struct {
 	// Forwards are served whenever the instance runs; the driver must list
 	// Capabilities.Forward.
 	Forwards []machine.Forward
+	// Isolated and Networks strip the instance of what its provider gives a
+	// machine by default, and place it on networks of the caller's
+	// (machine.InstanceSpec); the driver must list Capabilities.Isolation.
+	Isolated bool
+	Networks []string
 }
 
 // Create makes an instance from an image reference or ID, or from one of the
@@ -81,7 +86,13 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (In
 	if err := e.checkForwards(opts.Forwards); err != nil {
 		return Instance{}, err
 	}
-	spec := machine.InstanceSpec{Name: opts.Name, Image: ref, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: opts.Forwards}
+	if (opts.Isolated || len(opts.Networks) > 0) && !e.Driver.Capabilities().Isolation {
+		return Instance{}, fmt.Errorf("driver %s cannot isolate an instance or place it on networks: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
+	spec := machine.InstanceSpec{
+		Name: opts.Name, Image: ref, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: opts.Forwards,
+		Isolated: opts.Isolated, Networks: opts.Networks,
+	}
 	img, err := e.Resolve(ctx, ref)
 	if err != nil {
 		b, err := e.ResolveBase(ctx, ref, err)

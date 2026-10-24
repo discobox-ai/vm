@@ -13,7 +13,9 @@
 // deleted; an instance runs from a base the driver lists or finds, and is
 // snapshotted; a tag is set, moved, and dropped; clones run side by side;
 // Kill always works; and a started machine is attached to from another call,
-// and found stopped once its guest powers off.
+// and found stopped once its guest powers off; and a key the driver issues
+// runs the project's machines, cannot issue another, and works no more once
+// it is revoked.
 package machinetest
 
 import (
@@ -51,6 +53,10 @@ type Config struct {
 	Timeout time.Duration
 	// ScratchDir is a guest directory the suite may write into.
 	ScratchDir string
+	// Keyed is the driver again, for the same project, calling its
+	// provider with the key keys answers. A driver whose Capabilities.Keys
+	// issues needs it.
+	Keyed func(keys machine.KeySource) machine.Driver
 }
 
 // Run runs the suite. The driver is one project's, and the suite makes and
@@ -390,6 +396,100 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 				t.Fatalf("a guest that powered itself off still attaches: %v", err)
 			}
 			time.Sleep(time.Second)
+		}
+	})
+
+	// A key the driver issues runs the project's machines from another
+	// driver, cannot issue a key, and works no more once revoked. A driver
+	// that issues none says so with ErrNoKey or ErrCannotIssue.
+	t.Run("an-issued-key", func(t *testing.T) {
+		const ttl = time.Hour
+		key, err := driver.IssueKey(ctx, machine.IssueRequest{Name: "conformance-" + run, TTL: ttl})
+		if caps.Keys.Mode != machine.KeysIssue {
+			if !errors.Is(err, machine.ErrNoKey) && !errors.Is(err, machine.ErrCannotIssue) {
+				t.Fatalf("a driver that issues no keys issued %v: %v, want ErrNoKey or ErrCannotIssue", key, err)
+			}
+			return
+		}
+		if errors.Is(err, machine.ErrCannotIssue) {
+			t.Skipf("the driver's key cannot issue keys: %v", err)
+		}
+		if err != nil {
+			t.Fatalf("issue: %v", err)
+		}
+		t.Cleanup(func() { _ = driver.RevokeKey(context.Background(), key) })
+		if !key.Issued || key.Secret == "" || key.ID == "" || key.Scope != caps.Keys.Scope {
+			t.Fatalf("issued %v (issued %t, a secret %t), want an issued key with a secret, an ID, and scope %s", key, key.Issued, key.Secret != "", caps.Keys.Scope)
+		}
+		if key.Expires.IsZero() || key.Expires.After(time.Now().Add(ttl+time.Minute)) {
+			t.Fatalf("issued %v for %s", key, ttl)
+		}
+		if strings.Contains(fmt.Sprintf("%v %+v %#v %s", key, key, key, key), key.Secret) {
+			t.Fatal("a key prints its secret")
+		}
+		listed, err := driver.IssuedKeys(ctx, key.Name)
+		if err != nil {
+			t.Fatalf("issued keys: %v", err)
+		}
+		if len(listed) != 1 || listed[0].ID != key.ID || listed[0].Secret != "" {
+			t.Fatalf("issued keys named %s: %v, want %s alone, without its secret", key.Name, listed, key.ID)
+		}
+		if again, err := driver.IssueKey(ctx, machine.IssueRequest{Name: key.Name, TTL: ttl}); !errors.Is(err, machine.ErrExists) {
+			_ = driver.RevokeKey(context.Background(), again)
+			t.Fatalf("a second key named %s: %v, want ErrExists", key.Name, err)
+		}
+		if cfg.Keyed == nil {
+			t.Fatal("the driver issues keys, and Config.Keyed is nil")
+		}
+		keyed := cfg.Keyed(machine.StaticKey(key))
+		if again, err := keyed.IssueKey(ctx, machine.IssueRequest{Name: "conformance-" + run + "-again", TTL: ttl}); err == nil {
+			_ = driver.RevokeKey(context.Background(), again)
+			t.Fatal("an issued key issued another")
+		}
+
+		spec := start
+		names++
+		spec.Name = fmt.Sprintf("conformance-%s-%d", run, names)
+		spec.CPUs, spec.Memory = cfg.CPUs, cfg.Memory
+		inst, err := keyed.Create(ctx, spec)
+		if err != nil {
+			t.Fatalf("create with the issued key: %v", err)
+		}
+		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
+		m, err := keyed.Start(startCtx, inst, machine.BootOptions{})
+		if err != nil {
+			t.Fatalf("start with the issued key: %v", err)
+		}
+		t.Cleanup(func() { _ = m.Kill(context.Background()) })
+		if err := m.CopyTo(ctx, marker, tarOf(t, "keyed.txt", "keyed")); err != nil {
+			t.Fatalf("copy in with the issued key: %v", err)
+		}
+		if got := readMarker(t, m, marker+"/keyed.txt"); got != "keyed" {
+			t.Fatalf("read back %q", got)
+		}
+		shutdown(t, m)
+		if err := keyed.Destroy(ctx, inst); err != nil {
+			t.Fatalf("remove with the issued key: %v", err)
+		}
+
+		if err := driver.RevokeKey(ctx, key); err != nil {
+			t.Fatalf("revoke: %v", err)
+		}
+		if listed, err := driver.IssuedKeys(ctx, key.Name); err != nil || len(listed) != 0 {
+			t.Fatalf("issued keys after revoking: %v, %v", listed, err)
+		}
+		if _, err := keyed.Instances(ctx); !errors.Is(err, machine.ErrUnauthorized) {
+			t.Fatalf("a revoked key listing instances: %v, want ErrUnauthorized", err)
+		}
+		spec.Name += "-revoked"
+		if inst, err := keyed.Create(ctx, spec); err == nil {
+			_ = driver.Destroy(context.Background(), inst)
+			t.Fatal("a revoked key creates an instance")
+		}
+		if err := driver.RevokeKey(ctx, key); err != nil {
+			t.Fatalf("revoking a key already revoked: %v", err)
 		}
 	})
 

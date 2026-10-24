@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
 )
 
 // debugOptions report every call to boxd's API to machine.DebugCall: a unary
@@ -87,6 +88,12 @@ func debugText(m any) string {
 	msg, ok := m.(proto.Message)
 	if !ok {
 		return "{}"
+	}
+	if key, ok := msg.(*boxdapi.CreateApiKeyResponse); ok && key.GetApiKey() != "" {
+		// A key's secret is never logged.
+		key = proto.CloneOf(key)
+		key.ApiKey = "<redacted>"
+		msg = key
 	}
 	text := prototext.MarshalOptions{}.Format(msg)
 	if len(text) > 240 {

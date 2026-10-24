@@ -91,6 +91,13 @@ type Capabilities struct {
 	// Install reports that the driver makes an image from installation
 	// media (Install). One that does not has bases instead (Bases, Base).
 	Install bool `json:"install"`
+	// Keys is whether the driver issues keys (IssueKey), and the narrowest
+	// scope one reaches.
+	Keys KeyCapabilities `json:"keys"`
+	// Isolation reports that an instance can be created stripped of what
+	// the provider gives a machine by default (InstanceSpec.Isolated) and
+	// placed on networks of the caller's (InstanceSpec.Networks).
+	Isolation bool `json:"isolation"`
 }
 
 // SupportsOS reports whether the driver can run the given guest OS.
@@ -115,6 +122,12 @@ type Config struct {
 	// subcommand of its own that calls local.ShimMain, so it ships no second
 	// binary.
 	ShimCommand []string
+	// Keys is the key the driver calls its provider with, asked on every
+	// call. Nil is none: a driver whose provider needs a key (boxd) fails
+	// its calls, and one that keeps its own (fake) acts as its owner. The
+	// command line passes KeyFromEnv; nothing else reads the environment
+	// for a key.
+	Keys KeySource
 }
 
 // DirEnv overrides DefaultDir.
@@ -282,6 +295,16 @@ type InstanceSpec struct {
 	// Forwards are served whenever the instance runs, by a driver that lists
 	// Capabilities.Forward.
 	Forwards []Forward
+	// Isolated strips the machine of what its provider gives one by default
+	// (boxd: the in-VM CLI and its token, the git credential helper and
+	// integrations, and the default network's peers), for good: a snapshot
+	// of it, and an instance of that, stay isolated. A driver that does not
+	// list Capabilities.Isolation refuses it.
+	Isolated bool
+	// Networks are the provider's networks the machine peers on, in place
+	// of its default one. A driver that does not list
+	// Capabilities.Isolation refuses them.
+	Networks []string
 }
 
 // Instance is one machine made from an image or a base, as its provider has
@@ -304,6 +327,10 @@ type Instance struct {
 	Created time.Time `json:"created,omitzero"`
 	// Forwards are served whenever it runs.
 	Forwards []Forward `json:"forwards,omitempty"`
+	// Isolated and Networks are as InstanceSpec's, as the provider reports
+	// them.
+	Isolated bool     `json:"isolated,omitempty"`
+	Networks []string `json:"networks,omitempty"`
 }
 
 // InstallSpec creates an image from installation media.
@@ -454,6 +481,23 @@ type Driver interface {
 	// while it is stopped: then the driver returns ErrNotRunning. A URL
 	// that outlives a stop (boxd's) is the same across stop and start.
 	Service(ctx context.Context, inst Instance) (Service, error)
+
+	// IssueKey makes the narrowest key the driver can for another host to
+	// run this project's machines with. An issued key expires, and cannot
+	// itself issue keys: a key that could would let its holder make one
+	// that outlives every revocation. A driver with no key to hand on
+	// returns ErrNoKey; one whose provider cannot make such a key returns
+	// ErrCannotIssue (Capabilities.Keys says which up front). It never
+	// returns the caller's own key: handing that on is the caller's choice.
+	IssueKey(ctx context.Context, req IssueRequest) (Key, error)
+	// IssuedKeys lists the keys the driver issued for this project under a
+	// name, or under every name when name is empty, without their secrets.
+	IssuedKeys(ctx context.Context, name string) ([]Key, error)
+	// RevokeKey revokes a key the driver issued for this project (by its
+	// ID), so it works no more. One already gone is not an error; one the
+	// driver did not issue for this project is refused. A driver with no
+	// keys returns ErrNoKey.
+	RevokeKey(ctx context.Context, key Key) error
 }
 
 // FindBase is the base in bases that ref names, by name or ID: Driver.Base

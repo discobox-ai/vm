@@ -44,7 +44,7 @@ import (
 )
 
 func init() {
-	machine.Register("boxd", func(cfg machine.Config) (machine.Driver, error) { return New(cfg.Project), nil })
+	machine.Register("boxd", func(cfg machine.Config) (machine.Driver, error) { return New(cfg), nil }, APIKeyEnv, TokenEnv)
 }
 
 const (
@@ -64,19 +64,25 @@ type Driver struct {
 
 var _ machine.Driver = (*Driver)(nil)
 
-// New returns a driver that authenticates with $BOXD_API_KEY, for a project
-// (machine.DefaultProject when empty). It dials nothing until it is used.
-func New(project string) *Driver {
+// New returns a driver for cfg's project (machine.DefaultProject when empty)
+// that authenticates with the key cfg.Keys answers on each call. It dials
+// nothing until it is used.
+func New(cfg machine.Config) *Driver {
+	project := cfg.Project
 	if project == "" {
 		project = machine.DefaultProject
 	}
-	return &Driver{api: newClient(), project: project}
+	return &Driver{api: newClient(cfg.Keys), project: project}
 }
 
 func (*Driver) Name() string { return "boxd" }
 
 func (*Driver) Capabilities() machine.Capabilities {
-	return machine.Capabilities{GuestOS: []machine.OS{machine.Linux}}
+	return machine.Capabilities{
+		GuestOS:   []machine.OS{machine.Linux},
+		Keys:      keyCapabilities,
+		Isolation: true,
+	}
 }
 
 func (d *Driver) Check(ctx context.Context) error {
@@ -137,6 +143,12 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if len(spec.Forwards) > 0 {
 		return machine.Instance{}, fmt.Errorf("boxd: forwards: %w", machine.ErrUnsupported)
 	}
+	restore := spec.Base == nil || spec.Base.Options["snapshot"] != ""
+	if restore && len(spec.Networks) > 0 && !spec.Isolated {
+		// A restore takes no networks: they are set once it is made, and a
+		// machine that is not isolated is on the default network until then.
+		return machine.Instance{}, fmt.Errorf("boxd: networks on an instance of a snapshot need it isolated, or it peers on the default network until they are set: %w", machine.ErrUnsupported)
+	}
 	api, err := d.api.API()
 	if err != nil {
 		return machine.Instance{}, err
@@ -150,13 +162,13 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	var created *boxdapi.CreateVmResponse
 	switch {
 	case spec.Base == nil:
-		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: d.imageName(spec.ImageID), Name: name}
+		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: d.imageName(spec.ImageID), Name: name, Isolated: spec.Isolated}
 		if spec.CPUs != 0 || spec.Memory != 0 {
 			req.Config = config
 		}
 		created, err = api.CreateVmFromSnapshot(ctx, req)
 	case spec.Base.Options["snapshot"] != "":
-		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: spec.Base.Options["snapshot"], Name: name}
+		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: spec.Base.Options["snapshot"], Name: name, Isolated: spec.Isolated}
 		if spec.CPUs != 0 || spec.Memory != 0 {
 			// With none asked for, the snapshot's own size.
 			req.Config = config
@@ -165,6 +177,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	default:
 		created, err = api.CreateVm(ctx, &boxdapi.CreateVmRequest{
 			Name: name, ImageRef: spec.Base.Options["image"], RestartPolicy: "never", Config: config,
+			Isolated: spec.Isolated, Networks: spec.Networks,
 		})
 	}
 	if status.Code(err) == codes.AlreadyExists {
@@ -174,7 +187,17 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("boxd: create %s: %w", name, err)
 	}
 	vm := created.GetVmId()
-	err = d.settle(ctx, api, vm)
+	if restore && len(spec.Networks) > 0 {
+		// A restore takes no networks of its own. It is isolated, so it has
+		// no peers until they are set.
+		_, err = api.SetVmNetworks(ctx, &boxdapi.SetVmNetworksRequest{VmId: vm, Networks: spec.Networks})
+		if err != nil {
+			err = fmt.Errorf("boxd: networks of %s: %w", name, err)
+		}
+	}
+	if err == nil {
+		err = d.settle(ctx, api, vm)
+	}
 	if err == nil {
 		_, err = waitVM(ctx, api, vm, "running")
 	}
