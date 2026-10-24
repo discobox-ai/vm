@@ -1,6 +1,6 @@
 # 26-10-15-851 — Images are made by build and snapshot, and every clone boots cold
 
-- **Status**: Accepted
+- **Status**: Accepted (images made by build superseded by 26-10-23-410)
 - **Date**: 2026-10-15
 
 ## Context
