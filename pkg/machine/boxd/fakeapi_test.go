@@ -50,6 +50,11 @@ type fakeAPI struct {
 	proxyErr error
 	// syncFails makes the guest's sync exit 1.
 	syncFails atomic.Bool
+
+	keys keys
+	// addr and tokenURL are where the API and its token exchange are
+	// served.
+	addr, tokenURL string
 }
 
 type fakeVM struct {
@@ -64,6 +69,10 @@ type fakeVM struct {
 	// botProtection is on for a new machine, as on boxd.
 	proxyPort     uint32
 	botProtection bool
+	// isolated is immutable, and networks set at create or by
+	// SetVmNetworks.
+	isolated bool
+	networks []string
 }
 
 type fakeSnapshot struct {
@@ -71,10 +80,15 @@ type fakeSnapshot struct {
 	dir      string
 	vcpu     uint32
 	memory   uint64
+	// isolated is its machine's, which a restore inherits.
+	isolated bool
 }
 
 func newFakeAPI(dir string) *fakeAPI {
-	return &fakeAPI{dir: dir, vms: map[string]*fakeVM{}, snapshots: map[string]*fakeSnapshot{}, defaultImage: "ubuntu-24.04"}
+	return &fakeAPI{
+		dir: dir, vms: map[string]*fakeVM{}, snapshots: map[string]*fakeSnapshot{}, defaultImage: "ubuntu-24.04",
+		keys: keys{byID: map[string]*fakeKey{}, jwts: map[string]string{}},
+	}
 }
 
 // snapshot finds a snapshot by name or ID, as boxd does.
@@ -155,6 +169,7 @@ func (f *fakeAPI) CreateVm(_ context.Context, req *boxdapi.CreateVmRequest) (*bo
 		return nil, status.Errorf(codes.AlreadyExists, "a machine is named %q", req.GetName())
 	}
 	v := f.newVM(req.GetName(), req.GetConfig().GetVcpu(), req.GetConfig().GetMemoryBytes())
+	v.isolated, v.networks = req.GetIsolated(), req.GetNetworks()
 	if err := os.MkdirAll(f.root(v), 0o755); err != nil {
 		return nil, err
 	}
@@ -181,11 +196,23 @@ func (f *fakeAPI) CreateVmFromSnapshot(_ context.Context, req *boxdapi.CreateVmF
 		memory = c
 	}
 	v := f.newVM(req.GetName(), vcpu, memory)
+	v.isolated = snap.isolated || req.GetIsolated()
 	if err := fsutil.CopyTree(snap.dir, f.root(v)); err != nil {
 		return nil, err
 	}
 	f.boot(v)
 	return &boxdapi.CreateVmResponse{VmId: v.id, Name: v.name, Status: v.status}, nil
+}
+
+func (f *fakeAPI) SetVmNetworks(_ context.Context, req *boxdapi.SetVmNetworksRequest) (*boxdapi.SetVmNetworksResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, err := f.vm(req.GetVmId())
+	if err != nil {
+		return nil, err
+	}
+	v.networks = req.GetNetworks()
+	return &boxdapi.SetVmNetworksResponse{Networks: v.networks}, nil
 }
 
 func (f *fakeAPI) GetVm(_ context.Context, req *boxdapi.GetVmRequest) (*boxdapi.GetVmResponse, error) {
@@ -198,7 +225,7 @@ func (f *fakeAPI) GetVm(_ context.Context, req *boxdapi.GetVmRequest) (*boxdapi.
 	if err != nil {
 		return nil, err
 	}
-	return &boxdapi.GetVmResponse{VmId: v.id, Name: v.name, Status: v.status, Vcpu: v.vcpu, MemoryBytes: v.memory}, nil
+	return &boxdapi.GetVmResponse{VmId: v.id, Name: v.name, Status: v.status, Vcpu: v.vcpu, MemoryBytes: v.memory, Isolated: v.isolated, Networks: v.networks}, nil
 }
 
 func (f *fakeAPI) ListVms(context.Context, *boxdapi.ListVmsRequest) (*boxdapi.ListVmsResponse, error) {
@@ -206,7 +233,7 @@ func (f *fakeAPI) ListVms(context.Context, *boxdapi.ListVmsRequest) (*boxdapi.Li
 	defer f.mu.Unlock()
 	out := &boxdapi.ListVmsResponse{}
 	for _, v := range f.vms {
-		out.Vms = append(out.Vms, &boxdapi.GetVmResponse{VmId: v.id, Name: v.name, Status: v.status, Vcpu: v.vcpu, MemoryBytes: v.memory})
+		out.Vms = append(out.Vms, &boxdapi.GetVmResponse{VmId: v.id, Name: v.name, Status: v.status, Vcpu: v.vcpu, MemoryBytes: v.memory, Isolated: v.isolated, Networks: v.networks})
 	}
 	return out, nil
 }
@@ -353,7 +380,7 @@ func (f *fakeAPI) CreateSnapshot(_ context.Context, req *boxdapi.CreateSnapshotR
 		return nil, status.Errorf(codes.FailedPrecondition, "%s is %s, not running", v.name, v.status)
 	}
 	snap := &fakeSnapshot{
-		id: "snap_" + fsutil.RandomHex(4), name: req.GetName(), vcpu: v.vcpu, memory: v.memory,
+		id: "snap_" + fsutil.RandomHex(4), name: req.GetName(), vcpu: v.vcpu, memory: v.memory, isolated: v.isolated,
 	}
 	snap.dir = filepath.Join(f.dir, snap.id)
 	if err := fsutil.CopyTree(f.root(v), snap.dir); err != nil {

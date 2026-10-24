@@ -263,13 +263,15 @@ func (d *Driver) instanceName(vmName string) (string, bool) {
 func (d *Driver) instance(vm *boxdapi.GetVmResponse) machine.Instance {
 	name, _ := d.instanceName(vm.GetName())
 	return machine.Instance{
-		ID:      vm.GetVmId(),
-		Name:    name,
-		Image:   vm.GetImageRef(),
-		GuestOS: machine.Linux,
-		CPUs:    int(vm.GetVcpu()),
-		Memory:  vm.GetMemoryBytes(),
-		Created: unixTime(vm.GetCreatedAt(), time.Second),
+		ID:       vm.GetVmId(),
+		Name:     name,
+		Image:    vm.GetImageRef(),
+		GuestOS:  machine.Linux,
+		CPUs:     int(vm.GetVcpu()),
+		Memory:   vm.GetMemoryBytes(),
+		Created:  unixTime(vm.GetCreatedAt(), time.Second),
+		Isolated: vm.GetIsolated(),
+		Networks: vm.GetNetworks(),
 	}
 }
 

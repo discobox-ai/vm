@@ -31,16 +31,22 @@ func TestConformance(t *testing.T) {
 	}
 	catalog := []machine.Base{{Name: "stock", ID: "stock-1", GuestOS: machine.OS(runtime.GOOS), Options: map[string]string{"image": "stock"}}}
 	dir := t.TempDir()
-	driver, err := local.New(machine.Config{
-		Dir:         dir,
-		ShimCommand: []string{agent, "--root", dir, "--driver", "fake", "shim"},
-	}, &fake.Hypervisor{Agent: agent, Catalog: catalog})
-	if err != nil {
-		t.Fatal(err)
+	hv := &fake.Hypervisor{Agent: agent, Catalog: catalog}
+	newDriver := func(keys machine.KeySource) machine.Driver {
+		driver, err := local.New(machine.Config{
+			Dir:         dir,
+			ShimCommand: []string{agent, "--root", dir, "--driver", "fake", "shim"},
+			Keys:        keys,
+		}, hv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return driver
 	}
-	machinetest.Run(t, driver, machinetest.Config{
+	machinetest.Run(t, newDriver(nil), machinetest.Config{
 		Install:    machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"},
 		Timeout:    30 * time.Second,
 		ScratchDir: "/scratch",
+		Keyed:      newDriver,
 	})
 }

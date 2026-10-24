@@ -15,18 +15,24 @@ type Factory func(Config) (Driver, error)
 var (
 	registryMu sync.Mutex
 	registry   = map[string]Factory{}
+	keyEnv     = map[string][]string{}
 )
 
 // Register makes a driver available by name. Drivers register themselves from
 // init in build-tagged files, so a binary contains exactly the drivers its OS
-// can run; import pkg/machine/drivers to get all of them.
-func Register(name string, factory Factory) {
+// can run; import pkg/machine/drivers to get all of them. keyVars names the
+// environment variables the command line reads the driver's key from
+// (KeyFromEnv), in order.
+func Register(name string, factory Factory, keyVars ...string) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	if _, dup := registry[name]; dup {
 		panic("machine: driver registered twice: " + name)
 	}
 	registry[name] = factory
+	if len(keyVars) > 0 {
+		keyEnv[name] = keyVars
+	}
 }
 
 // Names lists the registered drivers.

@@ -55,6 +55,10 @@ const (
 	BoxdApi_ListProxies_FullMethodName             = "/boxd.api.v1.BoxdApi/ListProxies"
 	BoxdApi_SetProxyPort_FullMethodName            = "/boxd.api.v1.BoxdApi/SetProxyPort"
 	BoxdApi_SetBotProtection_FullMethodName        = "/boxd.api.v1.BoxdApi/SetBotProtection"
+	BoxdApi_SetVmNetworks_FullMethodName           = "/boxd.api.v1.BoxdApi/SetVmNetworks"
+	BoxdApi_CreateApiKey_FullMethodName            = "/boxd.api.v1.BoxdApi/CreateApiKey"
+	BoxdApi_ListApiKeys_FullMethodName             = "/boxd.api.v1.BoxdApi/ListApiKeys"
+	BoxdApi_DeleteApiKey_FullMethodName            = "/boxd.api.v1.BoxdApi/DeleteApiKey"
 )
 
 // BoxdApiClient is the client API for BoxdApi service.
@@ -98,6 +102,17 @@ type BoxdApiClient interface {
 	// Bot protection challenges an HTTPS request that would wake a sleeping
 	// machine on <machine>.<zone>. On by default.
 	SetBotProtection(ctx context.Context, in *SetBotProtectionRequest, opts ...grpc.CallOption) (*SetBotProtectionResponse, error)
+	// `networks` is the complete set, replacing the machine's. Empty moves it
+	// into the org's default network.
+	SetVmNetworks(ctx context.Context, in *SetVmNetworksRequest, opts ...grpc.CallOption) (*SetVmNetworksResponse, error)
+	// A key is fenced to exactly one org and never grants account-wide access.
+	CreateApiKey(ctx context.Context, in *CreateApiKeyRequest, opts ...grpc.CallOption) (*CreateApiKeyResponse, error)
+	// The keys the caller made, and the org-kind keys of every org the caller
+	// administers.
+	ListApiKeys(ctx context.Context, in *ListApiKeysRequest, opts ...grpc.CallOption) (*ListApiKeysResponse, error)
+	// Revokes a key the caller made, or an org-kind key of an org the caller
+	// administers.
+	DeleteApiKey(ctx context.Context, in *DeleteApiKeyRequest, opts ...grpc.CallOption) (*DeleteApiKeyResponse, error)
 }
 
 type boxdApiClient struct {
@@ -351,6 +366,46 @@ func (c *boxdApiClient) SetBotProtection(ctx context.Context, in *SetBotProtecti
 	return out, nil
 }
 
+func (c *boxdApiClient) SetVmNetworks(ctx context.Context, in *SetVmNetworksRequest, opts ...grpc.CallOption) (*SetVmNetworksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetVmNetworksResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_SetVmNetworks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *boxdApiClient) CreateApiKey(ctx context.Context, in *CreateApiKeyRequest, opts ...grpc.CallOption) (*CreateApiKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateApiKeyResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_CreateApiKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *boxdApiClient) ListApiKeys(ctx context.Context, in *ListApiKeysRequest, opts ...grpc.CallOption) (*ListApiKeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListApiKeysResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_ListApiKeys_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *boxdApiClient) DeleteApiKey(ctx context.Context, in *DeleteApiKeyRequest, opts ...grpc.CallOption) (*DeleteApiKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteApiKeyResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_DeleteApiKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BoxdApiServer is the server API for BoxdApi service.
 // All implementations must embed UnimplementedBoxdApiServer
 // for forward compatibility.
@@ -392,6 +447,17 @@ type BoxdApiServer interface {
 	// Bot protection challenges an HTTPS request that would wake a sleeping
 	// machine on <machine>.<zone>. On by default.
 	SetBotProtection(context.Context, *SetBotProtectionRequest) (*SetBotProtectionResponse, error)
+	// `networks` is the complete set, replacing the machine's. Empty moves it
+	// into the org's default network.
+	SetVmNetworks(context.Context, *SetVmNetworksRequest) (*SetVmNetworksResponse, error)
+	// A key is fenced to exactly one org and never grants account-wide access.
+	CreateApiKey(context.Context, *CreateApiKeyRequest) (*CreateApiKeyResponse, error)
+	// The keys the caller made, and the org-kind keys of every org the caller
+	// administers.
+	ListApiKeys(context.Context, *ListApiKeysRequest) (*ListApiKeysResponse, error)
+	// Revokes a key the caller made, or an org-kind key of an org the caller
+	// administers.
+	DeleteApiKey(context.Context, *DeleteApiKeyRequest) (*DeleteApiKeyResponse, error)
 	mustEmbedUnimplementedBoxdApiServer()
 }
 
@@ -473,6 +539,18 @@ func (UnimplementedBoxdApiServer) SetProxyPort(context.Context, *SetProxyPortReq
 }
 func (UnimplementedBoxdApiServer) SetBotProtection(context.Context, *SetBotProtectionRequest) (*SetBotProtectionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetBotProtection not implemented")
+}
+func (UnimplementedBoxdApiServer) SetVmNetworks(context.Context, *SetVmNetworksRequest) (*SetVmNetworksResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetVmNetworks not implemented")
+}
+func (UnimplementedBoxdApiServer) CreateApiKey(context.Context, *CreateApiKeyRequest) (*CreateApiKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateApiKey not implemented")
+}
+func (UnimplementedBoxdApiServer) ListApiKeys(context.Context, *ListApiKeysRequest) (*ListApiKeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListApiKeys not implemented")
+}
+func (UnimplementedBoxdApiServer) DeleteApiKey(context.Context, *DeleteApiKeyRequest) (*DeleteApiKeyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteApiKey not implemented")
 }
 func (UnimplementedBoxdApiServer) mustEmbedUnimplementedBoxdApiServer() {}
 func (UnimplementedBoxdApiServer) testEmbeddedByValue()                 {}
@@ -916,6 +994,78 @@ func _BoxdApi_SetBotProtection_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BoxdApi_SetVmNetworks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetVmNetworksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).SetVmNetworks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_SetVmNetworks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).SetVmNetworks(ctx, req.(*SetVmNetworksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BoxdApi_CreateApiKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateApiKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).CreateApiKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_CreateApiKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).CreateApiKey(ctx, req.(*CreateApiKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BoxdApi_ListApiKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListApiKeysRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).ListApiKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_ListApiKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).ListApiKeys(ctx, req.(*ListApiKeysRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BoxdApi_DeleteApiKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteApiKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).DeleteApiKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_DeleteApiKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).DeleteApiKey(ctx, req.(*DeleteApiKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // BoxdApi_ServiceDesc is the grpc.ServiceDesc for BoxdApi service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1014,6 +1164,22 @@ var BoxdApi_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetBotProtection",
 			Handler:    _BoxdApi_SetBotProtection_Handler,
+		},
+		{
+			MethodName: "SetVmNetworks",
+			Handler:    _BoxdApi_SetVmNetworks_Handler,
+		},
+		{
+			MethodName: "CreateApiKey",
+			Handler:    _BoxdApi_CreateApiKey_Handler,
+		},
+		{
+			MethodName: "ListApiKeys",
+			Handler:    _BoxdApi_ListApiKeys_Handler,
+		},
+		{
+			MethodName: "DeleteApiKey",
+			Handler:    _BoxdApi_DeleteApiKey_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

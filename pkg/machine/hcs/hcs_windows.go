@@ -42,6 +42,7 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		Forward: true,
 		Agent:   true,
 		Install: true,
+		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
 	}
 }
 

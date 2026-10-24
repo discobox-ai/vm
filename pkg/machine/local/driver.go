@@ -23,6 +23,7 @@ type Driver struct {
 	dir     string
 	project string
 	shim    []string
+	keys    machine.KeySource
 }
 
 var _ machine.Driver = (*Driver)(nil)
@@ -42,7 +43,7 @@ func New(cfg machine.Config, hv Hypervisor) (*Driver, error) {
 	if project == "" {
 		project = machine.DefaultProject
 	}
-	return &Driver{hv: hv, dir: dir, project: project, shim: cfg.ShimCommand}, nil
+	return &Driver{hv: hv, dir: dir, project: project, shim: cfg.ShimCommand, keys: cfg.Keys}, nil
 }
 
 // Hypervisor is the hypervisor the driver keeps state for.
@@ -53,13 +54,28 @@ func (d *Driver) Dir() string { return d.dir }
 
 func (d *Driver) Name() string                       { return d.hv.Name() }
 func (d *Driver) Capabilities() machine.Capabilities { return d.hv.Capabilities() }
-func (d *Driver) Check(ctx context.Context) error    { return d.hv.Check(ctx) }
+
+// Check is the hypervisor's, and the driver's key.
+func (d *Driver) Check(ctx context.Context) error {
+	if err := d.authorize(ctx); err != nil {
+		return err
+	}
+	return d.hv.Check(ctx)
+}
 
 // Bases is the hypervisor's.
-func (d *Driver) Bases(ctx context.Context) ([]machine.Base, error) { return d.hv.Bases(ctx) }
+func (d *Driver) Bases(ctx context.Context) ([]machine.Base, error) {
+	if err := d.authorize(ctx); err != nil {
+		return nil, err
+	}
+	return d.hv.Bases(ctx)
+}
 
 // Base is the base the hypervisor lists that ref names.
 func (d *Driver) Base(ctx context.Context, ref string) (machine.Base, bool, error) {
+	if err := d.authorize(ctx); err != nil {
+		return machine.Base{}, false, err
+	}
 	bases, err := d.hv.Bases(ctx)
 	if err != nil {
 		return machine.Base{}, false, err
@@ -136,7 +152,10 @@ func validID(id string) bool {
 
 // Image is an image whose disk can boot: its own, and, for a hypervisor that
 // Chains, every disk it differences over, are all there.
-func (d *Driver) Image(_ context.Context, id string) (machine.Image, error) {
+func (d *Driver) Image(ctx context.Context, id string) (machine.Image, error) {
+	if err := d.authorize(ctx); err != nil {
+		return machine.Image{}, err
+	}
 	img, err := d.readImage(id)
 	if err != nil {
 		return machine.Image{}, err
@@ -147,7 +166,10 @@ func (d *Driver) Image(_ context.Context, id string) (machine.Image, error) {
 	return img, nil
 }
 
-func (d *Driver) Images(context.Context) ([]machine.Image, error) {
+func (d *Driver) Images(ctx context.Context) ([]machine.Image, error) {
+	if err := d.authorize(ctx); err != nil {
+		return nil, err
+	}
 	records, err := d.records()
 	if err != nil {
 		return nil, err
@@ -264,6 +286,9 @@ func (p *pending) publish() (machine.Image, error) {
 func (p *pending) abort() { _ = os.RemoveAll(p.tmp) }
 
 func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, img machine.Image) (machine.Image, error) {
+	if err := d.authorize(ctx); err != nil {
+		return machine.Image{}, err
+	}
 	if !d.hv.Capabilities().Install {
 		return machine.Image{}, fmt.Errorf("%s installs nothing from media: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
@@ -282,7 +307,10 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, img mach
 // DeleteImage refuses an image whose disk another image's differences over,
 // in any project, since every project's disks share the directory; otherwise
 // it renames the image out of the listing, then removes it.
-func (d *Driver) DeleteImage(_ context.Context, id string) error {
+func (d *Driver) DeleteImage(ctx context.Context, id string) error {
+	if err := d.authorize(ctx); err != nil {
+		return err
+	}
 	if _, err := d.readImage(id); errors.Is(err, machine.ErrNotFound) {
 		return nil
 	} else if err != nil {
@@ -310,7 +338,10 @@ func (d *Driver) tagFile(ref string) string {
 	return filepath.Join(d.tagsDir(), hex.EncodeToString([]byte(ref))+".json")
 }
 
-func (d *Driver) Tags(context.Context) ([]machine.Tag, error) {
+func (d *Driver) Tags(ctx context.Context) ([]machine.Tag, error) {
+	if err := d.authorize(ctx); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(d.tagsDir())
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -339,7 +370,10 @@ func (d *Driver) Tags(context.Context) ([]machine.Tag, error) {
 	return out, nil
 }
 
-func (d *Driver) Tag(_ context.Context, ref, image string) error {
+func (d *Driver) Tag(ctx context.Context, ref, image string) error {
+	if err := d.authorize(ctx); err != nil {
+		return err
+	}
 	if _, err := d.readImage(image); err != nil {
 		return err
 	}
@@ -349,7 +383,10 @@ func (d *Driver) Tag(_ context.Context, ref, image string) error {
 	return fsutil.WriteJSON(d.tagFile(ref), machine.Tag{Ref: ref, Image: image})
 }
 
-func (d *Driver) Untag(_ context.Context, ref string) error {
+func (d *Driver) Untag(ctx context.Context, ref string) error {
+	if err := d.authorize(ctx); err != nil {
+		return err
+	}
 	if err := os.Remove(d.tagFile(ref)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -407,11 +444,22 @@ func (d *Driver) claim(name, id string) error {
 }
 
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
+	if err := d.authorize(ctx); err != nil {
+		return machine.Instance{}, err
+	}
 	if err := machine.ValidateName(spec.Name); err != nil {
 		return machine.Instance{}, err
 	}
 	if len(spec.Forwards) > 0 && !d.hv.Capabilities().Forward {
 		return machine.Instance{}, fmt.Errorf("%s cannot forward a guest's connections to the host: %w", d.hv.Name(), machine.ErrUnsupported)
+	}
+	if spec.Isolated || len(spec.Networks) > 0 {
+		return machine.Instance{}, fmt.Errorf("%s: isolation: %w", d.hv.Name(), machine.ErrUnsupported)
+	}
+	if spec.Base == nil {
+		if _, err := d.readImage(spec.ImageID); err != nil {
+			return machine.Instance{}, err
+		}
 	}
 	inst := machine.Instance{
 		ID: fsutil.RandomHex(6), Name: spec.Name, Image: spec.Image, ImageID: spec.ImageID, Base: spec.Base,
@@ -467,7 +515,10 @@ func (d *Driver) readInstance(id string) (machine.Instance, error) {
 	return rec.Instance, nil
 }
 
-func (d *Driver) Instance(_ context.Context, name string) (machine.Instance, error) {
+func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, error) {
+	if err := d.authorize(ctx); err != nil {
+		return machine.Instance{}, err
+	}
 	if err := machine.ValidateName(name); err != nil {
 		return machine.Instance{}, fmt.Errorf("instance %q: %w", name, machine.ErrNotFound)
 	}
@@ -485,7 +536,10 @@ func (d *Driver) Instance(_ context.Context, name string) (machine.Instance, err
 	return inst, err
 }
 
-func (d *Driver) Instances(context.Context) ([]machine.Instance, error) {
+func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
+	if err := d.authorize(ctx); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(d.instancesDir())
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -516,6 +570,9 @@ func (d *Driver) Instances(context.Context) ([]machine.Instance, error) {
 // fails partway leaves the record, so the instance is still listed and can be
 // removed again, and a name is never taken twice.
 func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
+	if err := d.authorizeInstance(ctx, inst); err != nil {
+		return err
+	}
 	if shim, err := d.openShim(inst.ID); err == nil {
 		_ = shim.kill(ctx)
 	}
@@ -560,6 +617,9 @@ func (d *Driver) release(inst machine.Instance) error {
 }
 
 func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+	if err := d.authorizeInstance(ctx, inst); err != nil {
+		return nil, err
+	}
 	return d.boot(ctx, inst, opts)
 }
 
@@ -583,6 +643,9 @@ func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.B
 // disk differences over the instance's image's, which it records as its
 // parent.
 func (d *Driver) Commit(ctx context.Context, inst machine.Instance, img machine.Image) (machine.Image, error) {
+	if err := d.authorizeInstance(ctx, inst); err != nil {
+		return machine.Image{}, err
+	}
 	if shim, err := d.openShim(inst.ID); err == nil && shim.status(ctx) == nil {
 		return machine.Image{}, fmt.Errorf("instance %s is running; stop it first", inst.Name)
 	}
@@ -609,6 +672,9 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance, img machine.
 // Service is the hypervisor's address in the guest, and the loopback URL the
 // instance's shim serves while it runs.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
+	if err := d.authorizeInstance(ctx, inst); err != nil {
+		return machine.Service{}, err
+	}
 	hs, err := d.spec(inst)
 	if err != nil {
 		return machine.Service{}, err

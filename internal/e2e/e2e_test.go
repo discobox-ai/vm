@@ -145,6 +145,8 @@ func TestMain(m *testing.M) {
 type env struct {
 	t    *testing.T
 	root string
+	// extra is added to every command's environment.
+	extra []string
 }
 
 // projectEnv names the project every command runs in, "e2e" by default. A
@@ -162,6 +164,7 @@ func (e env) run(args ...string) (string, int) {
 		project = "e2e"
 	}
 	cmd.Env = append(os.Environ(), "DISCO_VM_ROOT="+e.root, "DISCO_VM_DRIVER="+tg.driver, "DISCO_VM_PROJECT="+project)
+	cmd.Env = append(cmd.Env, e.extra...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
@@ -455,6 +458,65 @@ func TestInfo(t *testing.T) {
 		if code == 0 || !strings.Contains(out, "no display") {
 			t.Fatalf("install --gui on the fake driver: exit %d\n%s", code, out)
 		}
+	}
+}
+
+// A key the driver issues runs the project's machines from the command line,
+// cannot issue another, and is refused once it is revoked. The fake driver is
+// the one that issues keys and reads them from the environment.
+func TestKeys(t *testing.T) {
+	if tg.driver != "fake" {
+		t.Skipf("%s issues no keys the suite can use", tg.driver)
+	}
+	e := newEnv(t)
+	if out, code := e.run("key", "issue"); code == 0 || !strings.Contains(out, "ttl") {
+		t.Fatalf("key issue with no --ttl: exit %d\n%s", code, out)
+	}
+	var key struct {
+		Secret, ID, Name, Scope string
+		Issued                  bool
+		Expires                 time.Time
+	}
+	if err := json.Unmarshal([]byte(e.ok("key", "issue", "--name", "pool", "--ttl", "1h")), &key); err != nil {
+		t.Fatal(err)
+	}
+	if !key.Issued || key.Secret == "" || key.Name != "pool" || key.Scope != "project" || time.Until(key.Expires) > time.Hour {
+		t.Fatalf("issued %+v", key)
+	}
+	listed := e.ok("key", "ls", "pool")
+	mustContain(t, listed, key.ID, "pool", "project")
+	if strings.Contains(listed, key.Secret) {
+		t.Fatal("key ls shows the secret")
+	}
+
+	keyed := env{t: t, root: e.root, extra: []string{"DISCO_VM_FAKE_KEY=" + key.Secret}}
+	mustContain(t, keyed.ok("images"), "e2e/base:latest")
+	keyed.ok("run", "--name", "solo", "e2e/base")
+	t.Cleanup(func() { e.run("rm", "-f", "solo") })
+	note := filepath.Join(t.TempDir(), "keyed.txt")
+	if err := os.WriteFile(note, []byte("with a key"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keyed.ok("cp", note, "solo:"+tg.file("drop"))
+	mustContain(t, keyed.ok(append([]string{"exec", "solo"}, catArgv("drop/keyed.txt")...)...), "with a key")
+	if runtime.GOOS != "windows" {
+		// Neither the shim nor the guest is handed the key.
+		if out := keyed.ok("exec", "solo", "env"); strings.Contains(out, key.Secret) {
+			t.Fatalf("the guest's environment holds the key:\n%s", out)
+		}
+	}
+	keyed.ok("stop", "solo")
+	if out, code := keyed.run("key", "issue", "--ttl", "1h"); code == 0 || !strings.Contains(out, "cannot issue") {
+		t.Fatalf("an issued key issuing: exit %d\n%s", code, out)
+	}
+	keyed.ok("rm", "-f", "solo")
+
+	e.ok("key", "revoke", key.ID)
+	if out := e.ok("key", "ls", "--json"); strings.TrimSpace(out) != "[]" {
+		t.Fatalf("key ls after revoking: %s", out)
+	}
+	if out, code := keyed.run("ps"); code == 0 || !strings.Contains(out, "refused") {
+		t.Fatalf("a revoked key: exit %d\n%s", code, out)
 	}
 }
 

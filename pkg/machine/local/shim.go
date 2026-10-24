@@ -345,6 +345,8 @@ func (d *Driver) spawnShim(args []string, log *os.File) (<-chan error, error) {
 	// Not tied to a ctx: the shim outlives the command that spawned it.
 	cmd := exec.CommandContext(context.Background(), argv[0], append(slices.Clone(argv[1:]), args...)...) //nolint:gosec // G204: argv is this executable or its configured shim command
 	cmd.Stdout, cmd.Stderr = log, log
+	// The shim holds the machine as the directory's owner, with no key.
+	cmd.Env = machine.WithoutKeys(os.Environ())
 	proc.Detach(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start shim: %w", err)
@@ -357,6 +359,9 @@ func (d *Driver) spawnShim(args []string, log *os.File) (<-chan error, error) {
 // Start boots the instance under a shim of its own, and returns once the shim
 // has the machine and serves it.
 func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+	if err := d.authorizeInstance(ctx, inst); err != nil {
+		return nil, err
+	}
 	if opts.GUI && !d.hv.Capabilities().Display {
 		return nil, fmt.Errorf("%s has no display to show: %w", d.hv.Name(), machine.ErrUnsupported)
 	}

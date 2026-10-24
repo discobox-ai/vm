@@ -20,7 +20,9 @@ Attach, from any process; and Service
 Boot and Start return once the guest answers. A running `Machine` is the
 guest's operations (`machine.Guest`: Exec with stdio, a TTY and its resizes,
 a user, environment, and directory; CopyTo and CopyFrom, as tar; Info;
-Shutdown), and Kill and Done. hcs, vz, and fake are `local.Hypervisor`s under
+Shutdown), and Kill and Done. And keys: IssueKey, IssuedKeys, and RevokeKey
+([below](#a-driver-is-given-its-key-and-issues-keys-that-cannot-issue)).
+hcs, vz, and fake are `local.Hypervisor`s under
 one driver that keeps their state and runs their shims
 ([local/DESIGN.md](local/DESIGN.md)). Anything only one hypervisor can do is
 a `Capabilities` field, never a faked method:
@@ -35,9 +37,36 @@ a `Capabilities` field, never a faked method:
 | agent (`disco-vm guest` in the guest) | yes, from Install | yes, from Install | **no**: boxd's Exec | yes, from Create of a base | yes |
 | install (an image from media) | yes: a retail ISO | yes: an IPSW, or `latest` | **no**: boxd's images and snapshots are bases | **no**: registry images are bases | yes |
 | disks chain below the seam (`local.Hypervisor.Chains`) | yes: a snapshot is a differencing VHDX | no | no | no | no |
+| keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | issue, scope `project` |
+| isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
 ([below](#every-clone-is-cold-and-an-image-is-made-fast-by-what-is-in-it)).
+
+## A driver is given its key, and issues keys that cannot issue
+
+A driver calls its provider with the key `Config.Keys` answers, asked on
+every call, so one process runs engines with different keys and a key
+replaced where its source reads it is used from the next call (ADR
+26-10-24-562). A driver given no source has no key and never reads the
+environment for one: the command line passes `machine.KeyFromEnv`, which
+reads the variables a driver names at `Register` (boxd's `BOXD_API_KEY`,
+`BOXD_TOKEN`; fake's `DISCO_VM_FAKE_KEY`). A `Key`'s `Secret` is opaque: it
+prints, formats, and logs without it.
+
+`IssueKey` makes the narrowest key the driver can for another host to run the
+project's machines. An issued key expires (a TTL is required) and cannot
+itself issue keys; a driver that cannot promise both returns `ErrNoKey` (it
+has no credential to hand on) or `ErrCannotIssue` (its provider cannot make
+one), never the caller's own key. Issued keys are named for the project, so
+`IssuedKeys` finds them by name, and `RevokeKey` refuses one the driver did
+not issue for the project; `disco-vm key revoke` refuses an ID it does not
+list, so a typo never reads as revoked. A provider's refusal of a key is
+`ErrUnauthorized`.
+
+`Isolated` and `Networks` at create strip what a provider gives a machine by
+default and place it on the caller's networks; a driver without
+`Capabilities.Isolation` refuses them.
 
 ## Ports, not GUIDs
 

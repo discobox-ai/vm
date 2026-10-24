@@ -14,6 +14,9 @@ import (
 
 // Attach reaches the instance's machine through its shim, as any process can.
 func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
+	if err := d.authorizeInstance(ctx, inst); err != nil {
+		return nil, err
+	}
 	shim, err := d.openShim(inst.ID)
 	if err != nil {
 		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrNotRunning)

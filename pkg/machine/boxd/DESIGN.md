@@ -48,4 +48,29 @@ host: what it knows is in the names of its snapshots and machines (the root
   stop`. An image built before this has a shutdown hook that nothing reads.
 - **The driver talks to boxd's public gRPC API directly**, not through the
   boxd CLI: it works from a server that embeds the engine, from any host OS,
-  and with an API key (`BOXD_API_KEY`) rather than a browser login.
+  and with an API key rather than a browser login. The key is the one
+  `machine.Config.Keys` answers, asked on every call; an API key (`bxd_`) is
+  exchanged for a JWT, again whenever the key changes, and anything else is
+  sent as a JWT.
+- **An issued key is a `member` API key** named `dvm-<project>--<name>`,
+  fenced to the engine's key's org (boxd resolves an empty org to it), with
+  boxd's expiry. It reaches all its maker's machines in that org: scope
+  `org`. boxd refuses key management to every API key, so an issued key
+  cannot issue, and the driver issues only from a `boxd login` session; from
+  an API key it is `ErrCannotIssue`. `IssuedKeys` and `RevokeKey` read
+  `ListApiKeys`, keep only the caller's `member` keys named for the project,
+  and `RevokeKey` deletes nothing else (ADR 26-10-24-562).
+- **Isolation is boxd's.** `Isolated` is `CreateVm`'s and
+  `CreateVmFromSnapshot`'s `isolated`, which a restore inherits from its
+  snapshot; `Networks` is `CreateVm`'s `networks`, or `SetVmNetworks` after a
+  restore, which takes none. A restore given networks must be isolated, so
+  it has no peers until they are set rather than the default network's.
+- **The key's errors are the caller's.** The bearer is added by client
+  interceptors, not gRPC per-RPC credentials, whose errors gRPC flattens: a
+  missing key is `errNoCredentials`, and a key the exchange or a call
+  refuses (`Unauthenticated`, at a call's start or on a stream's message) is
+  `machine.ErrUnauthorized`, and drops the cached JWT so the next call
+  exchanges the key again. `--debug` prints a new key's answer without its
+  secret. An issued key outliving its TTL is taken back (`ErrCannotIssue`,
+  naming it if the delete fails), and a name is issued once while a key of
+  it lives (`machine.ErrExists`).
