@@ -1,6 +1,6 @@
 # 0002 — Docker guests make their own user namespace, and the base layer is shifted once
 
-- **Status**: Proposed
+- **Status**: Proposed (its base layer installed and shifted once superseded by 26-10-23-410)
 - **Date**: 2026-10-09
 
 ## Context

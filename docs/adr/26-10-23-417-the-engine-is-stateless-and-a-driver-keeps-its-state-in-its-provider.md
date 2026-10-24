@@ -1,6 +1,6 @@
 # 26-10-23-417 — The engine is stateless, and a driver keeps its state in its provider
 
-- **Status**: Accepted (supersedes in part 0004, its orphan listing)
+- **Status**: Accepted (supersedes in part 0004, its orphan listing; its layers as a build's cache superseded by 26-10-23-410)
 - **Date**: 2026-10-23
 
 ## Context
