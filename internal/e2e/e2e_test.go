@@ -565,10 +565,31 @@ func TestURL(t *testing.T) {
 	if out, code := e.run("url", "svc"); code == 0 || !strings.Contains(out, "not running") {
 		t.Fatalf("url of a stopped instance: exit %d\n%s", code, out)
 	}
+	if out, code := e.run("url", "--private", "svc"); code == 0 || !strings.Contains(out, "not running") {
+		t.Fatalf("url --private of a stopped instance: exit %d\n%s", code, out)
+	}
 	e.ok("start", "svc")
 	url := strings.TrimSpace(e.ok("url", "svc"))
 	if !strings.HasPrefix(url, "http://127.0.0.1:") {
 		t.Fatalf("url svc = %q", url)
+	}
+	// A fake guest's peers share its loopback, a container's dial its
+	// address on its network, and a vz or hcs guest has no peers.
+	private, code := e.run("url", "--private", "svc")
+	private = strings.TrimSpace(private)
+	switch tg.driver {
+	case "fake":
+		if code != 0 || private != url {
+			t.Fatalf("url --private svc = %q, exit %d; want the URL, %s", private, code, url)
+		}
+	case "docker":
+		if code != 0 || !strings.HasPrefix(private, "http://") || !strings.HasSuffix(private, ":7302") || private == url {
+			t.Fatalf("url --private svc = %q, exit %d; want the container's address at 7302", private, code)
+		}
+	default:
+		if code == 0 {
+			t.Fatalf("url --private svc on %s = %q, want none", tg.driver, private)
+		}
 	}
 
 	var guestOS struct {
@@ -614,6 +635,29 @@ func TestURL(t *testing.T) {
 		}
 	}
 	e.ok("rm", "-f", "svc")
+}
+
+// TestEgress: none of the drivers e2e runs fences an instance's egress, so
+// `create --egress` is refused and makes nothing; and none takes no other
+// entry beside it.
+func TestEgress(t *testing.T) {
+	e := newEnv(t)
+	t.Cleanup(func() { e.run("rm", "-f", "fenced") })
+	if out, code := e.run("create", "--name", "fenced", "--egress", "none,example.com", "e2e/base"); code == 0 || !strings.Contains(out, "takes no other entry") {
+		t.Fatalf("create --egress none,example.com: exit %d\n%s", code, out)
+	}
+	for _, empty := range [][]string{{"--egress", ""}, {"--egress", "", "--egress", "example.com"}, {"--egress", "example.com,"}} {
+		args := append(append([]string{"create", "--name", "fenced"}, empty...), "e2e/base")
+		if out, code := e.run(args...); code == 0 || !strings.Contains(out, "no empty entry") {
+			t.Fatalf("create %q: exit %d\n%s", empty, code, out)
+		}
+	}
+	if out, code := e.run("create", "--name", "fenced", "--egress", "none", "e2e/base"); code == 0 || !strings.Contains(out, "cannot fence") {
+		t.Fatalf("create --egress none on %s: exit %d\n%s", tg.driver, code, out)
+	}
+	if out, code := e.run("inspect", "fenced"); code == 0 {
+		t.Fatalf("a refused create made an instance:\n%s", out)
+	}
 }
 
 // TestBases lists a driver's base among the images, runs it with no image,

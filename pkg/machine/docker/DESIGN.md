@@ -38,7 +38,9 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   `disco-vm pipe` for each connection, on the container's side of the
   namespace, which reaches the agent's root-only socket through the guest's
   root directory. No other guest port is dialed: the service's URL is a port
-  the daemon publishes.
+  the daemon publishes, and its private URL is the service port at the
+  container's IPv4 address on its network, where another container dials it,
+  and none for a container with no IPv4 address (ADR 26-10-29-129). There is no egress fence.
 - **It is not a VM.** The kernel is the host's, `/proc` shows the host's
   resources, and the network namespace is Docker's, which the guest cannot
   reconfigure. The driver lists cold clones only, because a cold boot takes

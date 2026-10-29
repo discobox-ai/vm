@@ -50,8 +50,8 @@ use. The parts that matter here:
 | `Install` | not offered (`Capabilities.Install` is off): boxd's images and snapshots are bases. No agent either: `Capabilities.Agent` is off. |
 | image | the snapshot `dvm-<project>--<image id>`, the whole 64-character ID (boxd takes names of at least 110 characters, by hand, 2026-10-23). `Image` is `GetSnapshot`: gone, `pending`, or `failed` is not found. `Images` is `ListSnapshots`, keeping the project's names that are a hex ID and nothing more. boxd keeps no comment. `DeleteImage` deletes the snapshot; no other image needs it, since a restored machine has a disk of its own. |
 | tag | boxd cannot name or label a snapshot after the fact, and snapshots only a running machine. `Tag` restores the image's snapshot into a machine (named as an instance, `dvm-<project>--save-<random>`, so one a killed process leaves is listed and `rm` removes it), saves it as `dvm-<project>--<image id>--t-<ref>`, destroys the machine, and deletes the tag's snapshots on any other image. The ref is escaped to what a name holds: lowercase letters and digits stand for themselves, and every other byte is `-` and its two hex digits (`a/b:v1` is `a-2fb-3av1`), so `Tags` reads it back from `ListSnapshots`. `Untag` deletes them. Each tag costs a restore and a whole snapshot. |
-| `Create` | the machine `dvm-<project>--<name>`, at most 63 characters: restored from the image's snapshot (`CreateVmFromSnapshot`, at the instance's size when it asks for one), or made from a base, with `CreateVm` and its image (restart policy `never`) or `CreateVmFromSnapshot` and its snapshot. Idle timers off, then the proxy pinned (`SetBotProtection` off, `SetProxyPort` pins the default proxy, the one `ListProxies` marks `is_default`, to 7302), then `sync` in the guest, `StopVm`, and wait for `stopped`: the first boot is a cold boot of the disk. A step that fails destroys the machine. A name boxd already has is `ErrExists`. |
-| instance | `Instances` is `ListVms`, keeping the project's names; `Instance` finds a name there. An instance is its machine: its ID, its name less the project's prefix, its image (`image_ref`, which for a restored machine is the image under the snapshot, not the snapshot: boxd does not say which), its size, and when it was made. It has no image ID. |
+| `Create` | the machine `dvm-<project>--<name>`, at most 63 characters: restored from the image's snapshot (`CreateVmFromSnapshot`, at the instance's size when it asks for one), or made from a base, with `CreateVm` and its image (restart policy `never`) or `CreateVmFromSnapshot` and its snapshot. An `Egress` set at once and read back ([Egress](#egress)), idle timers off, then the proxy pinned (`SetBotProtection` off, `SetProxyPort` pins the default proxy, the one `ListProxies` marks `is_default`, to 7302), then `sync` in the guest, `StopVm`, and wait for `stopped`: the first boot is a cold boot of the disk. A step that fails destroys the machine. A name boxd already has is `ErrExists`. |
+| instance | `Instances` is `ListVms`, keeping the project's names; `Instance` finds a name there. An instance is its machine: its ID, its name less the project's prefix, its image (`image_ref`, which for a restored machine is the image under the snapshot, not the snapshot: boxd does not say which), its size, when it was made, and its isolation, networks, and egress allowlist. It has no image ID. |
 | `Boot`, `Start` | `StartVm` (after `ResizeVm` when the instance asks for another size), `ResumeVm`, or `WakeVm`, by state. A machine still `stopping` is waited out first. Returns once the guest answers: an Exec of `sudo -n systemctl is-system-running --wait` returns, once a second, for up to 5 minutes. A machine that stops meanwhile (`GetVm` every 2s) ends the wait. boxd owns the machine, so `Start` is `Boot`. |
 | `Attach` | `GetVm`: `running` or `starting` is the machine; not found, `stopped`, or any other state is `ErrNotRunning`. |
 | `Machine.Done` | watching starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to run a command polls nothing. `GetVm` every 2s: `stopped` is a power-off, and `failed`, `destroying`, or not-found is an error. |
@@ -64,7 +64,7 @@ use. The parts that matter here:
 | `Commit` | the guest is stopped after an orderly shutdown. Start it, wait for the guest, snapshot as the image, and destroy the machine. |
 | `Destroy` | `DestroyVm`; one already gone is not an error. |
 | `Bases`, `Base` | `GetConfig`'s `default_image` (named and ID'd by the image), then every `ready` snapshot of `ListSnapshots` whose name does not start with `dvm-`, oldest first (named by its name, ID'd by its ID, made from by its ID). `Base` finds a ref among them. Two calls on every `images`, and on a ref no image has. |
-| `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `https://` and the default proxy's domain, `ListProxies`, the same across stop and start. |
+| `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `https://` and the default proxy's domain, `ListProxies`, the same across stop and start. The private URL is `http://<machine>.boxd:7302` for a machine on networks, and the URL for one on none. |
 
 Exec runs as boxd's `boxd` user, who has passwordless sudo, so every guest
 operation goes through `sudo -n`, as root by default. An image installed
@@ -188,6 +188,52 @@ network. An isolated machine with networks
 peers with exactly the non-isolated machines on them, which is how a machine
 that holds no token reaches one that does. Against boxd (2026-10-24): `run
 --isolated` of the default image made a machine `GetVm` reports `isolated`.
+
+## Egress
+
+`run --egress HOST` (`InstanceSpec.Egress`; ADR 26-10-29-129) fences what the
+machine reaches beyond its networks to boxd's egress allowlist: hostnames,
+`*.domain` wildcards, public IPv4 addresses and ranges. `--egress none`, an
+empty `Allow`, is boxd's `["none"]`, which reaches nothing on the internet
+but the hosts of the host-bound secrets the machine holds: boxd admits those
+on top of any allowlist. A machine holds every secret in its scope: the
+org's `all` secrets, its `shared` ones on a shared machine, and its owner's
+`private` ones on a private machine (disco-vm's are its key's owner's), and
+`isolated` does not strip them, only keeps them from boot (boxd's
+docs.boxd.sh/guides/env-secrets). A secret is scoped to the org or a person,
+never to a network. disco-vm binds none, so a caller that must reach nothing
+but its networks keeps host-bound secrets out of every scope its machines
+are in. Not checked against boxd: the org of the run below held none.
+boxd's empty allowlist is none at all. boxd enforces it outside the machine, where its
+root cannot loosen it, and its resolver answers only the names the list
+admits. Neither `CreateVm` nor `CreateVmFromSnapshot` takes it, so Create
+calls `SetVmEgressAllow` as soon as either answers, before the idle timers,
+the networks, and the proxy, and reads it back from `GetVm`'s
+`egress_allow`: a machine that does not report it as asked is destroyed.
+The read-back compares entries as written, in any order, so an entry boxd
+rewrites (letter case, a range not at its network address) fails Create
+rather than pass; write them as boxd keeps them. Between the create's answer
+and the allowlist taking hold, a second or so, the machine runs unfenced:
+that is the guest's own boot, or a restored guest's processes resuming,
+never anything of the caller's, which Create has not returned to yet.
+It is the spec's: a restore starts unrestricted, unless its snapshot is of
+a boxd machine spec with `egress`, which disco-vm never makes.
+
+The private URL (`url --private`) is where a peer on the machine's networks
+reaches its service: `http://<machine>.boxd:7302`, boxd's internal DNS name
+of the machine, which resolves only on machines of the same owner, and
+follows the networks rule. Every port the guest listens on is reachable
+there, and nothing crosses boxd's proxy. A machine on no networks has its
+URL as its private URL.
+
+Against boxd (2026-10-29, `computer:0.1.53`): an isolated machine on network
+`dvm-t25` with `--egress none` reported egress `{}`. Its resolver answered
+`dvm-vtest25--dvm-hub.boxd` (a non-isolated machine on the same network) and
+no internet name, and a connection to `1.1.1.1:443` by address was closed in
+the TLS handshake. It reached the hub's private URL and its port 8080, and
+did after a stop and a start. Restores of its snapshot got the fence each
+asked for: `none`, `example.com` (example.com answered, github.com did not
+resolve), and none at all, which reached both.
 
 ## The URL
 

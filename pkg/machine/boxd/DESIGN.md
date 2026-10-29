@@ -39,7 +39,10 @@ host: what it knows is in the names of its snapshots and machines (the root
   at `<machine>.boxd.sh` to 7302 and turns off bot protection, which would
   put a browser challenge in front of a request that wakes the machine.
   Pinning it also stops the proxy forwarding to whichever common port the
-  guest listens on (80, 443, 8080, 8000, 3000, 5000, 5173).
+  guest listens on (80, 443, 8080, 8000, 3000, 5000, 5173). The private URL
+  of a machine on networks is `http://<machine>.boxd:7302`, its name on
+  boxd's internal DNS, where its peers reach every port directly; on none it
+  is the URL (ADR 26-10-29-129).
 - **A machine's power is boxd's** (ADR 26-10-15-833). Its state is `GetVm`'s
   status. An orderly shutdown runs `sync` in the guest, since boxd does not
   say whether `StopVm` cuts the power, then `StopVm`; a reboot is `RebootVm`,
@@ -65,6 +68,16 @@ host: what it knows is in the names of its snapshots and machines (the root
   snapshot; `Networks` is `CreateVm`'s `networks`, or `SetVmNetworks` after a
   restore, which takes none. A restore given networks must be isolated, so
   it has no peers until they are set rather than the default network's.
+- **The egress fence is boxd's allowlist** (ADR 26-10-29-129). Neither
+  create takes one, so `SetVmEgressAllow` is the first call once `CreateVm`
+  or `CreateVmFromSnapshot` answers, with `["none"]` for an empty `Allow`
+  (which still admits the hosts of the host-bound secrets the machine holds,
+  as every boxd allowlist does),
+  and `GetVm`'s `egress_allow` is read back; a machine that does not report
+  it as asked is destroyed, and Create fails. A nil `Egress` sets nothing: a
+  machine starts unrestricted, and so does a restore of a snapshot disco-vm
+  made, since only a snapshot of a boxd machine spec carries an allowlist.
+  `Instance.Egress` is `egress_allow`, nil for none.
 - **The key's errors are the caller's.** The bearer is added by client
   interceptors, not gRPC per-RPC credentials, whose errors gRPC flattens: a
   missing key is `errNoCredentials`, and a key the exchange or a call

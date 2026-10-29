@@ -272,6 +272,7 @@ func (d *Driver) instance(vm *boxdapi.GetVmResponse) machine.Instance {
 		Created:  unixTime(vm.GetCreatedAt(), time.Second),
 		Isolated: vm.GetIsolated(),
 		Networks: vm.GetNetworks(),
+		Egress:   egressOf(vm.GetEgressAllow()),
 	}
 }
 

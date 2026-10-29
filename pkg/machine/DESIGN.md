@@ -16,7 +16,7 @@ instances (Create, a clone; Instance, Instances, Destroy), as its provider
 keeps them ([the root DESIGN.md](../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider));
 and an instance's machine: Boot, in this process; Start, outliving it;
 Attach, from any process; and Service
-([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-one-http-url)).
+([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-one-http-url-and-a-private-one)).
 Boot and Start return once the guest answers. A running `Machine` is the
 guest's operations (`machine.Guest`: Exec with stdio, a TTY and its resizes,
 a user, environment, and directory; CopyTo and CopyFrom, as tar; Info;
@@ -39,6 +39,8 @@ a `Capabilities` field, never a faked method:
 | disks chain below the seam (`local.Hypervisor.Chains`) | yes: a snapshot is a differencing VHDX | no | no | no | no |
 | keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | issue, scope `project` |
 | isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no |
+| egress (`Egress`) | no | no | yes: the egress allowlist | no | no |
+| private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | the URL (a shared loopback) |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
 ([below](#every-clone-is-cold-and-an-image-is-made-fast-by-what-is-in-it)).
@@ -67,6 +69,15 @@ list, so a typo never reads as revoked. A provider's refusal of a key is
 `Isolated` and `Networks` at create strip what a provider gives a machine by
 default and place it on the caller's networks; a driver without
 `Capabilities.Isolation` refuses them.
+
+`Egress` at create fences what an instance reaches beyond its networks, where
+its root cannot loosen it (ADR 26-10-29-129). It is in place before Create
+returns and read back from the provider, so an instance the provider does not
+report fenced as asked is destroyed and Create fails; it holds across stop
+and start, and is the spec's, never the image's. An empty `Allow` is
+nothing beyond the networks; nil is the provider's default. A driver without
+`Capabilities.Egress` refuses it. `Instance.Egress` is the fence the provider
+reports.
 
 ## Ports, not GUIDs
 

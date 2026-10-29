@@ -31,7 +31,7 @@ its own binary: `machine.Config.ShimCommand` names it, and that subcommand
 makes the same driver and calls `local.ShimMain`. So an embedder ships one
 binary, and its VMs outlive it.
 
-## Every instance has one service, at one HTTP URL
+## Every instance has one service, at one HTTP URL, and a private one
 
 The driver, not the caller or the image, picks where an instance's one
 service listens in the guest (`Driver.Service`, `machine.Service`;
@@ -58,6 +58,19 @@ guest. A program the caller copies in reads it, or calls
   instance's `shim.json`, and there is none while the instance is stopped.
 
 No URL takes a credential, so the service authenticates its callers.
+
+`Engine.PrivateURL` and `disco-vm url --private INSTANCE` give where the
+instance's peers, other instances of the driver on its networks, reach the
+service (`Service.PrivateURL`; ADR 26-10-29-129), refused as `URL` is while
+it is not running, and refused where the driver has none (vz, hcs):
+
+- **A direct path** to the instance's address, where every port the guest
+  listens on is reachable: boxd's `http://<machine>.boxd:7302` for a machine
+  on networks, docker's container address on its network.
+- **The URL**, where that is how peers reach it: boxd's on no networks, and
+  fake's, whose guests share the host's loopback.
+
+A caller tells a direct path by its differing from the URL.
 
 ## An image is a snapshot, and stands alone
 

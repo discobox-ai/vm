@@ -3,6 +3,7 @@ package boxd
 import (
 	"context"
 	"fmt"
+	"net"
 	"strconv"
 
 	"github.com/discobox-ai/vm/pkg/guest"
@@ -16,7 +17,9 @@ var serviceListen = "tcp:0.0.0.0:" + strconv.FormatUint(uint64(guest.ServicePort
 
 // Service is the guest's TCP port behind the HTTPS URL of the machine's
 // default proxy, which Create pinned to it. The URL is the same across stop
-// and start.
+// and start. A machine on networks is reached by its peers there directly,
+// at its name on boxd's internal DNS, <machine>.boxd, on every port; one on
+// none, by its URL.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	api, err := d.api.API()
 	if err != nil {
@@ -29,7 +32,12 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 	if def.GetDomain() == "" {
 		return machine.Service{}, fmt.Errorf("boxd: %s's proxy has no domain", d.machineName(inst.Name))
 	}
-	return machine.Service{Listen: serviceListen, URL: "https://" + def.GetDomain()}, nil
+	service := machine.Service{Listen: serviceListen, URL: "https://" + def.GetDomain()}
+	service.PrivateURL = service.URL
+	if len(inst.Networks) > 0 {
+		service.PrivateURL = "http://" + net.JoinHostPort(d.machineName(inst.Name)+".boxd", strconv.FormatUint(uint64(guest.ServicePort), 10))
+	}
+	return service, nil
 }
 
 // pinProxy points the machine's default proxy at the service port and returns

@@ -50,6 +50,9 @@ type fakeAPI struct {
 	proxyErr error
 	// syncFails makes the guest's sync exit 1.
 	syncFails atomic.Bool
+	// egressIgnored makes SetVmEgressAllow answer and keep nothing, so
+	// GetVm reports the machine unrestricted.
+	egressIgnored atomic.Bool
 
 	keys keys
 	// addr and tokenURL are where the API and its token exchange are
@@ -73,6 +76,13 @@ type fakeVM struct {
 	// SetVmNetworks.
 	isolated bool
 	networks []string
+	// egressAtSettle is the allowlist when the driver turned off the idle
+	// timers, its first call after the create.
+	egressAtSettle []string
+	// egress is the allowlist, empty for none. A machine starts with none,
+	// a restore too: only a snapshot of a machine spec, which the driver
+	// never makes, carries one.
+	egress []string
 }
 
 type fakeSnapshot struct {
@@ -215,6 +225,25 @@ func (f *fakeAPI) SetVmNetworks(_ context.Context, req *boxdapi.SetVmNetworksReq
 	return &boxdapi.SetVmNetworksResponse{Networks: v.networks}, nil
 }
 
+// SetVmEgressAllow replaces the allowlist: empty is none, and "none" next to
+// other entries is dropped.
+func (f *fakeAPI) SetVmEgressAllow(_ context.Context, req *boxdapi.SetVmEgressAllowRequest) (*boxdapi.SetVmEgressAllowResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, err := f.vm(req.GetVm())
+	if err != nil {
+		return nil, err
+	}
+	entries := req.GetEntries()
+	if len(entries) > 1 {
+		entries = slices.DeleteFunc(slices.Clone(entries), func(e string) bool { return e == "none" })
+	}
+	if !f.egressIgnored.Load() {
+		v.egress = entries
+	}
+	return &boxdapi.SetVmEgressAllowResponse{Entries: entries}, nil
+}
+
 func (f *fakeAPI) GetVm(_ context.Context, req *boxdapi.GetVmRequest) (*boxdapi.GetVmResponse, error) {
 	if f.down.Load() {
 		return nil, status.Error(codes.Unavailable, "fake boxd is down")
@@ -225,7 +254,15 @@ func (f *fakeAPI) GetVm(_ context.Context, req *boxdapi.GetVmRequest) (*boxdapi.
 	if err != nil {
 		return nil, err
 	}
-	return &boxdapi.GetVmResponse{VmId: v.id, Name: v.name, Status: v.status, Vcpu: v.vcpu, MemoryBytes: v.memory, Isolated: v.isolated, Networks: v.networks}, nil
+	return f.info(v), nil
+}
+
+// info is a machine as GetVm and ListVms report it.
+func (f *fakeAPI) info(v *fakeVM) *boxdapi.GetVmResponse {
+	return &boxdapi.GetVmResponse{
+		VmId: v.id, Name: v.name, Status: v.status, Vcpu: v.vcpu, MemoryBytes: v.memory,
+		Isolated: v.isolated, Networks: v.networks, EgressAllow: v.egress,
+	}
 }
 
 func (f *fakeAPI) ListVms(context.Context, *boxdapi.ListVmsRequest) (*boxdapi.ListVmsResponse, error) {
@@ -233,7 +270,7 @@ func (f *fakeAPI) ListVms(context.Context, *boxdapi.ListVmsRequest) (*boxdapi.Li
 	defer f.mu.Unlock()
 	out := &boxdapi.ListVmsResponse{}
 	for _, v := range f.vms {
-		out.Vms = append(out.Vms, &boxdapi.GetVmResponse{VmId: v.id, Name: v.name, Status: v.status, Vcpu: v.vcpu, MemoryBytes: v.memory, Isolated: v.isolated, Networks: v.networks})
+		out.Vms = append(out.Vms, f.info(v))
 	}
 	return out, nil
 }
@@ -300,7 +337,14 @@ func (f *fakeAPI) ResumeVm(_ context.Context, req *boxdapi.ResumeVmRequest) (*bo
 	return &boxdapi.ResumeVmResponse{}, f.setStatus(req.GetVmId(), "suspended", "running")
 }
 
-func (f *fakeAPI) SetAutoSuspendTimeout(context.Context, *boxdapi.SetAutoSuspendTimeoutRequest) (*boxdapi.SetAutoSuspendTimeoutResponse, error) {
+func (f *fakeAPI) SetAutoSuspendTimeout(_ context.Context, req *boxdapi.SetAutoSuspendTimeoutRequest) (*boxdapi.SetAutoSuspendTimeoutResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, err := f.vm(req.GetVmId())
+	if err != nil {
+		return nil, err
+	}
+	v.egressAtSettle = v.egress
 	return &boxdapi.SetAutoSuspendTimeoutResponse{}, nil
 }
 

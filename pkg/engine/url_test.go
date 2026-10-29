@@ -23,7 +23,8 @@ import (
 // Every instance has one service, where the driver picks: the engine writes
 // the address to the guest's service file at start, and the instance's URL
 // reaches whatever listens there. A fake guest is a host process, so the
-// service is this test's server, listening where the file says.
+// service is this test's server, listening where the file says, and its
+// peers, host processes too, reach it at its URL: that is its private URL.
 func TestURL(t *testing.T) {
 	ctx := context.Background()
 	e, _ := fakeEngine(t)
@@ -34,6 +35,9 @@ func TestURL(t *testing.T) {
 	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
 	if _, err := e.URL(ctx, inst); err == nil {
 		t.Fatal("a stopped instance has a loopback URL")
+	}
+	if _, err := e.PrivateURL(ctx, inst); err == nil {
+		t.Fatal("a stopped instance has a private loopback URL")
 	}
 	var urls []string
 	for range 2 {
@@ -56,6 +60,9 @@ func TestURL(t *testing.T) {
 		}
 		if !strings.HasPrefix(url, "http://127.0.0.1:") {
 			t.Fatalf("URL %q is not on the loopback", url)
+		}
+		if private, err := e.PrivateURL(ctx, inst); err != nil || private != url {
+			t.Fatalf("private URL %q, %v; want the URL, %s", private, err, url)
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {

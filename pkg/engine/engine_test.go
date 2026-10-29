@@ -98,3 +98,22 @@ func TestOpenRefusesABadProject(t *testing.T) {
 		}
 	}
 }
+
+// A fence is refused at once by an engine whose driver cannot fence, and
+// nothing is made.
+func TestEgressNeedsADriverThatFences(t *testing.T) {
+	ctx := context.Background()
+	e, err := engine.Open(fakeDriver(t, t.TempDir(), ""), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Install(ctx, engine.InstallOptions{}, "base"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Create(ctx, "base", engine.CreateOptions{Name: "fenced", Egress: &machine.Egress{}}); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("a fence on the fake driver: %v, want ErrUnsupported", err)
+	}
+	if list, err := e.List(ctx); err != nil || len(list) != 0 {
+		t.Fatalf("instances after a refused fence: %+v, %v", list, err)
+	}
+}

@@ -12,8 +12,10 @@
 // of it and to no one else, and stands alone once the image it came from is
 // deleted; an instance runs from a base the driver lists or finds, and is
 // snapshotted; a tag is set, moved, and dropped; clones run side by side;
-// Kill always works; and a started machine is attached to from another call,
-// and found stopped once its guest powers off; and a key the driver issues
+// Kill always works; an instance fenced at create keeps its fence across a
+// boot, or the driver refuses the fence; a started machine is attached to from
+// another call, its service has a URL, and a private URL where it has one, and
+// it is found stopped once its guest powers off; and a key the driver issues
 // runs the project's machines, cannot issue another, and works no more once
 // it is revoked.
 package machinetest
@@ -360,9 +362,50 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 	})
 
+	// An instance fenced at create, from the start and from a snapshot,
+	// reports the fence as asked, while it runs and once it stops. A driver
+	// that cannot fence refuses a fence.
+	t.Run("a-fenced-instance", func(t *testing.T) {
+		if !caps.Egress {
+			spec := of(committed.ID)
+			spec.Name, spec.Egress = fmt.Sprintf("conformance-%s-fenced", run), &machine.Egress{}
+			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+				if err == nil {
+					_ = driver.Destroy(context.Background(), inst)
+				}
+				t.Fatalf("a driver that cannot fence made a fenced instance: %v, want ErrUnsupported", err)
+			}
+			t.Skip("the driver cannot fence an instance's egress")
+		}
+		for _, from := range []struct {
+			spec  machine.InstanceSpec
+			allow []string
+		}{
+			{start, nil},
+			{of(committed.ID), []string{"example.com"}},
+		} {
+			spec := from.spec
+			spec.Egress = &machine.Egress{Allow: from.allow}
+			inst := create(t, spec)
+			fenced := func(when string) {
+				t.Helper()
+				got, err := driver.Instance(ctx, inst.Name)
+				if err != nil || got.Egress == nil || !slices.Equal(got.Egress.Allow, from.allow) {
+					t.Fatalf("an instance fenced to %q %s reports %+v: %v", from.allow, when, got.Egress, err)
+				}
+			}
+			fenced("once created")
+			m := boot(t, inst)
+			fenced("while it runs")
+			shutdown(t, m)
+			fenced("once it stops")
+		}
+	})
+
 	// A started machine outlives the call that started it: another call
-	// attaches to it, its service has a URL, and a guest that powers itself
-	// off while nothing watches is found stopped.
+	// attaches to it, its service has a URL, and a private URL that is one
+	// where it has any, and a guest that powers itself off while nothing
+	// watches is found stopped.
 	t.Run("start-attach-and-stop", func(t *testing.T) {
 		inst := create(t, of(committed.ID))
 		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
@@ -382,6 +425,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		service, err := driver.Service(ctx, inst)
 		if err != nil || service.Listen == "" || service.URL == "" {
 			t.Fatalf("service of a running instance: %+v, %v", service, err)
+		}
+		if p := service.PrivateURL; p != "" && !strings.HasPrefix(p, "http://") && !strings.HasPrefix(p, "https://") {
+			t.Fatalf("the private URL of a running instance is %q, not an HTTP URL", p)
 		}
 		if err := m.Shutdown(ctx, false); err != nil {
 			t.Fatalf("shutdown request: %v", err)

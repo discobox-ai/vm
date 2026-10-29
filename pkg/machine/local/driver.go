@@ -456,6 +456,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if spec.Isolated || len(spec.Networks) > 0 {
 		return machine.Instance{}, fmt.Errorf("%s: isolation: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
+	if spec.Egress != nil {
+		return machine.Instance{}, fmt.Errorf("%s: egress: %w", d.hv.Name(), machine.ErrUnsupported)
+	}
 	if spec.Base == nil {
 		if _, err := d.readImage(spec.ImageID); err != nil {
 			return machine.Instance{}, err
@@ -670,7 +673,8 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance, img machine.
 }
 
 // Service is the hypervisor's address in the guest, and the loopback URL the
-// instance's shim serves while it runs.
+// instance's shim serves while it runs, which is its PrivateURL too where
+// the guests share the host's loopback.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return machine.Service{}, err
@@ -689,6 +693,9 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 		return service, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrNotRunning)
 	}
 	service.URL = "http://" + shim.state.Service
+	if d.hv.SharesLoopback() {
+		service.PrivateURL = service.URL
+	}
 	return service, nil
 }
 

@@ -55,6 +55,12 @@ service BoxdApi {
   // `networks` is the complete set, replacing the machine's. Empty moves it
   // into the org's default network.
   rpc SetVmNetworks(SetVmNetworksRequest)   returns (SetVmNetworksResponse);
+  // Replaces a VM's egress allowlist: hostnames / wildcards and public IPv4
+  // addresses / CIDRs the machine may reach. Empty = no allowlist. `none`
+  // alone = an allowlist with nothing in it: the machine reaches nothing (the
+  // hosts its network-scoped secrets are bound to aside, as with any
+  // allowlist); next to other entries it is dropped.
+  rpc SetVmEgressAllow(SetVmEgressAllowRequest) returns (SetVmEgressAllowResponse);
   // A key is fenced to exactly one org and never grants account-wide access.
   rpc CreateApiKey(CreateApiKeyRequest)     returns (CreateApiKeyResponse);
   // The keys the caller made, and the org-kind keys of every org the caller
@@ -141,6 +147,9 @@ message GetVmResponse {
   int64  created_at     = 17;  // epoch seconds
   repeated string networks = 25;
   bool   isolated       = 26;
+  // Egress allowlist. Empty = unrestricted; `["none"]` = nothing is
+  // reachable.
+  repeated string egress_allow = 28;
 }
 
 message ListVmsRequest {
@@ -266,6 +275,8 @@ message SetBotProtectionResponse {}
 
 message SetVmNetworksRequest  { string vm_id = 1; repeated string networks = 2; }
 message SetVmNetworksResponse { repeated string networks = 1; }
+message SetVmEgressAllowRequest  { string vm = 1; repeated string entries = 2; }
+message SetVmEgressAllowResponse { repeated string entries = 1; }
 
 message CreateApiKeyRequest {
   string name            = 1;
