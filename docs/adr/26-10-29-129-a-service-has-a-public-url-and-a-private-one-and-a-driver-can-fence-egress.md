@@ -1,6 +1,6 @@
 # 26-10-29-129 — An instance's service has a public URL and a private one, and a driver can fence an instance's egress to its networks
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-10-29
 
 ## Context
