@@ -307,7 +307,15 @@ type containerInfo struct {
 		// Ports are the running container's published ports, keyed as
 		// ExposedPorts is.
 		Ports map[string][]portBinding `json:"Ports"`
+		// Networks are the networks the running container is on, by name,
+		// with its address on each.
+		Networks map[string]endpointSettings `json:"Networks"`
 	} `json:"NetworkSettings"`
+}
+
+// endpointSettings is a container on one network.
+type endpointSettings struct {
+	IPAddress string `json:"IPAddress"`
 }
 
 func (a *api) inspectContainer(ctx context.Context, id string) (containerInfo, error) {

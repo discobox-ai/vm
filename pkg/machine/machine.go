@@ -98,6 +98,10 @@ type Capabilities struct {
 	// the provider gives a machine by default (InstanceSpec.Isolated) and
 	// placed on networks of the caller's (InstanceSpec.Networks).
 	Isolation bool `json:"isolation"`
+	// Egress reports that an instance can be created with its egress beyond
+	// its networks fenced (InstanceSpec.Egress), outside the guest, where its
+	// root cannot loosen it.
+	Egress bool `json:"egress"`
 }
 
 // SupportsOS reports whether the driver can run the given guest OS.
@@ -305,6 +309,19 @@ type InstanceSpec struct {
 	// of its default one. A driver that does not list
 	// Capabilities.Isolation refuses them.
 	Networks []string
+	// Egress fences what the machine reaches beyond its networks, in place
+	// before Create returns and across stop and start; nil is the
+	// provider's default. It is the spec's, never the image's. A driver that
+	// does not list Capabilities.Egress refuses it.
+	Egress *Egress
+}
+
+// Egress is an instance's fence: what it may reach beyond its networks,
+// which are never fenced by it.
+type Egress struct {
+	// Allow is the hostnames, wildcards (*.example.com), IPv4 addresses,
+	// and IPv4 ranges the instance may reach. Empty is nothing.
+	Allow []string `json:"allow,omitempty"`
 }
 
 // Instance is one machine made from an image or a base, as its provider has
@@ -331,6 +348,9 @@ type Instance struct {
 	// them.
 	Isolated bool     `json:"isolated,omitempty"`
 	Networks []string `json:"networks,omitempty"`
+	// Egress is the fence the provider holds, as InstanceSpec's: nil is
+	// none.
+	Egress *Egress `json:"egress,omitempty"`
 }
 
 // InstallSpec creates an image from installation media.
@@ -373,6 +393,13 @@ type Service struct {
 	// the Docker daemon publishes on the host's loopback, a loopback port a
 	// local driver's shim serves.
 	URL string
+	// PrivateURL is where the instance's peers, other instances of the
+	// driver on its networks, reach the service: a direct path,
+	// http://<address>:<port>, at an address where every port the guest
+	// listens on is reachable too; URL, where the driver gives instances no
+	// path to each other but URL reaches them; or empty, where neither does.
+	// A caller tells a direct path by PrivateURL != URL.
+	PrivateURL string
 }
 
 // Share is a host directory exported to the guest.

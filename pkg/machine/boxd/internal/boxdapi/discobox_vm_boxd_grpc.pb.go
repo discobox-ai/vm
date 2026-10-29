@@ -56,6 +56,7 @@ const (
 	BoxdApi_SetProxyPort_FullMethodName            = "/boxd.api.v1.BoxdApi/SetProxyPort"
 	BoxdApi_SetBotProtection_FullMethodName        = "/boxd.api.v1.BoxdApi/SetBotProtection"
 	BoxdApi_SetVmNetworks_FullMethodName           = "/boxd.api.v1.BoxdApi/SetVmNetworks"
+	BoxdApi_SetVmEgressAllow_FullMethodName        = "/boxd.api.v1.BoxdApi/SetVmEgressAllow"
 	BoxdApi_CreateApiKey_FullMethodName            = "/boxd.api.v1.BoxdApi/CreateApiKey"
 	BoxdApi_ListApiKeys_FullMethodName             = "/boxd.api.v1.BoxdApi/ListApiKeys"
 	BoxdApi_DeleteApiKey_FullMethodName            = "/boxd.api.v1.BoxdApi/DeleteApiKey"
@@ -105,6 +106,12 @@ type BoxdApiClient interface {
 	// `networks` is the complete set, replacing the machine's. Empty moves it
 	// into the org's default network.
 	SetVmNetworks(ctx context.Context, in *SetVmNetworksRequest, opts ...grpc.CallOption) (*SetVmNetworksResponse, error)
+	// Replaces a VM's egress allowlist: hostnames / wildcards and public IPv4
+	// addresses / CIDRs the machine may reach. Empty = no allowlist. `none`
+	// alone = an allowlist with nothing in it: the machine reaches nothing (the
+	// hosts its network-scoped secrets are bound to aside, as with any
+	// allowlist); next to other entries it is dropped.
+	SetVmEgressAllow(ctx context.Context, in *SetVmEgressAllowRequest, opts ...grpc.CallOption) (*SetVmEgressAllowResponse, error)
 	// A key is fenced to exactly one org and never grants account-wide access.
 	CreateApiKey(ctx context.Context, in *CreateApiKeyRequest, opts ...grpc.CallOption) (*CreateApiKeyResponse, error)
 	// The keys the caller made, and the org-kind keys of every org the caller
@@ -376,6 +383,16 @@ func (c *boxdApiClient) SetVmNetworks(ctx context.Context, in *SetVmNetworksRequ
 	return out, nil
 }
 
+func (c *boxdApiClient) SetVmEgressAllow(ctx context.Context, in *SetVmEgressAllowRequest, opts ...grpc.CallOption) (*SetVmEgressAllowResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetVmEgressAllowResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_SetVmEgressAllow_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *boxdApiClient) CreateApiKey(ctx context.Context, in *CreateApiKeyRequest, opts ...grpc.CallOption) (*CreateApiKeyResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateApiKeyResponse)
@@ -450,6 +467,12 @@ type BoxdApiServer interface {
 	// `networks` is the complete set, replacing the machine's. Empty moves it
 	// into the org's default network.
 	SetVmNetworks(context.Context, *SetVmNetworksRequest) (*SetVmNetworksResponse, error)
+	// Replaces a VM's egress allowlist: hostnames / wildcards and public IPv4
+	// addresses / CIDRs the machine may reach. Empty = no allowlist. `none`
+	// alone = an allowlist with nothing in it: the machine reaches nothing (the
+	// hosts its network-scoped secrets are bound to aside, as with any
+	// allowlist); next to other entries it is dropped.
+	SetVmEgressAllow(context.Context, *SetVmEgressAllowRequest) (*SetVmEgressAllowResponse, error)
 	// A key is fenced to exactly one org and never grants account-wide access.
 	CreateApiKey(context.Context, *CreateApiKeyRequest) (*CreateApiKeyResponse, error)
 	// The keys the caller made, and the org-kind keys of every org the caller
@@ -542,6 +565,9 @@ func (UnimplementedBoxdApiServer) SetBotProtection(context.Context, *SetBotProte
 }
 func (UnimplementedBoxdApiServer) SetVmNetworks(context.Context, *SetVmNetworksRequest) (*SetVmNetworksResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetVmNetworks not implemented")
+}
+func (UnimplementedBoxdApiServer) SetVmEgressAllow(context.Context, *SetVmEgressAllowRequest) (*SetVmEgressAllowResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetVmEgressAllow not implemented")
 }
 func (UnimplementedBoxdApiServer) CreateApiKey(context.Context, *CreateApiKeyRequest) (*CreateApiKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateApiKey not implemented")
@@ -1012,6 +1038,24 @@ func _BoxdApi_SetVmNetworks_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BoxdApi_SetVmEgressAllow_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetVmEgressAllowRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).SetVmEgressAllow(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_SetVmEgressAllow_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).SetVmEgressAllow(ctx, req.(*SetVmEgressAllowRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _BoxdApi_CreateApiKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateApiKeyRequest)
 	if err := dec(in); err != nil {
@@ -1168,6 +1212,10 @@ var BoxdApi_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetVmNetworks",
 			Handler:    _BoxdApi_SetVmNetworks_Handler,
+		},
+		{
+			MethodName: "SetVmEgressAllow",
+			Handler:    _BoxdApi_SetVmEgressAllow_Handler,
 		},
 		{
 			MethodName: "CreateApiKey",

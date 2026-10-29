@@ -50,6 +50,10 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 // disk of the image the instance ran from.
 func (*Hypervisor) Chains() bool { return true }
 
+// SharesLoopback is false: a guest reaches neither another guest nor the
+// host's loopback.
+func (*Hypervisor) SharesLoopback() bool { return false }
+
 // The files the driver keeps. An image's Dir holds its disk; an instance's Dir
 // holds its differencing disk, its guest and runtime state, and state.json.
 const (

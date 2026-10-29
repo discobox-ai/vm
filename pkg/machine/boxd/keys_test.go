@@ -3,6 +3,7 @@ package boxd
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -144,6 +145,75 @@ func TestIsolatedInstances(t *testing.T) {
 	t.Cleanup(func() { _ = d.Destroy(context.Background(), clone) })
 	if got, err := d.Instance(ctx, "clone"); err != nil || !got.Isolated || len(got.Networks) != 2 {
 		t.Fatalf("an instance of an isolated snapshot: %+v, %v", got, err)
+	}
+}
+
+// TestFencedInstances: an instance's egress is fenced as its spec asks before
+// anything else is done to its machine, from a base and from a snapshot,
+// whatever the snapshot's machine had; and a machine boxd does not report
+// fenced as asked is destroyed, and Create fails.
+func TestFencedInstances(t *testing.T) {
+	d, fake := fakeDriver(t, t.TempDir())
+	ctx := t.Context()
+	e, err := engine.Open(d, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	egress := func(id string) (now, atSettle []string) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		v := fake.vms[id]
+		return v.egress, v.egressAtSettle
+	}
+
+	inst, err := e.Create(ctx, fake.defaultImage, engine.CreateOptions{
+		Name: "sealed", Isolated: true, Networks: []string{"pool"}, Egress: &machine.Egress{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if now, atSettle := egress(inst.ID); !slices.Equal(now, []string{"none"}) || !slices.Equal(atSettle, []string{"none"}) {
+		t.Fatalf("a base's machine fenced to nothing has allowlist %q, and %q when it was settled", now, atSettle)
+	}
+	if inst.Egress == nil || len(inst.Egress.Allow) != 0 {
+		t.Fatalf("a base's machine fenced to nothing reports %+v", inst.Egress)
+	}
+	img, err := e.Snapshot(ctx, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	allow := []string{"api.example.com", "*.npmjs.org", "203.0.113.0/24"}
+	open, err := e.Create(ctx, img.ID, engine.CreateOptions{
+		Name: "open", Isolated: true, Networks: []string{"pool"}, Egress: &machine.Egress{Allow: allow},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), open) })
+	if now, atSettle := egress(open.ID); !slices.Equal(now, allow) || !slices.Equal(atSettle, allow) {
+		t.Fatalf("a restore fenced to %q has allowlist %q, and %q when it was settled", allow, now, atSettle)
+	}
+	if got, err := d.Instance(ctx, "open"); err != nil || got.Egress == nil || !slices.Equal(got.Egress.Allow, allow) {
+		t.Fatalf("a restore fenced to %q: %+v, %v", allow, got, err)
+	}
+	free, err := e.Create(ctx, img.ID, engine.CreateOptions{Name: "free", Isolated: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), free) })
+	if free.Egress != nil {
+		t.Fatalf("a restore of a fenced machine's snapshot asked for no fence reports %+v", free.Egress)
+	}
+
+	fake.egressIgnored.Store(true)
+	for _, ref := range []string{fake.defaultImage, img.ID} {
+		if _, err := e.Create(ctx, ref, engine.CreateOptions{Name: "leaky", Isolated: true, Egress: &machine.Egress{}}); err == nil {
+			t.Fatalf("a machine of %s whose fence boxd does not report was created", ref)
+		}
+		if _, err := d.Instance(ctx, "leaky"); !errors.Is(err, machine.ErrNotFound) {
+			t.Fatalf("a machine of %s whose fence boxd does not report was left: %v", ref, err)
+		}
 	}
 }
 

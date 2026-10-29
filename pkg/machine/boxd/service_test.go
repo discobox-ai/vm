@@ -14,7 +14,9 @@ import (
 )
 
 // TestServiceFakeAPI checks what Create sets up for the service: the default
-// proxy pinned to guest.ServicePort, bot protection off, and the URL.
+// proxy pinned to guest.ServicePort, bot protection off, and the URL; and the
+// private URL, the URL on no networks and the machine's internal DNS name on
+// some.
 func TestServiceFakeAPI(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
@@ -49,7 +51,20 @@ func TestServiceFakeAPI(t *testing.T) {
 	if service.URL != "https://dvm-default--cold.boxd.test" || port != guest.ServicePort || bots {
 		t.Errorf("URL %q, proxy port %d, bot protection %v", service.URL, port, bots)
 	}
+	if service.PrivateURL != service.URL {
+		t.Errorf("an instance on no networks has private URL %q, not its URL", service.PrivateURL)
+	}
 	if err := d.Destroy(ctx, inst); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := d.Create(ctx, machine.InstanceSpec{Name: "peer", ImageID: base.ID, GuestOS: machine.Linux, Isolated: true, Networks: []string{"pool"}})
+	if err != nil {
+		t.Fatalf("create on a network: %v", err)
+	}
+	if service, err := d.Service(ctx, peer); err != nil || service.PrivateURL != "http://dvm-default--peer.boxd:7302" {
+		t.Errorf("an instance on a network: %+v, %v", service, err)
+	}
+	if err := d.Destroy(ctx, peer); err != nil {
 		t.Fatal(err)
 	}
 

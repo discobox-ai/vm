@@ -78,6 +78,10 @@ type CreateOptions struct {
 	// (machine.InstanceSpec); the driver must list Capabilities.Isolation.
 	Isolated bool
 	Networks []string
+	// Egress fences what the instance reaches beyond its networks, from
+	// before Create returns (machine.InstanceSpec); nil is the provider's
+	// default. The driver must list Capabilities.Egress.
+	Egress *machine.Egress
 }
 
 // Create makes an instance from an image reference or ID, or from one of the
@@ -89,9 +93,12 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (In
 	if (opts.Isolated || len(opts.Networks) > 0) && !e.Driver.Capabilities().Isolation {
 		return Instance{}, fmt.Errorf("driver %s cannot isolate an instance or place it on networks: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
+	if opts.Egress != nil && !e.Driver.Capabilities().Egress {
+		return Instance{}, fmt.Errorf("driver %s cannot fence an instance's egress: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
 	spec := machine.InstanceSpec{
 		Name: opts.Name, Image: ref, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: opts.Forwards,
-		Isolated: opts.Isolated, Networks: opts.Networks,
+		Isolated: opts.Isolated, Networks: opts.Networks, Egress: opts.Egress,
 	}
 	img, err := e.Resolve(ctx, ref)
 	if err != nil {
@@ -312,6 +319,25 @@ func (e *Engine) URL(ctx context.Context, inst Instance) (string, error) {
 		return "", fmt.Errorf("instance %s: the %s driver gave its service no URL", inst.Name, e.Driver.Name())
 	}
 	return service.URL, nil
+}
+
+// PrivateURL is where the instance's peers, other instances of the driver on
+// its networks, reach its service (machine.Service.PrivateURL): a direct
+// path to the instance's address, or URL where that is how peers reach it.
+// It is refused while the instance is not running, as URL is, and where the
+// driver gives peers no way to it.
+func (e *Engine) PrivateURL(ctx context.Context, inst Instance) (string, error) {
+	service, err := e.Driver.Service(ctx, inst)
+	if errors.Is(err, machine.ErrNotRunning) {
+		return "", fmt.Errorf("instance %s is not running", inst.Name)
+	}
+	if err != nil {
+		return "", err
+	}
+	if service.PrivateURL == "" {
+		return "", fmt.Errorf("instance %s: the %s driver gives its instances no way to each other: %w", inst.Name, e.Driver.Name(), machine.ErrUnsupported)
+	}
+	return service.PrivateURL, nil
 }
 
 // announceService tells a started guest where its service listens, in its

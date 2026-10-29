@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -25,6 +26,7 @@ type createFlags struct {
 	cpus         int
 	isolated     bool
 	networks     []string
+	egress       []string
 }
 
 func (f *createFlags) register(cmd *cobra.Command) {
@@ -33,6 +35,31 @@ func (f *createFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.memory, "memory", "", "memory, e.g. 8GiB (default: the driver's)")
 	cmd.Flags().BoolVar(&f.isolated, "isolated", false, "strip the machine of what its provider gives one by default (boxd: the in-VM CLI and token, git credentials, integrations, default-network peers), for good")
 	cmd.Flags().StringSliceVar(&f.networks, "network", nil, "a provider network the machine peers on, in place of its default one (repeatable)")
+	// An array, not a slice: a slice reads --egress="" as no entries at all,
+	// which would fence the machine to nothing rather than be refused.
+	cmd.Flags().StringArrayVar(&f.egress, "egress", nil, "fence the machine's egress to hosts, *.domains, IPv4 addresses, or ranges beyond its networks, comma-separated (repeatable); none alone is nothing beyond them")
+}
+
+// fence is the egress the flags ask for: nil when none is given, nothing
+// beyond the networks for "none" alone. An empty entry is refused, so an
+// unset variable in --egress "$HOSTS" never fences a machine to nothing.
+func (f *createFlags) fence() (*machine.Egress, error) {
+	if f.egress == nil {
+		return nil, nil
+	}
+	var allow []string
+	for _, value := range f.egress {
+		allow = append(allow, strings.Split(value, ",")...)
+	}
+	switch {
+	case slices.Contains(allow, ""):
+		return nil, errors.New("--egress takes no empty entry")
+	case slices.Equal(allow, []string{"none"}):
+		return &machine.Egress{}, nil
+	case slices.Contains(allow, "none"):
+		return nil, errors.New("--egress none fences the machine to its networks alone, and takes no other entry")
+	}
+	return &machine.Egress{Allow: allow}, nil
 }
 
 func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) (engine.Instance, error) {
@@ -40,8 +67,12 @@ func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) 
 	if err != nil {
 		return engine.Instance{}, err
 	}
+	egress, err := f.fence()
+	if err != nil {
+		return engine.Instance{}, err
+	}
 	return e.Create(ctx, ref, engine.CreateOptions{
-		Name: f.name, CPUs: f.cpus, Memory: memory, Isolated: f.isolated, Networks: f.networks,
+		Name: f.name, CPUs: f.cpus, Memory: memory, Isolated: f.isolated, Networks: f.networks, Egress: egress,
 	})
 }
 
@@ -204,7 +235,8 @@ func lsCommand(g *globals) *cobra.Command {
 }
 
 func urlCommand(g *globals) *cobra.Command {
-	return &cobra.Command{
+	var private bool
+	cmd := &cobra.Command{
 		Use:   "url INSTANCE",
 		Short: "Print the HTTP URL of an instance's service",
 		Long: "Print the URL of the instance's one service: what a program in the guest\n" +
@@ -213,7 +245,12 @@ func urlCommand(g *globals) *cobra.Command {
 			"writes. On boxd it is a public HTTPS URL, the same across stop and start.\n" +
 			"Elsewhere it is http://127.0.0.1:PORT while the instance runs, a new port at\n" +
 			"each start. Neither needs a credential, so the service must authenticate\n" +
-			"its callers.",
+			"its callers.\n\n" +
+			"--private prints where the instance's peers, other instances of the driver\n" +
+			"on its networks, reach the service instead: the instance's own address on\n" +
+			"its networks, where every port it listens on is reachable too (boxd on\n" +
+			"networks: http://<machine>.boxd:7302; docker: the container's address), or\n" +
+			"the URL where that is how peers reach it.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
@@ -224,14 +261,20 @@ func urlCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			url, err := e.URL(cmd.Context(), inst)
+			url := e.URL
+			if private {
+				url = e.PrivateURL
+			}
+			u, err := url(cmd.Context(), inst)
 			if err != nil {
 				return err
 			}
-			fmt.Println(url)
+			fmt.Println(u)
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&private, "private", false, "print the URL the instance's peers reach it at")
+	return cmd
 }
 
 func inspectCommand(g *globals) *cobra.Command {

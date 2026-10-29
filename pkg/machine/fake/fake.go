@@ -100,6 +100,10 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 // Chains is false: an image is a tree of its own.
 func (*Hypervisor) Chains() bool { return false }
 
+// SharesLoopback is true: a fake guest is a process on the host's loopback,
+// and so are its peers.
+func (*Hypervisor) SharesLoopback() bool { return true }
+
 func (*Hypervisor) Check(context.Context) error { return nil }
 
 const (

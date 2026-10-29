@@ -130,4 +130,10 @@ type Hypervisor interface {
 	// Service is where a prepared instance's service listens in its guest
 	// (machine.Service.Listen), and the guest port the shim dials it on.
 	Service(inst InstanceSpec) (listen string, port uint32, err error)
+	// SharesLoopback reports that the hypervisor's guests are processes on
+	// the host's own loopback (fake's), so an instance's peers reach its
+	// service at the shim's URL, which is then its PrivateURL. One whose
+	// guests reach neither each other nor the host's loopback (vz's, hcs's)
+	// reports false, and its instances have no PrivateURL.
+	SharesLoopback() bool
 }

@@ -82,6 +82,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 		GuestOS:   []machine.OS{machine.Linux},
 		Keys:      keyCapabilities,
 		Isolation: true,
+		Egress:    true,
 	}
 }
 
@@ -127,8 +128,9 @@ func (*Driver) Install(context.Context, machine.InstallSpec, machine.Image) (mac
 }
 
 // Create makes the instance's machine: restored from its image's snapshot, or
-// made from its base, at the size it asks for, with its proxy pinned to the
-// service port; then powered off in order, so its first boot is a cold boot.
+// made from its base, at the size it asks for, fenced as it asks the moment
+// boxd answers, with its proxy pinned to the service port; then powered off
+// in order, so its first boot is a cold boot.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	if err := machine.ValidateName(spec.Name); err != nil {
 		return machine.Instance{}, err
@@ -187,7 +189,12 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("boxd: create %s: %w", name, err)
 	}
 	vm := created.GetVmId()
-	if restore && len(spec.Networks) > 0 {
+	if spec.Egress != nil {
+		// Neither create takes an allowlist, and the machine runs until it
+		// is set, so it is set before anything else.
+		err = fence(ctx, api, vm, *spec.Egress)
+	}
+	if err == nil && restore && len(spec.Networks) > 0 {
 		// A restore takes no networks of its own. It is isolated, so it has
 		// no peers until they are set.
 		_, err = api.SetVmNetworks(ctx, &boxdapi.SetVmNetworksRequest{VmId: vm, Networks: spec.Networks})
@@ -220,6 +227,53 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	inst := d.instance(info)
 	inst.Image, inst.ImageID, inst.Base = spec.Image, spec.ImageID, spec.Base
 	return inst, nil
+}
+
+// fence sets the machine's egress allowlist, and reads it back: a machine
+// boxd does not report fenced as asked is not one to hand out. An empty
+// Allow is boxd's ["none"], since boxd's empty allowlist is none at all.
+func fence(ctx context.Context, api boxdapi.BoxdApiClient, vm string, egress machine.Egress) error {
+	want := allowlist(egress)
+	if _, err := api.SetVmEgressAllow(ctx, &boxdapi.SetVmEgressAllowRequest{Vm: vm, Entries: want}); err != nil {
+		return fmt.Errorf("boxd: fence %s's egress to %q: %w", vm, want, err)
+	}
+	info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: vm})
+	if err != nil {
+		return fmt.Errorf("boxd: read back %s's egress: %w", vm, err)
+	}
+	if got := info.GetEgressAllow(); !sameEntries(got, want) {
+		return fmt.Errorf("boxd: %s's egress is %q, not the %q asked for", vm, got, want)
+	}
+	return nil
+}
+
+// allowlist is a fence as boxd's entries.
+func allowlist(egress machine.Egress) []string {
+	if len(egress.Allow) == 0 {
+		return []string{"none"}
+	}
+	return egress.Allow
+}
+
+// egressOf is boxd's allowlist as a fence: nil for none, and an empty Allow
+// for ["none"].
+func egressOf(entries []string) *machine.Egress {
+	switch {
+	case len(entries) == 0:
+		return nil
+	case slices.Equal(entries, []string{"none"}):
+		return &machine.Egress{}
+	}
+	return &machine.Egress{Allow: entries}
+}
+
+// sameEntries reports whether two allowlists hold the same entries, in any
+// order.
+func sameEntries(a, b []string) bool {
+	a, b = slices.Clone(a), slices.Clone(b)
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(slices.Compact(a), slices.Compact(b))
 }
 
 // settle turns off boxd's idle timers. A guest reached only through Exec looks

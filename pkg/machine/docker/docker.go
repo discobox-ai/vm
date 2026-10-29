@@ -49,10 +49,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -358,6 +360,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if spec.Isolated || len(spec.Networks) > 0 {
 		return machine.Instance{}, fmt.Errorf("docker: isolation: %w", machine.ErrUnsupported)
 	}
+	if spec.Egress != nil {
+		return machine.Instance{}, fmt.Errorf("docker: egress: %w", machine.ErrUnsupported)
+	}
 	name := containerName(d.project, spec.Name)
 	from, base := imageRepo+":"+imageTag(d.project, spec.ImageID), ""
 	if spec.Base != nil {
@@ -595,7 +600,9 @@ var servicePortKey = fmt.Sprintf("%d/tcp", guest.ServicePort)
 // Service is guest.ServicePort on the container's network, published on the
 // host's loopback at a port the daemon picked when the container started, so
 // its URL lasts only as long as the container runs. The daemon is the
-// host's own: one reached over tcp:// publishes on its own loopback.
+// host's own: one reached over tcp:// publishes on its own loopback. Its
+// PrivateURL is the port at the container's address on its network, which
+// another container there dials, as it does every other port.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	service := machine.Service{Listen: fmt.Sprintf("tcp:0.0.0.0:%d", guest.ServicePort)}
 	ref := containerRef{ID: inst.ID, Name: containerName(d.project, inst.Name)}
@@ -611,10 +618,29 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 	for _, b := range c.NetworkSettings.Ports[servicePortKey] {
 		if b.HostPort != "" {
 			service.URL = "http://" + net.JoinHostPort("127.0.0.1", b.HostPort)
-			return service, nil
+			break
 		}
 	}
-	return service, fmt.Errorf("docker: container %s publishes no service port; create the instance again", ref.Name)
+	if service.URL == "" {
+		return service, fmt.Errorf("docker: container %s publishes no service port; create the instance again", ref.Name)
+	}
+	// A container with no IPv4 address on its network (an IPv6-only one) has
+	// no private URL, and its URL still serves.
+	if addr := containerAddress(c); addr != "" {
+		service.PrivateURL = "http://" + net.JoinHostPort(addr, strconv.FormatUint(uint64(guest.ServicePort), 10))
+	}
+	return service, nil
+}
+
+// containerAddress is a running container's address on its network: the
+// first by name, on the rare container on more than one.
+func containerAddress(c containerInfo) string {
+	for _, name := range slices.Sorted(maps.Keys(c.NetworkSettings.Networks)) {
+		if addr := c.NetworkSettings.Networks[name].IPAddress; addr != "" {
+			return addr
+		}
+	}
+	return ""
 }
 
 // removeContainer is best-effort cleanup of a container the driver made for

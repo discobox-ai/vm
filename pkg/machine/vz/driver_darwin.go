@@ -41,6 +41,10 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 // is the instance's bundle moved, so each image's files are its own.
 func (*Hypervisor) Chains() bool { return false }
 
+// SharesLoopback is false: a guest reaches neither another guest nor the
+// host's loopback.
+func (*Hypervisor) SharesLoopback() bool { return false }
+
 // Commit moves the stopped instance's disk into the image. The MAC address and
 // the machine identifier stay behind: they are the running machine's identity,
 // and every clone of the image gets its own.
