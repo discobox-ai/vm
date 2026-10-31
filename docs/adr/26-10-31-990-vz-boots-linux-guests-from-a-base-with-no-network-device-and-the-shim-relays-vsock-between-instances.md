@@ -1,6 +1,8 @@
 # 26-10-31-990 — vz boots Linux guests from a base beside macOS ones, with no network device when asked, and an instance's guest ports reach its caller and its peers over vsock
 
-- **Status**: Proposed
+- **Status**: Accepted (supersedes in part 0001, its raw guest ports leaving
+  the seam; and 26-10-29-129, vz listing no `Egress` and `Capabilities.Egress`
+  as a bool)
 - **Date**: 2026-10-31
 
 ## Context

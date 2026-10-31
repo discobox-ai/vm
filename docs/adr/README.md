@@ -15,7 +15,7 @@ Follow `template.md` and the `repostd` skill.
 <!-- repostd:adr-index -->
 | ADR | Title | Status |
 |---|---|---|
-| [0001](0001-a-driver-runs-guest-operations-and-exposes-one-service-endpoint.md) | A driver runs guest operations itself and exposes one service endpoint | Accepted (§1's boxd shutdown superseded by 26-10-15-833) |
+| [0001](0001-a-driver-runs-guest-operations-and-exposes-one-service-endpoint.md) | A driver runs guest operations itself and exposes one service endpoint | Accepted (§1's boxd shutdown superseded by 26-10-15-833; §3's raw guest ports leaving the seam superseded by 26-10-31-990) |
 | [0002](0002-docker-guests-make-their-own-user-namespace.md) | Docker guests make their own user namespace, and the base layer is shifted once | Proposed (its base layer installed and shifted once superseded by 26-10-23-410) |
 | [0003](0003-a-client-converges-a-guest-to-state-files.md) | A client converges a guest to state files, through exec and copy | Superseded by [26-10-15-703](26-10-15-703-disco-vm-does-not-converge-guests.md) |
 | [0004](0004-a-project-scopes-every-resource-and-its-name.md) | A project scopes every resource, and is in the name of what a driver makes | Accepted (orphan listing superseded by 26-10-23-417) |
@@ -27,6 +27,6 @@ Follow `template.md` and the `repostd` skill.
 | [26-10-23-410](26-10-23-410-images-are-snapshots-and-stand-alone.md) | Images are snapshots and stand alone; there is no build | Accepted (supersedes in part 26-10-15-851, its images made by `build`; 0002, its docker base layer installed and shifted once; and 26-10-23-417, its layers as a build's cache) |
 | [26-10-23-417](26-10-23-417-the-engine-is-stateless-and-a-driver-keeps-its-state-in-its-provider.md) | The engine is stateless, and a driver keeps its state in its provider | Accepted (supersedes in part 0004, its orphan listing; its layers as a build's cache superseded by 26-10-23-410) |
 | [26-10-24-562](26-10-24-562-a-driver-is-given-its-key-and-issues-keys-that-expire-and-cannot-issue.md) | A driver is given its key, and issues keys that expire and cannot issue | Proposed |
-| [26-10-29-129](26-10-29-129-a-service-has-a-public-url-and-a-private-one-and-a-driver-can-fence-egress.md) | An instance's service has a public URL and a private one, and a driver can fence an instance's egress to its networks | Accepted |
-| [26-10-31-990](26-10-31-990-vz-boots-linux-guests-from-a-base-with-no-network-device-and-the-shim-relays-vsock-between-instances.md) | vz boots Linux guests from a base beside macOS ones, with no network device when asked, and an instance's guest ports reach its caller and its peers over vsock | Proposed |
+| [26-10-29-129](26-10-29-129-a-service-has-a-public-url-and-a-private-one-and-a-driver-can-fence-egress.md) | An instance's service has a public URL and a private one, and a driver can fence an instance's egress to its networks | Accepted (§2's vz listing no `Egress`, and `Capabilities.Egress` as a bool, superseded by 26-10-31-990) |
+| [26-10-31-990](26-10-31-990-vz-boots-linux-guests-from-a-base-with-no-network-device-and-the-shim-relays-vsock-between-instances.md) | vz boots Linux guests from a base beside macOS ones, with no network device when asked, and an instance's guest ports reach its caller and its peers over vsock | Accepted (supersedes in part 0001, its raw guest ports leaving the seam; and 26-10-29-129, vz listing no `Egress` and `Capabilities.Egress` as a bool) |
 <!-- /repostd:adr-index -->
