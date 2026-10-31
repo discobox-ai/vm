@@ -197,6 +197,15 @@ every guest OS, and boxd and docker do not.
   `Engine.Dial(ctx, inst, port)` and `disco-vm dial INSTANCE PORT` (stdio) are
   how callers use it. The service URL stays as it is: one port, at a
   loopback URL.
+- **The shim's control API moves to a Unix socket**: `shim.sock` in the
+  instance's directory, owner-only, in place of its loopback TCP listener.
+  That API is `/status`, `/stop`, `/kill`, `/guest` and `/dial`. `shim.json`
+  names the socket, and the bearer token stays. A raw port into any guest is
+  then reachable only by the user who owns the root, and no other local user
+  can open a connection to it at all. A shim that wrote a TCP address is
+  attached through it until it exits, so instances already running keep
+  working. The service URL remains the one loopback TCP listener, because
+  ADR 0005 makes it an HTTP URL that any process reaches.
 - **Guest to host:** `Forwards`, guest ports spliced into Unix sockets, as
   today.
 - **Guest to peer:** a `Forward` may target another instance of the
@@ -211,7 +220,11 @@ every guest OS, and boxd and docker do not.
   host. disco-vm decides nothing else about it.
 
 So disco-vm relays between two of its guests, by the spec its caller wrote,
-and the relay outlives the caller's process just as the shim does. A caller
+and the relay outlives the caller's process just as the shim does. A shim is
+started detached and outlives whoever started it, discobox's server
+included. That is deliberate here: a sandbox's way out must not depend on
+its caller's process. It differs from discobox ADR 0062, where the VM dies
+with the server, and discobox-ai/discobox#418 takes it as given. A caller
 that needs a relay to change after Create, or that needs a policy per
 connection, builds that relay from `Dial` and a `Socket` forward. vz's
 `PrivateURL` stays empty: no address reaches a vz guest.
