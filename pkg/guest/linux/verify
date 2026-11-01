@@ -1,0 +1,36 @@
+#!/bin/sh
+# Check an assembled artifact set before it is published: a kernel the
+# hypervisor loads, a root that mounts as disco-vm expects, and an initrd that
+# moves the agent a boot appends. A broken one otherwise fails as a blank
+# console on a host that cannot be debugged from.
+set -eu
+
+out=${1:?usage: verify OUTPUT_DIR}
+arch=${TARGETARCH:?verify: TARGETARCH must be set}
+fail() {
+    echo "verify: $*" >&2
+    exit 1
+}
+
+case "$arch" in
+arm64) [ "$(dd if="$out/vmlinux" bs=1 skip=56 count=4 2>/dev/null)" = "ARMd" ] || fail "vmlinux is not an arm64 Image" ;;
+amd64) [ "$(dd if="$out/vmlinux" bs=1 skip=1 count=3 2>/dev/null)" = "ELF" ] || fail "vmlinux is not an ELF kernel" ;;
+esac
+
+[ "$(e2label "$out/root.ext4")" = "disco-vm-root" ] || fail "root.ext4 is not labeled disco-vm-root"
+has() { debugfs -R "stat $1" "$out/root.ext4" 2>/dev/null | grep -q "^Inode:" || fail "root.ext4 has no $1"; }
+has /etc/systemd/system/disco-vm-guest.service
+has /etc/systemd/system/multi-user.target.wants/disco-vm-guest.service
+has /etc/systemd/system/systemd-networkd-wait-online.service.d/10-disco-vm.conf
+has /etc/systemd/system/network-online.target.wants/systemd-networkd-wait-online.service
+has /etc/systemd/network/10-disco-vm.network
+has /usr/local/sbin/disco-vm-sync-clock
+debugfs -R "cat /etc/fstab" "$out/root.ext4" 2>/dev/null | grep -q "^/dev/vda / ext4 rw,x-systemd.growfs" || fail "fstab does not grow the root"
+size=$(debugfs -R "stat /etc/machine-id" "$out/root.ext4" 2>/dev/null | sed -n 's/.*Size: \([0-9]*\).*/\1/p' | head -n1)
+[ "$size" = "0" ] || fail "/etc/machine-id is not empty"
+
+contents=$(lsinitramfs "$out/initrd.img")
+for want in scripts/init-bottom/disco-vm-agent bin/cp bin/chmod; do
+    echo "$contents" | grep -q "^\(usr/\)\?$want$" || fail "the initrd has no $want, which moving the agent needs"
+done
+echo "verify: $out is a disco-vm Linux guest for $arch"

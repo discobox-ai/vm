@@ -1,0 +1,19 @@
+# The disco-vm agent, which every boot hands the guest in its initrd (ADR
+# 26-10-31-990): the initramfs hook disco-vm-agent moves it to /run, so the
+# agent is always the one the host booted the guest with, and nothing of
+# disco-vm's is written to the disk.
+#
+# It orders after no network target: it listens on vsock, and must answer on a
+# guest with no network device as on one whose lease is late.
+[Unit]
+Description=disco-vm guest agent
+ConditionPathExists=/run/disco-vm/disco-vm
+After=local-fs.target
+
+[Service]
+ExecStart=/run/disco-vm/disco-vm guest
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

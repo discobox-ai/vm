@@ -1,0 +1,19 @@
+# The guest takes its address, route, and resolver from a DHCP lease, which
+# Virtualization.framework's NAT attachment serves. Both name globs are
+# load-bearing: a virtio-pci NIC is enp0s*, one with no topology to name
+# itself from stays eth0.
+#
+# ClientIdentifier=mac makes the lease follow the instance's own MAC, which
+# Create gives it, rather than a DUID derived from the machine ID: two clones
+# of one snapshot never ask for the same address.
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=ipv4
+IPv6AcceptRA=no
+
+[DHCPv4]
+ClientIdentifier=mac
+UseDNS=yes
+UseDomains=yes

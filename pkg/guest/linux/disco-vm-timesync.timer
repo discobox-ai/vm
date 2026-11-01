@@ -1,0 +1,12 @@
+# A Mac that slept leaves a guest hours behind, and every time-bounded token
+# then fails both ways; Linux reads the RTC only at boot.
+[Unit]
+Description=Keep the guest clock in step with the host
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

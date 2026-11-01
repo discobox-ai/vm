@@ -1,0 +1,30 @@
+# The Linux guest image's own release line (ADR 26-10-31-990): a linux/vN tag
+# pushes ghcr.io/discobox-ai/disco-vm-linux:vN, and the digest it prints is
+# pinned in vz.DefaultLinuxBase by hand. The job body is one Taskfile target.
+name: Linux guest
+
+on:
+  push:
+    tags:
+      - "linux/v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        with:
+          target: release:linux-guest

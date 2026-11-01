@@ -1,0 +1,5 @@
+# The root is the instance's own disk, writable. Create grows the disk to its
+# ceiling, sparse, and x-systemd.growfs grows the filesystem into it online at
+# boot.
+/dev/vda / ext4 rw,x-systemd.growfs 0 1
+tmpfs /tmp tmpfs mode=1777,nosuid,nodev 0 0
