@@ -188,10 +188,10 @@ func TestWriteBootInitrd(t *testing.T) {
 		t.Fatalf("the image's initrd is not first, padded: %q", data[:8])
 	}
 	entries := readNewc(t, data[8:])
-	if e, ok := entries[agentPath]; !ok || e[0] != 0o100755 || e[1] != "the agent" {
+	if e, ok := entries[initrdAgentPath]; !ok || e[0] != 0o100755 || e[1] != "the agent" {
 		t.Fatalf("the agent's entry is %v (found %v)", e, ok)
 	}
-	if e, ok := entries[agentDir]; !ok || e[0] != 0o040755 {
+	if e, ok := entries[initrdAgentDir]; !ok || e[0] != 0o040755 {
 		t.Fatalf("the agent's directory entry is %v (found %v)", e, ok)
 	}
 }
