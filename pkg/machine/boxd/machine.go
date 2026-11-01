@@ -3,10 +3,12 @@ package boxd
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
 )
 
@@ -153,6 +155,12 @@ func (m *vm) giveUp(why error) error {
 }
 
 func (m *vm) Done() <-chan struct{} { return m.watched() }
+
+// Dial is unsupported: boxd has no socket from the host into a guest, only
+// its Exec stream and its service's URL (ADR 0001).
+func (m *vm) Dial(context.Context, uint32) (net.Conn, error) {
+	return nil, fmt.Errorf("boxd: a guest port: %w", machine.ErrUnsupported)
+}
 
 func (m *vm) Err() error {
 	<-m.watched()

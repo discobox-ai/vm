@@ -3,12 +3,17 @@
 package vz
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/local"
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
@@ -19,6 +24,11 @@ import (
 // made, which `disco-vm images` lists. The conformance suite clones it rather
 // than installing macOS on every run, and skips without it.
 const BaseEnv = "DISCO_VM_VZ_BASE"
+
+// LinuxBaseEnv names a Linux base to run the conformance suite from:
+// LinuxBaseName, a guest image's reference, or a directory holding one's
+// artifacts. Without it the Linux suite skips. Its agent is $DISCO_VM_AGENT.
+const LinuxBaseEnv = "DISCO_VM_VZ_LINUX_BASE"
 
 // TestConformance is the vz driver's definition of done. It creates VMs, so
 // the test binary has to be signed, and so does the disco-vm that runs as each
@@ -48,6 +58,101 @@ func TestConformance(t *testing.T) {
 		Timeout:    10 * time.Minute,
 		ScratchDir: "/Users/Shared",
 	})
+}
+
+// TestConformanceLinux is the suite from a Linux base: its guests boot
+// beside macOS ones and do not count against their limit.
+func TestConformanceLinux(t *testing.T) {
+	driver, ref := linuxDriver(t)
+	base, found, err := driver.Base(t.Context(), ref)
+	if err != nil || !found {
+		t.Fatalf("base %s: found %v, %v", ref, found, err)
+	}
+	machinetest.Run(t, driver, machinetest.Config{
+		Base:       &base,
+		CPUs:       2,
+		Memory:     2 << 30,
+		Timeout:    5 * time.Minute,
+		ScratchDir: "/var/tmp",
+		GuestAgent: "/run/disco-vm/disco-vm",
+	})
+}
+
+// TestLinuxBesideMacOS is issue #27's proof: a Linux guest with no network
+// device boots while a macOS guest runs, and its caller reaches a vsock port
+// in it.
+func TestLinuxBesideMacOS(t *testing.T) {
+	macOS := os.Getenv(BaseEnv)
+	if macOS == "" {
+		t.Skipf("$%s names no installed macOS image", BaseEnv)
+	}
+	driver, ref := linuxDriver(t)
+	ctx := t.Context()
+	start := func(spec machine.InstanceSpec) machine.Machine {
+		t.Helper()
+		inst, err := driver.Create(ctx, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+		m, err := driver.Start(ctx, inst, machine.BootOptions{})
+		if err != nil {
+			t.Fatalf("start %s: %v", spec.Name, err)
+		}
+		t.Cleanup(func() { _ = m.Kill(context.Background()) })
+		return m
+	}
+	start(machine.InstanceSpec{Name: "beside-macos", ImageID: macOS, GuestOS: machine.Darwin})
+	base, found, err := driver.Base(ctx, ref)
+	if err != nil || !found {
+		t.Fatalf("base %s: found %v, %v", ref, found, err)
+	}
+	linux := start(machine.InstanceSpec{Name: "beside-linux", Base: &base, GuestOS: machine.Linux, Egress: &machine.Egress{}})
+	var out bytes.Buffer
+	if code, err := machine.Run(ctx, linux, machine.ExecRequest{Argv: []string{"ls", "/sys/class/net"}}, nil, &out, &out); err != nil || code != 0 {
+		t.Fatalf("ls /sys/class/net: exit %d, %v\n%s", code, err, out.String())
+	}
+	if links := strings.Fields(out.String()); len(links) != 1 || links[0] != "lo" {
+		t.Fatalf("a guest with no network device has links %q", links)
+	}
+	conn, err := linux.Dial(ctx, guest.AgentPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "GET /v1/health HTTP/1.0\r\nHost: guest\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	answer, _ := io.ReadAll(conn)
+	if !strings.Contains(string(answer), " 200 ") {
+		t.Fatalf("the Linux guest's vsock port answered %q", answer)
+	}
+}
+
+// linuxDriver is the vz driver for the Linux suites, and the base they run,
+// or skips.
+func linuxDriver(t *testing.T) (*local.Driver, string) {
+	t.Helper()
+	ref := os.Getenv(LinuxBaseEnv)
+	if ref == "" {
+		t.Skipf("$%s names no Linux base", LinuxBaseEnv)
+	}
+	if os.Getenv(AgentEnv) == "" {
+		t.Fatalf("$%s names no linux/arm64 disco-vm to boot the guest with", AgentEnv)
+	}
+	binary := os.Getenv("DISCO_VM_TEST_BINARY")
+	if binary == "" {
+		t.Fatal("$DISCO_VM_TEST_BINARY names no signed disco-vm to run each started instance's shim")
+	}
+	dir := machine.DefaultDir()
+	driver, err := local.New(machine.Config{
+		Dir:         dir,
+		ShimCommand: []string{binary, "--root", dir, "--driver", "vz", "shim"},
+	}, &Hypervisor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return driver, ref
 }
 
 func TestLeaseFor(t *testing.T) {

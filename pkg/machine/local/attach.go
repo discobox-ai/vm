@@ -61,6 +61,12 @@ func (m *shimMachine) Done() <-chan struct{} {
 	return m.done
 }
 
+// Dial reaches a guest port through the shim, which dials it on the machine
+// it holds.
+func (m *shimMachine) Dial(ctx context.Context, port uint32) (net.Conn, error) {
+	return m.shim.dial(ctx, port)
+}
+
 // Err is nil: how the machine stopped is in its shim's log.
 func (m *shimMachine) Err() error {
 	<-m.Done()

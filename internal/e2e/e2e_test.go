@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -147,6 +148,8 @@ type env struct {
 	root string
 	// extra is added to every command's environment.
 	extra []string
+	// stdin is every command's standard input; empty is none.
+	stdin string
 }
 
 // projectEnv names the project every command runs in, "e2e" by default. A
@@ -167,6 +170,9 @@ func (e env) run(args ...string) (string, int) {
 	cmd.Env = append(cmd.Env, e.extra...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
+	if e.stdin != "" {
+		cmd.Stdin = strings.NewReader(e.stdin)
+	}
 	err := cmd.Run()
 	code := 0
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -569,6 +575,22 @@ func TestURL(t *testing.T) {
 		t.Fatalf("url --private of a stopped instance: exit %d\n%s", code, out)
 	}
 	e.ok("start", "svc")
+	// A guest port is reached through the instance's shim: the agent's,
+	// whose health an HTTP request reads. docker has no socket into its
+	// guest.
+	asking := e
+	asking.stdin = "GET /v1/health HTTP/1.0\r\nHost: guest\r\n\r\n"
+	answer, code := asking.run("dial", "svc", strconv.FormatUint(uint64(guest.AgentPort), 10))
+	switch tg.driver {
+	case "docker":
+		if code == 0 || !strings.Contains(answer, "not supported") {
+			t.Fatalf("dial svc on docker: exit %d\n%s", code, answer)
+		}
+	default:
+		if code != 0 || !strings.Contains(answer, " 200 ") {
+			t.Fatalf("dial svc %d: exit %d\n%s", guest.AgentPort, code, answer)
+		}
+	}
 	url := strings.TrimSpace(e.ok("url", "svc"))
 	if !strings.HasPrefix(url, "http://127.0.0.1:") {
 		t.Fatalf("url svc = %q", url)
@@ -637,9 +659,10 @@ func TestURL(t *testing.T) {
 	e.ok("rm", "-f", "svc")
 }
 
-// TestEgress: none of the drivers e2e runs fences an instance's egress, so
-// `create --egress` is refused and makes nothing; and none takes no other
-// entry beside it.
+// TestEgress: none takes no other entry beside it, and a fence the driver
+// does not hold is refused and makes nothing: vz holds none alone, as an
+// instance with no network device, which inspect reports; the other drivers
+// e2e runs hold no fence.
 func TestEgress(t *testing.T) {
 	e := newEnv(t)
 	t.Cleanup(func() { e.run("rm", "-f", "fenced") })
@@ -651,6 +674,20 @@ func TestEgress(t *testing.T) {
 		if out, code := e.run(args...); code == 0 || !strings.Contains(out, "no empty entry") {
 			t.Fatalf("create %q: exit %d\n%s", empty, code, out)
 		}
+	}
+	if out, code := e.run("create", "--name", "fenced", "--egress", "example.com", "e2e/base"); code == 0 || !strings.Contains(out, "cannot fence") {
+		t.Fatalf("create --egress example.com on %s: exit %d\n%s", tg.driver, code, out)
+	}
+	if tg.driver == "vz" {
+		e.ok("create", "--name", "fenced", "--egress", "none", "e2e/base")
+		var fenced struct {
+			Egress *struct{} `json:"egress"`
+		}
+		if err := json.Unmarshal([]byte(e.ok("inspect", "fenced")), &fenced); err != nil || fenced.Egress == nil {
+			t.Fatalf("an instance with no network device reports no fence: %v", err)
+		}
+		e.ok("rm", "fenced")
+		return
 	}
 	if out, code := e.run("create", "--name", "fenced", "--egress", "none", "e2e/base"); code == 0 || !strings.Contains(out, "cannot fence") {
 		t.Fatalf("create --egress none on %s: exit %d\n%s", tg.driver, code, out)

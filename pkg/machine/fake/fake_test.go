@@ -47,6 +47,7 @@ func TestConformance(t *testing.T) {
 		Install:    machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"},
 		Timeout:    30 * time.Second,
 		ScratchDir: "/scratch",
+		GuestAgent: agent,
 		Keyed:      newDriver,
 	})
 }

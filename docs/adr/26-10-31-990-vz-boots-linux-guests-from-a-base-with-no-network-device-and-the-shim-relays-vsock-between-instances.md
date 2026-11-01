@@ -215,8 +215,9 @@ every guest OS, and boxd and docker do not.
   The engine's check takes exactly one of them: an absolute `Socket`, or a
   valid instance name and a port.
   The instance's shim accepts the guest's connections on `Port` and splices
-  each into the target's shim `/dial`. A target that is not running refuses
-  the connection, and the guest sees a refused connection. A peer forward is
+  each into the target's shim `/dial`. While the target is not running each
+  connection is closed at once: the shim has accepted it already, so the
+  guest connects and reads EOF. A peer forward is
   the spec's, fixed at Create, and reported in `Instance.Forwards`. It holds
   across stop and start, and it carries no identity: the target sees the
   host. disco-vm decides nothing else about it.
@@ -335,8 +336,8 @@ The same design, with hcs's mechanisms in place of vz's:
   boxd's and docker's `Dial` are `ErrUnsupported`. Fake's dials the host's
   loopback, so its guests share one port space: on fake, a peer forward
   proves the engine's and shim's plumbing (the record, the splice into the
-  target's `/dial`, a stopped target refused), and only vz and hcs prove
-  which instance answered. `disco-vm dial` is a new command.
+  target's `/dial`, a stopped target's connection closed), and only vz and
+  hcs prove which instance answered. `disco-vm dial` is a new command.
 - vz's bundle code handles two layouts, read from `vz.json`'s guest OS. A
   bundle from before records none and is macOS.
 - disco-vm gains a release line (`linux/v*`), a Dockerfile and its verify

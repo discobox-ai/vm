@@ -76,10 +76,11 @@ func (b bundle) macAddress() (*vz.MACAddress, error) {
 	return address, nil
 }
 
-// configuration is a bundle's machine. It is the same set of devices at
-// install and at every boot, so the guest never sees its hardware change;
-// only shares are optional.
-func (b bundle) configuration(cpus uint, memory uint64, shares []machine.Share) (*vz.VirtualMachineConfiguration, error) {
+// configuration is a macOS bundle's machine. It is the same set of devices
+// at install and at every boot, so the guest never sees its hardware change;
+// only shares are optional, and the network device, which an instance fenced
+// to nothing has none of.
+func (b bundle) configuration(cpus uint, memory uint64, shares []machine.Share, nic bool) (*vz.VirtualMachineConfiguration, error) {
 	platform, err := b.platform()
 	if err != nil {
 		return nil, err
@@ -88,9 +89,14 @@ func (b bundle) configuration(cpus uint, memory uint64, shares []machine.Share) 
 	if err != nil {
 		return nil, err
 	}
+	if !nic {
+		address = nil
+	}
 	return configure(platform, cpus, memory, b.path(diskName), address, shares)
 }
 
+// configure is a macOS guest's machine, with a NAT network device at address,
+// or none when address is nil.
 func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk string, address *vz.MACAddress, shares []machine.Share) (*vz.VirtualMachineConfiguration, error) {
 	// No kernel, no initrd: a Mac's boot loader is the platform's own, and
 	// everything it needs is in the auxiliary storage.
@@ -114,16 +120,13 @@ func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk
 	}
 	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{block})
 
-	nat, err := vz.NewNATNetworkDeviceAttachment()
-	if err != nil {
-		return nil, fmt.Errorf("vz: network attachment: %w", err)
+	if address != nil {
+		network, err := natDevice(address)
+		if err != nil {
+			return nil, err
+		}
+		config.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{network})
 	}
-	network, err := vz.NewVirtioNetworkDeviceConfiguration(nat)
-	if err != nil {
-		return nil, fmt.Errorf("vz: network device: %w", err)
-	}
-	network.SetMACAddress(address)
-	config.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{network})
 
 	// The Mac framebuffer is attached whether or not anyone looks at it, so
 	// that opening a window never changes the hardware the guest sees.
@@ -178,6 +181,21 @@ func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk
 		return nil, fmt.Errorf("vz: validate machine configuration: %w", err)
 	}
 	return config, nil
+}
+
+// natDevice is a virtio network device on the framework's NAT, which serves
+// DHCP and DNS, at address.
+func natDevice(address *vz.MACAddress) (*vz.VirtioNetworkDeviceConfiguration, error) {
+	nat, err := vz.NewNATNetworkDeviceAttachment()
+	if err != nil {
+		return nil, fmt.Errorf("vz: network attachment: %w", err)
+	}
+	network, err := vz.NewVirtioNetworkDeviceConfiguration(nat)
+	if err != nil {
+		return nil, fmt.Errorf("vz: network device: %w", err)
+	}
+	network.SetMACAddress(address)
+	return network, nil
 }
 
 // shareDevices exports host directories over virtiofs. A share with no tag

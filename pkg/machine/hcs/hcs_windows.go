@@ -39,9 +39,9 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.Windows},
 		Display: true,
-		Forward: true,
+		Ports:   true,
 		Agent:   true,
-		Install: true,
+		Install: []machine.OS{machine.Windows},
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
 	}
 }
@@ -192,7 +192,7 @@ func terminateStale(id string) {
 // Boot starts the instance and waits for its agent. With opts.GUI it opens a
 // window on the VM's video console that closes when the VM stops. Closing the
 // window leaves the VM running.
-func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (local.Machine, error) {
+func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
 	m, err := d.boot(inst, opts)
 	if err != nil {
 		return nil, err
@@ -313,7 +313,12 @@ func removeAll(dir string) error {
 }
 
 // Bases is empty: every first image is installed from media.
-func (*Hypervisor) Bases(context.Context) ([]machine.Base, error) { return nil, nil }
+func (*Hypervisor) Bases(context.Context, string) ([]machine.Base, error) { return nil, nil }
+
+// Base finds nothing: hcs has no bases.
+func (*Hypervisor) Base(context.Context, string, string) (machine.Base, bool, error) {
+	return machine.Base{}, false, nil
+}
 
 // Service is the hvsocket service ID of guest.ServicePort, which every VM's
 // ServiceTable lists; the instance's shim serves it on the host's loopback.

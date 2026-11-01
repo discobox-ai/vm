@@ -238,7 +238,7 @@ func install(ctx context.Context, b bundle, ipsw string, spec machine.InstallSpe
 	if err := b.writeMeta(m); err != nil {
 		return meta{}, err
 	}
-	vm, err := newVM(b, m.CPUs, m.Memory, nil)
+	vm, err := newVM(b, m.CPUs, m.Memory, nil, true)
 	if err != nil {
 		return meta{}, err
 	}

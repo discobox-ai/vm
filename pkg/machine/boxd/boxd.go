@@ -82,7 +82,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 		GuestOS:   []machine.OS{machine.Linux},
 		Keys:      keyCapabilities,
 		Isolation: true,
-		Egress:    true,
+		Egress:    []machine.EgressFence{machine.EgressNone, machine.EgressAllow},
 	}
 }
 

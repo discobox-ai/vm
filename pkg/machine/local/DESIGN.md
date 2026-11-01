@@ -16,10 +16,12 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   names from when images were layers;
 - `images/tags/<project>/<ref in hex>.json`;
 - `instances/<id>/machine` (the hypervisor's) and `instance.json` (project,
-  name, image, image ID or base, size, forwards), and while a shim holds it,
-  `shim.json` and `shim.log`;
+  name, image, image ID or base, size, forwards, fence), and while a shim
+  holds it, `shim.json`, `shim.sock`, and `shim.log`;
 - `instances/.names/<project>/<name>`, the name's claim, holding the ID;
-- `cache/<hypervisor>/`, media the hypervisor downloads;
+- `cache/<hypervisor>/`, what the hypervisor downloads: media it installs
+  from, and, for vz, Linux guest images pulled per digest
+  (`cache/vz/linux/<digest>`). `Bases`, `Base`, and `Prepare` are given it;
 - `keys/<hash>.json`, a key the driver issued, named for the SHA-256 of its
   secret (ID, name, project, expiry, and that hash, never the secret), for a
   hypervisor whose capabilities issue keys. A call reads its own key's
@@ -74,17 +76,29 @@ HCS VM belongs to vmcompute, so `Start` spawns the shim command detached
 same root, driver, and project, or `machine.Config.ShimCommand`, a
 subcommand of an embedder's own binary that makes the same driver and calls
 `ShimMain`. The shim boots the VM, holds it for its whole life, and exits when
-it stops. Once the machine answers it writes `shim.json` (PID, loopback
-address, bearer token, service address) and serves:
+it stops. A shim is detached on purpose, and outlives whoever started it, an
+embedder's process included: a NIC-less guest's way to its peers must not
+depend on its caller (ADR 26-10-31-990). Once the machine answers it writes
+`shim.json` (PID, socket, bearer token, service address), private to the
+owner, and serves its control API on `shim.sock`, an owner-only Unix socket
+in the instance's directory, behind the token. A socket path too long for a
+Unix socket (macOS holds 104 bytes) is one in a private temporary directory
+instead, which `shim.json` names. The API is:
 
 - `/status`; `/stop`, an orderly shutdown forced off after a timeout; `/kill`;
 - `/guest`, which upgrades to the agent protocol, answered from its
   machine's guest operations (`guest.Relay`);
-- the instance's URL, a loopback port spliced into the machine's
-  `Dial(service port)`;
-- the instance's forwards, each guest port accepted (`machine.HostListener`)
-  and spliced into its Unix socket.
+- `/dial?port=N`, which upgrades to a stream spliced into the machine's
+  `Dial(N)`: any guest port, which only the owner can reach.
+
+It also serves the instance's URL on a loopback TCP port spliced into the
+machine's `Dial(service port)`, since ADR 0005 makes that an HTTP URL any
+process reaches; and the instance's forwards, each guest port accepted
+(`machine.HostListener`) and spliced into its Unix socket, or into its peer's
+guest port through the peer's shim's `/dial`.
 
 `Attach` reaches a running instance through its shim: its guest operations
-are the relay's, `Kill` is `/kill` (a shim from before `/kill` is stopped with
-no grace), and `Done` closes once the shim's process has exited.
+are the relay's, `Dial` is `/dial`, `Kill` is `/kill` (a shim from before
+`/kill` is stopped with no grace), and `Done` closes once the shim's process
+has exited. A shim from before `shim.sock` named a loopback address in
+`shim.json` instead, and is reached there until it exits.

@@ -43,8 +43,8 @@ func TestForward(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = m.Kill(context.Background()) })
-	if !d.Capabilities().Forward {
-		t.Fatal("hcs machines listen for the guest but the driver does not list Forward")
+	if !d.Capabilities().Ports {
+		t.Fatal("hcs machines listen for the guest but the driver does not list Ports")
 	}
 
 	l, err := m.(machine.HostListener).Listen(7401)

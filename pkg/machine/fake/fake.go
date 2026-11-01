@@ -90,9 +90,9 @@ func (*Hypervisor) Name() string { return "fake" }
 func (*Hypervisor) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.OS(runtime.GOOS)},
-		Forward: true,
+		Ports:   true,
 		Agent:   true,
-		Install: true,
+		Install: []machine.OS{machine.OS(runtime.GOOS)},
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopeProject},
 	}
 }
@@ -162,7 +162,7 @@ func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 	return fsutil.CopyTree(rootfs(inst.Parent().Dir), rootfs(inst.Dir))
 }
 
-func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (local.Machine, error) {
+func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
 	addrFile := filepath.Join(inst.Dir, addrName)
 	_ = os.Remove(addrFile)
 	//nolint:gosec,noctx // G204: the agent is the driver's own disco-vm binary; noctx: the guest outlives Boot's ctx and stops through Stop or Kill
@@ -240,7 +240,13 @@ func (d *Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {
 }
 
 // Bases is the Catalog the driver was given.
-func (d *Hypervisor) Bases(context.Context) ([]machine.Base, error) { return d.Catalog, nil }
+func (d *Hypervisor) Bases(context.Context, string) ([]machine.Base, error) { return d.Catalog, nil }
+
+// Base is the base of the Catalog ref names.
+func (d *Hypervisor) Base(_ context.Context, _, ref string) (machine.Base, bool, error) {
+	b, found := machine.FindBase(d.Catalog, ref)
+	return b, found, nil
+}
 
 // pickServicePort gives the instance a free port on the host's loopback for
 // its service: a fake guest is a host process, so a port of its own keeps two
@@ -284,7 +290,7 @@ type proc struct {
 	killed    atomic.Bool
 }
 
-var _ local.Machine = (*proc)(nil)
+var _ machine.Machine = (*proc)(nil)
 
 // Dial reaches the agent at its own address. A fake guest is a host process,
 // so any other port is the host's loopback.

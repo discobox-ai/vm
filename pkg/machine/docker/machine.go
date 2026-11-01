@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/pkg/guest"
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // container is a running guest. Nothing ties it to this process: the daemon
@@ -116,6 +117,13 @@ func (m *container) Kill(ctx context.Context) error {
 }
 
 func (m *container) Done() <-chan struct{} { return m.watched() }
+
+// Dial is unsupported: the daemon may be on another host or in Docker
+// Desktop's VM, where a container's ports are not this host's to reach; the
+// agent is reached through docker exec.
+func (m *container) Dial(context.Context, uint32) (net.Conn, error) {
+	return nil, fmt.Errorf("docker: a guest port: %w", machine.ErrUnsupported)
+}
 
 func (m *container) Err() error {
 	<-m.watched()

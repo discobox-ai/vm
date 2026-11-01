@@ -17,6 +17,8 @@ keeps them ([the root DESIGN.md](../../DESIGN.md#the-engine-keeps-no-state-and-a
 and an instance's machine: Boot, in this process; Start, outliving it;
 Attach, from any process; and Service
 ([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-one-http-url-and-a-private-one)).
+A machine also dials any guest port (`Machine.Dial`) where the driver lists
+`Capabilities.Ports` ([below](#ports-not-guids)).
 Boot and Start return once the guest answers. A running `Machine` is the
 guest's operations (`machine.Guest`: Exec with stdio, a TTY and its resizes,
 a user, environment, and directory; CopyTo and CopyFrom, as tar; Info;
@@ -29,17 +31,17 @@ a `Capabilities` field, never a faked method:
 
 | capability | hcs | vz | boxd | docker | fake |
 |---|---|---|---|---|---|
-| guest OS | windows | darwin | linux | linux | host's |
-| max running | none | **2 macOS guests** (framework limit) | none (the org's quota) | none | none |
+| guest OS | windows | darwin, and linux (ADR 26-10-31-990) | linux | linux | host's |
+| max running | none | **2 macOS guests** (framework limit); Linux guests do not count | none (the org's quota) | none | none |
 | shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | no |
 | display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no | no |
-| forward (guest to host) | hvsocket to the parent partition | vsock to the host, CID 2 | no | no | loopback |
-| agent (`disco-vm guest` in the guest) | yes, from Install | yes, from Install | **no**: boxd's Exec | yes, from Create of a base | yes |
-| install (an image from media) | yes: a retail ISO | yes: an IPSW, or `latest` | **no**: boxd's images and snapshots are bases | **no**: registry images are bases | yes |
+| ports (`Ports`: `Machine.Dial`, `Forwards` to a socket or a peer) | hvsocket, through the shim | vsock, through the shim | no | no | loopback, through the shim |
+| agent (`disco-vm guest` in the guest) | yes, from Install | yes: macOS from Install; Linux handed it in the initrd at every boot | **no**: boxd's Exec | yes, from Create of a base | yes |
+| install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest`; Linux guests are bases | **none**: boxd's images and snapshots are bases | **none**: registry images are bases | the host's |
 | disks chain below the seam (`local.Hypervisor.Chains`) | yes: a snapshot is a differencing VHDX | no | no | no | no |
 | keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | issue, scope `project` |
 | isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no |
-| egress (`Egress`) | no | no | yes: the egress allowlist | no | no |
+| egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | none |
 | private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | the URL (a shared loopback) |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
@@ -75,9 +77,18 @@ its root cannot loosen it (ADR 26-10-29-129). It is in place before Create
 returns and read back from the provider, so an instance the provider does not
 report fenced as asked is destroyed and Create fails; it holds across stop
 and start, and is the spec's, never the image's. An empty `Allow` is
-nothing beyond the networks; nil is the provider's default. A driver without
-`Capabilities.Egress` refuses it. `Instance.Egress` is the fence the provider
-reports.
+nothing beyond the networks; nil is the provider's default.
+`Capabilities.Egress` lists the fences a driver holds (`Capabilities.Fences`):
+`none`, an empty `Allow`, and `allow`, a list (ADR 26-10-31-990). A driver
+refuses a fence it does not hold. vz holds `none` alone, as an instance with
+no network device, whose only reach is the vsock its spec forwards; its
+read-back is the instance's record, which Boot reads to attach no NIC.
+`Instance.Egress` is the fence the provider reports.
+
+A driver lists every guest OS it boots in `Capabilities.GuestOS`, and the
+ones it installs from media in `Capabilities.Install`; a caller asks for a
+guest OS by running an image or base of it (ADR 26-10-31-990). vz boots
+macOS, installed, and Linux, from bases.
 
 ## Ports, not GUIDs
 
@@ -89,17 +100,35 @@ ServiceTable. On docker it listens on a root-only unix socket, which
 `disco-vm pipe` reaches through docker exec. boxd has no socket from the host
 into the guest and no agent: its guest operations are command lines over
 boxd's authenticated Exec stream ([boxd/DESIGN.md](boxd/DESIGN.md)). 7301 is reserved for the
-display stream. A port is a driver's own detail: the shim, the engine, and a
-discobox provider see only `machine.Guest`, and the shim dials one port, the
-service's.
+display stream.
 
-The other direction is a port too. A guest process connects out to the host
-with `guest.DialHost(port)` (vsock to CID 2 on vz, hvsocket to the parent
-partition on HCS), and an instance created with `Forwards` has its shim accept
-those connections (`machine.HostListener`) and splice each into a Unix socket on
-the host, passing half-closes through. That is how a guest reaches a host
-service with no TCP listener anywhere, as libkrun maps a vsock port to a Unix
-socket. `disco-vm dial-host PORT` does the same from a shell in the guest.
+A driver that lists `Capabilities.Ports` (hcs, vz, fake) reaches every guest
+port, in three directions, all through the process that holds the machine
+(ADR 26-10-31-990, which brings back the raw guest port ADR 0001 §3 took off
+the seam):
+
+- **Caller to guest:** `Machine.Dial(port)`, through the shim's `/dial` for an
+  attached machine; `Engine.Dial` and `disco-vm dial INSTANCE PORT`. The
+  service stays one port at one URL (ADR 0005). boxd and docker return
+  `ErrUnsupported`.
+- **Guest to host:** a guest process connects out with `guest.DialHost(port)`
+  (vsock to CID 2 on vz, hvsocket to the parent partition on HCS), and an
+  instance created with a `Forward` to a `Socket` has its shim accept those
+  connections (`machine.HostListener`) and splice each into the Unix socket,
+  passing half-closes through, as libkrun maps a vsock port to a Unix socket.
+  `disco-vm dial-host PORT` does the same from a shell in the guest.
+- **Guest to peer:** a `Forward` to an `Instance` and `InstancePort` has the
+  shim splice each connection into that instance's guest port, through the
+  peer's shim, found by name at every connection. It is the spec's, fixed at
+  Create and reported in `Instance.Forwards`. While the peer is stopped each
+  connection is closed at once (the shim has already accepted it, so the
+  guest connects and reads EOF), and a peer that starts again is followed;
+  the peer sees the connection come from the host. A NIC-less guest's way
+  to its peer outlives the caller's process, as the shims do. A relay that
+  changes after Create, or carries a policy per connection, is the caller's,
+  built from `Dial` and a `Socket` forward. On fake every guest port but the
+  agent's is the host's loopback, so a peer forward there proves the plumbing
+  through the agent's port.
 
 ## A window is per boot, and lives with the VM
 
