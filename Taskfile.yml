@@ -38,6 +38,12 @@ tasks:
       - go build -ldflags '{{.LDFLAGS}}' -o {{.BINARY}} {{.MAIN}}
       - cmd: codesign --force --sign - --entitlements {{.ENTITLEMENTS}} {{.BINARY}}
         platforms: [darwin]
+      # A Linux guest on vz boots with the linux agent beside it
+      # ($DISCO_VM_AGENT), which a darwin binary cannot be.
+      - task: build:linux-agent
+        vars:
+          AGENT_ARCH: "{{ARCH}}"
+        platforms: [darwin]
 
   # A plain `go install` links the host's libc where cgo is on, and a guest
   # without that libc cannot run the result as its agent.
@@ -49,10 +55,40 @@ tasks:
       - go install -ldflags '{{.LDFLAGS}}' {{.MAIN}}
 
   build:linux-agent:
-    desc: Cross-compile a static linux/amd64 disco-vm into build/linux-amd64/, the agent $DISCO_VM_AGENT names for a docker guest from any other host
+    desc: Cross-compile a static linux disco-vm into build/linux-AGENT_ARCH/ (amd64 unless AGENT_ARCH says), the agent $DISCO_VM_AGENT names for a docker guest from another host, or a vz Linux guest
+    vars:
+      AGENT_ARCH: '{{.AGENT_ARCH | default "amd64"}}'
     cmds:
-      - mkdir -p build/linux-amd64
-      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '{{.LDFLAGS}}' -o build/linux-amd64/disco-vm {{.MAIN}}
+      - mkdir -p build/linux-{{.AGENT_ARCH}}
+      - CGO_ENABLED=0 GOOS=linux GOARCH={{.AGENT_ARCH}} go build -ldflags '{{.LDFLAGS}}' -o build/linux-{{.AGENT_ARCH}}/disco-vm {{.MAIN}}
+
+  # disco-vm's Linux guest image (pkg/guest/linux, ADR 26-10-31-990), for one
+  # architecture: assembled and verified inside the build, so a broken one
+  # fails here and not as a blank console. Boot the result on vz by naming the
+  # directory as the base: `disco-vm run $PWD/build/linux-guest/arm64`.
+  build:linux-guest:
+    desc: Build the Linux guest image's artifacts for linux/GUEST_ARCH (this host's unless set) into build/linux-guest/GUEST_ARCH
+    vars:
+      GUEST_ARCH: '{{.GUEST_ARCH | default ARCH}}'
+    cmds:
+      - docker buildx build --platform linux/{{.GUEST_ARCH}} --output type=local,dest=build/linux-guest/{{.GUEST_ARCH}} pkg/guest/linux
+
+  # The Linux guest image's release, on its own line: a linux/vN tag pushes
+  # ghcr.io/discobox-ai/disco-vm-linux:vN for both architectures and prints
+  # the digest to pin as vz.DefaultLinuxBase. arm64 builds under QEMU.
+  release:linux-guest:
+    desc: Push the Linux guest image for linux/arm64 and linux/amd64 as ghcr.io/discobox-ai/disco-vm-linux:TAG (CI, on a linux/v* tag; needs GITHUB_TOKEN and GITHUB_ACTOR)
+    requires:
+      vars: [TAG]
+    vars:
+      IMAGE: ghcr.io/discobox-ai/disco-vm-linux:{{trimPrefix "linux/" .TAG}}
+    cmds:
+      - docker run --privileged --rm docker.io/tonistiigi/binfmt@sha256:1b804311fe87047a4c96d38b4b3ef6f62fca8cd125265917a9e3dc3c996c39e6 --install arm64
+      - docker buildx create --use --name disco-vm-linux 2>/dev/null || docker buildx use disco-vm-linux
+      - printenv GITHUB_TOKEN | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - mkdir -p build/linux-guest
+      - docker buildx build --platform linux/arm64,linux/amd64 --tag {{.IMAGE}} --push --metadata-file build/linux-guest/metadata.json pkg/guest/linux
+      - 'echo "pin vz.DefaultLinuxBase to {{.IMAGE}}@$(sed -n ''s/.*"containerimage.digest": *"\([^"]*\)".*/\1/p'' build/linux-guest/metadata.json)"'
 
   # disco-vm has nothing long-running to serve, so the loop only rebuilds.
   dev:
@@ -73,18 +109,22 @@ tasks:
       - go test {{.RACE}} {{.PACKAGES}}
 
   # The vz conformance suite on real hardware. DISCO_VM_VZ_BASE names an
-  # installed image's ID (see docs/drivers/vz.md); without it the suite skips.
-  # Each started instance's shim is the signed build. caffeinate -d keeps the
-  # display awake for the hours a run takes.
+  # installed image's ID, and DISCO_VM_VZ_LINUX_BASE a Linux base (linux, a
+  # guest image's reference, or a directory of its artifacts; see
+  # docs/drivers/vz.md); a suite with neither skips. Each started instance's
+  # shim is the signed build, and a Linux guest's agent the linux one beside
+  # it. caffeinate -d keeps the display awake for the hours a run takes.
   test:vz:
-    desc: Run the vz conformance suite on this Mac (needs DISCO_VM_VZ_BASE)
+    desc: Run the vz conformance suites on this Mac (needs DISCO_VM_VZ_BASE, DISCO_VM_VZ_LINUX_BASE, or both)
     platforms: [darwin]
     deps:
       - build
     env:
       DISCO_VM_TEST_BINARY: '{{.ROOT_DIR}}/{{.BINARY}}'
+      DISCO_VM_AGENT:
+        sh: echo "${DISCO_VM_AGENT:-{{.ROOT_DIR}}/build/linux-{{ARCH}}/disco-vm}"
     cmds:
-      - caffeinate -d go test -exec {{.ROOT_DIR}}/scripts/codesign-exec -timeout 4h -v -run 'TestConformance' ./pkg/machine/vz
+      - caffeinate -d go test -exec {{.ROOT_DIR}}/scripts/codesign-exec -timeout 4h -v -run 'TestConformance|TestLinuxBesideMacOS' ./pkg/machine/vz
 
   # internal/e2e against vz: the signed binary, and a state root that keeps its
   # base install between runs (the first run installs macOS).

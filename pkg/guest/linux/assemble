@@ -1,0 +1,106 @@
+#!/bin/sh
+# Turn an exported guest root filesystem into disco-vm's Linux guest artifact
+# set: an uncompressed kernel (vmlinux), an initrd (initrd.img), and a raw ext4
+# root filesystem (root.ext4). Taken from discobox's vm-image pipeline (ADR
+# 0062 §6, §8): it runs inside the image build, and mkfs.ext4 -d fills an
+# image file with no loop device and no privileges.
+set -eu
+
+rootfs=${1:?usage: assemble ROOTFS OUTPUT_DIR}
+out=${2:?usage: assemble ROOTFS OUTPUT_DIR}
+arch=${TARGETARCH:?assemble: TARGETARCH must be set}
+# A disco-vm root is the instance's own and writable: Create grows its disk to
+# a ceiling, and x-systemd.growfs grows the filesystem into it at boot. The
+# slack is room for a first boot before that.
+slack_mib=${ROOT_SLACK_MIB:-256}
+hostname=disco-vm
+
+mkdir -p "$out"
+kernel=$(find "$rootfs/boot" -maxdepth 1 -name 'vmlinuz-*' | sort -V | tail -n 1)
+initrd=$(find "$rootfs/boot" -maxdepth 1 -name 'initrd.img-*' | sort -V | tail -n 1)
+if [ -z "$kernel" ] || [ -z "$initrd" ]; then
+    echo "assemble: no kernel or initrd in $rootfs/boot" >&2
+    exit 1
+fi
+
+# An arm64 Image carries "ARMd" at offset 0x38.
+is_arm64_image() {
+    [ -s "$1" ] && [ "$(dd if="$1" bs=1 skip=56 count=4 2>/dev/null)" = "ARMd" ]
+}
+# An uncompressed x86 kernel is an ELF vmlinux.
+is_elf() {
+    [ -s "$1" ] && [ "$(dd if="$1" bs=1 skip=1 count=3 2>/dev/null)" = "ELF" ]
+}
+
+case "$arch" in
+arm64)
+    # VZLinuxBootLoader needs an uncompressed Image. Whether Debian ships one
+    # is not a constant, so detect rather than assume.
+    if is_arm64_image "$kernel"; then
+        cp "$kernel" "$out/vmlinux"
+    else
+        for format in gzip zstd xz lz4; do
+            "$format" -dc "$kernel" >"$out/vmlinux" 2>/dev/null || true
+            is_arm64_image "$out/vmlinux" && break
+            rm -f "$out/vmlinux"
+        done
+    fi
+    if ! is_arm64_image "$out/vmlinux"; then
+        echo "assemble: $kernel is not an arm64 kernel Image and no known compression produced one" >&2
+        exit 1
+    fi
+    ;;
+amd64)
+    # Direct kernel boot (HCS's LinuxKernelDirect, an Intel Mac's
+    # VZLinuxBootLoader) takes the ELF inside a bzImage, which is compressed
+    # behind the boot stub: find each format's magic and try to decompress
+    # from there, as Linux's scripts/extract-vmlinux does.
+    try_decompress() {
+        for pos in $(tr "$1\n$2" "\n$2=" <"$kernel" | grep -abo "^$2"); do
+            pos=${pos%%:*}
+            tail -c+"$pos" "$kernel" | $3 >"$out/vmlinux" 2>/dev/null || true
+            is_elf "$out/vmlinux" && return 0
+        done
+        rm -f "$out/vmlinux"
+        return 1
+    }
+    try_decompress '\050\265\057\375' xxx 'zstd -dc' ||
+        try_decompress '\3757zXZ\000' abcde 'xz -dc' ||
+        try_decompress '\037\213\010' xy 'gzip -dc' ||
+        try_decompress '\002!L\030' xxx 'lz4 -dc' || true
+    if ! is_elf "$out/vmlinux"; then
+        echo "assemble: found no ELF vmlinux inside $kernel" >&2
+        exit 1
+    fi
+    ;;
+*)
+    echo "assemble: unsupported architecture $arch" >&2
+    exit 1
+    ;;
+esac
+cp "$initrd" "$out/initrd.img"
+
+# The hypervisor loads the kernel and the initrd from the host; the guest
+# never reads /boot, so leaving them in the tree ships each twice.
+rm -rf "${rootfs:?}"/boot/*
+
+# What a container runtime supplies and a VM does not: a resolver that is not
+# the builder's, a hostname, and hosts.
+rm -f "$rootfs/etc/resolv.conf"
+ln -s /run/systemd/resolve/resolv.conf "$rootfs/etc/resolv.conf"
+echo "$hostname" >"$rootfs/etc/hostname"
+cat >"$rootfs/etc/hosts" <<HOSTS
+127.0.0.1	localhost
+127.0.1.1	$hostname
+::1	localhost ip6-localhost ip6-loopback
+HOSTS
+
+used_mib=$(du -sm "$rootfs" | cut -f1)
+root_mib=$((used_mib * 110 / 100 + slack_mib))
+truncate -s "${root_mib}M" "$out/root.ext4"
+# Writable, so it keeps its journal and 1% for root; 4 KiB blocks whatever its
+# size, since it grows.
+mkfs.ext4 -F -q -m 1 -b 4096 -L disco-vm-root -d "$rootfs" "$out/root.ext4"
+
+echo "guest artifacts:"
+ls -l "$out"

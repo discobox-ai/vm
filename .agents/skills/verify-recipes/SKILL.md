@@ -93,6 +93,32 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   untags an image an instance runs and keeps it; `rmi` an untagged leftover
   by its ID.
 
+## The Linux guest image, without a Mac
+
+vz needs a Mac, but its Linux base (`pkg/guest/linux`) boots under QEMU/KVM
+on a Linux box with `/dev/kvm` and `/dev/vhost-vsock` (a discobox has both),
+the way vz boots it:
+
+- `go tool task build:linux-guest` (amd64 here) and `go tool task
+  build:linux-agent`; QEMU from `nix build --print-out-paths nixpkgs#qemu_kvm`.
+- The boot initrd and command line are `writeBootInitrd` and `linuxCmdline`
+  (`pkg/machine/vz/linuxguest.go`), which are unexported: call them from a
+  throwaway `_test.go` in the package that writes the files, and delete it.
+- Copy `root.ext4` to a scratch `disk.img` (`cp --sparse=always`, then
+  `truncate -s 8G`), and boot: `qemu-system-x86_64 -enable-kvm -cpu host -m 2048
+  -kernel vmlinux -initrd boot-initrd.img -append "<cmdline>" -drive
+  file=disk.img,format=raw,if=virtio -device vhost-vsock-pci,guest-cid=42
+  -nic none` (or `-nic user,model=virtio-net-pci`) `-device virtio-serial-pci
+  -chardev file,id=c0,path=console.log -device virtconsole,chardev=c0
+  -display none -daemonize`.
+- Reach the agent with a throwaway Go program: `guest.NewClient` over an
+  AF_VSOCK connect to CID 42 port 7300. `net.FileConn` refuses a vsock fd, so
+  wrap the `*os.File` in a `net.Conn` of your own.
+- `systemd.journald.forward_to_console=1` on the command line puts the
+  agent's unit's failures in `console.log`.
+- Nothing in the bare base wants `network-online.target`; `systemctl start
+  network-online.target` before reading wait-online's result.
+
 ## Flows worth driving
 
 - `run`, then `exec` and `cp` **more than five minutes later** (`sleep 330`):

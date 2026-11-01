@@ -1,0 +1,24 @@
+#!/bin/sh
+# initramfs-tools init-bottom hook: move the agent a boot appended to the
+# initrd (/.disco-vm/disco-vm) to /run/disco-vm, which init moves onto the
+# root with /run before it switches to it. A boot that appended none leaves
+# nothing, and disco-vm-guest.service does not start.
+#
+# /run/disco-vm is a tmpfs of its own: initramfs-tools mounts /run noexec,
+# and the root keeps that mount, so the agent could not be run from /run
+# itself. A mount below it moves with it.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+if [ -f /.disco-vm/disco-vm ]; then
+    mkdir -p /run/disco-vm
+    mount -t tmpfs -o mode=0755,nodev,nosuid,size=128m disco-vm /run/disco-vm
+    cp /.disco-vm/disco-vm /run/disco-vm/disco-vm
+    chmod 0755 /run/disco-vm/disco-vm
+fi
