@@ -80,17 +80,22 @@ type Capabilities struct {
 	SharedDirectories bool `json:"sharedDirectories"`
 	// Display reports a viewable guest framebuffer.
 	Display bool `json:"display"`
-	// Forward reports that guest processes can connect out to the host: an
-	// instance created with Forwards has them served whenever it runs.
-	Forward bool `json:"forward"`
+	// Ports reports that an instance's guest ports reach past its one
+	// service, in three directions, all through the process that holds the
+	// machine: a caller dials any guest port (Machine.Dial), guest processes
+	// connect out to the host (Forwards to a Socket), and to another
+	// instance of the project's guest port (Forwards to an Instance).
+	Ports bool `json:"ports"`
 	// Agent reports that the driver puts the disco-vm agent in the guest and
 	// reaches the guest's operations through it: Install bakes it in
 	// (InstallSpec.Agent) on hcs and vz, and docker adds it to a base's image
 	// at Create. boxd reaches them through its own API, and needs none.
 	Agent bool `json:"agent"`
-	// Install reports that the driver makes an image from installation
-	// media (Install). One that does not has bases instead (Bases, Base).
-	Install bool `json:"install"`
+	// Install is every guest OS the driver makes an image of from
+	// installation media (Install). An OS it boots but does not install
+	// comes from its bases instead (Bases, Base), as every OS does on a
+	// driver that installs none.
+	Install []OS `json:"install,omitempty"`
 	// Keys is whether the driver issues keys (IssueKey), and the narrowest
 	// scope one reaches.
 	Keys KeyCapabilities `json:"keys"`
@@ -98,14 +103,45 @@ type Capabilities struct {
 	// the provider gives a machine by default (InstanceSpec.Isolated) and
 	// placed on networks of the caller's (InstanceSpec.Networks).
 	Isolation bool `json:"isolation"`
-	// Egress reports that an instance can be created with its egress beyond
-	// its networks fenced (InstanceSpec.Egress), outside the guest, where its
-	// root cannot loosen it.
-	Egress bool `json:"egress"`
+	// Egress is every fence an instance can be created with
+	// (InstanceSpec.Egress), held outside the guest, where its root cannot
+	// loosen it: EgressNone, nothing beyond its networks, and EgressAllow, a
+	// list beyond them. Empty is none at all.
+	Egress []EgressFence `json:"egress,omitempty"`
 }
+
+// EgressFence is a kind of fence a driver holds (Capabilities.Egress).
+type EgressFence string
+
+const (
+	// EgressNone is an empty Egress.Allow: nothing beyond the instance's
+	// networks. vz holds it as an instance with no network device.
+	EgressNone EgressFence = "none"
+	// EgressAllow is an Egress.Allow that lists hosts, wildcards,
+	// addresses, or ranges.
+	EgressAllow EgressFence = "allow"
+)
 
 // SupportsOS reports whether the driver can run the given guest OS.
 func (c Capabilities) SupportsOS(os OS) bool { return slices.Contains(c.GuestOS, os) }
+
+// Installs reports whether the driver installs the given guest OS from
+// media.
+func (c Capabilities) Installs(os OS) bool { return slices.Contains(c.Install, os) }
+
+// Fences reports whether the driver holds the fence e asks for: EgressNone
+// for an empty Allow, EgressAllow for any other. A nil fence is the
+// provider's default, which every driver holds.
+func (c Capabilities) Fences(e *Egress) bool {
+	switch {
+	case e == nil:
+		return true
+	case len(e.Allow) == 0:
+		return slices.Contains(c.Egress, EgressNone)
+	default:
+		return slices.Contains(c.Egress, EgressAllow)
+	}
+}
 
 // Config is what a driver is made with.
 type Config struct {
@@ -272,13 +308,25 @@ type Base struct {
 
 // Forward sends the connections a guest process opens to the host on a port
 // (guest.DialHost: vsock to the host on vz, hvsocket on HCS) to a Unix socket
-// on the host, which something there serves. It is how a guest reaches a host
-// service without a TCP listener, as libkrun maps a vsock port to a Unix
-// socket.
+// on the host, which something there serves, or to a guest port of another
+// instance of the project. It is how a guest reaches a host service, or a
+// peer, without a TCP listener or a network device, as libkrun maps a vsock
+// port to a Unix socket. Exactly one of Socket and Instance is set.
 type Forward struct {
 	Port   uint32 `json:"port"`
-	Socket string `json:"socket"`
+	Socket string `json:"socket,omitempty"`
+	// Instance names another instance of the project, whose guest port
+	// InstancePort each connection is spliced into while both run. While
+	// the target is not running each connection is closed at once, so the
+	// guest connects and reads EOF. The target sees the connection come
+	// from the host, not from this instance.
+	Instance     string `json:"instance,omitempty"`
+	InstancePort uint32 `json:"instancePort,omitempty"`
 }
+
+// Peer reports whether the forward goes to another instance, not to a host
+// socket.
+func (f Forward) Peer() bool { return f.Instance != "" }
 
 // InstanceSpec is a new instance.
 type InstanceSpec struct {
@@ -297,7 +345,7 @@ type InstanceSpec struct {
 	CPUs   int
 	Memory uint64
 	// Forwards are served whenever the instance runs, by a driver that lists
-	// Capabilities.Forward.
+	// Capabilities.Ports.
 	Forwards []Forward
 	// Isolated strips the machine of what its provider gives one by default
 	// (boxd: the in-VM CLI and its token, the git credential helper and
@@ -312,7 +360,7 @@ type InstanceSpec struct {
 	// Egress fences what the machine reaches beyond its networks, in place
 	// before Create returns and across stop and start; nil is the
 	// provider's default. It is the spec's, never the image's. A driver that
-	// does not list Capabilities.Egress refuses it.
+	// does not hold the fence asked for (Capabilities.Fences) refuses it.
 	Egress *Egress
 }
 
@@ -539,7 +587,7 @@ func FindBase(bases []Base, ref string) (Base, bool) {
 }
 
 // HostListener is a running machine whose guest processes can connect out to
-// the host. A driver that lists Capabilities.Forward returns machines that
+// the host. A driver that lists Capabilities.Ports returns machines that
 // implement it.
 type HostListener interface {
 	// Listen accepts the connections guest processes open to the host on a
@@ -566,4 +614,10 @@ type Machine interface {
 	// Err is why the guest stopped, once Done is closed; nil for a power-off.
 	// It is non-nil when the driver gave the machine up without seeing it stop.
 	Err() error
+	// Dial opens a stream to a guest port: vsock on vz, hvsocket on HCS with
+	// the service ID derived from the port by the vsock template, the host's
+	// loopback on fake. An attached machine's goes through the process that
+	// holds it. A driver that does not list Capabilities.Ports returns
+	// ErrUnsupported.
+	Dial(ctx context.Context, port uint32) (net.Conn, error)
 }

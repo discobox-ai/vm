@@ -54,7 +54,7 @@ guest. A program the caller copies in reads it, or calls
   `http://127.0.0.1:N`, a port the daemon publishes at each start.
 - **The shim's** everywhere else: `http://127.0.0.1:N`, a loopback port the
   shim binds at each start and splices, connection by connection, into the
-  hypervisor machine's `Dial(7302)` (`local.Machine`). It is in the
+  hypervisor machine's `Dial(7302)` (`machine.Machine.Dial`). It is in the
   instance's `shim.json`, and there is none while the instance is stopped.
 
 No URL takes a credential, so the service authenticates its callers.
@@ -71,6 +71,15 @@ it is not running, and refused where the driver has none (vz, hcs):
   fake's, whose guests share the host's loopback.
 
 A caller tells a direct path by its differing from the URL.
+
+Past the one service, `Engine.Dial` and `disco-vm dial INSTANCE PORT` open a
+stream to any guest port of a running instance, through the process that
+holds its machine, on a driver that lists `Capabilities.Ports` (ADR
+26-10-31-990): the shim's owner-only socket on hcs, vz, and fake. It is no
+URL and needs the owner's access to the driver's directory; boxd and docker
+refuse it. Where vz and hcs give no private URL, a guest reaches a peer's
+port through a `Forward` to that instance instead
+([pkg/machine](../machine/DESIGN.md#ports-not-guids)).
 
 ## An image is a snapshot, and stands alone
 

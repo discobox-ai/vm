@@ -68,20 +68,19 @@ func (d *Driver) Bases(ctx context.Context) ([]machine.Base, error) {
 	if err := d.authorize(ctx); err != nil {
 		return nil, err
 	}
-	return d.hv.Bases(ctx)
+	return d.hv.Bases(ctx, d.cacheDir())
 }
+
+// cacheDir is where the hypervisor caches what it downloads: media, and
+// guest images.
+func (d *Driver) cacheDir() string { return filepath.Join(d.dir, "cache", d.hv.Name()) }
 
 // Base is the base the hypervisor lists that ref names.
 func (d *Driver) Base(ctx context.Context, ref string) (machine.Base, bool, error) {
 	if err := d.authorize(ctx); err != nil {
 		return machine.Base{}, false, err
 	}
-	bases, err := d.hv.Bases(ctx)
-	if err != nil {
-		return machine.Base{}, false, err
-	}
-	b, found := machine.FindBase(bases, ref)
-	return b, found, nil
+	return d.hv.Base(ctx, d.cacheDir(), ref)
 }
 
 const (
@@ -289,14 +288,14 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, img mach
 	if err := d.authorize(ctx); err != nil {
 		return machine.Image{}, err
 	}
-	if !d.hv.Capabilities().Install {
-		return machine.Image{}, fmt.Errorf("%s installs nothing from media: %w", d.hv.Name(), machine.ErrUnsupported)
+	if !d.hv.Capabilities().Installs(spec.GuestOS) {
+		return machine.Image{}, fmt.Errorf("%s installs no %s guest from media: %w", d.hv.Name(), spec.GuestOS, machine.ErrUnsupported)
 	}
 	p, err := d.begin(img, "")
 	if err != nil {
 		return machine.Image{}, err
 	}
-	err = d.hv.Install(ctx, InstallSpec{InstallSpec: spec, CacheDir: filepath.Join(d.dir, "cache", d.hv.Name())}, p.layer())
+	err = d.hv.Install(ctx, InstallSpec{InstallSpec: spec, CacheDir: d.cacheDir()}, p.layer())
 	if err != nil {
 		p.abort()
 		return machine.Image{}, err
@@ -398,7 +397,7 @@ func (d *Driver) spec(inst machine.Instance) (InstanceSpec, error) {
 	if !validID(inst.ID) {
 		return InstanceSpec{}, fmt.Errorf("local: instance ID %q is not a directory name", inst.ID)
 	}
-	spec := InstanceSpec{ID: inst.ID, Dir: filepath.Join(d.instanceDir(inst.ID), machineDir), GuestOS: inst.GuestOS, Base: inst.Base}
+	spec := InstanceSpec{ID: inst.ID, Dir: filepath.Join(d.instanceDir(inst.ID), machineDir), GuestOS: inst.GuestOS, Base: inst.Base, CacheDir: d.cacheDir(), Egress: inst.Egress}
 	if inst.Base == nil {
 		chain, err := d.chain(inst.ImageID)
 		if err != nil {
@@ -450,14 +449,19 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if err := machine.ValidateName(spec.Name); err != nil {
 		return machine.Instance{}, err
 	}
-	if len(spec.Forwards) > 0 && !d.hv.Capabilities().Forward {
-		return machine.Instance{}, fmt.Errorf("%s cannot forward a guest's connections to the host: %w", d.hv.Name(), machine.ErrUnsupported)
+	if len(spec.Forwards) > 0 && !d.hv.Capabilities().Ports {
+		return machine.Instance{}, fmt.Errorf("%s cannot forward a guest's connections: %w", d.hv.Name(), machine.ErrUnsupported)
+	}
+	for _, f := range spec.Forwards {
+		if f.Peer() && f.Instance == spec.Name {
+			return machine.Instance{}, fmt.Errorf("port %d forwards to the instance itself", f.Port)
+		}
 	}
 	if spec.Isolated || len(spec.Networks) > 0 {
 		return machine.Instance{}, fmt.Errorf("%s: isolation: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
-	if spec.Egress != nil {
-		return machine.Instance{}, fmt.Errorf("%s: egress: %w", d.hv.Name(), machine.ErrUnsupported)
+	if !d.hv.Capabilities().Fences(spec.Egress) {
+		return machine.Instance{}, fmt.Errorf("%s cannot fence an instance's egress to %q: %w", d.hv.Name(), spec.Egress.Allow, machine.ErrUnsupported)
 	}
 	if spec.Base == nil {
 		if _, err := d.readImage(spec.ImageID); err != nil {
@@ -467,7 +471,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	inst := machine.Instance{
 		ID: fsutil.RandomHex(6), Name: spec.Name, Image: spec.Image, ImageID: spec.ImageID, Base: spec.Base,
 		GuestOS: spec.GuestOS, CPUs: spec.CPUs, Memory: spec.Memory,
-		Created: time.Now().UTC(), Forwards: spec.Forwards,
+		Created: time.Now().UTC(), Forwards: spec.Forwards, Egress: spec.Egress,
 	}
 	if inst.Base != nil {
 		inst.ImageID = ""
@@ -626,7 +630,7 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 	return d.boot(ctx, inst, opts)
 }
 
-func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (Machine, error) {
+func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
 	if opts.GUI && !d.hv.Capabilities().Display {
 		return nil, fmt.Errorf("%s has no display to show: %w", d.hv.Name(), machine.ErrUnsupported)
 	}

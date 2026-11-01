@@ -42,14 +42,26 @@ func (*Hypervisor) Check(context.Context) error {
 }
 
 // Prepare clones the parent layer's bundle into the instance, with its own
-// machine identifier (and a MAC address on its first boot).
-func (*Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
+// machine identity: a macOS guest's machine identifier (and a MAC address on
+// its first boot), a Linux guest's machine ID and MAC address. An instance of
+// a base is a Linux guest made from its image, pulled into the cache first.
+func (*Hypervisor) Prepare(ctx context.Context, inst local.InstanceSpec) error {
+	if inst.Base != nil {
+		return prepareLinux(ctx, inst)
+	}
 	if len(inst.Chain) == 0 {
 		return errors.New("vz: instance has no image")
 	}
-	dst := bundle(inst.Dir)
-	if err := cloneLayer(bundle(inst.Parent().Dir), dst); err != nil {
+	src, dst := bundle(inst.Parent().Dir), bundle(inst.Dir)
+	m, err := src.readMeta()
+	if err != nil {
 		return err
+	}
+	if err := cloneLayer(src, dst, m.guestOS()); err != nil {
+		return err
+	}
+	if m.guestOS() == machine.Linux {
+		return dst.newLinuxIdentity()
 	}
 	return dst.newIdentifier()
 }
@@ -59,9 +71,20 @@ func (*Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 // no disk to boot.
 const pendingName = "resume.pending"
 
-// Boot starts a prepared instance from power-off and waits for its agent.
-func (*Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (local.Machine, error) {
-	vm, err := bootInstance(inst, opts)
+// Boot starts a prepared instance from power-off and waits for its agent. A
+// Linux guest's agent is the one this boot handed it, and one that speaks
+// another protocol is killed and refused.
+func (*Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
+	m, err := bundle(inst.Dir).readMeta()
+	if err != nil {
+		return nil, err
+	}
+	var vm *vmMachine
+	if m.guestOS() == machine.Linux {
+		vm, err = bootLinux(inst, m, opts)
+	} else {
+		vm, err = bootInstance(inst, opts)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -69,8 +92,18 @@ func (*Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local
 		_ = vm.Kill(context.Background())
 		return nil, err
 	}
+	if m.guestOS() == machine.Linux {
+		if err := guest.CheckProtocol(ctx, vm); err != nil {
+			_ = vm.Kill(context.Background())
+			return nil, err
+		}
+	}
 	return vm, nil
 }
+
+// fenced reports that the instance was created fenced to nothing beyond its
+// networks, which vz holds as no network device.
+func fenced(inst local.InstanceSpec) bool { return inst.Egress != nil && len(inst.Egress.Allow) == 0 }
 
 func bootInstance(inst local.InstanceSpec, opts local.BootOptions) (*vmMachine, error) {
 	b := bundle(inst.Dir)
@@ -81,7 +114,7 @@ func bootInstance(inst local.InstanceSpec, opts local.BootOptions) (*vmMachine, 
 	if _, err := os.Stat(b.path(pendingName)); err == nil {
 		return nil, fmt.Errorf("vz: instance %s was prepared as a resume clone and never booted, and resume clones are gone; remove it and run its image again", inst.ID)
 	}
-	if err := b.installed(); err != nil {
+	if err := b.installed(machine.Darwin); err != nil {
 		return nil, err
 	}
 	m, err := b.readMeta()
@@ -101,7 +134,7 @@ func bootInstance(inst local.InstanceSpec, opts local.BootOptions) (*vmMachine, 
 		}
 	}
 	cpus, memory := size(m, opts.CPUs, opts.Memory)
-	vm, err := start(b, cpus, memory, opts.Shares, nil)
+	vm, err := start(b, cpus, memory, opts.Shares, !fenced(inst), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -132,13 +165,14 @@ func (m *vmMachine) display(opts local.BootOptions) error {
 	return nil
 }
 
-// start boots a bundle from power-off, provisioning its first account if asked.
-func start(b bundle, cpus uint, memory uint64, shares []machine.Share, provision *vz.MacGuestProvisioningOptions) (*vmMachine, error) {
+// start boots a macOS bundle from power-off, with a network device when nic,
+// provisioning its first account if asked.
+func start(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool, provision *vz.MacGuestProvisioningOptions) (*vmMachine, error) {
 	var options []vz.VirtualMachineStartOption
 	if provision != nil {
 		options = append(options, vz.WithMacGuestProvisioning(*provision))
 	}
-	vm, err := unlocked(b, cpus, memory, shares, func(vm *vz.VirtualMachine) error { return vm.Start(options...) })
+	vm, err := unlocked(b, cpus, memory, shares, nic, func(vm *vz.VirtualMachine) error { return vm.Start(options...) })
 	if err != nil {
 		return nil, entitlementHint(fmt.Errorf("vz: start: %w", err))
 	}
@@ -152,10 +186,10 @@ func start(b bundle, cpus uint, memory uint64, shares []machine.Share, provision
 // install's provisioning boot, a build's reboot step) waits for a garbage
 // collection. A VM whose start failed is not started again: it would stop at
 // once in the error state. Each attempt gets a new one.
-func unlocked(b bundle, cpus uint, memory uint64, shares []machine.Share, run func(*vz.VirtualMachine) error) (*vz.VirtualMachine, error) {
+func unlocked(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool, run func(*vz.VirtualMachine) error) (*vz.VirtualMachine, error) {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		vm, err := newVM(b, cpus, memory, shares)
+		vm, err := newVM(b, cpus, memory, shares, nic)
 		if err != nil {
 			return nil, err
 		}
@@ -171,8 +205,8 @@ func unlocked(b bundle, cpus uint, memory uint64, shares []machine.Share, run fu
 	}
 }
 
-func newVM(b bundle, cpus uint, memory uint64, shares []machine.Share) (*vz.VirtualMachine, error) {
-	config, err := b.configuration(cpus, memory, shares)
+func newVM(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool) (*vz.VirtualMachine, error) {
+	config, err := b.configuration(cpus, memory, shares, nic)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +296,7 @@ func (m *vmMachine) Dial(ctx context.Context, port uint32) (net.Conn, error) {
 
 var (
 	_ machine.HostListener = (*vmMachine)(nil)
-	_ local.Machine        = (*vmMachine)(nil)
+	_ machine.Machine      = (*vmMachine)(nil)
 )
 
 // Listen accepts what guest processes open to the host (CID 2) on a vsock

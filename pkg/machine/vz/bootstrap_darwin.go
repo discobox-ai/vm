@@ -106,7 +106,7 @@ func bootstrap(ctx context.Context, b bundle, m meta, agent string, opts options
 		} else {
 			fmt.Fprintln(log, "vz: the guest restarted itself during setup; booting it again")
 		}
-		vm, err := start(b, m.CPUs, m.Memory, nil, &vz.MacGuestProvisioningOptions{
+		vm, err := start(b, m.CPUs, m.Memory, nil, true, &vz.MacGuestProvisioningOptions{
 			FullName:            opts.fullName,
 			Username:            opts.user,
 			Password:            opts.password,

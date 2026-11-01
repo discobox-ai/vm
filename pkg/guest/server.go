@@ -60,6 +60,7 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 		Arch:     runtime.GOARCH,
 		Hostname: hostname,
 		Version:  s.Version,
+		Protocol: Protocol,
 		Fake:     s.Fake,
 	})
 }

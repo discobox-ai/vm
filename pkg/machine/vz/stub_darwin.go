@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
@@ -19,6 +20,6 @@ func (*Hypervisor) Install(context.Context, local.InstallSpec, local.Layer) erro
 
 func (*Hypervisor) Prepare(context.Context, local.InstanceSpec) error { return errNoCgo }
 
-func (*Hypervisor) Boot(context.Context, local.InstanceSpec, local.BootOptions) (local.Machine, error) {
+func (*Hypervisor) Boot(context.Context, local.InstanceSpec, local.BootOptions) (machine.Machine, error) {
 	return nil, errNoCgo
 }

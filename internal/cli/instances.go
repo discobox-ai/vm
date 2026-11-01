@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -232,6 +233,46 @@ func lsCommand(g *globals) *cobra.Command {
 	}
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "include stopped instances")
 	return cmd
+}
+
+func dialCommand(g *globals) *cobra.Command {
+	return &cobra.Command{
+		Use:   "dial INSTANCE PORT",
+		Short: "Connect to a guest port of a running instance, over stdin and stdout",
+		Long: "Connect stdin and stdout to PORT in the guest, through the process that\n" +
+			"holds the instance's machine: vsock on vz, hvsocket on hcs. Whatever listens\n" +
+			"on the port authenticates its callers. When stdin ends, the guest reads EOF\n" +
+			"and the answer is still copied out. Drivers with no socket into the guest\n" +
+			"(boxd, docker) refuse it.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			port, err := strconv.ParseUint(args[1], 10, 32)
+			if err != nil {
+				return fmt.Errorf("port %q: %w", args[1], err)
+			}
+			e, err := g.engine()
+			if err != nil {
+				return err
+			}
+			inst, err := e.Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			conn, err := e.Dial(cmd.Context(), inst, uint32(port))
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			go func() {
+				_, _ = io.Copy(conn, os.Stdin)
+				if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+					_ = cw.CloseWrite()
+				}
+			}()
+			_, err = io.Copy(os.Stdout, conn)
+			return err
+		},
+	}
 }
 
 func urlCommand(g *globals) *cobra.Command {

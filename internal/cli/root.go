@@ -92,7 +92,7 @@ func Main(args []string) int {
 		installCommand(g),
 		imagesCommand(g), rmiCommand(g), tagCommand(g), snapshotCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
-		lsCommand(g), inspectCommand(g), urlCommand(g), execCommand(g), cpCommand(g),
+		lsCommand(g), inspectCommand(g), urlCommand(g), dialCommand(g), execCommand(g), cpCommand(g),
 		infoCommand(g), keyCommand(g),
 		guestCommand(), pipeCommand(), shimCommand(g), dialHostCommand(), dockerInitCommand(),
 	)

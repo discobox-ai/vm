@@ -71,6 +71,9 @@ type GuestInfo struct {
 	Hostname string `json:"hostname"`
 	// Version is the disco-vm agent's, in a guest that has one.
 	Version string `json:"version"`
+	// Protocol is the agent's guest.Protocol, in a guest that has one; zero
+	// from an agent from before it was reported.
+	Protocol int `json:"protocol,omitempty"`
 	// Fake is set when the guest is the fake driver's, a directory on the
 	// host.
 	Fake bool `json:"fake,omitempty"`

@@ -30,6 +30,15 @@ import (
 	"io"
 )
 
+// Protocol is the version of this protocol, which the agent reports in its
+// info. It moves whenever a change to the protocol means a host and an agent
+// on either side of it cannot work together, so a driver that hands the
+// guest its agent at every boot (vz's Linux guests) refuses one that reports
+// another (CheckProtocol). It is not the build's version, which is the main
+// module's: an embedder's in a program that embeds the engine, and "dev" for
+// any two builds with no VCS data.
+const Protocol = 1
+
 // AgentPort is the agent's port on every guest. It is above 1024, as discobox
 // requires of guest vsock ports, and clear of discobox's own 3001-3004.
 const AgentPort uint32 = 7300

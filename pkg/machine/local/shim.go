@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,18 +25,69 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-const shimStateName = "shim.json"
+const (
+	shimStateName  = "shim.json"
+	shimSocketName = "shim.sock"
+	// maxSocketPath is the longest path a Unix socket may have on every host
+	// a shim runs on: macOS's sun_path holds 104 bytes, Linux's 108.
+	maxSocketPath = 103
+)
 
 // shimState is how other processes find a running instance's shim. It exists
-// only while the shim is serving; the token keeps other local users off the
-// loopback port.
+// only while the shim is serving, and is private to the owner, as is the
+// socket it names; the token is a second check on top.
 type shimState struct {
-	PID   int    `json:"pid"`
-	Addr  string `json:"addr"`
+	PID int `json:"pid"`
+	// Socket is the owner-only Unix socket the control API is served on:
+	// shim.sock in the instance's directory, or one in a private temporary
+	// directory when that path is too long for a socket.
+	Socket string `json:"socket,omitempty"`
+	// Addr is the loopback address a shim from before the socket serves its
+	// control API on. Such a shim is attached through it until it exits.
+	Addr  string `json:"addr,omitempty"`
 	Token string `json:"token"`
 	// Service is the loopback address where the shim serves the instance's
 	// service, with no token: the service authenticates its callers.
 	Service string `json:"service,omitempty"`
+}
+
+// dial connects to the shim's control API.
+func (s shimState) dial(ctx context.Context) (net.Conn, error) {
+	var d net.Dialer
+	if s.Socket != "" {
+		return d.DialContext(ctx, "unix", s.Socket)
+	}
+	return d.DialContext(ctx, "tcp", s.Addr)
+}
+
+// listenControl listens on the Unix socket a shim serves its control API on,
+// readable and writable by the owner alone. The returned func removes what
+// it made.
+func listenControl(ctx context.Context, dir string) (net.Listener, string, func(), error) {
+	path := filepath.Join(dir, shimSocketName)
+	cleanup := func() { _ = os.Remove(path) }
+	if len(path) > maxSocketPath {
+		tmp, err := os.MkdirTemp("", "dvm-shim-")
+		if err != nil {
+			return nil, "", nil, err
+		}
+		path = filepath.Join(tmp, shimSocketName)
+		cleanup = func() { _ = os.RemoveAll(tmp) }
+	}
+	_ = os.Remove(path)
+	l, err := (&net.ListenConfig{}).Listen(ctx, "unix", path)
+	if err != nil {
+		cleanup()
+		return nil, "", nil, fmt.Errorf("shim: listen on %s: %w", path, err)
+	}
+	// Windows keeps no Unix permission bits on a socket; its ACL is the
+	// directory's, which is the owner's.
+	if err := os.Chmod(path, 0o600); err != nil && runtime.GOOS != "windows" {
+		_ = l.Close()
+		cleanup()
+		return nil, "", nil, err
+	}
+	return l, path, cleanup, nil
 }
 
 // runShim is the body of a shim: boot the instance, serve its control API,
@@ -57,7 +110,7 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 	if err != nil {
 		return err
 	}
-	forwards, err := serveForwards(m, inst.Forwards)
+	forwards, err := d.serveForwards(m, inst.Forwards)
 	if err != nil {
 		_ = m.Kill(context.Background())
 		return err
@@ -70,11 +123,12 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 	}
 	defer serviceListener.Close()
 	go serveService(serviceListener, m, port)
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	listener, socket, removeSocket, err := listenControl(ctx, d.instanceDir(id))
 	if err != nil {
 		_ = m.Kill(context.Background())
 		return err
 	}
+	defer removeSocket()
 	var stopOnce sync.Once
 	var stopErr error
 	stop := func(timeout time.Duration) error {
@@ -123,13 +177,41 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 		}
 		relay.hand(&bufConn{Conn: conn, r: rw.Reader})
 	})
+	// Other processes reach any guest port here: the connection, once
+	// upgraded, is spliced into the machine's Dial of the port.
+	mux.HandleFunc("GET /dial", func(w http.ResponseWriter, r *http.Request) {
+		port, err := strconv.ParseUint(r.URL.Query().Get("port"), 10, 32)
+		if err != nil || port == 0 {
+			http.Error(w, "dial: want ?port=N", http.StatusBadRequest)
+			return
+		}
+		dialCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		upstream, err := m.Dial(dialCtx, uint32(port))
+		cancel()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		conn, rw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			_ = upstream.Close()
+			return
+		}
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + dialUpgrade + "\r\n\r\n")
+		if err := rw.Flush(); err != nil {
+			_ = conn.Close()
+			_ = upstream.Close()
+			return
+		}
+		go spliceHalves(&bufConn{Conn: conn, r: rw.Reader}, upstream)
+	})
 	statePath := filepath.Join(d.instanceDir(id), shimStateName)
-	state, closeControl, err := serveControl(listener, mux, statePath, serviceListener.Addr().String())
+	state, closeControl, err := serveControl(listener, socket, mux, statePath, serviceListener.Addr().String())
 	if err != nil {
 		_ = m.Kill(context.Background())
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "shim: %s running, control on %s\n", inst.Name, state.Addr)
+	fmt.Fprintf(os.Stderr, "shim: %s running, control on %s\n", inst.Name, state.Socket)
 
 	select {
 	case <-m.Done():
@@ -173,7 +255,7 @@ func shutdown(ctx context.Context, m machine.Machine, timeout time.Duration) err
 // serveService splices every connection to the instance's loopback URL into
 // the service's guest port, until the listener is closed. A guest with nothing
 // listening yet closes the connection.
-func serveService(l net.Listener, m Machine, port uint32) {
+func serveService(l net.Listener, m machine.Machine, port uint32) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -193,8 +275,9 @@ func serveService(l net.Listener, m Machine, port uint32) {
 }
 
 // serveForwards listens for the guest on each forward's port and splices every
-// connection into its host socket. The returned func stops listening.
-func serveForwards(m machine.Machine, forwards []machine.Forward) (func(), error) {
+// connection into its host socket, or into its peer's guest port through the
+// peer's shim. The returned func stops listening.
+func (d *Driver) serveForwards(m machine.Machine, forwards []machine.Forward) (func(), error) {
 	if len(forwards) == 0 {
 		return func() {}, nil
 	}
@@ -224,14 +307,15 @@ func serveForwards(m machine.Machine, forwards []machine.Forward) (func(), error
 				go func() {
 					// Not the shim's ctx: a guest shutting down in order after
 					// a signal may still connect out.
-					var d net.Dialer
-					host, err := d.DialContext(context.Background(), "unix", f.Socket)
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					upstream, err := d.dialForward(ctx, f)
+					cancel()
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "shim: forward port %d: %v\n", f.Port, err)
 						_ = conn.Close()
 						return
 					}
-					spliceHalves(conn, host)
+					spliceHalves(conn, upstream)
 				}()
 			}
 		}(l, f)
@@ -239,11 +323,31 @@ func serveForwards(m machine.Machine, forwards []machine.Forward) (func(), error
 	return closeAll, nil
 }
 
-// serveControl serves a shim's control API on listener, behind a bearer token,
-// and publishes it at statePath with the address of the instance's service,
-// if it serves one. The returned func unpublishes and stops it.
-func serveControl(listener net.Listener, mux *http.ServeMux, statePath, service string) (shimState, func(), error) {
-	state := shimState{PID: os.Getpid(), Addr: listener.Addr().String(), Token: fsutil.RandomHex(16), Service: service}
+// dialForward opens the far end of one of a forward's connections: its host
+// socket, or its peer's guest port through the shim that holds the peer,
+// found by name at every connection so a peer that restarted is followed.
+func (d *Driver) dialForward(ctx context.Context, f machine.Forward) (net.Conn, error) {
+	if !f.Peer() {
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, "unix", f.Socket)
+	}
+	peer, err := d.Instance(ctx, f.Instance)
+	if err != nil {
+		return nil, err
+	}
+	shim, err := d.openShim(peer.ID)
+	if err != nil {
+		return nil, fmt.Errorf("instance %s: %w", peer.Name, machine.ErrNotRunning)
+	}
+	return shim.dial(ctx, f.InstancePort)
+}
+
+// serveControl serves a shim's control API on listener, the Unix socket at
+// socket, behind a bearer token, and publishes it at statePath with the
+// address of the instance's service, if it serves one. The returned func
+// unpublishes and stops it.
+func serveControl(listener net.Listener, socket string, mux *http.ServeMux, statePath, service string) (shimState, func(), error) {
+	state := shimState{PID: os.Getpid(), Socket: socket, Token: fsutil.RandomHex(16), Service: service}
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Authorization") != "Bearer "+state.Token {
@@ -296,6 +400,15 @@ type bufConn struct {
 }
 
 func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// CloseWrite half-closes the connection underneath, so a splice through it
+// passes an EOF on; one that cannot is closed.
+func (c *bufConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return c.Close()
+}
 
 // ShimMain is the body of a shim, given the arguments Start appends to the
 // shim command: [--gui] INSTANCE-ID. driver is the one Start was called on,
@@ -429,11 +542,18 @@ func (d *Driver) openShim(id string) (*shimClient, error) {
 	if !proc.Alive(state.PID) {
 		return nil, errors.New("shim is gone")
 	}
-	return &shimClient{state: state, http: &http.Client{}}, nil
+	// No keep-alives: a client is made per call, so an idle connection it
+	// kept would hold a descriptor open in the caller and in the shim, one
+	// per call, for as long as the caller runs.
+	transport := &http.Transport{
+		DialContext:       func(ctx context.Context, _, _ string) (net.Conn, error) { return state.dial(ctx) },
+		DisableKeepAlives: true,
+	}
+	return &shimClient{state: state, http: &http.Client{Transport: transport}}, nil
 }
 
 func (c *shimClient) do(ctx context.Context, method, path string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, "http://"+c.state.Addr+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, "http://shim"+path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -498,19 +618,29 @@ func (c *shimClient) stop(ctx context.Context, timeout time.Duration) error {
 // dialGuest opens a connection to the shim's relay of its machine's guest
 // operations, which speaks the agent's protocol (guest.Client).
 func (c *shimClient) dialGuest(ctx context.Context) (net.Conn, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", c.state.Addr)
+	return c.upgrade(ctx, "/guest", guestUpgrade)
+}
+
+// dial opens a stream to a guest port of the shim's machine.
+func (c *shimClient) dial(ctx context.Context, port uint32) (net.Conn, error) {
+	return c.upgrade(ctx, "/dial?port="+strconv.FormatUint(uint64(port), 10), dialUpgrade)
+}
+
+// upgrade asks the shim to upgrade a connection to one of its streams, and
+// returns the connection once it has.
+func (c *shimClient) upgrade(ctx context.Context, path, token string) (net.Conn, error) {
+	conn, err := c.state.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://shim/guest", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://shim"+path, nil)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.state.Token)
 	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", guestUpgrade)
+	req.Header.Set("Upgrade", token)
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
@@ -527,14 +657,19 @@ func (c *shimClient) dialGuest(ctx context.Context) (net.Conn, error) {
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = conn.Close()
-		return nil, fmt.Errorf("shim: guest: %s", strings.TrimSpace(string(msg)))
+		what, _, _ := strings.Cut(strings.TrimPrefix(path, "/"), "?")
+		return nil, fmt.Errorf("shim: %s: %s", what, strings.TrimSpace(string(msg)))
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return &bufConn{Conn: conn, r: reader}, nil
 }
 
-// guestUpgrade is the Upgrade token of a connection to a shim's relay.
-const guestUpgrade = "disco-vm-guest"
+const (
+	// guestUpgrade is the Upgrade token of a connection to a shim's relay.
+	guestUpgrade = "disco-vm-guest"
+	// dialUpgrade is the Upgrade token of a connection to a guest port.
+	dialUpgrade = "disco-vm-dial"
+)
 
 // connListener is a net.Listener whose connections are handed to it: those a
 // shim's control API upgraded for its relay.

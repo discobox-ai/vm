@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -70,8 +71,9 @@ type CreateOptions struct {
 	Name   string
 	CPUs   int
 	Memory uint64
-	// Forwards are served whenever the instance runs; the driver must list
-	// Capabilities.Forward.
+	// Forwards are served whenever the instance runs, each to a host socket
+	// or to another instance's guest port; the driver must list
+	// Capabilities.Ports.
 	Forwards []machine.Forward
 	// Isolated and Networks strip the instance of what its provider gives a
 	// machine by default, and place it on networks of the caller's
@@ -80,7 +82,7 @@ type CreateOptions struct {
 	Networks []string
 	// Egress fences what the instance reaches beyond its networks, from
 	// before Create returns (machine.InstanceSpec); nil is the provider's
-	// default. The driver must list Capabilities.Egress.
+	// default. The driver must hold the fence (Capabilities.Fences).
 	Egress *machine.Egress
 }
 
@@ -93,8 +95,11 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (In
 	if (opts.Isolated || len(opts.Networks) > 0) && !e.Driver.Capabilities().Isolation {
 		return Instance{}, fmt.Errorf("driver %s cannot isolate an instance or place it on networks: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
-	if opts.Egress != nil && !e.Driver.Capabilities().Egress {
-		return Instance{}, fmt.Errorf("driver %s cannot fence an instance's egress: %w", e.Driver.Name(), machine.ErrUnsupported)
+	if !e.Driver.Capabilities().Fences(opts.Egress) {
+		if len(opts.Egress.Allow) == 0 {
+			return Instance{}, fmt.Errorf("driver %s cannot fence an instance to nothing beyond its networks: %w", e.Driver.Name(), machine.ErrUnsupported)
+		}
+		return Instance{}, fmt.Errorf("driver %s cannot fence an instance's egress to a list: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
 	spec := machine.InstanceSpec{
 		Name: opts.Name, Image: ref, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: opts.Forwards,
@@ -112,6 +117,11 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (In
 	}
 	if spec.Name == "" {
 		spec.Name = fsutil.RandomHex(6)
+	}
+	for _, f := range opts.Forwards {
+		if f.Peer() && f.Instance == spec.Name {
+			return Instance{}, fmt.Errorf("port %d forwards to instance %s itself", f.Port, f.Instance)
+		}
 	}
 	return e.Driver.Create(ctx, spec)
 }
@@ -178,20 +188,30 @@ type StartOptions struct {
 	GUI bool
 }
 
-// checkForwards refuses forwards the driver cannot serve or that make no sense.
+// checkForwards refuses forwards the driver cannot serve or that make no
+// sense: each goes to exactly one of an absolute host socket, or an instance
+// of the project and a port.
 func (e *Engine) checkForwards(forwards []machine.Forward) error {
 	if len(forwards) == 0 {
 		return nil
 	}
-	if !e.Driver.Capabilities().Forward {
-		return fmt.Errorf("driver %s cannot forward a guest's connections to the host: %w", e.Driver.Name(), machine.ErrUnsupported)
+	if !e.Driver.Capabilities().Ports {
+		return fmt.Errorf("driver %s cannot forward a guest's connections: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
 	ports := map[uint32]bool{}
 	for _, f := range forwards {
 		switch {
 		case f.Port == 0:
 			return errors.New("a forward needs a port")
-		case !filepath.IsAbs(f.Socket):
+		case f.Socket != "" && f.Peer():
+			return fmt.Errorf("port %d forwards to both a socket and instance %s", f.Port, f.Instance)
+		case f.Peer() && machine.ValidateName(f.Instance) != nil:
+			return fmt.Errorf("port %d forwards to %q, which is not an instance name", f.Port, f.Instance)
+		case f.Peer() && f.InstancePort == 0:
+			return fmt.Errorf("port %d forwards to instance %s with no port", f.Port, f.Instance)
+		case !f.Peer() && f.InstancePort != 0:
+			return fmt.Errorf("port %d names a port of no instance", f.Port)
+		case !f.Peer() && !filepath.IsAbs(f.Socket):
 			return fmt.Errorf("port %d forwards to %q, which is not an absolute path", f.Port, f.Socket)
 		case ports[f.Port]:
 			return fmt.Errorf("port %d is forwarded twice", f.Port)
@@ -300,6 +320,31 @@ func (e *Engine) Guest(ctx context.Context, inst Instance) (machine.Guest, error
 		return nil, fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
 	return m, nil
+}
+
+// Dial opens a stream to a guest port of a running instance, through the
+// process that holds its machine, on a driver that lists
+// Capabilities.Ports. The stream is the guest's: whatever listens on the port
+// authenticates its callers.
+func (e *Engine) Dial(ctx context.Context, inst Instance, port uint32) (net.Conn, error) {
+	if !e.Driver.Capabilities().Ports {
+		return nil, fmt.Errorf("driver %s reaches no guest port: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
+	if port == 0 {
+		return nil, errors.New("dial: a guest port is 1 or more")
+	}
+	m, err := e.Driver.Attach(ctx, inst)
+	if err != nil {
+		if errors.Is(err, machine.ErrNotRunning) {
+			return nil, fmt.Errorf("instance %s is not running", inst.Name)
+		}
+		return nil, fmt.Errorf("instance %s: %w", inst.Name, err)
+	}
+	conn, err := m.Dial(ctx, port)
+	if err != nil {
+		return nil, fmt.Errorf("instance %s port %d: %w", inst.Name, port, err)
+	}
+	return conn, nil
 }
 
 // URL is where an instance's one service is reached over HTTP: boxd's public
@@ -439,19 +484,19 @@ type InstallOptions struct {
 }
 
 // Install makes an image from installation media, on a driver that lists
-// Capabilities.Install, and tags it with each of refs. Where the driver puts
-// the agent in the guest, it is this binary, so the guest's OS must be this
-// host's.
+// the guest OS in Capabilities.Install, and tags it with each of refs. Where
+// the driver puts the agent in the guest, it is this binary, so the guest's
+// OS must be this host's.
 func (e *Engine) Install(ctx context.Context, opts InstallOptions, refs ...string) (machine.Image, error) {
 	caps := e.Driver.Capabilities()
-	if !caps.Install {
+	if len(caps.Install) == 0 {
 		return machine.Image{}, fmt.Errorf("driver %s installs nothing from media; run one of its bases by name instead: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
-	if opts.GuestOS == "" && len(caps.GuestOS) == 1 {
-		opts.GuestOS = caps.GuestOS[0]
+	if opts.GuestOS == "" && len(caps.Install) == 1 {
+		opts.GuestOS = caps.Install[0]
 	}
-	if !caps.SupportsOS(opts.GuestOS) {
-		return machine.Image{}, fmt.Errorf("driver %s cannot install %q guests (it runs %v)", e.Driver.Name(), opts.GuestOS, caps.GuestOS)
+	if !caps.Installs(opts.GuestOS) {
+		return machine.Image{}, fmt.Errorf("driver %s cannot install %q guests from media (it installs %v; run a base for the others): %w", e.Driver.Name(), opts.GuestOS, caps.Install, machine.ErrUnsupported)
 	}
 	for _, ref := range refs {
 		if err := ValidateRef(ref); err != nil {

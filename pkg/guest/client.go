@@ -96,6 +96,19 @@ func (c *Client) WaitReady(ctx context.Context, stopped <-chan struct{}) error {
 
 var _ machine.Guest = (*Client)(nil)
 
+// CheckProtocol refuses a guest whose agent speaks another version of the
+// protocol than this host (Protocol), naming both.
+func CheckProtocol(ctx context.Context, g machine.Guest) error {
+	info, err := g.Info(ctx)
+	if err != nil {
+		return err
+	}
+	if info.Protocol != Protocol {
+		return fmt.Errorf("guest: the agent (disco-vm %s) speaks protocol %d, and this host speaks %d; boot it with an agent built from the same disco-vm", info.Version, info.Protocol, Protocol)
+	}
+	return nil
+}
+
 // Info describes the guest.
 func (c *Client) Info(ctx context.Context) (machine.GuestInfo, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/v1/info", nil, nil)

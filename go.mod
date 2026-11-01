@@ -6,6 +6,7 @@ require (
 	github.com/Code-Hex/vz/v3 v3.7.1
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/creack/pty v1.1.24
+	github.com/google/go-containerregistry v0.22.1
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.59.0
@@ -190,7 +191,6 @@ require (
 	github.com/golangci/swaggoswag v0.0.0-20250504205917-77f2aca3143e // indirect
 	github.com/golangci/unconvert v0.0.0-20250410112200-a129a6e6413e // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/go-containerregistry v0.22.1 // indirect
 	github.com/google/s2a-go v0.1.10 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.22 // indirect

@@ -14,7 +14,6 @@ import (
 
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
-	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // vm is a running compute system this process holds. The document sets
@@ -39,7 +38,7 @@ type vm struct {
 var (
 	_ machine.Machine      = (*vm)(nil)
 	_ machine.HostListener = (*vm)(nil)
-	_ local.Machine        = (*vm)(nil)
+	_ machine.Machine      = (*vm)(nil)
 )
 
 // startVM creates and starts a compute system from c. Its files must already

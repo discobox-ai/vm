@@ -15,7 +15,9 @@
 // Kill always works; an instance fenced at create keeps its fence across a
 // boot, or the driver refuses the fence; a started machine is attached to from
 // another call, its service has a URL, and a private URL where it has one, and
-// it is found stopped once its guest powers off; and a key the driver issues
+// it is found stopped once its guest powers off; a guest port is dialed
+// through an attached machine, and a guest reaches a peer's port through a
+// forward, or the driver refuses both; and a key the driver issues
 // runs the project's machines, cannot issue another, and works no more once
 // it is revoked.
 package machinetest
@@ -34,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -55,6 +58,10 @@ type Config struct {
 	Timeout time.Duration
 	// ScratchDir is a guest directory the suite may write into.
 	ScratchDir string
+	// GuestAgent is where the disco-vm agent is in the guest, which the
+	// suite runs as `dial-host` to reach a peer through a forward. Empty
+	// skips that subtest.
+	GuestAgent string
 	// Keyed is the driver again, for the same project, calling its
 	// provider with the key keys answers. A driver whose Capabilities.Keys
 	// issues needs it.
@@ -92,7 +99,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("image %s: %v", cfg.Image, err)
 		}
 		start = machine.InstanceSpec{ImageID: img.ID, GuestOS: img.GuestOS}
-	case caps.Install && cfg.Install.GuestOS != "":
+	case cfg.Install.GuestOS != "" && caps.Installs(cfg.Install.GuestOS):
 		img, err := driver.Install(ctx, cfg.Install, machine.Image{ID: newID(), GuestOS: cfg.Install.GuestOS, Comment: "conformance install"})
 		if err != nil {
 			t.Fatalf("install: %v", err)
@@ -362,22 +369,12 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 	})
 
-	// An instance fenced at create, from the start and from a snapshot,
-	// reports the fence as asked, while it runs and once it stops. A driver
-	// that cannot fence refuses a fence.
+	// An instance fenced at create, to nothing from the start and to a list
+	// from a snapshot, reports the fence as asked, while it runs and once it
+	// stops. A driver refuses each fence it does not hold.
 	t.Run("a-fenced-instance", func(t *testing.T) {
-		if !caps.Egress {
-			spec := of(committed.ID)
-			spec.Name, spec.Egress = fmt.Sprintf("conformance-%s-fenced", run), &machine.Egress{}
-			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
-				if err == nil {
-					_ = driver.Destroy(context.Background(), inst)
-				}
-				t.Fatalf("a driver that cannot fence made a fenced instance: %v, want ErrUnsupported", err)
-			}
-			t.Skip("the driver cannot fence an instance's egress")
-		}
-		for _, from := range []struct {
+		held := 0
+		for i, from := range []struct {
 			spec  machine.InstanceSpec
 			allow []string
 		}{
@@ -386,6 +383,17 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		} {
 			spec := from.spec
 			spec.Egress = &machine.Egress{Allow: from.allow}
+			if !caps.Fences(spec.Egress) {
+				spec.Name = fmt.Sprintf("conformance-%s-fenced-%d", run, i)
+				if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+					if err == nil {
+						_ = driver.Destroy(context.Background(), inst)
+					}
+					t.Fatalf("a driver that does not hold the fence %q made an instance fenced to it: %v, want ErrUnsupported", from.allow, err)
+				}
+				continue
+			}
+			held++
 			inst := create(t, spec)
 			fenced := func(when string) {
 				t.Helper()
@@ -399,6 +407,129 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			fenced("while it runs")
 			shutdown(t, m)
 			fenced("once it stops")
+		}
+		if held == 0 {
+			t.Skip("the driver holds no fence")
+		}
+	})
+
+	// A guest port is dialed through a machine another call attached to: the
+	// agent's, where an HTTP request for its health is answered. A driver
+	// that reaches no guest port refuses the dial.
+	t.Run("a-guest-port", func(t *testing.T) {
+		inst := create(t, of(committed.ID))
+		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
+		started, err := driver.Start(startCtx, inst, machine.BootOptions{})
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		t.Cleanup(func() { _ = started.Kill(context.Background()) })
+		m, err := driver.Attach(ctx, inst)
+		if err != nil {
+			t.Fatalf("attach: %v", err)
+		}
+		dialCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		conn, err := m.Dial(dialCtx, guest.AgentPort)
+		if !caps.Ports {
+			if !errors.Is(err, machine.ErrUnsupported) {
+				t.Fatalf("a driver that reaches no guest port dialed one: %v, want ErrUnsupported", err)
+			}
+			t.Skip("the driver reaches no guest port")
+		}
+		if err != nil {
+			t.Fatalf("dial the agent's port: %v", err)
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(time.Minute))
+		if _, err := io.WriteString(conn, "GET /v1/health HTTP/1.0\r\nHost: guest\r\n\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		answer, _ := io.ReadAll(conn)
+		if !strings.HasPrefix(string(answer), "HTTP/1.0 200") && !strings.HasPrefix(string(answer), "HTTP/1.1 200") {
+			t.Fatalf("the agent's port answered %q", answer)
+		}
+	})
+
+	// A guest reaches a peer's guest port through a forward, and it is the
+	// peer that answers: the agent's port of an instance holding a file the
+	// other does not, which the request reads back. While the peer is stopped
+	// the guest's connection is closed with nothing read, and a peer started
+	// again is followed.
+	t.Run("a-peer-forward", func(t *testing.T) {
+		if !caps.Ports {
+			spec := of(committed.ID)
+			spec.Name = fmt.Sprintf("conformance-%s-forwarded", run)
+			spec.Forwards = []machine.Forward{{Port: 7402, Instance: "peer", InstancePort: guest.AgentPort}}
+			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+				if err == nil {
+					_ = driver.Destroy(context.Background(), inst)
+				}
+				t.Fatalf("a driver that reaches no guest port made a peer forward: %v, want ErrUnsupported", err)
+			}
+			t.Skip("the driver reaches no guest port")
+		}
+		if cfg.GuestAgent == "" {
+			t.Skip("no GuestAgent to dial the host from inside the guest")
+		}
+		start := func(t *testing.T, inst machine.Instance) machine.Machine {
+			t.Helper()
+			startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+			defer cancel()
+			m, err := driver.Start(startCtx, inst, machine.BootOptions{})
+			if err != nil {
+				t.Fatalf("start %s: %v", inst.Name, err)
+			}
+			t.Cleanup(func() { _ = m.Kill(context.Background()) })
+			return m
+		}
+		peer := create(t, of(committed.ID))
+		pm := start(t, peer)
+		proof := randomHex(8)
+		if err := pm.CopyTo(ctx, marker, tarOf(t, "peer.txt", proof)); err != nil {
+			t.Fatal(err)
+		}
+		spec := of(committed.ID)
+		spec.Forwards = []machine.Forward{{Port: 7402, Instance: peer.Name, InstancePort: guest.AgentPort}}
+		inst := create(t, spec)
+		got, err := driver.Instance(ctx, inst.Name)
+		if err != nil || len(got.Forwards) != 1 || got.Forwards[0] != spec.Forwards[0] {
+			t.Fatalf("an instance with a peer forward reports %+v: %v", got.Forwards, err)
+		}
+		m := start(t, inst)
+		request := "GET /v1/files?path=" + marker + "/peer.txt HTTP/1.0\r\nHost: guest\r\n\r\n"
+		argv := []string{"/bin/sh", "-c", `printf "$1" | "$0" dial-host 7402`, cfg.GuestAgent, strings.ReplaceAll(request, "\r\n", `\r\n`)}
+		if guestOS == machine.Windows {
+			argv = []string{"powershell", "-NoProfile", "-Command", "\"" + strings.ReplaceAll(request, "\r\n", "`r`n") + "\" | & '" + cfg.GuestAgent + "' dial-host 7402"}
+		}
+		ask := func(t *testing.T) string {
+			t.Helper()
+			var out bytes.Buffer
+			if _, err := machine.Run(ctx, m, machine.ExecRequest{Argv: argv}, nil, &out, &out); err != nil {
+				t.Fatalf("dial-host through the forward: %v\n%s", err, out.String())
+			}
+			return out.String()
+		}
+		if got := ask(t); !strings.Contains(got, proof) {
+			t.Fatalf("the peer's agent did not answer with its file; the guest read %q", got)
+		}
+		if err := pm.Kill(ctx); err != nil {
+			t.Fatal(err)
+		}
+		// Kill returns once the stop is asked; the peer is stopped once its
+		// machine says so, and only then may it start again.
+		select {
+		case <-pm.Done():
+		case <-time.After(cfg.Timeout):
+			t.Fatal("the peer did not stop after Kill")
+		}
+		if got := ask(t); strings.Contains(got, proof) {
+			t.Fatalf("a stopped peer still answered through the forward: %q", got)
+		}
+		start(t, peer)
+		if got := ask(t); !strings.Contains(got, proof) {
+			t.Fatalf("the forward did not follow its peer once it started again; the guest read %q", got)
 		}
 	})
 

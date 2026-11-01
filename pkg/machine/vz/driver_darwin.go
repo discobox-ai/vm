@@ -14,26 +14,30 @@ func init() {
 	machine.Register("vz", func(cfg machine.Config) (machine.Driver, error) { return local.New(cfg, &Hypervisor{}) })
 }
 
-// Hypervisor runs macOS guests under Virtualization.framework, under a
-// local.Driver.
+// Hypervisor runs macOS and Linux guests under Virtualization.framework,
+// under a local.Driver: macOS installed from media, Linux from a base
+// (ADR 26-10-31-990).
 type Hypervisor struct{}
 
 var _ local.Hypervisor = (*Hypervisor)(nil)
 
 func (*Hypervisor) Name() string { return "vz" }
 
-// Capabilities: macOS guests, and the framework's limit of two concurrently
-// running ones.
+// Capabilities: macOS guests, installed from media, and the framework's
+// limit of two concurrently running ones; Linux guests, from bases, which do
+// not count against it; and an instance with no network device, the empty
+// fence.
 func (*Hypervisor) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
-		GuestOS:           []machine.OS{machine.Darwin},
+		GuestOS:           []machine.OS{machine.Darwin, machine.Linux},
 		MaxRunning:        map[machine.OS]int{machine.Darwin: 2},
 		SharedDirectories: true,
 		Display:           true,
-		Forward:           true,
+		Ports:             true,
 		Agent:             true,
-		Install:           true,
+		Install:           []machine.OS{machine.Darwin},
 		Keys:              machine.KeyCapabilities{Mode: machine.KeysNone},
+		Egress:            []machine.EgressFence{machine.EgressNone},
 	}
 }
 
@@ -45,19 +49,34 @@ func (*Hypervisor) Chains() bool { return false }
 // host's loopback.
 func (*Hypervisor) SharesLoopback() bool { return false }
 
-// Commit moves the stopped instance's disk into the image. The MAC address and
-// the machine identifier stay behind: they are the running machine's identity,
-// and every clone of the image gets its own.
+// Commit moves the stopped instance's disk into the image, with a Linux
+// guest's kernel and initrd. The MAC address and the machine's identity stay
+// behind: they are the running machine's, and every clone of the image gets
+// its own.
 func (*Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst local.Layer) error {
-	return moveLayer(bundle(inst.Dir), bundle(dst.Dir))
+	return moveLayer(bundle(inst.Dir), bundle(dst.Dir), inst.GuestOS)
 }
 
 func (*Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {
 	return os.RemoveAll(inst.Dir)
 }
 
-// Bases is empty: every first image is installed from media.
-func (*Hypervisor) Bases(context.Context) ([]machine.Base, error) { return nil, nil }
+// Bases is the Linux guest image disco-vm runs by default (LinuxBaseName),
+// and every one already cached. A macOS guest's first image is installed
+// from media.
+func (*Hypervisor) Bases(_ context.Context, cacheDir string) ([]machine.Base, error) {
+	return linuxBases(cacheDir), nil
+}
+
+// Base is the Linux base ref names: LinuxBaseName, a guest image's
+// reference, which Prepare pulls, or a directory holding its artifacts.
+func (*Hypervisor) Base(_ context.Context, cacheDir, ref string) (machine.Base, bool, error) {
+	if b, found := machine.FindBase(linuxBases(cacheDir), ref); found {
+		return b, true, nil
+	}
+	b, found := linuxBase(ref)
+	return b, found, nil
+}
 
 // Service is guest.ServicePort over vsock; the instance's shim serves it on
 // the host's loopback.
