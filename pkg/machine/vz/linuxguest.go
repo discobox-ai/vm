@@ -42,11 +42,11 @@ const (
 	// as.
 	linuxSourceName = "source.json"
 
-	// agentDir and agentPath are where the appended archive puts the agent
+	// initrdAgentDir and initrdAgentPath are where the appended archive puts the agent
 	// in the initramfs. The base's initramfs hook moves it to
 	// /run/disco-vm/disco-vm, which its disco-vm-guest.service runs.
-	agentDir  = ".disco-vm"
-	agentPath = agentDir + "/disco-vm"
+	initrdAgentDir  = ".disco-vm"
+	initrdAgentPath = initrdAgentDir + "/disco-vm"
 )
 
 // DefaultLinuxBase is the Linux guest image a reference of LinuxBaseName
@@ -328,7 +328,7 @@ func checkAgent(agent, arch string) error {
 
 // writeBootInitrd writes the initrd a boot hands the kernel to dst: the
 // image's initrd, padded to four bytes, then an uncompressed newc archive
-// holding the agent at agentPath. The kernel unpacks each archive of a
+// holding the agent at initrdAgentPath. The kernel unpacks each archive of a
 // concatenation in turn into the initramfs.
 func writeBootInitrd(dst, initrd, agent string) error {
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
@@ -359,8 +359,8 @@ func writeBootInitrd(dst, initrd, agent string) error {
 	return errors.Join(err, out.Close())
 }
 
-// writeAgentArchive writes a newc cpio archive holding agentDir and the
-// agent, executable, at agentPath.
+// writeAgentArchive writes a newc cpio archive holding initrdAgentDir and the
+// agent, executable, at initrdAgentPath.
 func writeAgentArchive(w io.Writer, agent []byte) error {
 	var buf bytes.Buffer
 	entries := []struct {
@@ -368,8 +368,8 @@ func writeAgentArchive(w io.Writer, agent []byte) error {
 		mode uint32
 		data []byte
 	}{
-		{agentDir, 0o040755, nil},
-		{agentPath, 0o100755, agent},
+		{initrdAgentDir, 0o040755, nil},
+		{initrdAgentPath, 0o100755, agent},
 		{"TRAILER!!!", 0, nil},
 	}
 	for i, e := range entries {
