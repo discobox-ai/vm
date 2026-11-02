@@ -40,7 +40,7 @@ a `Capabilities` field, never a faked method:
 | guest OS | windows | darwin, and linux (ADR 26-10-31-990) | linux | linux | linux (ADR 26-11-03-530) | host's | linux, amd64 |
 | max running | none | **2 macOS guests** (framework limit); Linux guests do not count | none (the org's quota) | none | none | none | none (the plan's quota) |
 | shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | virtiofs | no | no |
-| display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no | no | no | no |
+| display | the guest's Remote Desktop in mstsc, or the agent's stream on 7301 in a window (ADR 26-11-02-274); also on a running VM (`Viewer`) | framework view in a native window, at boot only | no | no | no | no | no |
 | ports (`Ports`: `Machine.Dial`, `Forwards` to a socket or a peer) | hvsocket, through the shim | vsock, through the shim | no | no | vsock, through the shim: the agent's and service's ports, and the forwards, mapped at boot; the host's half-close is not passed on | loopback, through the shim | no |
 | agent (`disco-vm guest` in the guest) | yes, from Install | yes: macOS from Install; Linux handed it in the initrd at every boot | **no**: boxd's Exec | yes, from Create of a base | yes: the running disco-vm (or `$DISCO_VM_AGENT`), handed it in the initrd at every boot | yes | **no**: Archil's process API |
 | install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest` | **none** | **none** | **none** | the host's | **none** |
@@ -183,8 +183,8 @@ which is the vsock template GUID with the port in its first field
 ServiceTable. On docker it listens on a root-only unix socket, which
 `disco-vm pipe` reaches through docker exec. boxd has no socket from the host
 into the guest and no agent: its guest operations are command lines over
-boxd's authenticated Exec stream ([boxd/DESIGN.md](boxd/DESIGN.md)). 7301 is reserved for the
-display stream.
+boxd's authenticated Exec stream ([boxd/DESIGN.md](boxd/DESIGN.md)). 7301 is a Windows
+guest's display stream (`guest.ServeDisplay`).
 
 A driver that lists `Capabilities.Ports` (hcs, vz, libkrun, fake) reaches
 guest ports in three directions, all through the process that holds the
@@ -231,6 +231,13 @@ that owns the VM. For `run` and `start` that is the shim (`shim --gui`); for
 an install it is the CLI. The window closes when the VM stops, and closing it leaves
 the VM running. A driver without `Capabilities.Display` refuses GUI with
 `ErrUnsupported` rather than ignoring it.
+
+A driver that can also open a window on a running instance from any process
+implements `machine.Viewer`, which `disco-vm gui` (`Engine.GUI`) calls. The
+local driver gives it through the shim to a hypervisor that is a
+`local.MachineViewer`: hcs, whose window needs only the machine's guest
+operations and `Dial`. vz's window needs the VM object the shim holds, so it
+refuses `gui` as `ErrNotImplemented`.
 
 A native window on macOS must run on the process's main thread, which only
 `main` can give away. So `main` locks its goroutine to the main thread and runs

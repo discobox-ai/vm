@@ -344,6 +344,25 @@ func (e *Engine) Guest(ctx context.Context, inst Instance) (machine.Guest, error
 	return m, nil
 }
 
+// GUI opens a window on a running instance's desktop in this process, and
+// returns once it is closed.
+func (e *Engine) GUI(ctx context.Context, inst Instance) error {
+	if err := e.CheckGUI(true); err != nil {
+		return err
+	}
+	viewer, ok := e.Driver.(machine.Viewer)
+	if !ok {
+		return fmt.Errorf("driver %s opens no window on a running instance: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
+	if e.State(ctx, inst) != Running {
+		return fmt.Errorf("instance %s is not running", inst.Name)
+	}
+	if err := viewer.View(ctx, inst, "disco-vm: "+inst.Name); err != nil {
+		return fmt.Errorf("instance %s: %w", inst.Name, err)
+	}
+	return nil
+}
+
 // Dial opens a stream to a guest port of a running instance, through the
 // process that holds its machine, on a driver that lists
 // Capabilities.Ports. The stream is the guest's: whatever listens on the port

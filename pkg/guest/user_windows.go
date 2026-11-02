@@ -27,9 +27,11 @@ var (
 // runAs makes cmd run as the named local account, elevated when the account
 // is an administrator, with its profile loaded and its own environment.
 //
-// The agent runs as SYSTEM, which may log any account on. Accounts the image
-// made (the install's user) have a blank password, which Install allows for
-// LogonUser by turning LimitBlankPasswordUse off. The process runs in the
+// The agent runs as SYSTEM, which may log any account on. The account the
+// image made (the install's user) has its own name for a password; an image
+// from before that has a blank one, which Install allows for LogonUser by
+// turning LimitBlankPasswordUse off, so a blank password is tried second. The
+// process runs in the
 // agent's session, on the agent's window station and desktop, which the
 // account is granted: without that, anything that loads user32 fails to start
 // (0xC0000142).
@@ -42,9 +44,17 @@ func runAs(cmd *exec.Cmd, name string) ([]string, func(), error) {
 	empty, _ := windows.UTF16PtrFromString("")
 	const logonInteractive, providerDefault = 2, 0
 	var token windows.Token
-	if r, _, e := logonUser.Call(uintptr(unsafe.Pointer(namep)), uintptr(unsafe.Pointer(dot)), uintptr(unsafe.Pointer(empty)),
-		logonInteractive, providerDefault, uintptr(unsafe.Pointer(&token))); r == 0 {
-		return nil, nil, fmt.Errorf("guest: log on as %q (accounts the image made have a blank password): %w", name, e)
+	for _, password := range []*uint16{namep, empty} {
+		r, _, e := logonUser.Call(uintptr(unsafe.Pointer(namep)), uintptr(unsafe.Pointer(dot)), uintptr(unsafe.Pointer(password)),
+			logonInteractive, providerDefault, uintptr(unsafe.Pointer(&token)))
+		if r != 0 {
+			err = nil
+			break
+		}
+		err = e
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("guest: log on as %q (the account the image made has its name for a password, or, made before that, a blank one): %w", name, err)
 	}
 	// UAC hands an administrator's interactive logon a filtered token; the
 	// full one is linked to it, and steps that install software need it.

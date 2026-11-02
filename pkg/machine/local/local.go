@@ -110,6 +110,13 @@ type BootOptions struct {
 	Console io.Writer
 }
 
+// MachineViewer is a hypervisor that opens a window on a running machine's
+// desktop from any process, given the machine as an attached one reaches it
+// (Driver.View).
+type MachineViewer interface {
+	View(ctx context.Context, m machine.Machine, title string) error
+}
+
 // Hypervisor is what runs on this host's disk: hcs, vz, libkrun, and fake.
 type Hypervisor interface {
 	Name() string

@@ -31,6 +31,21 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	return m, nil
 }
 
+// View opens a window on the instance's desktop in this process, through its
+// shim, on a hypervisor that can (MachineViewer). One that shows a window
+// only from the process that booted it refuses it as not implemented yet.
+func (d *Driver) View(ctx context.Context, inst machine.Instance, title string) error {
+	viewer, ok := d.hv.(MachineViewer)
+	if !ok {
+		return fmt.Errorf("%s opens a window only when it boots an instance (start --gui): %w", d.hv.Name(), machine.ErrNotImplemented)
+	}
+	m, err := d.Attach(ctx, inst)
+	if err != nil {
+		return err
+	}
+	return viewer.View(ctx, m, title)
+}
+
 // shimMachine is a running machine its shim holds. Its guest operations are
 // the shim's relay of the machine's; it is stopped once the shim has exited,
 // which a shim does when its machine stops.

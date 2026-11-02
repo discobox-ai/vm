@@ -96,9 +96,9 @@ func Main(args []string) int {
 		installCommand(g),
 		commitCommand(g), upgradeCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
-		lsCommand(g), inspectCommand(g), urlCommand(g), dialCommand(g), execCommand(g), cpCommand(g),
+		lsCommand(g), inspectCommand(g), urlCommand(g), dialCommand(g), guiCommand(g), execCommand(g), cpCommand(g),
 		infoCommand(g), keyCommand(g), cacheCommand(g),
-		guestCommand(), consoleHostCommand(), pipeCommand(), shimCommand(g), dialHostCommand(), dockerInitCommand(), dockerVolumesCommand(),
+		guestCommand(), consoleHostCommand(), displayHostCommand(), pipeCommand(), shimCommand(g), dialHostCommand(), dockerInitCommand(), dockerVolumesCommand(),
 	)
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
