@@ -88,7 +88,10 @@ try {
     $index = $match.ImageIndex
   }
   $name = ($images | Where-Object ImageIndex -eq $index).ImageName
-  Write-Output "image: $wim index $index ($name)"
+  # Home editions (Core, CoreN, CoreSingleLanguage) cannot host Remote Desktop.
+  $editionId = (Get-WindowsImage -ImagePath $wim -Index $index).EditionId
+  $rdp = $editionId -notmatch '^Core'
+  Write-Output "image: $wim index $index ($name, $editionId)"
 
   Assert-OurDisk $DiskNumber $Vhdx
   Initialize-Disk -Number $DiskNumber -PartitionStyle GPT | Out-Null
@@ -155,9 +158,17 @@ try {
   reg add $svc /v ObjectName /t REG_SZ /d 'LocalSystem' /f | Out-Null
   # Restart the agent 5 s after any crash, three times a day.
   reg add $svc /v FailureActions /t REG_BINARY /d 8051010000000000000000000300000014000000010000008813000001000000881300000100000088130000 /f | Out-Null
-  # Steps that run as the image's user log on with LogonUser, which refuses a
-  # blank password unless this is off.
+  # The agent logs on as the image's user with LogonUser, which refuses a
+  # blank password, as an image from before had and as -Password may give,
+  # unless this is off.
   reg add 'HKLM\DISCOVMSYS\ControlSet001\Control\Lsa' /v LimitBlankPasswordUse /t REG_DWORD /d 0 /f | Out-Null
+  # Remote Desktop, where the edition hosts it, is how `disco-vm gui` shows
+  # the desktop. Its firewall rules stay as Windows ships them, closed: the
+  # agent relays to it from inside the guest, over 127.0.0.1.
+  if ($rdp) {
+    reg add 'HKLM\DISCOVMSYS\ControlSet001\Control\Terminal Server' /v fDenyTSConnections /t REG_DWORD /d 0 /f | Out-Null
+    Write-Output "remote desktop: on, reachable only from inside the guest"
+  }
   [gc]::Collect()
   reg unload 'HKLM\DISCOVMSYS' | Out-Null
   if ($LASTEXITCODE -ne 0) { Start-Sleep -Seconds 1; [gc]::Collect(); reg unload 'HKLM\DISCOVMSYS' | Out-Null }
