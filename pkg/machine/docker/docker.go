@@ -148,6 +148,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 		GuestOS: []machine.OS{machine.Linux},
 		Agent:   true,
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
+		Volumes: []machine.Volume{machine.VolumeData, machine.VolumeCache},
 	}
 }
 
@@ -336,6 +337,9 @@ func (d *Driver) commit(ctx context.Context, container string, dst machine.Image
 	labels := map[string]string{
 		labelID: dst.ID, labelProject: d.project, labelComment: dst.Comment,
 		labelInstance: "", labelImage: "", labelCPUs: "", labelMemory: "",
+		// An image never holds a volume, and a container inherits its
+		// image's labels.
+		labelData: "", labelCache: "", labelCacheBytes: "", labelGeneration: "",
 	}
 	var changes []string
 	for _, key := range sortedKeys(labels) {
@@ -388,16 +392,29 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		d.removeImage(base)
 		return machine.Instance{}, err
 	}
+	vols, err := d.makeVolumes(ctx, spec, image.ID)
+	if vols.copier != "" {
+		defer d.removeContainer(vols.copier)
+	}
+	if err != nil {
+		d.removeVolumes(vols.names)
+		d.removeImage(base)
+		return machine.Instance{}, err
+	}
+	labels := map[string]string{
+		labelInstance: spec.Name, labelProject: d.project, labelID: spec.ImageID, labelImage: spec.Image,
+		labelCPUs: strconv.Itoa(spec.CPUs), labelMemory: strconv.FormatUint(spec.Memory, 10),
+		labelComment: "",
+		// Set even when empty, over any its image carries.
+		labelData: "", labelCache: "", labelCacheBytes: "", labelGeneration: "",
+	}
+	maps.Copy(labels, vols.labels)
 	none := []string{}
 	id, err := d.api.createContainer(ctx, name, containerConfig{
 		Image:    image.ID,
 		Hostname: spec.Name,
 		Cmd:      []string{},
-		Labels: map[string]string{
-			labelInstance: spec.Name, labelProject: d.project, labelID: spec.ImageID, labelImage: spec.Image,
-			labelCPUs: strconv.Itoa(spec.CPUs), labelMemory: strconv.FormatUint(spec.Memory, 10),
-			labelComment: "",
-		},
+		Labels:   labels,
 		// The service is published on the host's loopback, on a port the
 		// daemon picks at every start.
 		ExposedPorts: map[string]struct{}{servicePortKey: {}},
@@ -410,19 +427,29 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 			MaskedPaths:   &none,
 			ReadonlyPaths: &none,
 			Tmpfs:         map[string]string{relayDir: "mode=0700"},
+			Mounts:        vols.mounts,
 		},
 	})
 	if isConflict(err) {
+		d.removeVolumes(vols.names)
 		d.removeImage(base)
 		return machine.Instance{}, fmt.Errorf("docker: an instance named %q: %w", spec.Name, machine.ErrExists)
 	}
 	if err != nil {
+		d.removeVolumes(vols.names)
 		d.removeImage(base)
 		return machine.Instance{}, fmt.Errorf("docker: create %s: %w", name, err)
 	}
 	c, err := d.api.inspectContainer(ctx, id)
+	if err == nil {
+		err = d.checkVolumes(ctx, vols.names)
+	}
+	if err == nil && vols.copier != "" {
+		err = d.copyCache(ctx, vols.copier, id)
+	}
 	if err != nil {
 		d.removeContainer(id)
+		d.removeVolumes(vols.names)
 		d.removeImage(base)
 		return machine.Instance{}, fmt.Errorf("docker: container %s: %w", name, err)
 	}
@@ -572,6 +599,9 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	}
 	if err := d.api.removeContainer(ctx, inst.ID); err != nil {
 		return fmt.Errorf("docker: remove %s: %w", containerName(d.project, inst.Name), err)
+	}
+	if err := d.removeOwnVolumes(ctx, inst.Name); err != nil {
+		return err
 	}
 	images, err := d.api.images(ctx, imageRepo)
 	if err != nil {

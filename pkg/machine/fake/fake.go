@@ -94,6 +94,7 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		Agent:   true,
 		Install: []machine.OS{machine.OS(runtime.GOOS)},
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopeProject},
+		Volumes: []machine.Volume{machine.VolumeData, machine.VolumeCache},
 	}
 }
 
@@ -118,6 +119,44 @@ const (
 )
 
 func rootfs(dir string) string { return filepath.Join(dir, rootfsName) }
+
+// cacheName is the directory of a generation SaveCache writes.
+const cacheName = "cache"
+
+// volume is where a fake guest's volume is: a directory in its root at the
+// guest's machine.VolumePath, which Commit leaves out of the image. Bytes
+// are a hint: a directory has no size.
+func volume(inst local.InstanceSpec, v machine.Volume) string {
+	return guest.Resolve(rootfs(inst.Dir), machine.VolumePath(inst.GuestOS, v))
+}
+
+// prepareVolumes makes the instance's volumes in its root: empty, whatever
+// the image holds at their paths, and the cache a copy of its generation.
+func prepareVolumes(inst local.InstanceSpec) error {
+	if inst.Data != nil {
+		if err := freshDir(volume(inst, machine.VolumeData)); err != nil {
+			return err
+		}
+	}
+	if inst.Cache == nil {
+		return nil
+	}
+	dir := volume(inst, machine.VolumeCache)
+	if err := freshDir(dir); err != nil {
+		return err
+	}
+	if inst.CacheFrom == nil {
+		return nil
+	}
+	return fsutil.CopyTree(filepath.Join(inst.CacheFrom.Dir, cacheName), dir)
+}
+
+func freshDir(dir string) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	return os.MkdirAll(dir, 0o755)
+}
 
 // Install creates an empty root. The media is not read; it is recorded, so a
 // test can see what the spec asked for.
@@ -157,9 +196,15 @@ func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 		for _, key := range slices.Sorted(maps.Keys(b.Options)) {
 			fmt.Fprintf(&marker, "option.%s=%s\n", key, b.Options[key])
 		}
-		return os.WriteFile(filepath.Join(rootfs(inst.Dir), markerName), []byte(marker.String()), 0o644) //nolint:gosec // G306: the fake guest's marker, no secrets
+		if err := os.WriteFile(filepath.Join(rootfs(inst.Dir), markerName), []byte(marker.String()), 0o644); err != nil { //nolint:gosec // G306: the fake guest's marker, no secrets
+			return err
+		}
+		return prepareVolumes(inst)
 	}
-	return fsutil.CopyTree(rootfs(inst.Parent().Dir), rootfs(inst.Dir))
+	if err := fsutil.CopyTree(rootfs(inst.Parent().Dir), rootfs(inst.Dir)); err != nil {
+		return err
+	}
+	return prepareVolumes(inst)
 }
 
 func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
@@ -231,8 +276,22 @@ func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst loca
 	if err := os.MkdirAll(dst.Dir, 0o755); err != nil {
 		return err
 	}
+	// The image never holds a volume; its mount point stays, as an empty
+	// directory a real driver's would.
+	for v, attached := range map[machine.Volume]bool{machine.VolumeData: inst.Data != nil, machine.VolumeCache: inst.Cache != nil} {
+		if attached {
+			if err := freshDir(volume(inst, v)); err != nil {
+				return err
+			}
+		}
+	}
 	// Moved, not copied: Commit consumes the instance.
 	return os.Rename(rootfs(inst.Dir), rootfs(dst.Dir))
+}
+
+// SaveCache copies the instance's cache volume into the generation dst.
+func (d *Hypervisor) SaveCache(_ context.Context, inst local.InstanceSpec, dst local.Layer) error {
+	return fsutil.CopyTree(volume(inst, machine.VolumeCache), filepath.Join(dst.Dir, cacheName))
 }
 
 func (d *Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {

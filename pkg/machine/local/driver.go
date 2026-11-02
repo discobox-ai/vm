@@ -397,7 +397,10 @@ func (d *Driver) spec(inst machine.Instance) (InstanceSpec, error) {
 	if !validID(inst.ID) {
 		return InstanceSpec{}, fmt.Errorf("local: instance ID %q is not a directory name", inst.ID)
 	}
-	spec := InstanceSpec{ID: inst.ID, Dir: filepath.Join(d.instanceDir(inst.ID), machineDir), GuestOS: inst.GuestOS, Base: inst.Base, CacheDir: d.cacheDir(), Egress: inst.Egress}
+	spec := InstanceSpec{
+		ID: inst.ID, Dir: filepath.Join(d.instanceDir(inst.ID), machineDir), GuestOS: inst.GuestOS, Base: inst.Base,
+		CacheDir: d.cacheDir(), Egress: inst.Egress, Data: inst.Data, Cache: inst.Cache,
+	}
 	if inst.Base == nil {
 		chain, err := d.chain(inst.ImageID)
 		if err != nil {
@@ -463,6 +466,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if !d.hv.Capabilities().Fences(spec.Egress) {
 		return machine.Instance{}, fmt.Errorf("%s cannot fence an instance's egress to %q: %w", d.hv.Name(), spec.Egress.Allow, machine.ErrUnsupported)
 	}
+	if err := checkVolumes(d.hv, spec); err != nil {
+		return machine.Instance{}, err
+	}
 	if spec.Base == nil {
 		if _, err := d.readImage(spec.ImageID); err != nil {
 			return machine.Instance{}, err
@@ -472,6 +478,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		ID: fsutil.RandomHex(6), Name: spec.Name, Image: spec.Image, ImageID: spec.ImageID, Base: spec.Base,
 		GuestOS: spec.GuestOS, CPUs: spec.CPUs, Memory: spec.Memory,
 		Created: time.Now().UTC(), Forwards: spec.Forwards, Egress: spec.Egress,
+	}
+	if spec.Data != nil {
+		inst.Data = &machine.DataVolume{Bytes: spec.Data.Bytes}
 	}
 	if inst.Base != nil {
 		inst.ImageID = ""
@@ -484,7 +493,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		err = os.MkdirAll(d.instanceDir(inst.ID), 0o755)
 	}
 	if err == nil {
-		err = d.hv.Prepare(ctx, hs)
+		err = d.prepare(ctx, &inst, &hs, spec.Cache)
 	}
 	if err == nil {
 		// The record is the instance: until it is written, nothing lists it.
@@ -499,6 +508,45 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, err
 	}
 	return inst, nil
+}
+
+// checkVolumes refuses a volume the hypervisor does not attach, and a cache
+// key that is not one.
+func checkVolumes(hv Hypervisor, spec machine.InstanceSpec) error {
+	caps := hv.Capabilities()
+	if spec.Data != nil && !caps.Attaches(machine.VolumeData) {
+		return fmt.Errorf("%s: a data volume: %w", hv.Name(), machine.ErrUnsupported)
+	}
+	if spec.Cache == nil {
+		return nil
+	}
+	if !caps.Attaches(machine.VolumeCache) {
+		return fmt.Errorf("%s: a cache volume: %w", hv.Name(), machine.ErrUnsupported)
+	}
+	return machine.ValidateCacheKey(spec.Cache.Key)
+}
+
+// prepare has the hypervisor make the instance's disk and volumes, its cache
+// volume cloned from its key's current generation. A generation removed
+// while it was cloned (a save moved the key) is retried once with the new
+// one.
+func (d *Driver) prepare(ctx context.Context, inst *machine.Instance, hs *InstanceSpec, cache *machine.CacheVolume) error {
+	if cache == nil {
+		return d.hv.Prepare(ctx, *hs)
+	}
+	for attempt := 0; ; attempt++ {
+		from, gen, err := d.cacheFrom(cache.Key)
+		if err != nil {
+			return err
+		}
+		inst.Cache = &machine.CacheVolume{Key: cache.Key, Bytes: cache.Bytes, Generation: gen}
+		hs.Cache, hs.CacheFrom = inst.Cache, from
+		err = d.hv.Prepare(ctx, *hs)
+		if err == nil || gen == "" || attempt > 0 || !d.generationGone(gen) {
+			return err
+		}
+		_ = d.hv.Destroy(ctx, *hs)
+	}
 }
 
 // readInstance reads an instance of the driver's project by its ID.
@@ -587,7 +635,7 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 		return d.release(inst)
 	}
-	hs := InstanceSpec{ID: inst.ID, Dir: filepath.Join(dir, machineDir), GuestOS: inst.GuestOS, Base: inst.Base}
+	hs := InstanceSpec{ID: inst.ID, Dir: filepath.Join(dir, machineDir), GuestOS: inst.GuestOS, Base: inst.Base, Data: inst.Data, Cache: inst.Cache}
 	if chain, err := d.chain(inst.ImageID); err == nil && inst.Base == nil {
 		hs.Chain = chain
 	}

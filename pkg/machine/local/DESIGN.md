@@ -19,6 +19,15 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   name, image, image ID or base, size, forwards, fence), and while a shim
   holds it, `shim.json`, `shim.sock`, and `shim.log`;
 - `instances/.names/<project>/<name>`, the name's claim, holding the ID;
+- `caches/<project>/<key>.json`, a cache key, naming its current
+  generation, and `caches/generations/<id>/payload` (the hypervisor's copy
+  of a cache volume, which `Hypervisor.SaveCache` writes and `Prepare` clones
+  from `InstanceSpec.CacheFrom`) and `generation.json` (project, key, size,
+  when it was saved). A generation is published by renaming it into place,
+  and a key moves by replacing its file; the generation it moved off is
+  renamed out of reach and removed, and a Create cloning it in that moment
+  is retried once with the new one. Every instance's cache volume is its own
+  copy, so nothing but a key needs a generation;
 - `cache/<hypervisor>/`, what the hypervisor downloads: media it installs
   from, and, for vz, Linux guest images pulled per digest
   (`cache/vz/linux/<digest>`). `Bases`, `Base`, and `Prepare` are given it;

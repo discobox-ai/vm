@@ -43,6 +43,7 @@ a `Capabilities` field, never a faked method:
 | isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no |
 | egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | none |
 | private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | the URL (a shared loopback) |
+| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: named volumes | `data` and `cache`: directories in the guest's root |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
 ([below](#every-clone-is-cold-and-an-image-is-made-fast-by-what-is-in-it)).
@@ -84,6 +85,37 @@ refuses a fence it does not hold. vz holds `none` alone, as an instance with
 no network device, whose only reach is the vsock its spec forwards; its
 read-back is the instance's record, which Boot reads to attach no NIC.
 `Instance.Egress` is the fence the provider reports.
+
+## Two volumes, at fixed paths, and a cache is saved only on request
+
+An instance can have a data volume and a cache volume (`InstanceSpec.Data`,
+`Cache`; ADR 26-11-02-180), and nothing else beside its root disk. Every
+driver mounts each at `machine.VolumePath`: `/.discobox/data` and
+`/.discobox/cache`, and `C:\.discobox\...` on Windows, before Boot or Start
+returns. A driver lists what it attaches in `Capabilities.Volumes` and
+refuses the rest with `ErrUnsupported`; nothing falls back to a directory on
+the root disk. A size is a cap where the provider sizes storage and a hint
+where it grows on demand (docker, fake).
+
+- **A data volume is the instance's**: made empty at Create, kept across stop
+  and start, removed by Destroy, and never in an image, since Commit captures
+  the root disk alone.
+- **A cache key points at a generation**, an immutable snapshot of a cache
+  volume, as a tag points at an image; each project has its own keys. Create
+  clones the key's current generation into the instance's own volume (empty
+  where the key has none), which no other machine mounts and nothing
+  refreshes; `Instance.Cache.Generation` names it.
+- **Only `SaveCache` publishes**, from a stopped instance, to the key it
+  names, keeping the instance. A guarded save (`CacheSave.Guarded`) refuses
+  with `ErrCacheMoved` once the key holds another generation than the one it
+  expects, checked before it copies and again before it moves the key; two
+  saves in the same moment may both pass, and one of them wins (local: the
+  last to move the key; docker: the one begun last). The engine
+  guards a save to the key the instance started from, by the generation it
+  was cloned from, unless forced (`SaveOptions.Force`, `cache save --force`).
+- **A key moved off a generation removes it**, once nothing needs it;
+  `DeleteCache` drops the key and its generation, and instances keep their
+  clones.
 
 A driver lists every guest OS it boots in `Capabilities.GuestOS`, and the
 ones it installs from media in `Capabilities.Install`; a caller asks for a

@@ -108,7 +108,14 @@ type Capabilities struct {
 	// loosen it: EgressNone, nothing beyond its networks, and EgressAllow, a
 	// list beyond them. Empty is none at all.
 	Egress []EgressFence `json:"egress,omitempty"`
+	// Volumes is every volume the driver attaches to an instance
+	// (InstanceSpec.Data, InstanceSpec.Cache), mounted at VolumePath. Empty
+	// is none.
+	Volumes []Volume `json:"volumes,omitempty"`
 }
+
+// Attaches reports whether the driver attaches the volume v.
+func (c Capabilities) Attaches(v Volume) bool { return slices.Contains(c.Volumes, v) }
 
 // EgressFence is a kind of fence a driver holds (Capabilities.Egress).
 type EgressFence string
@@ -362,6 +369,11 @@ type InstanceSpec struct {
 	// provider's default. It is the spec's, never the image's. A driver that
 	// does not hold the fence asked for (Capabilities.Fences) refuses it.
 	Egress *Egress
+	// Data is the instance's data volume, and Cache its cache volume; nil is
+	// none. A driver that does not list the volume in
+	// Capabilities.Volumes refuses it. Neither is ever part of an image.
+	Data  *DataVolume
+	Cache *CacheVolume
 }
 
 // Egress is an instance's fence: what it may reach beyond its networks,
@@ -399,6 +411,10 @@ type Instance struct {
 	// Egress is the fence the provider holds, as InstanceSpec's: nil is
 	// none.
 	Egress *Egress `json:"egress,omitempty"`
+	// Data and Cache are its volumes, as the provider reports them; Cache
+	// says which generation it was cloned from.
+	Data  *DataVolume  `json:"data,omitempty"`
+	Cache *CacheVolume `json:"cache,omitempty"`
 }
 
 // InstallSpec creates an image from installation media.
@@ -519,14 +535,17 @@ type Driver interface {
 
 	// Create makes a stopped instance: a copy-on-write clone of its image,
 	// or a machine made from its base, that boots from power-off with a machine
-	// identity of its own. A name the project already has is ErrExists.
+	// identity of its own. A name the project already has is ErrExists. Its
+	// data volume is made empty, and its cache volume a clone of the key's
+	// current generation.
 	Create(ctx context.Context, spec InstanceSpec) (Instance, error)
 	// Instance is the project's instance of a name, or ErrNotFound.
 	Instance(ctx context.Context, name string) (Instance, error)
 	// Instances lists the project's instances.
 	Instances(ctx context.Context) ([]Instance, error)
-	// Destroy removes an instance and everything made for it, stopping it
-	// first if it runs. One already gone is not an error.
+	// Destroy removes an instance and everything made for it, its volumes
+	// included, stopping it first if it runs. One already gone is not an
+	// error.
 	Destroy(ctx context.Context, inst Instance) error
 
 	// Boot starts a stopped instance in this process and returns once its
@@ -548,14 +567,30 @@ type Driver interface {
 	// that outlives the call.
 	Attach(ctx context.Context, inst Instance) (Machine, error)
 	// Commit captures a stopped instance's disk as the image img (its ID,
-	// GuestOS, and Comment): a snapshot. It removes the instance, and returns
-	// the image as the provider keeps it.
+	// GuestOS, and Comment): a snapshot. It removes the instance, its volumes
+	// included, which the image never holds, and returns the image as the
+	// provider keeps it.
 	Commit(ctx context.Context, inst Instance, img Image) (Image, error)
 	// Service is the instance's service. A URL that exists only while the
 	// instance runs (a port the daemon publishes, a shim's) is asked for
 	// while it is stopped: then the driver returns ErrNotRunning. A URL
 	// that outlives a stop (boxd's) is the same across stop and start.
 	Service(ctx context.Context, inst Instance) (Service, error)
+
+	// Caches lists the project's cache keys, each with its current
+	// generation. A driver that does not list VolumeCache lists none.
+	Caches(ctx context.Context) ([]Cache, error)
+	// SaveCache snapshots stopped inst's cache volume as a new generation
+	// and points save.Key at it, keeping the instance and its volume. A
+	// guarded save whose key does not hold the generation it expects is
+	// ErrCacheMoved, and saves nothing. The key's old generation is removed
+	// once nothing needs it. A driver that does not list VolumeCache returns
+	// ErrUnsupported.
+	SaveCache(ctx context.Context, inst Instance, save CacheSave) (Cache, error)
+	// DeleteCache drops a cache key and the generations nothing else needs.
+	// A key already gone is not an error. A driver that does not list
+	// VolumeCache returns ErrUnsupported.
+	DeleteCache(ctx context.Context, key string) error
 
 	// IssueKey makes the narrowest key the driver can for another host to
 	// run this project's machines with. An issued key expires, and cannot

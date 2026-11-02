@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // stageEnv tells Init which side of the user namespace it runs on.
@@ -52,6 +54,9 @@ func Init() error {
 	if err := os.Lchown("/", UIDBase, UIDBase); err != nil {
 		return fmt.Errorf("docker-init: give the guest its root directory: %w", err)
 	}
+	if err := giveVolumes(); err != nil {
+		return err
+	}
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	for {
@@ -81,6 +86,30 @@ func Init() error {
 
 // cgroupRoot is the container's cgroup, as its own cgroup namespace sees it.
 const cgroupRoot = "/sys/fs/cgroup"
+
+// giveVolumes gives the guest's root its volumes' mount points, which Docker
+// makes as the host's root, as it makes the root directory: /.discobox and
+// each volume's directory, where they are the host root's. A directory the
+// guest already owns is left alone.
+func giveVolumes() error {
+	data := machine.VolumePath(machine.Linux, machine.VolumeData)
+	for _, dir := range []string{filepath.Dir(data), data, machine.VolumePath(machine.Linux, machine.VolumeCache)} {
+		var st unix.Stat_t
+		if err := unix.Lstat(dir, &st); err != nil {
+			if errors.Is(err, unix.ENOENT) {
+				continue
+			}
+			return fmt.Errorf("docker-init: %s: %w", dir, err)
+		}
+		if st.Uid != 0 {
+			continue
+		}
+		if err := os.Lchown(dir, UIDBase, UIDBase); err != nil {
+			return fmt.Errorf("docker-init: give the guest %s: %w", dir, err)
+		}
+	}
+	return nil
+}
 
 // delegateCgroup moves this process out of the container's cgroup into a leaf
 // and enables every controller below it, so a guest cgroup beside it can have

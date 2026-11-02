@@ -142,8 +142,10 @@ guests share it.
 | `Machine.Done` | waiting starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to run a command leaves nothing running. The daemon's `wait` on the container: exit 0 is a power-off. A failed wait (the daemon restarted) inspects and waits again. |
 | `Machine.Kill` | SIGKILL to the container. |
 | `Machine` guest operations | the agent (`guest.Client`), each connection a docker exec of `disco-vm pipe unix:/run/disco-vm-relay/guest/run/disco-vm/agent.sock`, on the container's side. |
-| `Commit` | empty the stopped container's `/etc/machine-id`, so every instance of the image makes its own, `docker commit` it as the image, and destroy the instance. |
-| `Destroy` | `docker rm -f`, then remove the `disco-vm-layer:<project>--base-<name>--*` tag of the image the container ran, and every other one of the name older than 30 minutes that no container runs: what a Destroy that failed partway or a create that lost a race left, and never a create of the name still readying (no name has `--`, so another name's are never matched). The daemon keeps what a snapshot of it is built on, and refuses a tag a later instance of the name runs. |
+| volumes | `Data`: a named volume `dvm-<project>--<name>--data-<random>` at `/.discobox/data`; `Cache`: `--cache-<random>` at `/.discobox/cache`, filled at Create from the key's current generation. Both are mounted with `NoCopy` and labeled `ai.discobox.vm.volume`, `.project`, and `.instance`; the container carries `.data` and `.cache`, `.cache-bytes`, and `.generation`. docker-init chowns a root-owned `/.discobox` and each mount point into the guest's uids at every start. The local volume driver has no quota, so a size is a hint. |
+| caches | a generation is a volume `dvm-<project>--cachegen--<key>--<id>`, and the key's pointer to it an empty volume `--cachekey--<key>--<id>`, both labeled `.volume`, `.project`, `.cache`, `.generation`, `.cache-bytes`, and `.saved`. `SaveCache` makes the generation, copies the stopped instance's `/.discobox/cache` into it (`GET /containers/<id>/archive`, then `PUT` into a container made, never started, from the instance's image with the generation mounted), checks the guard again, makes the pointer, and removes the key's pointers and generations saved before it but one a copy still mounts, so of two saves at once the one begun last wins. Create mounts the key's current generation in such a container before it reads it, which keeps a save from removing it meanwhile: the daemon makes a missing volume a mount names, so one found unlabeled once mounted was removed in between, and the next is tried. `Caches` reads each key's newest pointer whose generation is there; `DeleteCache` removes its pointers, then its generations. |
+| `Commit` | empty the stopped container's `/etc/machine-id`, so every instance of the image makes its own, `docker commit` it as the image, and destroy the instance. `docker commit` never holds a volume. |
+| `Destroy` | `docker rm -f`, then its data and cache volumes, found by their labels (one a later instance of the name mounts is left), then remove the `disco-vm-layer:<project>--base-<name>--*` tag of the image the container ran, and every other one of the name older than 30 minutes that no container runs: what a Destroy that failed partway or a create that lost a race left, and never a create of the name still readying (no name has `--`, so another name's are never matched). The daemon keeps what a snapshot of it is built on, and refuses a tag a later instance of the name runs. |
 
 The driver talks to the Docker Engine API over `DOCKER_HOST` itself, not
 through the docker CLI or SDK, as boxd's does.
@@ -226,6 +228,11 @@ minutes with apt), every subtest but the listed bases'; `internal/e2e` with
 the static binary, e2e/base a snapshot of debian:trixie; and by hand, two
 generations of snapshots with the first removed and the second run with
 both writes, and nothing left on the daemon.
+
+Since ADR 26-11-02-180 (2026-11-02, Docker 29.9.2, Linux 7.1):
+`TestConformance` from `debian:trixie`, a-data-volume and a-cache-volume
+included, and `internal/e2e` TestVolumes with the static binary; no volume
+or container left behind.
 
 ## Not verified yet
 

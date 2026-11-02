@@ -17,7 +17,9 @@
 // another call, its service has a URL, and a private URL where it has one, and
 // it is found stopped once its guest powers off; a guest port is dialed
 // through an attached machine, and a guest reaches a peer's port through a
-// forward, or the driver refuses both; and a key the driver issues
+// forward, or the driver refuses both; a data volume is kept across a boot
+// and never in a snapshot; a cache volume is a private clone of its key's
+// generation, which only a save moves; and a key the driver issues
 // runs the project's machines, cannot issue another, and works no more once
 // it is revoked.
 package machinetest
@@ -670,6 +672,193 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 	})
 
+	// A data volume is the instance's: empty at Create, kept across a stop
+	// and a boot, gone with the instance, and never in a snapshot of it. A
+	// driver that attaches none refuses it.
+	t.Run("a-data-volume", func(t *testing.T) {
+		spec := of(committed.ID)
+		spec.Data = &machine.DataVolume{}
+		if !caps.Attaches(machine.VolumeData) {
+			spec.Name = fmt.Sprintf("conformance-%s-data", run)
+			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+				if err == nil {
+					_ = driver.Destroy(context.Background(), inst)
+				}
+				t.Fatalf("a driver that attaches no data volume made an instance with one: %v, want ErrUnsupported", err)
+			}
+			t.Skip("the driver attaches no data volume")
+		}
+		dir := machine.VolumePath(guestOS, machine.VolumeData)
+		inst := create(t, spec)
+		if got, err := driver.Instance(ctx, inst.Name); err != nil || got.Data == nil {
+			t.Fatalf("an instance with a data volume reports %+v: %v", got.Data, err)
+		}
+		m := boot(t, inst)
+		if err := m.CopyTo(ctx, dir, tarOf(t, "data.txt", "kept")); err != nil {
+			t.Fatalf("write to the data volume: %v", err)
+		}
+		shutdown(t, m)
+		m = boot(t, inst)
+		if got := readMarker(t, m, dir+"/data.txt"); got != "kept" {
+			t.Fatalf("the data volume reads %q after a stop and a boot", got)
+		}
+		shutdown(t, m)
+		gone := of(committed.ID)
+		gone.Name, gone.Data = fmt.Sprintf("conformance-%s-data-gone", run), &machine.DataVolume{}
+		destroyed, err := driver.Create(ctx, gone)
+		if err != nil {
+			t.Fatalf("create %s: %v", gone.Name, err)
+		}
+		m = boot(t, destroyed)
+		if err := m.CopyTo(ctx, dir, tarOf(t, "data.txt", "destroyed")); err != nil {
+			t.Fatalf("write to the data volume: %v", err)
+		}
+		shutdown(t, m)
+		if err := driver.Destroy(ctx, destroyed); err != nil {
+			t.Fatalf("destroy %s: %v", gone.Name, err)
+		}
+		reborn, err := driver.Create(ctx, gone)
+		if err != nil {
+			t.Fatalf("create %s again: %v", gone.Name, err)
+		}
+		t.Cleanup(func() { _ = driver.Destroy(context.Background(), reborn) })
+		m = boot(t, reborn)
+		absent(t, m, dir+"/data.txt", "a new instance of a destroyed one's name")
+		shutdown(t, m)
+		img := snapshot(t, inst, "conformance data")
+		again := of(img.ID)
+		again.Data = &machine.DataVolume{}
+		m = boot(t, create(t, again))
+		absent(t, m, dir+"/data.txt", "a snapshot's instance's data volume")
+		shutdown(t, m)
+		bare := create(t, of(img.ID))
+		if got, err := driver.Instance(ctx, bare.Name); err != nil || got.Data != nil {
+			t.Fatalf("an instance of a snapshot, made with no volume, reports data %+v: %v", got.Data, err)
+		}
+		m = boot(t, bare)
+		absent(t, m, dir+"/data.txt", "a snapshot")
+	})
+
+	// A cache volume is a private clone of its key's current generation,
+	// which only a save moves: a write is seen by no live peer and by no
+	// later instance until it is saved; a guarded save is refused once the
+	// key has moved; another key sees nothing; and an instance keeps its
+	// clone once its key is removed. A driver that attaches none refuses it.
+	t.Run("a-cache-volume", func(t *testing.T) {
+		key, other := "conformance-"+run, "conformance-"+run+"-other"
+		withCache := func(key string) machine.InstanceSpec {
+			spec := of(committed.ID)
+			spec.Cache = &machine.CacheVolume{Key: key}
+			return spec
+		}
+		if !caps.Attaches(machine.VolumeCache) {
+			spec := withCache(key)
+			spec.Name = fmt.Sprintf("conformance-%s-cache", run)
+			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+				if err == nil {
+					_ = driver.Destroy(context.Background(), inst)
+				}
+				t.Fatalf("a driver that attaches no cache volume made an instance with one: %v, want ErrUnsupported", err)
+			}
+			if caches, err := driver.Caches(ctx); err != nil || len(caches) != 0 {
+				t.Fatalf("a driver that attaches no cache volume lists caches %+v: %v", caches, err)
+			}
+			if err := driver.DeleteCache(ctx, key); !errors.Is(err, machine.ErrUnsupported) {
+				t.Fatalf("a driver that attaches no cache volume deletes one: %v, want ErrUnsupported", err)
+			}
+			t.Skip("the driver attaches no cache volume")
+		}
+		t.Cleanup(func() {
+			_ = driver.DeleteCache(context.Background(), key)
+			_ = driver.DeleteCache(context.Background(), other)
+		})
+		dir := machine.VolumePath(guestOS, machine.VolumeCache)
+		cached := func(t *testing.T, key string) machine.Instance {
+			t.Helper()
+			inst := create(t, withCache(key))
+			got, err := driver.Instance(ctx, inst.Name)
+			if err != nil || got.Cache == nil || got.Cache.Key != key {
+				t.Fatalf("an instance with cache %s reports %+v: %v", key, got.Cache, err)
+			}
+			return got
+		}
+
+		first := cached(t, key)
+		if first.Cache.Generation != "" {
+			t.Fatalf("an instance of a key never saved was cloned from generation %q", first.Cache.Generation)
+		}
+		m := boot(t, first)
+		if err := m.CopyTo(ctx, dir, tarOf(t, "cache.txt", "first")); err != nil {
+			t.Fatalf("write to the cache volume: %v", err)
+		}
+		peer := boot(t, cached(t, key))
+		absent(t, peer, dir+"/cache.txt", "a live peer's cache volume")
+		shutdown(t, peer)
+		shutdown(t, m)
+		if _, err := driver.SaveCache(ctx, first, machine.CacheSave{Key: key, Guarded: true, IfGeneration: "x"}); !errors.Is(err, machine.ErrCacheMoved) {
+			t.Fatalf("a save guarded on a generation the key never held: %v, want ErrCacheMoved", err)
+		}
+		saved, err := driver.SaveCache(ctx, first, machine.CacheSave{Key: key, Guarded: true})
+		if err != nil || saved.Key != key || saved.Generation == "" {
+			t.Fatalf("save the first instance's cache: %+v, %v", saved, err)
+		}
+		if _, err := driver.SaveCache(ctx, first, machine.CacheSave{Key: key, Guarded: true}); !errors.Is(err, machine.ErrCacheMoved) {
+			t.Fatalf("a save guarded on no generation once the key holds one: %v, want ErrCacheMoved", err)
+		}
+		caches, err := driver.Caches(ctx)
+		if err != nil || !slices.ContainsFunc(caches, func(c machine.Cache) bool { return c.Key == key && c.Generation == saved.Generation }) {
+			t.Fatalf("caches %+v do not list %s at %s: %v", caches, key, saved.Generation, err)
+		}
+
+		second := cached(t, key)
+		if second.Cache.Generation != saved.Generation {
+			t.Fatalf("an instance of %s was cloned from %q, want %q", key, second.Cache.Generation, saved.Generation)
+		}
+		m = boot(t, second)
+		if got := readMarker(t, m, dir+"/cache.txt"); got != "first" {
+			t.Fatalf("a clone of the saved generation reads %q", got)
+		}
+		if err := m.CopyTo(ctx, dir, tarOf(t, "cache.txt", "second")); err != nil {
+			t.Fatalf("write to the cache volume: %v", err)
+		}
+		shutdown(t, m)
+		m = boot(t, cached(t, other))
+		absent(t, m, dir+"/cache.txt", "another key's cache volume")
+		shutdown(t, m)
+
+		if err := driver.DeleteCache(ctx, key); err != nil {
+			t.Fatalf("delete cache %s: %v", key, err)
+		}
+		if err := driver.DeleteCache(ctx, key); err != nil {
+			t.Fatalf("delete cache %s again: %v", key, err)
+		}
+		caches, err = driver.Caches(ctx)
+		if err != nil || slices.ContainsFunc(caches, func(c machine.Cache) bool { return c.Key == key }) {
+			t.Fatalf("caches %+v still list %s once it is deleted: %v", caches, key, err)
+		}
+		m = boot(t, second)
+		if got := readMarker(t, m, dir+"/cache.txt"); got != "second" {
+			t.Fatalf("an instance's cache volume reads %q once its key is deleted", got)
+		}
+		shutdown(t, m)
+		saved, err = driver.SaveCache(ctx, second, machine.CacheSave{Key: other})
+		if err != nil || saved.Key != other {
+			t.Fatalf("save an instance's cache to another key: %+v, %v", saved, err)
+		}
+		m = boot(t, cached(t, other))
+		if got := readMarker(t, m, dir+"/cache.txt"); got != "second" {
+			t.Fatalf("a clone of %s reads %q", other, got)
+		}
+		shutdown(t, m)
+		img := snapshot(t, second, "conformance cache")
+		bare := create(t, of(img.ID))
+		if got, err := driver.Instance(ctx, bare.Name); err != nil || got.Cache != nil || got.Data != nil {
+			t.Fatalf("an instance of a snapshot, made with no volume, reports cache %+v and data %+v: %v", got.Cache, got.Data, err)
+		}
+		m = boot(t, bare)
+		absent(t, m, dir+"/cache.txt", "a snapshot of an instance with a cache volume")
+	})
+
 	// A snapshot of an instance of a snapshot keeps both writes, and stands
 	// alone: once the image it came from is deleted, it still boots with
 	// both. A driver whose snapshot still needs the other's disk refuses the
@@ -701,6 +890,16 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("a clone of the second snapshot reads %q from its own", got)
 		}
 	})
+}
+
+// absent fails unless the guest has nothing at path.
+func absent(t *testing.T, g machine.Guest, path, what string) {
+	t.Helper()
+	stream, err := g.CopyFrom(context.Background(), path)
+	if err == nil {
+		stream.Close()
+		t.Fatalf("%s has %s", what, path)
+	}
 }
 
 func hasImage(t *testing.T, driver machine.Driver, id string) bool {

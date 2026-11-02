@@ -41,6 +41,17 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   the daemon publishes, and its private URL is the service port at the
   container's IPv4 address on its network, where another container dials it,
   and none for a container with no IPv4 address (ADR 26-10-29-129). There is no egress fence.
+- **A volume is a named Docker volume** (ADR 26-11-02-180), mounted with no
+  copy of what the image holds at its path. An instance's data and cache
+  volumes are `dvm-<project>--<name>--data-<random>` and `--cache-<random>`,
+  removed with its container; docker-init gives the guest's root their
+  mount points, which Docker makes as the host's root, as it gives it `/`.
+  A cache generation is `dvm-<project>--cachegen--<key>--<id>`, and a key's
+  pointer to it `--cachekey--<key>--<id>`, an empty volume made once the
+  generation is whole, since labels never change; a key's current generation
+  is its newest pointer's. A cache is copied between volumes as a tar stream
+  through the daemon's archive API, the guest's owners in its headers, with
+  a container made and never started to mount the other end: O(its size).
 - **It is not a VM.** The kernel is the host's, `/proc` shows the host's
   resources, and the network namespace is Docker's, which the guest cannot
   reconfigure. The driver lists cold clones only, because a cold boot takes

@@ -145,6 +145,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if len(spec.Forwards) > 0 {
 		return machine.Instance{}, fmt.Errorf("boxd: forwards: %w", machine.ErrUnsupported)
 	}
+	if spec.Data != nil || spec.Cache != nil {
+		return machine.Instance{}, fmt.Errorf("boxd: a data or cache volume: %w", machine.ErrUnsupported)
+	}
 	restore := spec.Base == nil || spec.Base.Options["snapshot"] != ""
 	if restore && len(spec.Networks) > 0 && !spec.Isolated {
 		// A restore takes no networks: they are set once it is made, and a

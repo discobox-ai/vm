@@ -257,6 +257,7 @@ func (d *Driver) instance(c containerInfo, images map[string]string) machine.Ins
 	}
 	inst.CPUs, _ = strconv.Atoi(labels[labelCPUs])
 	inst.Memory, _ = strconv.ParseUint(labels[labelMemory], 10, 64)
+	volumesOf(&inst, labels)
 	return inst
 }
 
