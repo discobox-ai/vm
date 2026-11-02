@@ -43,7 +43,8 @@ const Protocol = 1
 // requires of guest vsock ports, and clear of discobox's own 3001-3004.
 const AgentPort uint32 = 7300
 
-// DisplayPort is reserved for a framebuffer stream (guestfb on Windows).
+// DisplayPort is a Windows guest's desktop, streamed to a viewer on the host
+// (ServeDisplay).
 const DisplayPort uint32 = 7301
 
 // ServicePort is the guest port of an instance's one service on the drivers

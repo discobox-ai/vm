@@ -27,7 +27,10 @@ type Driver struct {
 	keys machine.KeySource
 }
 
-var _ machine.Driver = (*Driver)(nil)
+var (
+	_ machine.Driver = (*Driver)(nil)
+	_ machine.Viewer = (*Driver)(nil)
+)
 
 // New is a driver for hv, keeping its state in cfg.Dir (machine.DefaultDir
 // when empty), for cfg's pool.

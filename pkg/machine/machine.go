@@ -606,6 +606,16 @@ type Driver interface {
 	RevokeKey(ctx context.Context, key Key) error
 }
 
+// Viewer is a driver that opens a window on a running instance's desktop
+// from any process, not only from the one that booted it with
+// BootOptions.GUI. A driver that lists Capabilities.Display may implement
+// it.
+type Viewer interface {
+	// View opens a window on the instance's desktop, titled title, and
+	// returns once someone closes it, ctx is done, or the instance stops.
+	View(ctx context.Context, inst Instance, title string) error
+}
+
 // HostListener is a running machine whose guest processes can connect out to
 // the host. A driver that lists Capabilities.Ports returns machines that
 // implement it.

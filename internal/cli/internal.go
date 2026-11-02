@@ -43,6 +43,16 @@ func guestCommand() *cobra.Command {
 				}
 			}
 			server := &guest.Server{Version: version.String(), Root: root, Fake: fake}
+			if !fake {
+				// The desktop, for a viewer on the host: a Windows guest's
+				// only; elsewhere it returns at once. Failing to serve it
+				// leaves the agent's own port serving.
+				go func() {
+					if err := guest.ServeDisplay(); err != nil {
+						fmt.Fprintln(os.Stderr, "disco-vm guest: display:", err)
+					}
+				}()
+			}
 			// The root command turns SIGTERM into a canceled context. The
 			// agent must still exit on it: the guest's init sends it at
 			// shutdown, and waits out its stop timeout for an agent that
@@ -111,6 +121,21 @@ func consoleHostCommand() *cobra.Command {
 				return exitError{code}
 			}
 			return nil
+		},
+	}
+}
+
+// displayHostCommand shows the desktop it runs on to a viewer on its stdin
+// and stdout. The agent starts it in the session of whoever is logged on to
+// a Windows guest's console (guest.ServeDisplay).
+func displayHostCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "display-host",
+		Short:  "Stream this desktop over stdin and stdout (started by the guest agent)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return guest.DisplayHost(os.Stdin, os.Stdout)
 		},
 	}
 }
