@@ -188,6 +188,28 @@ such an instance is an image like any other. A base is not an image: `tag`
 and `rmi` refuse it (`ErrBase`), since disco-vm never deletes what it did
 not make.
 
+## An instance's volumes, and a cache saved only on request
+
+`create` and `run` give an instance a data volume (`--data SIZE`) and a
+cache volume (`--cache KEY`, `--cache-size SIZE`), at
+`machine.VolumePath` (ADR 26-11-02-180;
+[pkg/machine](../machine/DESIGN.md#two-volumes-at-fixed-paths-and-a-cache-is-saved-only-on-request)).
+`Engine.Create` refuses, with `ErrUnsupported`, a volume the driver does not
+list in `Capabilities.Volumes`, and never makes a directory on the root disk
+in its place; it refuses a negative size and a key that is not one
+(`machine.ValidateCacheKey`), before it resolves the image.
+
+`Engine.SaveCache` (`cache save INSTANCE [KEY]`) publishes a stopped
+instance's cache volume as a new generation of a key, the instance's own by
+default, and keeps the instance; one not found stopped is refused, as
+`Snapshot` refuses it. A save to the key the instance started from is
+guarded by the generation it was cloned from (`Instance.Cache.Generation`),
+so a run that began from an older cache never replaces a newer one; another
+key is saved unguarded, and `SaveOptions.Force` (`--force`) drops the guard.
+`Engine.Caches` (`cache ls`) and `Engine.DeleteCache` (`cache rm`) are the
+driver's. A second guarded save from one instance is refused too, since the
+key has moved to its own first save: force it, or save from a new instance.
+
 ## disco-vm does not converge guests
 
 Deciding what an image holds is a client's, above

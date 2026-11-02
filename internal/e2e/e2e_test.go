@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/pkg/guest"
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 var (
@@ -694,6 +695,99 @@ func TestEgress(t *testing.T) {
 	}
 	if out, code := e.run("inspect", "fenced"); code == 0 {
 		t.Fatalf("a refused create made an instance:\n%s", out)
+	}
+}
+
+// TestVolumes gives instances a data volume and a cache volume: the data is
+// kept across a stop and never in a snapshot; a cache saved from a stopped
+// instance, and not a running one, is what the next instance of its key
+// starts from; a second save from it is refused once the key has moved,
+// unless forced; and a key removed lists no more. A driver that attaches no
+// volume refuses both.
+func TestVolumes(t *testing.T) {
+	e := newEnv(t)
+	t.Cleanup(func() {
+		e.run("rm", "-f", "vol-a", "vol-b", "vol-s")
+		e.run("cache", "rm", "e2e-cache")
+		e.run("rmi", "test/vol")
+	})
+	guestOS := map[string]machine.OS{"fake": machine.OS(runtime.GOOS), "docker": machine.Linux, "vz": machine.Darwin, "hcs": machine.Windows}[tg.driver]
+	data, cache := machine.VolumePath(guestOS, machine.VolumeData), machine.VolumePath(guestOS, machine.VolumeCache)
+	if tg.driver != "fake" && tg.driver != "docker" {
+		for _, flags := range [][]string{{"--data", "1GiB"}, {"--cache", "e2e-cache"}} {
+			args := append(append([]string{"create", "--name", "vol-a"}, flags...), "e2e/base")
+			if out, code := e.run(args...); code == 0 || !strings.Contains(out, "cannot attach") {
+				t.Fatalf("create %q on %s: exit %d\n%s", flags, tg.driver, code, out)
+			}
+		}
+		return
+	}
+	if out, code := e.run("create", "--name", "vol-a", "--cache-size", "1GiB", "e2e/base"); code == 0 || !strings.Contains(out, "needs --cache") {
+		t.Fatalf("create --cache-size with no --cache: exit %d\n%s", code, out)
+	}
+	local := t.TempDir()
+	note := filepath.Join(local, "note.txt")
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(note, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func(inst, path string) string {
+		t.Helper()
+		out := t.TempDir()
+		e.ok("cp", inst+":"+path+"/note.txt", out)
+		got, err := os.ReadFile(filepath.Join(out, "note.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(got)
+	}
+
+	e.ok("run", "--name", "vol-a", "--data", "1GiB", "--cache", "e2e-cache", "e2e/base")
+	write("data")
+	e.ok("cp", note, "vol-a:"+data)
+	write("cache a")
+	e.ok("cp", note, "vol-a:"+cache)
+	if out, code := e.run("cache", "save", "vol-a"); code == 0 || !strings.Contains(out, "stop it first") {
+		t.Fatalf("cache save of a running instance: exit %d\n%s", code, out)
+	}
+	e.ok("stop", "vol-a")
+	e.ok("start", "vol-a")
+	if got := read("vol-a", data); got != "data" {
+		t.Fatalf("the data volume reads %q after a stop and a start", got)
+	}
+	e.ok("stop", "vol-a")
+	gen := strings.TrimSpace(e.ok("cache", "save", "vol-a"))
+	mustContain(t, e.ok("cache", "ls"), "e2e-cache", gen)
+	if out, code := e.run("cache", "save", "vol-a"); code == 0 || !strings.Contains(out, "--force") {
+		t.Fatalf("a second guarded save: exit %d\n%s", code, out)
+	}
+
+	e.ok("run", "--name", "vol-b", "--cache", "e2e-cache", "e2e/base")
+	if got := read("vol-b", cache); got != "cache a" {
+		t.Fatalf("an instance of the saved key reads %q", got)
+	}
+	var inspected struct {
+		Cache *machine.CacheVolume `json:"cache"`
+	}
+	if err := json.Unmarshal([]byte(e.ok("inspect", "vol-b")), &inspected); err != nil || inspected.Cache == nil || inspected.Cache.Generation != gen {
+		t.Fatalf("inspect vol-b: cache %+v, %v; want generation %s", inspected.Cache, err, gen)
+	}
+	write("cache b")
+	e.ok("cp", note, "vol-b:"+cache)
+	e.ok("stop", "vol-b")
+	forced := strings.TrimSpace(e.ok("cache", "save", "--force", "vol-a"))
+	mustContain(t, e.ok("cache", "ls"), forced)
+
+	e.ok("snapshot", "vol-a", "test/vol")
+	e.ok("run", "--name", "vol-s", "--data", "0", "test/vol")
+	if out, code := e.run("cp", "vol-s:"+data+"/note.txt", t.TempDir()); code == 0 {
+		t.Fatalf("a snapshot carried its instance's data volume:\n%s", out)
+	}
+	e.ok("cache", "rm", "e2e-cache")
+	if out := e.ok("cache", "ls"); strings.Contains(out, "e2e-cache") {
+		t.Fatalf("a removed key is listed:\n%s", out)
 	}
 }
 
