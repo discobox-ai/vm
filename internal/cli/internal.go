@@ -85,6 +85,36 @@ func pipeCommand() *cobra.Command {
 	}
 }
 
+// consoleHostCommand makes a Windows pseudo console as the account it runs as
+// and runs a command on it. The agent starts it for a TTY session as another
+// account, whose console must be that account's own (guest.ConsoleHost).
+func consoleHostCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "console-host ROWS COLS APP CMDLINE",
+		Short:  "Run a command on a pseudo console of this account's own (started by the guest agent)",
+		Hidden: true,
+		Args:   cobra.ExactArgs(4),
+		RunE: func(_ *cobra.Command, args []string) error {
+			rows, err := strconv.ParseUint(args[0], 10, 16)
+			if err != nil {
+				return fmt.Errorf("rows %q: %w", args[0], err)
+			}
+			cols, err := strconv.ParseUint(args[1], 10, 16)
+			if err != nil {
+				return fmt.Errorf("cols %q: %w", args[1], err)
+			}
+			code, err := guest.ConsoleHost(uint16(rows), uint16(cols), args[2], args[3], os.Stdin, os.Stdout)
+			if err != nil {
+				return err
+			}
+			if code != 0 {
+				return exitError{code}
+			}
+			return nil
+		},
+	}
+}
+
 // dockerInitCommand is a docker guest's PID 1, which starts systemd in a user
 // namespace of the guest's own; with --shift it is the docker driver's install
 // step that moves the base image's files into the guest's uids.
