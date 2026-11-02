@@ -60,8 +60,14 @@ type memory struct {
 	Backing  string `json:"Backing"`
 }
 
+// processor exposes the host's virtualization extensions to every guest, so
+// a guest can run its own hypervisor: WSL 2, Hyper-V, Windows Sandbox, and
+// Docker Desktop all need one. It rules out dynamic memory, which these VMs
+// do not use: their memory is Virtual-backed, committed as the guest touches
+// it, not taken at boot.
 type processor struct {
-	Count int `json:"Count"`
+	Count                          int  `json:"Count"`
+	ExposeVirtualizationExtensions bool `json:"ExposeVirtualizationExtensions"`
 }
 
 type devices struct {
@@ -183,7 +189,7 @@ func newDocument(c vmConfig) document {
 			Chipset:     chipset{Uefi: uefi{ApplySecureBootTemplate: "Apply", SecureBootTemplateID: microsoftWindowsTemplate}},
 			ComputeTopology: topology{
 				Memory:    memory{SizeInMB: mb, Backing: "Virtual"},
-				Processor: processor{Count: cpus},
+				Processor: processor{Count: cpus, ExposeVirtualizationExtensions: true},
 			},
 			Devices: devices{
 				Scsi: map[string]scsi{"0": {Attachments: map[string]attachment{"0": {Type: "VirtualDisk", Path: slashes(c.Disk)}}}},
