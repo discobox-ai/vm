@@ -1,6 +1,6 @@
 # 26-11-02-274 — A Windows guest's window is its own Remote Desktop or the agent's stream, never the host's video console
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-02
 
 ## Context
