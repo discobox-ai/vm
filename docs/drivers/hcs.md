@@ -72,6 +72,11 @@ What building it found, beyond the recipes below:
   hive), the linked elevated token, the profile loaded, and the account
   granted the agent's window station and desktop (without which anything that
   loads user32 fails with 0xC0000142).
+- **Nested virtualization is on** for every VM (`Processor.ExposeVirtualizationExtensions`),
+  so a guest runs WSL 2, Hyper-V, Windows Sandbox, or Docker Desktop. Memory
+  stays `Virtual`-backed, committed as the guest touches it: nesting rules out
+  only dynamic memory, which these VMs do not use. Proven by hand on Win 11
+  (2026-11-02): VBS running in the guest, and a WSL 2 Debian booting.
 - **Display is the VM's basic video console**, as sandboxi proved: every
   document has `VideoMonitor` (with `ConnectionOptions` naming a pipe per VM
   and the current user's SID), `Keyboard` and `Mouse`. With

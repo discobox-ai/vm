@@ -105,6 +105,7 @@ func TestDocument(t *testing.T) {
 		`"00001C84-FACB-11E6-BD58-64006A7986D3"`,
 		`"ShouldTerminateOnLastHandleClosed":true`,
 		`"Count":6`,
+		`"ExposeVirtualizationExtensions":true`,
 		`"SizeInMB":4096`,
 		`"EndpointId":"ep"`,
 	} {
