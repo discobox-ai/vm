@@ -265,6 +265,11 @@ func (d *Hypervisor) boot(inst local.InstanceSpec, opts local.BootOptions) (*vm,
 	})
 }
 
+// SaveCache is unsupported: hcs attaches no volume yet (ADR 26-11-02-180).
+func (*Hypervisor) SaveCache(context.Context, local.InstanceSpec, local.Layer) error {
+	return fmt.Errorf("hcs: a cache volume: %w", machine.ErrUnsupported)
+}
+
 // Commit moves the stopped instance's differencing disk into dst and points
 // it at its parent again, since a differencing disk moved across directories
 // cannot be trusted to find its parent by its old relative locator.

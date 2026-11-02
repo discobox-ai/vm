@@ -266,6 +266,31 @@ type hostConfig struct {
 	// PortBindings publishes container ports on the daemon's host, keyed as
 	// ExposedPorts is.
 	PortBindings map[string][]portBinding `json:"PortBindings,omitempty"`
+	// Mounts are the named volumes the container mounts.
+	Mounts []mount `json:"Mounts,omitempty"`
+}
+
+// mount is a named volume mounted in a container.
+type mount struct {
+	Type     string `json:"Type"`
+	Source   string `json:"Source"`
+	Target   string `json:"Target"`
+	ReadOnly bool   `json:"ReadOnly,omitempty"`
+	// VolumeOptions.NoCopy keeps the daemon from filling an empty volume
+	// with what the image holds at its mount point.
+	VolumeOptions *struct {
+		NoCopy bool `json:"NoCopy"`
+	} `json:"VolumeOptions,omitempty"`
+}
+
+// volumeMount mounts the named volume at target, never filled from the
+// image.
+func volumeMount(name, target string, readOnly bool) mount {
+	m := mount{Type: "volume", Source: name, Target: target, ReadOnly: readOnly}
+	m.VolumeOptions = &struct {
+		NoCopy bool `json:"NoCopy"`
+	}{NoCopy: true}
+	return m
 }
 
 // portBinding is one host address a container port is published on. An empty
@@ -303,6 +328,13 @@ type containerInfo struct {
 		NanoCPUs int64 `json:"NanoCpus"`
 		Memory   int64 `json:"Memory"`
 	} `json:"HostConfig"`
+	// Mounts are what the container mounts; a named volume's Name is its
+	// name.
+	Mounts []struct {
+		Type        string `json:"Type"`
+		Name        string `json:"Name"`
+		Destination string `json:"Destination"`
+	} `json:"Mounts"`
 	NetworkSettings struct {
 		// Ports are the running container's published ports, keyed as
 		// ExposedPorts is.
@@ -375,6 +407,65 @@ func (a *api) putArchive(ctx context.Context, id, dir string, tarball io.Reader)
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// getArchive returns path in the container's filesystem, running or not, as
+// a tar stream rooted at its base name, with its owners.
+func (a *api) getArchive(ctx context.Context, id, path string) (io.ReadCloser, error) {
+	resp, err := a.do(ctx, http.MethodGet, "/containers/"+id+"/archive", url.Values{"path": {path}}, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
+// volumeInfo is a named volume, as the daemon lists it.
+type volumeInfo struct {
+	Name      string            `json:"Name"`
+	Labels    map[string]string `json:"Labels"`
+	CreatedAt string            `json:"CreatedAt"`
+}
+
+// createVolume makes a named volume with labels. A name the daemon already
+// has answers that volume, so every name the driver makes is new.
+func (a *api) createVolume(ctx context.Context, name string, labels map[string]string) error {
+	return a.call(ctx, http.MethodPost, "/volumes/create", nil, map[string]any{"Name": name, "Labels": labels}, nil)
+}
+
+// inspectVolume reads a named volume.
+func (a *api) inspectVolume(ctx context.Context, name string) (volumeInfo, error) {
+	var out volumeInfo
+	return out, a.call(ctx, http.MethodGet, "/volumes/"+name, nil, nil, &out)
+}
+
+// volumes lists the named volumes carrying every label of labels.
+func (a *api) volumes(ctx context.Context, labels map[string]string) ([]volumeInfo, error) {
+	var filter []string
+	for _, key := range sortedKeys(labels) {
+		filter = append(filter, key+"="+labels[key])
+	}
+	q := url.Values{}
+	if len(filter) > 0 {
+		raw, err := json.Marshal(map[string][]string{"label": filter})
+		if err != nil {
+			return nil, err
+		}
+		q.Set("filters", string(raw))
+	}
+	var out struct {
+		Volumes []volumeInfo `json:"Volumes"`
+	}
+	return out.Volumes, a.call(ctx, http.MethodGet, "/volumes", q, nil, &out)
+}
+
+// removeVolume removes a named volume. One already gone is not an error; one
+// a container mounts is a conflict.
+func (a *api) removeVolume(ctx context.Context, name string) error {
+	err := a.call(ctx, http.MethodDelete, "/volumes/"+name, nil, nil, nil)
+	if isNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // logs returns the tail of a stopped container's output.

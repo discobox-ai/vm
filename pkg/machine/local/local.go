@@ -12,6 +12,8 @@
 //	instances/<id>/instance.json     the instance: project, name, image, size
 //	instances/<id>/shim.json         its shim, while one holds it
 //	instances/.names/<project>/<name> the name's claim, holding the ID
+//	caches/<project>/<key>.json      a cache key: its current generation
+//	caches/generations/<id>/payload/ a cache generation's volume (Layer.Dir)
 //	cache/<hypervisor>/              media the hypervisor downloads
 //
 // Nothing is kept anywhere else, and nothing needs a lock: an image is
@@ -74,6 +76,15 @@ type InstanceSpec struct {
 	// keeps: nil is none. A hypervisor holds it at every boot (vz: an empty
 	// Allow is no network device).
 	Egress *machine.Egress
+	// Data and Cache are the instance's volumes, which its record keeps:
+	// nil is none. Prepare makes them, at the guest's machine.VolumePath;
+	// Commit leaves them out of the image; Destroy removes them.
+	Data  *machine.DataVolume
+	Cache *machine.CacheVolume
+	// CacheFrom is the generation Prepare clones the cache volume from, a
+	// directory SaveCache wrote; nil is an empty volume. Only Prepare is
+	// given it.
+	CacheFrom *Layer
 }
 
 // Parent is the image the instance is a clone of. An instance of a Base has
@@ -116,10 +127,15 @@ type Hypervisor interface {
 	// answer. The returned machine lives until it powers off or is killed; it
 	// is not bound to ctx, which only bounds starting it.
 	Boot(ctx context.Context, inst InstanceSpec, opts BootOptions) (machine.Machine, error)
-	// Commit captures a stopped instance's disk as the new image dst. The
-	// instance is destroyed afterwards, so a hypervisor may move rather than
-	// copy.
+	// Commit captures a stopped instance's disk as the new image dst,
+	// without its volumes. The instance is destroyed afterwards, so a
+	// hypervisor may move rather than copy.
 	Commit(ctx context.Context, inst InstanceSpec, dst Layer) error
+	// SaveCache writes a stopped instance's cache volume into dst.Dir, as a
+	// generation a later Prepare clones (InstanceSpec.CacheFrom). The
+	// instance keeps its volume. A hypervisor that does not list
+	// machine.VolumeCache returns machine.ErrUnsupported.
+	SaveCache(ctx context.Context, inst InstanceSpec, dst Layer) error
 	// Destroy removes everything Prepare and Boot created for the instance.
 	Destroy(ctx context.Context, inst InstanceSpec) error
 	// Bases lists what the hypervisor already has that an instance can run

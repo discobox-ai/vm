@@ -57,6 +57,11 @@ func (*Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst local.
 	return moveLayer(bundle(inst.Dir), bundle(dst.Dir), inst.GuestOS)
 }
 
+// SaveCache is unsupported: vz attaches no volume yet (ADR 26-11-02-180).
+func (*Hypervisor) SaveCache(context.Context, local.InstanceSpec, local.Layer) error {
+	return fmt.Errorf("vz: a cache volume: %w", machine.ErrUnsupported)
+}
+
 func (*Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {
 	return os.RemoveAll(inst.Dir)
 }
