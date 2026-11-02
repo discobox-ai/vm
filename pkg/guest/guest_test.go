@@ -2,6 +2,7 @@ package guest
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"io"
@@ -246,5 +247,35 @@ func TestRelay(t *testing.T) {
 	}
 	if info, err := client.Info(ctx); err != nil || !info.Fake {
 		t.Fatalf("info = %+v, %v", info, err)
+	}
+}
+
+// An exec stream cut before an exit code, as a guest restarting under its
+// process cuts it, says that the guest went away.
+func TestExecStreamCutSaysTheGuestWentAway(t *testing.T) {
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
+			return
+		}
+		_, _ = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: "+UpgradeExec+"\r\n\r\n")
+		_ = WriteFrame(conn, FrameStdout, []byte("partial"))
+	}()
+	client := NewClient(func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp", l.Addr().String())
+	})
+	_, err = machine.Run(context.Background(), client, machine.ExecRequest{Argv: []string{"anything"}}, nil, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "the guest went away") {
+		t.Fatalf("err = %v, want one that says the guest went away", err)
 	}
 }
