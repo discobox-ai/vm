@@ -232,8 +232,14 @@ func (p *process) Resize(rows, cols uint16) error {
 func (p *process) Wait(stdout, stderr io.Writer) (int, error) {
 	for {
 		typ, payload, err := ReadFrame(p.in)
-		if err != nil {
+		if errors.Is(err, net.ErrClosed) {
 			return -1, fmt.Errorf("guest: exec stream: %w", err)
+		}
+		if err != nil {
+			// The agent always ends with an exit code or an error; a stream
+			// cut before either is the guest, or the way to it, going away:
+			// a restart or a shutdown under the process, most often.
+			return -1, fmt.Errorf("guest: the guest went away before the process exited (did it restart or shut down?): %w", err)
 		}
 		switch typ {
 		case FrameStdout:
