@@ -28,6 +28,9 @@ type createFlags struct {
 	isolated     bool
 	networks     []string
 	egress       []string
+	// data and cacheSize are sizes; data unset is no data volume, and cache
+	// unset no cache volume.
+	data, cache, cacheSize string
 }
 
 func (f *createFlags) register(cmd *cobra.Command) {
@@ -39,6 +42,32 @@ func (f *createFlags) register(cmd *cobra.Command) {
 	// An array, not a slice: a slice reads --egress="" as no entries at all,
 	// which would fence the machine to nothing rather than be refused.
 	cmd.Flags().StringArrayVar(&f.egress, "egress", nil, "fence the machine's egress to hosts, *.domains, IPv4 addresses, or ranges beyond its networks, comma-separated (repeatable); none alone is nothing beyond them")
+	cmd.Flags().StringVar(&f.data, "data", "", "give the instance a data volume of this size at /.discobox/data, e.g. 20GiB; 0 is the driver's default size")
+	cmd.Flags().StringVar(&f.cache, "cache", "", "give the instance a cache volume at /.discobox/cache, cloned from this cache key's current generation")
+	cmd.Flags().StringVar(&f.cacheSize, "cache-size", "", "the cache volume's size, e.g. 50GiB (default: the driver's)")
+}
+
+// volumes are the volumes the flags ask for.
+func (f *createFlags) volumes() (*machine.DataVolume, *machine.CacheVolume, error) {
+	var data *machine.DataVolume
+	if f.data != "" {
+		n, err := units.ParseBytes(f.data)
+		if err != nil {
+			return nil, nil, fmt.Errorf("--data: %w", err)
+		}
+		data = &machine.DataVolume{Bytes: int64(n)} //nolint:gosec // G115: a size well under 8 EiB
+	}
+	if f.cache == "" {
+		if f.cacheSize != "" {
+			return nil, nil, errors.New("--cache-size needs --cache")
+		}
+		return data, nil, nil
+	}
+	n, err := units.ParseBytes(f.cacheSize)
+	if err != nil {
+		return nil, nil, fmt.Errorf("--cache-size: %w", err)
+	}
+	return data, &machine.CacheVolume{Key: f.cache, Bytes: int64(n)}, nil //nolint:gosec // G115: a size well under 8 EiB
 }
 
 // fence is the egress the flags ask for: nil when none is given, nothing
@@ -72,8 +101,13 @@ func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) 
 	if err != nil {
 		return engine.Instance{}, err
 	}
+	data, cache, err := f.volumes()
+	if err != nil {
+		return engine.Instance{}, err
+	}
 	return e.Create(ctx, ref, engine.CreateOptions{
 		Name: f.name, CPUs: f.cpus, Memory: memory, Isolated: f.isolated, Networks: f.networks, Egress: egress,
+		Data: data, Cache: cache,
 	})
 }
 

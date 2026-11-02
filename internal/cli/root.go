@@ -93,7 +93,7 @@ func Main(args []string) int {
 		imagesCommand(g), rmiCommand(g), tagCommand(g), snapshotCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
 		lsCommand(g), inspectCommand(g), urlCommand(g), dialCommand(g), execCommand(g), cpCommand(g),
-		infoCommand(g), keyCommand(g),
+		infoCommand(g), keyCommand(g), cacheCommand(g),
 		guestCommand(), pipeCommand(), shimCommand(g), dialHostCommand(), dockerInitCommand(),
 	)
 	root.SetArgs(args)

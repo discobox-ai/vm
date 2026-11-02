@@ -84,6 +84,11 @@ type CreateOptions struct {
 	// before Create returns (machine.InstanceSpec); nil is the provider's
 	// default. The driver must hold the fence (Capabilities.Fences).
 	Egress *machine.Egress
+	// Data and Cache are the instance's volumes, mounted at
+	// machine.VolumePath; nil is none. The driver must list each in
+	// Capabilities.Volumes. Cache.Generation is the driver's to report.
+	Data  *machine.DataVolume
+	Cache *machine.CacheVolume
 }
 
 // Create makes an instance from an image reference or ID, or from one of the
@@ -101,9 +106,18 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (In
 		}
 		return Instance{}, fmt.Errorf("driver %s cannot fence an instance's egress to a list: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
+	if err := e.checkVolumes(opts.Data, opts.Cache); err != nil {
+		return Instance{}, err
+	}
 	spec := machine.InstanceSpec{
 		Name: opts.Name, Image: ref, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: opts.Forwards,
 		Isolated: opts.Isolated, Networks: opts.Networks, Egress: opts.Egress,
+	}
+	if opts.Data != nil {
+		spec.Data = &machine.DataVolume{Bytes: opts.Data.Bytes}
+	}
+	if opts.Cache != nil {
+		spec.Cache = &machine.CacheVolume{Key: opts.Cache.Key, Bytes: opts.Cache.Bytes}
 	}
 	img, err := e.Resolve(ctx, ref)
 	if err != nil {
