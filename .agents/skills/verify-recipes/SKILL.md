@@ -1,6 +1,6 @@
 ---
 name: verify-recipes
-description: How to verify a disco-vm change at runtime — the CLI against real boxd or a real Docker daemon (run, exec, cp, stop, start, ps, rm, commit, create --from), including from inside a discobox whose boxd credential is a five-minute sentinel. Read before verifying anything that touches the engine, the CLI, or the boxd or docker driver.
+description: How to verify a disco-vm change at runtime — the CLI against real boxd, Archil, or a real Docker daemon (run, exec, cp, stop, start, ps, rm, commit, create --from), including from inside a discobox whose boxd credential is a five-minute sentinel. Read before verifying anything that touches the engine, the CLI, or the boxd, archil, or docker driver.
 ---
 
 # Verifying disco-vm
@@ -92,6 +92,27 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   `disco-vm-vm` and `disco-vm-base` images are left (`docker ps -a`,
   `docker images`). `rm` of a committed VM removes its tag; a container
   created from it keeps the image until it is removed too.
+
+## archil
+
+- Credentials: `ARCHIL_API_KEY`. Inside a discobox, ask `discobox-access`
+  for it on `*.archil.com` (the control plane and the process API) and
+  `*.archil.app` (exposed ports), then `eval "$(discobox-access env)"`. Any
+  build drives it: nothing of disco-vm's goes in the guest.
+- Isolate state: `export DISCO_VM_DRIVER=archil DISCO_VM_PROJECT=<scratch>
+  DISCO_VM_BASE=debian:trixie`. A VM is the sandbox `dvm-<project>--<name>`,
+  its data volume the disk `dvm-<project>--<name>--data`. With no
+  `DISCO_VM_BASE`, a fresh VM runs Archil's default image (Debian 12).
+- The flow: `run dev --data 1GiB` (about 7 s), `exec dev sh -c '...'` (no
+  `--` after the name: it reaches the guest as the command), `stop`,
+  `commit`, `run dev2 --from dev`. `rm dev` is refused with `ErrInUse`
+  while `dev2`, its fork, exists.
+- Conformance: `DISCO_VM_ARCHIL_IMAGE=debian:trixie go test
+  ./pkg/machine/archil -run TestConformance -v` (about 2.5 minutes, in
+  project `conformance`).
+- Clean up: `ls -a` is empty, and the control plane lists no sandbox or disk
+  of the project (`GET /api/sandboxes`, `GET /api/disks` at
+  `https://control.green.us-east-1.aws.prod.archil.com`).
 
 ## The Linux guest image, without a Mac
 

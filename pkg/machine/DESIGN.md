@@ -3,8 +3,8 @@
 The driver seam: `machine.Driver` and the guest's operations,
 `machine.Guest`. Each hypervisor is a package below it, selected by build tags
 (`drivers`), and `machinetest` is the conformance suite every driver passes.
-boxd, docker, and local have their own design notes:
-[boxd/DESIGN.md](boxd/DESIGN.md), [docker/DESIGN.md](docker/DESIGN.md), and
+archil, boxd, docker, and local have their own design notes:
+[archil/DESIGN.md](archil/DESIGN.md), [boxd/DESIGN.md](boxd/DESIGN.md), [docker/DESIGN.md](docker/DESIGN.md), and
 [local/DESIGN.md](local/DESIGN.md).
 
 ## The driver contract is the intersection, and differences are reported
@@ -35,25 +35,25 @@ one driver that keeps their state and runs their shims
 ([local/DESIGN.md](local/DESIGN.md)). Anything only one hypervisor can do is
 a `Capabilities` field, never a faked method:
 
-| capability | hcs | vz | boxd | docker | fake |
-|---|---|---|---|---|---|
-| guest OS | windows | darwin, and linux (ADR 26-10-31-990) | linux | linux | host's |
-| max running | none | **2 macOS guests** (framework limit); Linux guests do not count | none (the org's quota) | none | none |
-| shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | no |
-| display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no | no |
-| ports (`Ports`: `Machine.Dial`, `Forwards` to a socket or a peer) | hvsocket, through the shim | vsock, through the shim | no | no | loopback, through the shim |
-| agent (`disco-vm guest` in the guest) | yes, from Install | yes: macOS from Install; Linux handed it in the initrd at every boot | **no**: boxd's Exec | yes, from Create of a base | yes |
-| install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest` | **none** | **none** | the host's |
-| base (`Config.Base`: what a fresh VM starts from) | **none** | Linux: a guest image, `DefaultLinuxBase` by default | an image, boxd's default by default | an image; **none** unless configured | a name, `scratch` by default |
-| commit (`Commit`: `Driver.Commit` and `InstanceSpec.From`) | yes | yes | yes | yes | yes, unless made with `NoCommit` (a test option) |
-| a committed VM (`Commit`) | its record and disk, left in place | its record and bundle, left in place | a snapshot `dvm-<project>--<name>`; the machine deleted | an image `disco-vm-vm:<project>--<name>`; the container removed | its record and tree, left in place |
-| disks chain below the seam (`local.Hypervisor.Chains`) | yes: a copy is a differencing VHDX over the committed VM's | no | no | no | no |
-| keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | issue, scope `project` |
-| isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no |
-| egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | none |
-| private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | the URL (a shared loopback) |
-| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | `data` and `cache`: directories in the guest's root |
-| upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | a new root beside the old, its volumes moved into it |
+| capability | hcs | vz | boxd | docker | fake | archil |
+|---|---|---|---|---|---|---|
+| guest OS | windows | darwin, and linux (ADR 26-10-31-990) | linux | linux | host's | linux, amd64 |
+| max running | none | **2 macOS guests** (framework limit); Linux guests do not count | none (the org's quota) | none | none | none (the plan's quota) |
+| shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | no | no |
+| display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no | no | no |
+| ports (`Ports`: `Machine.Dial`, `Forwards` to a socket or a peer) | hvsocket, through the shim | vsock, through the shim | no | no | loopback, through the shim | no |
+| agent (`disco-vm guest` in the guest) | yes, from Install | yes: macOS from Install; Linux handed it in the initrd at every boot | **no**: boxd's Exec | yes, from Create of a base | yes | **no**: Archil's process API |
+| install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest` | **none** | **none** | the host's | **none** |
+| base (`Config.Base`: what a fresh VM starts from) | **none** | Linux: a guest image, `DefaultLinuxBase` by default | an image, boxd's default by default | an image; **none** unless configured | a name, `scratch` by default | an OCI image; Archil's default by default |
+| commit (`Commit`: `Driver.Commit` and `InstanceSpec.From`) | yes | yes | yes | yes | yes, unless made with `NoCommit` (a test option) | yes |
+| a committed VM (`Commit`) | its record and disk, left in place | its record and bundle, left in place | a snapshot `dvm-<project>--<name>`; the machine deleted | an image `disco-vm-vm:<project>--<name>`; the container removed | its record and tree, left in place | the stopped sandbox `dvm-<project>--<name>`, its mounts and data disk dropped; nothing marks it committed |
+| disks chain below the seam (`local.Hypervisor.Chains`) | yes: a copy is a differencing VHDX over the committed VM's | no | no | no | no | yes: a copy forks the committed VM's sandbox, which Archil keeps while it has forks (`ErrInUse`) |
+| keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | issue, scope `project` | none (`ErrCannotIssue`: an Archil token never expires) |
+| isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no | no |
+| egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | none | `none` and `allow`: `network.egress`, default `deny` |
+| private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | the URL (a shared loopback) | the URL |
+| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<project>--<name>--data` |
+| upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | a new root beside the old, its volumes moved into it | ⬜ |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
 ([below](#every-copy-is-cold-and-a-vm-is-made-fast-by-what-is-in-it)).
@@ -81,7 +81,7 @@ every call, so one process runs engines with different keys and a key
 replaced where its source reads it is used from the next call (ADR
 26-10-24-562). A driver given no source has no key and never reads the
 environment for one: the command line passes `machine.KeyFromEnv`, which
-reads the variables a driver names at `Register` (boxd's `BOXD_API_KEY`,
+reads the variables a driver names at `Register` (archil's `ARCHIL_API_KEY`, boxd's `BOXD_API_KEY`,
 `BOXD_TOKEN`; fake's `DISCO_VM_FAKE_KEY`). A `Key`'s `Secret` is opaque: it
 prints, formats, and logs without it.
 

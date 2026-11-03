@@ -3,8 +3,9 @@
 Read [DESIGN.md](DESIGN.md) first. If you are implementing a driver, your
 brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
 [docs/drivers/vz.md](docs/drivers/vz.md),
-[docs/drivers/boxd.md](docs/drivers/boxd.md), or
-[docs/drivers/docker.md](docs/drivers/docker.md).
+[docs/drivers/boxd.md](docs/drivers/boxd.md),
+[docs/drivers/docker.md](docs/drivers/docker.md), or
+[docs/drivers/archil.md](docs/drivers/archil.md).
 
 ## Rules
 
@@ -26,10 +27,10 @@ brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
 
 ## Project Structure
 
-- Root module `github.com/discobox-ai/vm`: disco-vm, which runs OS images as
-  VMs on Host Compute Service (hcs), Virtualization.framework (vz), or boxd,
-  or as Docker containers that boot systemd (docker), and snapshots them as
-  new images.
+- Root module `github.com/discobox-ai/vm`: disco-vm, which runs VMs on Host
+  Compute Service (hcs), Virtualization.framework (vz), boxd, or Archil
+  (archil), or as Docker containers that boot systemd (docker), and commits
+  them for copying.
 - The root holds only top-level containers (`cmd`, `pkg`, `internal`, `docs`,
   `test`, `scripts`), never packages.
 - `cmd/disco-vm`: the `disco-vm` binary: CLI, guest agent, and shim.
