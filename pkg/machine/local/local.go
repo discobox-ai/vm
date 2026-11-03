@@ -24,8 +24,8 @@
 // A Virtualization.framework machine dies with the process that booted it,
 // and an HCS machine belongs to vmcompute, so Start runs each instance under
 // a shim process of its own (ShimMain), which boots it, holds it, and serves
-// its guest operations, any guest port, and its forwards on an owner-only
-// Unix socket, and its URL on the host's loopback. Any process of the owner's
+// its guest operations, its agent's and service's ports, and its forwards
+// on an owner-only Unix socket, and its URL on the host's loopback. Any process of the owner's
 // attaches to it there (Attach).
 package local
 
@@ -77,6 +77,10 @@ type InstanceSpec struct {
 	// keeps: nil is none. A hypervisor holds it at every boot (vz: an empty
 	// Allow is no network device).
 	Egress *machine.Egress
+	// Forwards are the instance's forwards, which its record keeps. A
+	// hypervisor that must map a guest port to the host before its VM starts
+	// (libkrun) maps each one's Port at every boot (ADR 26-11-03-247).
+	Forwards []machine.Forward
 	// Data and Cache are the instance's volumes, which its record keeps:
 	// nil is none. Prepare makes them, at the guest's machine.VolumePath;
 	// Commit removes them; Destroy removes them.
@@ -106,7 +110,7 @@ type BootOptions struct {
 	Console io.Writer
 }
 
-// Hypervisor is what runs on this host's disk: hcs, vz, and fake.
+// Hypervisor is what runs on this host's disk: hcs, vz, libkrun, and fake.
 type Hypervisor interface {
 	Name() string
 	Capabilities() machine.Capabilities

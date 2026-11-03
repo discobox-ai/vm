@@ -90,9 +90,11 @@ type Capabilities struct {
 	Display bool `json:"display"`
 	// Ports reports that an instance's guest ports reach past its one
 	// service, in three directions, all through the process that holds the
-	// machine: a caller dials any guest port (Machine.Dial), guest processes
-	// connect out to the host (Forwards to a Socket), and to another
-	// instance of the project's guest port (Forwards to an Instance).
+	// machine: a caller dials the agent's port or the service's
+	// (Machine.Dial; guest.DialablePort), guest processes connect out to the
+	// host (Forwards to a Socket), and to another instance of the project's
+	// agent or service port (Forwards to an Instance). Every port is known
+	// at boot (ADR 26-11-03-247).
 	Ports bool `json:"ports"`
 	// Agent reports that the driver puts the disco-vm agent in the guest and
 	// reaches the guest's operations through it: Install bakes it in
@@ -624,7 +626,8 @@ type Machine interface {
 	// Err is why the guest stopped, once Done is closed; nil for a power-off.
 	// It is non-nil when the driver gave the machine up without seeing it stop.
 	Err() error
-	// Dial opens a stream to a guest port: vsock on vz, hvsocket on HCS with
+	// Dial opens a stream to a guest port, the agent's or the service's
+	// (guest.DialablePort): vsock on vz and libkrun, hvsocket on HCS with
 	// the service ID derived from the port by the vsock template, the host's
 	// loopback on fake. An attached machine's goes through the process that
 	// holds it. A driver that does not list Capabilities.Ports returns

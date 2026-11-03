@@ -103,7 +103,7 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 	if err != nil {
 		return err
 	}
-	_, port, err := d.hv.Service(hs)
+	_, servicePort, err := d.hv.Service(hs)
 	if err != nil {
 		return err
 	}
@@ -123,7 +123,7 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 		return err
 	}
 	defer serviceListener.Close()
-	go serveService(serviceListener, m, port)
+	go serveService(serviceListener, m, servicePort)
 	listener, socket, removeSocket, err := listenControl(ctx, d.instanceDir(id))
 	if err != nil {
 		_ = m.Kill(context.Background())
@@ -178,16 +178,26 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 		}
 		relay.hand(&bufConn{Conn: conn, r: rw.Reader})
 	})
-	// Other processes reach any guest port here: the connection, once
-	// upgraded, is spliced into the machine's Dial of the port.
+	// Other processes reach the agent's port and the service's here
+	// (guest.DialablePort): the connection, once upgraded, is spliced into
+	// the machine's Dial of the port, the service's as the hypervisor serves
+	// it.
 	mux.HandleFunc("GET /dial", func(w http.ResponseWriter, r *http.Request) {
 		port, err := strconv.ParseUint(r.URL.Query().Get("port"), 10, 32)
 		if err != nil || port == 0 {
 			http.Error(w, "dial: want ?port=N", http.StatusBadRequest)
 			return
 		}
+		if !guest.DialablePort(uint32(port)) {
+			http.Error(w, fmt.Sprintf("dial: guest port %d is neither the agent's nor the service's", port), http.StatusForbidden)
+			return
+		}
+		target := uint32(port)
+		if target == guest.ServicePort {
+			target = servicePort
+		}
 		dialCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		upstream, err := m.Dial(dialCtx, uint32(port))
+		upstream, err := m.Dial(dialCtx, target)
 		cancel()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
@@ -627,6 +637,9 @@ func (c *shimClient) dialGuest(ctx context.Context) (net.Conn, error) {
 
 // dial opens a stream to a guest port of the shim's machine.
 func (c *shimClient) dial(ctx context.Context, port uint32) (net.Conn, error) {
+	if !guest.DialablePort(port) {
+		return nil, fmt.Errorf("guest port %d: a caller reaches the agent's port (%d) and the service's (%d) alone: %w", port, guest.AgentPort, guest.ServicePort, machine.ErrUnsupported)
+	}
 	return c.upgrade(ctx, "/dial?port="+strconv.FormatUint(uint64(port), 10), dialUpgrade)
 }
 

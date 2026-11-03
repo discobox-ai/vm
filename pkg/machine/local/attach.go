@@ -62,7 +62,7 @@ func (m *shimMachine) Done() <-chan struct{} {
 }
 
 // Dial reaches a guest port through the shim, which dials it on the machine
-// it holds.
+// it holds: the agent's or the service's (guest.DialablePort).
 func (m *shimMachine) Dial(ctx context.Context, port uint32) (net.Conn, error) {
 	return m.shim.dial(ctx, port)
 }

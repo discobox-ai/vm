@@ -14,7 +14,8 @@ import (
 )
 
 // A guest port of a running instance is dialed through its shim: the agent's
-// answers an HTTP request, and a stopped instance is refused.
+// answers an HTTP request, a stopped instance is refused, and so is any port
+// but the agent's and the service's (ADR 26-11-03-247).
 func TestDial(t *testing.T) {
 	ctx := context.Background()
 	e, _ := fakeEngine(t)
@@ -41,13 +42,16 @@ func TestDial(t *testing.T) {
 	if err != nil || !strings.Contains(string(answer), " 200 ") {
 		t.Fatalf("the agent's port answered %q: %v", answer, err)
 	}
-	if _, err := e.Dial(ctx, inst, 0); err == nil {
-		t.Fatal("dial port 0 was not refused")
+	for _, port := range []uint32{0, guest.DisplayPort, 22} {
+		if _, err := e.Dial(ctx, inst, port); !errors.Is(err, machine.ErrUnsupported) {
+			t.Fatalf("dial port %d: %v, want ErrUnsupported", port, err)
+		}
 	}
 }
 
-// A forward goes to exactly one of a host socket and a peer's port, never to
-// the instance itself; a fence the driver does not hold is refused.
+// A forward goes to exactly one of a host socket and a peer's agent or
+// service port, never to the instance itself; a fence the driver does not
+// hold is refused.
 func TestCreateRefuses(t *testing.T) {
 	ctx := context.Background()
 	e, _ := fakeEngine(t)
@@ -60,7 +64,8 @@ func TestCreateRefuses(t *testing.T) {
 		{"no port", engine.CreateOptions{Forwards: []machine.Forward{{Port: 1, Instance: "peer"}}}, "with no port"},
 		{"bad name", engine.CreateOptions{Forwards: []machine.Forward{{Port: 1, Instance: "Peer!", InstancePort: 2}}}, "not an instance name"},
 		{"stray port", engine.CreateOptions{Forwards: []machine.Forward{{Port: 1, Socket: "/s", InstancePort: 2}}}, "port of no instance"},
-		{"itself", engine.CreateOptions{Name: "self", Forwards: []machine.Forward{{Port: 1, Instance: "self", InstancePort: 2}}}, "itself"},
+		{"itself", engine.CreateOptions{Name: "self", Forwards: []machine.Forward{{Port: 1, Instance: "self", InstancePort: guest.AgentPort}}}, "itself"},
+		{"another port", engine.CreateOptions{Forwards: []machine.Forward{{Port: 1, Instance: "peer", InstancePort: 22}}}, "agent's port (7300) or its service's (7302) alone"},
 	} {
 		if _, err := e.Create(ctx, withFrom(c.opts, "app")); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want an error saying %q", c.name, err, c.want)

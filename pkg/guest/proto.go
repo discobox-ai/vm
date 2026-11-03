@@ -50,6 +50,13 @@ const DisplayPort uint32 = 7301
 // that pick a fixed one (machine.Service).
 const ServicePort uint32 = 7302
 
+// DialablePort reports whether a caller may dial port in a guest
+// (machine.Machine.Dial through the seam, a peer forward's InstancePort): the
+// agent's and the service's, on every driver, and no other (ADR
+// 26-11-03-247). libkrun reaches a guest port from the host only if it was
+// mapped at boot, so no driver reaches more.
+func DialablePort(port uint32) bool { return port == AgentPort || port == ServicePort }
+
 // UpgradeExec is the Upgrade token of an exec connection.
 const UpgradeExec = "disco-vm-exec"
 
