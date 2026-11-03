@@ -1,7 +1,10 @@
 # 26-11-03-868 — Commit is a capability a driver reports, and a driver without it refuses commit and copies
 
-- **Status**: Proposed
+- **Status**: Accepted (supersedes in part 26-11-03-606, its §4 requiring
+  `Commit` and `InstanceSpec.From` of every driver)
 - **Date**: 2026-11-03
+
+Accepted by the owner by merging #34, 2026-11-03.
 
 ## Context
 
