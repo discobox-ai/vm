@@ -18,8 +18,10 @@
 // across a boot, or the driver refuses the fence; a started machine is
 // attached to from another call, its service has a URL, and a private URL
 // where it has one, and it is found stopped once its guest powers off; a
-// guest port is dialed through an attached machine, and a guest reaches a
-// peer's port through a forward, or the driver refuses both; a data volume
+// guest's agent port is dialed through an attached machine and no port but
+// the agent's and the service's is, and a guest reaches a peer's agent port
+// through a forward and no other of its ports, or the driver refuses both; a
+// data volume
 // is kept across a boot and never in a committed VM; a cache volume is a
 // private clone of its key's generation, which only a save moves; an
 // upgrade gives a stopped VM a new root and keeps its name, settings, and
@@ -452,7 +454,8 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	// A guest port is dialed through a machine another call attached to: the
-	// agent's, where an HTTP request for its health is answered. A driver
+	// agent's, where an HTTP request for its health is answered. Any port but
+	// the agent's and the service's is refused (ADR 26-11-03-247). A driver
 	// that reaches no guest port refuses the dial.
 	t.Run("a-guest-port", func(t *testing.T) {
 		inst := create(t, start)
@@ -480,6 +483,12 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("dial the agent's port: %v", err)
 		}
 		defer conn.Close()
+		if other, err := m.Dial(dialCtx, guest.DisplayPort); !errors.Is(err, machine.ErrUnsupported) {
+			if err == nil {
+				_ = other.Close()
+			}
+			t.Fatalf("dial guest port %d, neither the agent's nor the service's: %v, want ErrUnsupported", guest.DisplayPort, err)
+		}
 		_ = conn.SetDeadline(time.Now().Add(time.Minute))
 		if _, err := io.WriteString(conn, "GET /v1/health HTTP/1.0\r\nHost: guest\r\n\r\n"); err != nil {
 			t.Fatal(err)
@@ -494,8 +503,20 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// peer that answers: the agent's port of an instance holding a file the
 	// other does not, which the request reads back. While the peer is stopped
 	// the guest's connection is closed with nothing read, and a peer started
-	// again is followed.
+	// again is followed. A forward to a peer's port other than its agent's or
+	// its service's is refused at Create.
 	t.Run("a-peer-forward", func(t *testing.T) {
+		if caps.Ports {
+			spec := start
+			spec.Name = fmt.Sprintf("conformance-%s-other-port", run)
+			spec.Forwards = []machine.Forward{{Port: 7402, Instance: "peer", InstancePort: guest.DisplayPort}}
+			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+				if err == nil {
+					_ = driver.Destroy(context.Background(), inst)
+				}
+				t.Fatalf("a forward to a peer's port %d, neither its agent's nor its service's: %v, want ErrUnsupported", guest.DisplayPort, err)
+			}
+		}
 		if !caps.Ports {
 			spec := start
 			spec.Name = fmt.Sprintf("conformance-%s-forwarded", run)
@@ -527,6 +548,13 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		proof := randomHex(8)
 		if err := pm.CopyTo(ctx, marker, tarOf(t, "peer.txt", proof)); err != nil {
 			t.Fatal(err)
+		}
+		// The peer is killed below, a power cut, and must still hold the
+		// file when it starts again.
+		if guestOS != machine.Windows {
+			if code, err := machine.Run(ctx, pm, machine.ExecRequest{Argv: []string{"sync"}}, nil, io.Discard, io.Discard); err != nil || code != 0 {
+				t.Fatalf("sync the peer: exit %d, %v", code, err)
+			}
 		}
 		spec := copied
 		spec.Forwards = []machine.Forward{{Port: 7402, Instance: peer.Name, InstancePort: guest.AgentPort}}

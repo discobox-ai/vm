@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -51,6 +52,11 @@ func (d *Driver) Hypervisor() Hypervisor { return d.hv }
 
 // Dir is where the driver keeps its state.
 func (d *Driver) Dir() string { return d.dir }
+
+// CacheDir is where the hypervisor caches what it downloads
+// (cache/<hypervisor>), which Prepare is given as InstanceSpec.CacheDir. It
+// may not exist yet.
+func (d *Driver) CacheDir() string { return d.cacheDir() }
 
 func (d *Driver) Name() string                       { return d.hv.Name() }
 func (d *Driver) Capabilities() machine.Capabilities { return d.hv.Capabilities() }
@@ -201,6 +207,7 @@ func (d *Driver) spec(rec instanceRecord) (InstanceSpec, error) {
 	spec := InstanceSpec{
 		ID: rec.ID, Dir: d.machineDir(rec.ID), GuestOS: rec.GuestOS,
 		CacheDir: d.cacheDir(), Egress: rec.Egress, Data: rec.Data, Cache: rec.Cache,
+		Forwards: rec.Forwards,
 	}
 	if d.hv.Chains() && rec.FromID != "" {
 		chain, err := d.chain(rec.FromID)
@@ -261,6 +268,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	for _, f := range spec.Forwards {
 		if f.Peer() && f.Instance == spec.Name {
 			return machine.Instance{}, fmt.Errorf("port %d forwards to the instance itself", f.Port)
+		}
+		if f.Peer() && !guest.DialablePort(f.InstancePort) {
+			return machine.Instance{}, fmt.Errorf("port %d forwards to port %d of instance %s, and a peer is reached at its agent's port or its service's alone: %w", f.Port, f.InstancePort, f.Instance, machine.ErrUnsupported)
 		}
 	}
 	if spec.Isolated || len(spec.Networks) > 0 {

@@ -294,9 +294,11 @@ func dialCommand(g *globals) *cobra.Command {
 		Use:   "dial INSTANCE PORT",
 		Short: "Connect to a guest port of a running instance, over stdin and stdout",
 		Long: "Connect stdin and stdout to PORT in the guest, through the process that\n" +
-			"holds the instance's machine: vsock on vz, hvsocket on hcs. Whatever listens\n" +
-			"on the port authenticates its callers. When stdin ends, the guest reads EOF\n" +
-			"and the answer is still copied out. Drivers with no socket into the guest\n" +
+			"holds the instance's machine: vsock on vz and libkrun, hvsocket on hcs.\n" +
+			"PORT is the agent's (7300) or the service's (7302); any other is refused.\n" +
+			"Whatever listens on the port authenticates its callers. When stdin ends,\n" +
+			"the guest reads EOF (except on libkrun, which keeps the stream open) and\n" +
+			"the answer is still copied out. Drivers with no socket into the guest\n" +
 			"(boxd, docker) refuse it.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {

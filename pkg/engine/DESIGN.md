@@ -72,9 +72,10 @@ it is not running, and refused where the driver has none (vz, hcs):
 A caller tells a direct path by its differing from the URL.
 
 Past the one service, `Engine.Dial` and `disco-vm dial INSTANCE PORT` open a
-stream to any guest port of a running instance, through the process that
-holds its machine, on a driver that lists `Capabilities.Ports` (ADR
-26-10-31-990): the shim's owner-only socket on hcs, vz, and fake. It is no
+stream to the agent's port or the service's of a running instance (ADR
+26-11-03-247), through the process that holds its machine, on a driver that
+lists `Capabilities.Ports` (ADR 26-10-31-990): the shim's owner-only socket
+on hcs, vz, libkrun, and fake. It is no
 URL and needs the owner's access to the driver's directory; boxd and docker
 refuse it. Where vz and hcs give no private URL, a guest reaches a peer's
 port through a `Forward` to that instance instead

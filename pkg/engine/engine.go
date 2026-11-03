@@ -229,6 +229,8 @@ func (e *Engine) checkForwards(forwards []machine.Forward) error {
 			return fmt.Errorf("port %d forwards to %q, which is not an instance name", f.Port, f.Instance)
 		case f.Peer() && f.InstancePort == 0:
 			return fmt.Errorf("port %d forwards to instance %s with no port", f.Port, f.Instance)
+		case f.Peer() && !guest.DialablePort(f.InstancePort):
+			return fmt.Errorf("port %d forwards to port %d of instance %s, and a peer is reached at its agent's port (%d) or its service's (%d) alone: %w", f.Port, f.InstancePort, f.Instance, guest.AgentPort, guest.ServicePort, machine.ErrUnsupported)
 		case !f.Peer() && f.InstancePort != 0:
 			return fmt.Errorf("port %d names a port of no instance", f.Port)
 		case !f.Peer() && !filepath.IsAbs(f.Socket):
@@ -350,8 +352,8 @@ func (e *Engine) Dial(ctx context.Context, inst Instance, port uint32) (net.Conn
 	if !e.Driver.Capabilities().Ports {
 		return nil, fmt.Errorf("driver %s reaches no guest port: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
-	if port == 0 {
-		return nil, errors.New("dial: a guest port is 1 or more")
+	if !guest.DialablePort(port) {
+		return nil, fmt.Errorf("dial: guest port %d: a caller reaches the agent's port (%d) and the service's (%d) alone: %w", port, guest.AgentPort, guest.ServicePort, machine.ErrUnsupported)
 	}
 	m, err := e.Driver.Attach(ctx, inst)
 	if err != nil {
