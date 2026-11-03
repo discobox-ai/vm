@@ -4,8 +4,6 @@ package vz
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +14,7 @@ import (
 	"github.com/Code-Hex/vz/v3"
 
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/linuximage"
 	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
@@ -29,25 +28,16 @@ const (
 	linuxDisk = 64 << 30
 )
 
-// newMachineID is a systemd machine ID: 32 lowercase hex digits.
-func newMachineID() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
-}
-
 // prepareLinux makes a fresh Linux VM from the base (ADR 26-10-31-990,
 // 26-11-03-606): its image pulled into the cache once per digest, or its
 // directory; its kernel and initrd cloned; its root cloned as the VM's own
 // disk and grown, sparse, to the disk ceiling, which the guest's filesystem
 // grows into at boot; and an identity of its own.
-func prepareLinux(ctx context.Context, inst local.InstanceSpec, base linuxImage) error {
+func prepareLinux(ctx context.Context, inst local.InstanceSpec, base linuximage.Image) error {
 	const ceiling = int64(linuxDisk)
-	src, err := linuxArtifactDir(ctx, inst.CacheDir, base, runtime.GOARCH)
+	src, err := base.Artifacts(ctx, inst.CacheDir, runtime.GOARCH)
 	if err != nil {
-		return err
+		return fmt.Errorf("vz: %w", err)
 	}
 	dst := bundle(inst.Dir)
 	if err := os.MkdirAll(string(dst), 0o700); err != nil {
@@ -76,7 +66,7 @@ func prepareLinux(ctx context.Context, inst local.InstanceSpec, base linuxImage)
 // its own, so a clone of a snapshot is never its source's twin, on the
 // guest's systemd or on the NAT's leases.
 func (b bundle) newLinuxIdentity() error {
-	id, err := newMachineID()
+	id, err := linuximage.NewMachineID()
 	if err != nil {
 		return err
 	}
@@ -108,7 +98,7 @@ func bootLinux(inst local.InstanceSpec, m meta, opts local.BootOptions) (*vmMach
 	if err := checkAgent(agent, runtime.GOARCH); err != nil {
 		return nil, err
 	}
-	if err := writeBootInitrd(b.path(bootInitrdName), b.path(initrdName), agent); err != nil {
+	if err := linuximage.WriteBootInitrd(b.path(bootInitrdName), b.path(initrdName), agent); err != nil {
 		return nil, fmt.Errorf("vz: the boot's initrd: %w", err)
 	}
 	id, err := os.ReadFile(b.path(machineIDName))
@@ -117,7 +107,7 @@ func bootLinux(inst local.InstanceSpec, m meta, opts local.BootOptions) (*vmMach
 	}
 	nic := !fenced(inst)
 	cpus, memory := size(m, opts.CPUs, opts.Memory)
-	config, err := b.linuxConfiguration(cpus, memory, linuxCmdline(strings.TrimSpace(string(id)), nic), nic, opts.Shares)
+	config, err := b.linuxConfiguration(cpus, memory, linuximage.Cmdline(strings.TrimSpace(string(id)), nic), nic, opts.Shares)
 	if err != nil {
 		return nil, err
 	}
