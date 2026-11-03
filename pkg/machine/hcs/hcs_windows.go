@@ -22,7 +22,12 @@ import (
 )
 
 func init() {
-	machine.Register("hcs", func(cfg machine.Config) (machine.Driver, error) { return local.New(cfg, &Hypervisor{}) })
+	// cfg.Base is not read: hcs has no base (Base), so a fresh VM is
+	// refused at Create, and a base configured for another driver
+	// ($DISCO_VM_BASE) stops nothing else.
+	machine.Register("hcs", func(cfg machine.Config) (machine.Driver, error) {
+		return local.New(cfg, &Hypervisor{})
+	})
 }
 
 // Hypervisor runs Windows guests as HCS virtual machines, under a
@@ -46,16 +51,23 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 	}
 }
 
-// Chains is true: a snapshot is the instance's differencing disk, over the
-// disk of the image the instance ran from.
+// Chains is true: a VM's disk is a differencing disk over the disk of the
+// committed VM it was created from, and a committed VM keeps its disk where
+// it is.
 func (*Hypervisor) Chains() bool { return true }
+
+// Base is none: a Windows VM is installed from media, or created from a
+// committed VM.
+func (*Hypervisor) Base() (machine.OS, bool) { return "", false }
 
 // SharesLoopback is false: a guest reaches neither another guest nor the
 // host's loopback.
 func (*Hypervisor) SharesLoopback() bool { return false }
 
-// The files the driver keeps. An image's Dir holds its disk; an instance's Dir
-// holds its differencing disk, its guest and runtime state, and state.json.
+// The files the driver keeps. A VM's Dir holds its disk, differencing over
+// its committed parent's (an install's is whole), and, until it is committed,
+// its guest and runtime state and state.json. A committed VM's Dir holds its
+// disk alone, which is what a VM created from it differences over.
 const (
 	diskName      = "disk.vhdx"
 	guestFileName = "guest.vmgs"
@@ -68,7 +80,8 @@ const (
 	forkDiskName = "template.vhdx"
 )
 
-func imageDisk(img local.Layer) string { return filepath.Join(img.Dir, diskName) }
+// imageDisk is a committed VM's disk, in its own directory.
+func imageDisk(vm local.Layer) string { return filepath.Join(vm.Dir, diskName) }
 
 // instanceState is what the driver remembers about an instance between boots.
 type instanceState struct {
@@ -126,7 +139,7 @@ func (*Hypervisor) Check(context.Context) error {
 
 func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 	if len(inst.Chain) == 0 {
-		return errors.New("hcs: instance has no image")
+		return fmt.Errorf("hcs: a fresh VM: hcs has no base: %w", machine.ErrUnsupported)
 	}
 	if err := os.MkdirAll(inst.Dir, 0o755); err != nil {
 		return err
@@ -270,10 +283,12 @@ func (*Hypervisor) SaveCache(context.Context, local.InstanceSpec, local.Layer) e
 	return fmt.Errorf("hcs: a cache volume: %w", machine.ErrUnsupported)
 }
 
-// Commit moves the stopped instance's differencing disk into dst and points
-// it at its parent again, since a differencing disk moved across directories
-// cannot be trusted to find its parent by its old relative locator.
-func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst local.Layer) error {
+// Commit freezes the stopped VM in place. Its disk stays where it was made,
+// differencing over its parent's, whose path is final, so its parent locator
+// needs no rewriting (a disk moved across directories would). What only a
+// running VM needs goes: its guest and runtime state and state.json (its
+// MAC), so a VM created from it gets its own. hcs attaches no volumes.
+func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec) error {
 	if sys, err := openSystem(vmID(inst.Dir)); err == nil {
 		sys.close()
 		return fmt.Errorf("hcs: instance %s is still running; it must be stopped to commit", inst.ID)
@@ -281,14 +296,15 @@ func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst loca
 	if _, err := os.Stat(filepath.Join(inst.Dir, forkDiskName)); err == nil {
 		return fmt.Errorf("hcs: instance %s is a fork clone, whose disk depends on its template's; it cannot be committed", inst.ID)
 	}
-	if err := os.MkdirAll(dst.Dir, 0o755); err != nil {
-		return err
+	if _, err := os.Stat(filepath.Join(inst.Dir, diskName)); err != nil {
+		return fmt.Errorf("hcs: instance %s has no disk to commit: %w", inst.ID, err)
 	}
-	disk := imageDisk(dst)
-	if err := os.Rename(filepath.Join(inst.Dir, diskName), disk); err != nil {
-		return fmt.Errorf("hcs: move the instance disk into the image: %w", err)
+	for _, name := range []string{guestFileName, stateFileName, stateJSON} {
+		if err := os.Remove(filepath.Join(inst.Dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("hcs: commit %s: %w", inst.ID, err)
+		}
 	}
-	return setParent(disk, imageDisk(inst.Parent()))
+	return nil
 }
 
 // Destroy ends the instance's VM if one is running and removes its files.
@@ -315,14 +331,6 @@ func removeAll(dir string) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return err
-}
-
-// Bases is empty: every first image is installed from media.
-func (*Hypervisor) Bases(context.Context, string) ([]machine.Base, error) { return nil, nil }
-
-// Base finds nothing: hcs has no bases.
-func (*Hypervisor) Base(context.Context, string, string) (machine.Base, bool, error) {
-	return machine.Base{}, false, nil
 }
 
 // Service is the hvsocket service ID of guest.ServicePort, which every VM's

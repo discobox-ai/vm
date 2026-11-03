@@ -29,11 +29,11 @@ func TestServiceFakeAPI(t *testing.T) {
 	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
-	base, err := snapshotOfBase(ctx, d, "0123456789abcdef")
+	base, err := commitFresh(ctx, d, "base")
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "cold", ImageID: base.ID, GuestOS: machine.Linux})
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "cold", From: &base})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestServiceFakeAPI(t *testing.T) {
 	if err := d.Destroy(ctx, inst); err != nil {
 		t.Fatal(err)
 	}
-	peer, err := d.Create(ctx, machine.InstanceSpec{Name: "peer", ImageID: base.ID, GuestOS: machine.Linux, Isolated: true, Networks: []string{"pool"}})
+	peer, err := d.Create(ctx, machine.InstanceSpec{Name: "peer", From: &base, Isolated: true, Networks: []string{"pool"}})
 	if err != nil {
 		t.Fatalf("create on a network: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestServiceFakeAPI(t *testing.T) {
 	fake.mu.Lock()
 	fake.proxyErr = status.Error(codes.NotFound, "no such proxy")
 	fake.mu.Unlock()
-	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "noproxy", ImageID: base.ID, GuestOS: machine.Linux}); err == nil {
+	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "noproxy", From: &base}); err == nil {
 		t.Fatal("create with a proxy that cannot be found succeeded")
 	}
 	fake.mu.Lock()

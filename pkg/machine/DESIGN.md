@@ -9,12 +9,17 @@ boxd, docker, and local have their own design notes:
 
 ## The driver contract is the intersection, and differences are reported
 
-`machine.Driver` is one project's (`machine.Config.Project`) images (Install,
-Image, Images, DeleteImage, Commit; each stands alone, ADR 26-10-23-410),
-tags (Tags, Tag, Untag), bases (Bases, Base), and
-instances (Create, a clone; Instance, Instances, Destroy), as its provider
-keeps them ([the root DESIGN.md](../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider));
-and an instance's machine: Boot, in this process; Start, outliving it;
+`machine.Driver` is one project's (`machine.Config.Project`) VMs, committed
+or not (ADR 26-11-03-606): Create, fresh from the driver's base
+(`Config.Base`) or a copy of a committed VM (`InstanceSpec.From`); Install,
+a committed VM from media; Commit, which freezes a stopped VM under its
+name; Instance, Instances, and Destroy, as its provider keeps them ([the root DESIGN.md](../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider)).
+That a VM is committed is the caller's to record, since not every provider
+can tell (Archil keeps a committed sandbox as a stopped one): a driver
+refuses one only where its provider has no machine left to run
+(`ErrCommitted`: docker's image, boxd's snapshot), or where a boot would
+write to a disk another VM's differences over (`ErrInUse`: hcs). And a VM's
+machine: Boot, in this process; Start, outliving it;
 Attach, from any process; and Service
 ([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-one-http-url-and-a-private-one)).
 A machine also dials any guest port (`Machine.Dial`) where the driver lists
@@ -37,8 +42,10 @@ a `Capabilities` field, never a faked method:
 | display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no | no |
 | ports (`Ports`: `Machine.Dial`, `Forwards` to a socket or a peer) | hvsocket, through the shim | vsock, through the shim | no | no | loopback, through the shim |
 | agent (`disco-vm guest` in the guest) | yes, from Install | yes: macOS from Install; Linux handed it in the initrd at every boot | **no**: boxd's Exec | yes, from Create of a base | yes |
-| install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest`; Linux guests are bases | **none**: boxd's images and snapshots are bases | **none**: registry images are bases | the host's |
-| disks chain below the seam (`local.Hypervisor.Chains`) | yes: a snapshot is a differencing VHDX | no | no | no | no |
+| install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest` | **none** | **none** | the host's |
+| base (`Config.Base`: what a fresh VM starts from) | **none** | Linux: a guest image, `DefaultLinuxBase` by default | an image, boxd's default by default | an image; **none** unless configured | a name, `scratch` by default |
+| a committed VM (`Commit`) | its record and disk, left in place | its record and bundle, left in place | a snapshot `dvm-<project>--<name>`; the machine deleted | an image `disco-vm-vm:<project>--<name>`; the container removed | its record and tree, left in place |
+| disks chain below the seam (`local.Hypervisor.Chains`) | yes: a copy is a differencing VHDX over the committed VM's | no | no | no | no |
 | keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | issue, scope `project` |
 | isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no |
 | egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | none |
@@ -46,7 +53,7 @@ a `Capabilities` field, never a faked method:
 | volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: named volumes | `data` and `cache`: directories in the guest's root |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
-([below](#every-clone-is-cold-and-an-image-is-made-fast-by-what-is-in-it)).
+([below](#every-copy-is-cold-and-a-vm-is-made-fast-by-what-is-in-it)).
 
 ## A driver is given its key, and issues keys that cannot issue
 
@@ -77,7 +84,7 @@ default and place it on the caller's networks; a driver without
 its root cannot loosen it (ADR 26-10-29-129). It is in place before Create
 returns and read back from the provider, so an instance the provider does not
 report fenced as asked is destroyed and Create fails; it holds across stop
-and start, and is the spec's, never the image's. An empty `Allow` is
+and start, and is the spec's, never a committed VM's. An empty `Allow` is
 nothing beyond the networks; nil is the provider's default.
 `Capabilities.Egress` lists the fences a driver holds (`Capabilities.Fences`):
 `none`, an empty `Allow`, and `allow`, a list (ADR 26-10-31-990). A driver
@@ -98,10 +105,10 @@ the root disk. A size is a cap where the provider sizes storage and a hint
 where it grows on demand (docker, fake).
 
 - **A data volume is the instance's**: made empty at Create, kept across stop
-  and start, removed by Destroy, and never in an image, since Commit captures
+  and start, removed by Destroy, and never in a committed VM, since Commit keeps
   the root disk alone.
 - **A cache key points at a generation**, an immutable snapshot of a cache
-  volume, as a tag points at an image; each project has its own keys. Create
+  volume; each project has its own keys. Create
   clones the key's current generation into the instance's own volume (empty
   where the key has none), which no other machine mounts and nothing
   refreshes; `Instance.Cache.Generation` names it.
@@ -119,8 +126,8 @@ where it grows on demand (docker, fake).
 
 A driver lists every guest OS it boots in `Capabilities.GuestOS`, and the
 ones it installs from media in `Capabilities.Install`; a caller asks for a
-guest OS by running an image or base of it (ADR 26-10-31-990). vz boots
-macOS, installed, and Linux, from bases.
+guest OS by creating from a committed VM of it, or fresh from a base of it
+(ADR 26-10-31-990). vz boots macOS, installed, and Linux, from its base.
 
 ## Ports, not GUIDs
 
@@ -180,13 +187,14 @@ the program through `machine.Main`. A driver that shows windows installs a
 first window is asked for, so no other command (and not the guest agent) ever
 touches it.
 
-## Every clone is cold, and an image is made fast by what is in it
+## Every copy is cold, and a VM is made fast by what is in it
 
-Create makes one kind of clone (ADR 26-10-15-851): a copy-on-write clone of
-the image's disk, with a machine identity of its own, which Boot starts from
-power-off. There are no clone modes, no staged images, and no `warm`
-command. Work that every instance needs goes into the image, by shaping a
-guest and taking a `snapshot` of it, so an instance starts with it done.
+Create makes one kind of copy (ADR 26-10-15-851): a copy-on-write copy of
+the committed VM's disk, with a machine identity of its own, which Boot
+starts from power-off. There are no clone modes, no staged VMs, and no
+`warm` command. Work that every VM needs goes into a committed VM, by
+shaping a guest and committing it, so a VM created from it starts with it
+done.
 
 What warming left behind is upgraded, not used:
 
@@ -203,7 +211,7 @@ What warming left behind is upgraded, not used:
   and an hcs fork clone's disk differences over the template disk in its own
   directory, which is why hcs still refuses to commit one. An instance
   prepared fast and never booted (vz's `resume.pending`, an hcs fork ticket)
-  is refused at start: remove it and run the image again.
+  is refused at start: remove it and create it again.
 
 Fast clones may come back once every driver's snapshots are proven
 (the ADR's Deferred section), with a design of their own.

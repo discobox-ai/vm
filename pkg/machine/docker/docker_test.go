@@ -9,15 +9,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
 // ImageEnv names a registry image, such as debian:trixie, to run the
-// conformance suite from, as a base, against the Docker daemon $DOCKER_HOST
-// names.
+// conformance suite from as the driver's base (machine.Config.Base),
+// against the Docker daemon $DOCKER_HOST names.
 const ImageEnv = "DISCO_VM_DOCKER_IMAGE"
 
 // TestConformance runs the conformance suite against a real Docker daemon. It
@@ -28,14 +30,9 @@ func TestConformance(t *testing.T) {
 	if image == "" {
 		t.Skipf("set %s (an image, such as debian:trixie) to run the conformance suite against docker", ImageEnv)
 	}
-	d := New("")
+	d := New(machine.Config{Base: image})
 	d.Agent = linuxAgent(t)
-	b, found, err := d.Base(t.Context(), image)
-	if err != nil || !found {
-		t.Fatalf("base %s: found %v, %v", image, found, err)
-	}
 	machinetest.Run(t, d, machinetest.Config{
-		Base:    &b,
 		CPUs:    2,
 		Memory:  2 << 30,
 		Timeout: 2 * time.Minute,
@@ -44,14 +41,38 @@ func TestConformance(t *testing.T) {
 	})
 }
 
-func TestUnknownToRegistry(t *testing.T) {
-	for status, want := range map[int]bool{404: true, 401: true, 403: true, 500: false, 502: false} {
-		if got := isUnknownToRegistry(&apiError{Status: status}); got != want {
-			t.Errorf("status %d: unknown = %v, want %v", status, got, want)
-		}
+// TestNoBase refuses a fresh VM where no base is configured, before it asks
+// the daemon anything.
+func TestNoBase(t *testing.T) {
+	_, err := New(machine.Config{}).Create(t.Context(), machine.InstanceSpec{Name: "fresh"})
+	if !errors.Is(err, machine.ErrUnsupported) || !strings.Contains(err.Error(), BaseEnv) {
+		t.Fatalf("a fresh VM with no base: %v", err)
 	}
-	if isUnknownToRegistry(errors.New("dial unix: no such file")) {
-		t.Error("no answer at all is an unknown image")
+}
+
+// TestCommittedRefused refuses every operation of a running VM on a
+// committed one, a Docker image with no container, before it asks the
+// daemon anything.
+func TestCommittedRefused(t *testing.T) {
+	d := New(machine.Config{})
+	inst := machine.Instance{ID: "sha256:0", Name: "frozen"}
+	if _, err := d.Boot(t.Context(), inst, machine.BootOptions{}); !errors.Is(err, machine.ErrCommitted) {
+		t.Errorf("boot: %v", err)
+	}
+	if _, err := d.Start(t.Context(), inst, machine.BootOptions{}); !errors.Is(err, machine.ErrCommitted) {
+		t.Errorf("start: %v", err)
+	}
+	if _, err := d.Attach(t.Context(), inst); !errors.Is(err, machine.ErrNotRunning) {
+		t.Errorf("attach: %v", err)
+	}
+	if _, err := d.Commit(t.Context(), inst); !errors.Is(err, machine.ErrCommitted) {
+		t.Errorf("commit: %v", err)
+	}
+	if _, err := d.Service(t.Context(), inst); !errors.Is(err, machine.ErrNotRunning) {
+		t.Errorf("service: %v", err)
+	}
+	if _, err := d.SaveCache(t.Context(), inst, machine.CacheSave{Key: "k"}); !errors.Is(err, machine.ErrCommitted) {
+		t.Errorf("save cache: %v", err)
 	}
 }
 
@@ -107,4 +128,26 @@ func linuxAgent(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return agent
+}
+
+// TestManagedLeavesTheOldOut lists a VM's container and a readying one of
+// the project's, and not a container from before ADR 26-11-03-606, an
+// instance of an image, which labelImage names.
+func TestManagedLeavesTheOldOut(t *testing.T) {
+	d := New(machine.Config{Project: "p"})
+	for _, c := range []struct {
+		labels map[string]string
+		want   bool
+	}{
+		{map[string]string{labelInstance: "dev", labelProject: "p", labelImage: ""}, true},
+		{map[string]string{labelInstance: "dev", labelProject: "p"}, true},
+		{map[string]string{labelInstance: "base-0a1b2c", labelProject: "p", labelImage: "debian:trixie"}, true},
+		{map[string]string{labelInstance: "dev", labelProject: "p", labelImage: "e2e/base"}, false},
+		{map[string]string{labelInstance: "base-app", labelProject: "p", labelImage: "e2e/base"}, false},
+		{map[string]string{labelInstance: "dev", labelProject: "q"}, false},
+	} {
+		if got := d.managed(c.labels); got != c.want {
+			t.Errorf("managed(%v) = %v, want %v", c.labels, got, c.want)
+		}
+	}
 }

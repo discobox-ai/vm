@@ -26,6 +26,10 @@ type exitError struct{ code int }
 
 func (e exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
+// BaseEnv is the driver's base (machine.Config.Base), what a fresh VM starts
+// from: the driver's configuration, which no command takes as a flag.
+const BaseEnv = "DISCO_VM_BASE"
+
 type globals struct {
 	root    string
 	driver  string
@@ -50,7 +54,7 @@ func (g *globals) newDriver(name, project string) (machine.Driver, error) {
 	if name == "" {
 		name = machine.DefaultName()
 	}
-	return machine.New(name, machine.Config{Dir: g.dir(), Project: project, Keys: machine.KeyFromEnv(name)})
+	return machine.New(name, machine.Config{Dir: g.dir(), Project: project, Base: os.Getenv(BaseEnv), Keys: machine.KeyFromEnv(name)})
 }
 
 func (g *globals) engine() (*engine.Engine, error) {
@@ -73,7 +77,7 @@ func Main(args []string) int {
 	g := &globals{}
 	root := &cobra.Command{
 		Use:           "disco-vm",
-		Short:         "Run OS images as VMs, and snapshot them as new images",
+		Short:         "Run VMs, fresh or from committed ones, and commit them",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.String(),
@@ -84,13 +88,13 @@ func Main(args []string) int {
 			machine.SetDebug(os.Stderr)
 		}
 	}
-	root.PersistentFlags().StringVar(&g.root, "root", "", "where a driver on this host's disk (hcs, vz, fake) keeps its images and instances (default $"+machine.DirEnv+" or the per-OS data directory)")
-	root.PersistentFlags().StringVar(&g.project, "project", envOr("DISCO_VM_PROJECT", machine.DefaultProject), "project that scopes every image, instance, and driver resource (also $DISCO_VM_PROJECT)")
+	root.PersistentFlags().StringVar(&g.root, "root", "", "where a driver on this host's disk (hcs, vz, fake) keeps its VMs (default $"+machine.DirEnv+" or the per-OS data directory)")
+	root.PersistentFlags().StringVar(&g.project, "project", envOr("DISCO_VM_PROJECT", machine.DefaultProject), "project that scopes every VM and driver resource (also $DISCO_VM_PROJECT)")
 	root.PersistentFlags().StringVar(&g.driver, "driver", os.Getenv("DISCO_VM_DRIVER"), "hypervisor driver (default "+machine.DefaultName()+"; also $DISCO_VM_DRIVER)")
 	root.AddCommand(
 		driversCommand(g),
 		installCommand(g),
-		imagesCommand(g), rmiCommand(g), tagCommand(g), snapshotCommand(g),
+		commitCommand(g),
 		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
 		lsCommand(g), inspectCommand(g), urlCommand(g), dialCommand(g), execCommand(g), cpCommand(g),
 		infoCommand(g), keyCommand(g), cacheCommand(g),

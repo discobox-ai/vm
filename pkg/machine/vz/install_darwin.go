@@ -24,9 +24,10 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
-// Install creates a macOS base layer: it installs the restore image onto a new
-// bundle, then boots it once with guest provisioning to create an account and
-// bake in the agent, and shuts it down through the agent.
+// Install makes a committed macOS VM in dst.Dir, its own directory: it
+// installs the restore image onto a new bundle, then boots it once with guest
+// provisioning to create an account and bake in the agent, shuts it down
+// through the agent, and freezes it.
 func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) error {
 	if spec.GuestOS != machine.Darwin {
 		return fmt.Errorf("vz: can install darwin guests, not %s", spec.GuestOS)
@@ -60,8 +61,8 @@ func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst lo
 	if err := bootstrap(ctx, b, m, spec.Agent, opts, spec.GUI, log); err != nil {
 		return err
 	}
-	// A layer carries no running machine's identity.
-	return os.Remove(b.path(macName))
+	// A committed VM carries no running machine's identity.
+	return freezeLayer(b, machine.Darwin)
 }
 
 // options are the install options a spec passes through (from.install.options).

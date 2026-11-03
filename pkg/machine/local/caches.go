@@ -115,7 +115,11 @@ func (d *Driver) SaveCache(ctx context.Context, inst machine.Instance, save mach
 	if err := machine.ValidateCacheKey(save.Key); err != nil {
 		return machine.Cache{}, err
 	}
-	if inst.Cache == nil {
+	rec, err := d.readProject(inst.ID)
+	if err != nil {
+		return machine.Cache{}, err
+	}
+	if rec.Cache == nil {
 		return machine.Cache{}, fmt.Errorf("instance %s has no cache volume", inst.Name)
 	}
 	if shim, err := d.openShim(inst.ID); err == nil && shim.status(ctx) == nil {
@@ -124,11 +128,11 @@ func (d *Driver) SaveCache(ctx context.Context, inst machine.Instance, save mach
 	if _, err := d.guard(save); err != nil {
 		return machine.Cache{}, err
 	}
-	hs, err := d.spec(inst)
+	hs, err := d.spec(rec)
 	if err != nil {
 		return machine.Cache{}, err
 	}
-	g := generation{ID: fsutil.RandomHex(16), Project: d.project, Key: save.Key, Bytes: inst.Cache.Bytes, Saved: time.Now().UTC()}
+	g := generation{ID: fsutil.RandomHex(16), Project: d.project, Key: save.Key, Bytes: rec.Cache.Bytes, Saved: time.Now().UTC()}
 	tmp := filepath.Join(d.generationsDir(), ".tmp-"+g.ID)
 	if err := os.MkdirAll(filepath.Join(tmp, payloadDir), 0o755); err != nil {
 		return machine.Cache{}, err

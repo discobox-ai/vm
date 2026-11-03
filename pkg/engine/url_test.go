@@ -28,7 +28,7 @@ import (
 func TestURL(t *testing.T) {
 	ctx := context.Background()
 	e, _ := fakeEngine(t)
-	inst, err := e.Create(ctx, "app", engine.CreateOptions{Name: "one"})
+	inst, err := e.Create(ctx, engine.CreateOptions{From: "app", Name: "one"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func fakeEngine(t *testing.T) (*engine.Engine, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Install(ctx, engine.InstallOptions{}, "app"); err != nil {
+	if _, err := e.Install(ctx, "app", engine.InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	return e, binary

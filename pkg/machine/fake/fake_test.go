@@ -29,25 +29,34 @@ func TestConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	catalog := []machine.Base{{Name: "stock", ID: "stock-1", GuestOS: machine.OS(runtime.GOOS), Options: map[string]string{"image": "stock"}}}
-	dir := t.TempDir()
-	hv := &fake.Hypervisor{Agent: agent, Catalog: catalog}
-	newDriver := func(keys machine.KeySource) machine.Driver {
-		driver, err := local.New(machine.Config{
-			Dir:         dir,
-			ShimCommand: []string{agent, "--root", dir, "--driver", "fake", "shim"},
-			Keys:        keys,
-		}, hv)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return driver
+	for _, from := range []struct {
+		name    string
+		install machine.InstallSpec
+	}{
+		{"install", machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"}},
+		{"fresh", machine.InstallSpec{}},
+	} {
+		t.Run(from.name, func(t *testing.T) {
+			dir := t.TempDir()
+			hv := &fake.Hypervisor{Agent: agent, BaseName: "stock"}
+			newDriver := func(keys machine.KeySource) machine.Driver {
+				driver, err := local.New(machine.Config{
+					Dir:         dir,
+					ShimCommand: []string{agent, "--root", dir, "--driver", "fake", "shim"},
+					Keys:        keys,
+				}, hv)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return driver
+			}
+			machinetest.Run(t, newDriver(nil), machinetest.Config{
+				Install:    from.install,
+				Timeout:    30 * time.Second,
+				ScratchDir: "/scratch",
+				GuestAgent: agent,
+				Keyed:      newDriver,
+			})
+		})
 	}
-	machinetest.Run(t, newDriver(nil), machinetest.Config{
-		Install:    machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"},
-		Timeout:    30 * time.Second,
-		ScratchDir: "/scratch",
-		GuestAgent: agent,
-		Keyed:      newDriver,
-	})
 }

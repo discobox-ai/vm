@@ -18,7 +18,7 @@ import (
 func TestDial(t *testing.T) {
 	ctx := context.Background()
 	e, _ := fakeEngine(t)
-	inst, err := e.Create(ctx, "app", engine.CreateOptions{Name: "dialed"})
+	inst, err := e.Create(ctx, engine.CreateOptions{From: "app", Name: "dialed"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,11 +62,11 @@ func TestCreateRefuses(t *testing.T) {
 		{"stray port", engine.CreateOptions{Forwards: []machine.Forward{{Port: 1, Socket: "/s", InstancePort: 2}}}, "port of no instance"},
 		{"itself", engine.CreateOptions{Name: "self", Forwards: []machine.Forward{{Port: 1, Instance: "self", InstancePort: 2}}}, "itself"},
 	} {
-		if _, err := e.Create(ctx, "app", c.opts); err == nil || !strings.Contains(err.Error(), c.want) {
+		if _, err := e.Create(ctx, withFrom(c.opts, "app")); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want an error saying %q", c.name, err, c.want)
 		}
 	}
-	if _, err := e.Create(ctx, "app", engine.CreateOptions{Egress: &machine.Egress{}}); !errors.Is(err, machine.ErrUnsupported) {
+	if _, err := e.Create(ctx, engine.CreateOptions{From: "app", Egress: &machine.Egress{}}); !errors.Is(err, machine.ErrUnsupported) {
 		t.Errorf("a fence fake does not hold: %v, want ErrUnsupported", err)
 	}
 }

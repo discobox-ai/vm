@@ -3,19 +3,19 @@
 // because the hypervisor is not on the host.
 //
 // boxd has no disk images to hand out, only machines and snapshots of them,
-// and keeps no labels on either, so the driver maps the seam onto their names
-// and keeps nothing on the host (ADR 26-10-23-417):
+// and keeps no labels on either, so the driver maps the seam's VMs (ADR
+// 26-11-03-606) onto their names and keeps nothing on the host (ADR
+// 26-10-23-417):
 //
-//   - An image is a boxd snapshot (memory and disk) of the guest booted from
-//     the committed disk, named dvm-<project>--<image id>. boxd keeps no
-//     comment for it, and a snapshot is whole: no image needs another.
-//   - A tag is a second snapshot of its image's, named
-//     dvm-<project>--<image id>--t-<ref>, with the ref's punctuation escaped.
-//   - An instance is a boxd machine named dvm-<project>--<name>, restored from
-//     its image's snapshot or made from a base, and powered off in order once
+//   - A VM is a boxd machine named dvm-<project>--<name>: fresh, made from
+//     the driver's base (machine.Config.Base, or boxd's default image), or
+//     restored from a committed VM's snapshot, and powered off in order once
 //     made, so its first boot is a cold boot of its disk.
+//   - A committed VM is a boxd snapshot (memory and disk) of the guest booted
+//     from the committed disk, under the same name, and its machine deleted.
+//     A snapshot is whole: no VM restored from one needs it again.
 //
-// There is no install: boxd's images and snapshots are bases.
+// There is no install: a fresh VM starts from boxd's image.
 //
 // There is no hypervisor socket to the guest, and no disco-vm agent in it.
 // The guest's operations (machine.Guest) are boxd's authenticated Exec stream:
@@ -37,7 +37,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
@@ -60,6 +59,9 @@ const (
 type Driver struct {
 	api     *client
 	project string
+	// base is the image a fresh VM is made from; empty is boxd's default
+	// image (GetConfig).
+	base string
 }
 
 var _ machine.Driver = (*Driver)(nil)
@@ -72,7 +74,7 @@ func New(cfg machine.Config) *Driver {
 	if project == "" {
 		project = machine.DefaultProject
 	}
-	return &Driver{api: newClient(cfg.Keys), project: project}
+	return &Driver{api: newClient(cfg.Keys), project: project, base: cfg.Base}
 }
 
 func (*Driver) Name() string { return "boxd" }
@@ -108,39 +110,41 @@ type vmRef struct {
 // prefix starts the name of everything the driver makes for its project.
 func (d *Driver) prefix() string { return machine.ResourcePrefix(namePrefix, d.project) }
 
-// imageName is an image's snapshot.
-func (d *Driver) imageName(id string) string { return d.prefix() + id }
-
-// transientName is a machine the driver makes for a moment of its own (to save
-// a tag's snapshot), named as an instance of the project's, `<what>-<random>`,
-// so that one a process killed meanwhile leaves, which boxd bills, is listed,
-// and `rm` removes it.
-func (d *Driver) transientName(what string) string {
-	return d.prefix() + what + "-" + fsutil.RandomHex(3)
-}
-
-// machineName is an instance's machine.
+// machineName is a VM's machine, and a committed VM's snapshot.
 func (d *Driver) machineName(name string) string { return d.prefix() + name }
 
-// Install is not offered: boxd's images and snapshots are bases instead.
-func (*Driver) Install(context.Context, machine.InstallSpec, machine.Image) (machine.Image, error) {
-	return machine.Image{}, fmt.Errorf("boxd: run one of boxd's images or snapshots (disco-vm images): %w", machine.ErrUnsupported)
+// Install is not offered: a fresh VM starts from boxd's image instead.
+func (*Driver) Install(context.Context, machine.InstallSpec, string) (machine.Instance, error) {
+	return machine.Instance{}, fmt.Errorf("boxd: installs nothing from media; create a fresh VM from its image: %w", machine.ErrUnsupported)
 }
 
-// Create makes the instance's machine: restored from its image's snapshot, or
-// made from its base, at the size it asks for, fenced as it asks the moment
-// boxd answers, with its proxy pinned to the service port; then powered off
-// in order, so its first boot is a cold boot.
+// baseImage is the image a fresh VM is made from: the driver's configured
+// one, or boxd's default.
+func (d *Driver) baseImage(ctx context.Context, api boxdapi.BoxdApiClient) (string, error) {
+	if d.base != "" {
+		return d.base, nil
+	}
+	config, err := api.GetConfig(ctx, &boxdapi.GetConfigRequest{})
+	if err != nil {
+		return "", fmt.Errorf("boxd: read the default image: %w", err)
+	}
+	if config.GetDefaultImage() == "" {
+		return "", fmt.Errorf("boxd: no default image to make a fresh VM from: %w", machine.ErrUnsupported)
+	}
+	return config.GetDefaultImage(), nil
+}
+
+// Create makes the VM's machine: restored from the committed VM's snapshot,
+// or made fresh from the driver's image, at the size it asks for, fenced as
+// it asks the moment boxd answers, with its proxy pinned to the service
+// port; then powered off in order, so its first boot is a cold boot.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	if err := machine.ValidateName(spec.Name); err != nil {
 		return machine.Instance{}, err
 	}
 	name := d.machineName(spec.Name)
 	if len(name) > maxMachineName {
-		return machine.Instance{}, fmt.Errorf("boxd: instance name %q is too long: its machine %s must be at most %d characters", spec.Name, name, maxMachineName)
-	}
-	if spec.Base == nil && spec.ImageID == "" {
-		return machine.Instance{}, errors.New("boxd: instance has no image")
+		return machine.Instance{}, fmt.Errorf("boxd: VM name %q is too long: its machine %s must be at most %d characters", spec.Name, name, maxMachineName)
 	}
 	if len(spec.Forwards) > 0 {
 		return machine.Instance{}, fmt.Errorf("boxd: forwards: %w", machine.ErrUnsupported)
@@ -148,45 +152,57 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if spec.Data != nil || spec.Cache != nil {
 		return machine.Instance{}, fmt.Errorf("boxd: a data or cache volume: %w", machine.ErrUnsupported)
 	}
-	restore := spec.Base == nil || spec.Base.Options["snapshot"] != ""
+	restore := spec.From != nil
 	if restore && len(spec.Networks) > 0 && !spec.Isolated {
 		// A restore takes no networks: they are set once it is made, and a
 		// machine that is not isolated is on the default network until then.
-		return machine.Instance{}, fmt.Errorf("boxd: networks on an instance of a snapshot need it isolated, or it peers on the default network until they are set: %w", machine.ErrUnsupported)
+		return machine.Instance{}, fmt.Errorf("boxd: networks on a VM created from a committed one need it isolated, or it peers on the default network until they are set: %w", machine.ErrUnsupported)
 	}
 	api, err := d.api.API()
 	if err != nil {
 		return machine.Instance{}, err
 	}
 	if _, err := d.Instance(ctx, spec.Name); err == nil {
-		return machine.Instance{}, fmt.Errorf("boxd: an instance named %q: %w", spec.Name, machine.ErrExists)
+		return machine.Instance{}, fmt.Errorf("boxd: a VM named %q: %w", spec.Name, machine.ErrExists)
 	} else if !errors.Is(err, machine.ErrNotFound) {
 		return machine.Instance{}, err
 	}
 	config := &boxdapi.VmConfig{Vcpu: uint32(spec.CPUs), MemoryBytes: spec.Memory}
 	var created *boxdapi.CreateVmResponse
-	switch {
-	case spec.Base == nil:
-		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: d.imageName(spec.ImageID), Name: name, Isolated: spec.Isolated}
-		if spec.CPUs != 0 || spec.Memory != 0 {
-			req.Config = config
+	if restore {
+		// boxd restores only a snapshot: a From that is a machine is no
+		// committed VM boxd has.
+		snap, err := d.snapshotOf(ctx, api, *spec.From)
+		if err != nil {
+			return machine.Instance{}, err
 		}
-		created, err = api.CreateVmFromSnapshot(ctx, req)
-	case spec.Base.Options["snapshot"] != "":
-		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: spec.Base.Options["snapshot"], Name: name, Isolated: spec.Isolated}
+		if snap == nil {
+			return machine.Instance{}, fmt.Errorf("boxd: no committed VM %s, a snapshot of that name and ID; commit it first: %w", spec.From.Name, machine.ErrNotFound)
+		}
+		// By name, as boxd's own restores are: a committed VM's name is
+		// its snapshot's, and no second VM of the project takes it.
+		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: d.machineName(spec.From.Name), Name: name, Isolated: spec.Isolated}
 		if spec.CPUs != 0 || spec.Memory != 0 {
 			// With none asked for, the snapshot's own size.
 			req.Config = config
 		}
 		created, err = api.CreateVmFromSnapshot(ctx, req)
-	default:
+		if isNotFound(err) {
+			return machine.Instance{}, fmt.Errorf("boxd: committed VM %s: %w", spec.From.Name, machine.ErrNotFound)
+		}
+	} else {
+		var image string
+		image, err = d.baseImage(ctx, api)
+		if err != nil {
+			return machine.Instance{}, err
+		}
 		created, err = api.CreateVm(ctx, &boxdapi.CreateVmRequest{
-			Name: name, ImageRef: spec.Base.Options["image"], RestartPolicy: "never", Config: config,
+			Name: name, ImageRef: image, RestartPolicy: "never", Config: config,
 			Isolated: spec.Isolated, Networks: spec.Networks,
 		})
 	}
 	if status.Code(err) == codes.AlreadyExists {
-		return machine.Instance{}, fmt.Errorf("boxd: an instance named %q: %w", spec.Name, machine.ErrExists)
+		return machine.Instance{}, fmt.Errorf("boxd: a VM named %q: %w", spec.Name, machine.ErrExists)
 	}
 	if err != nil {
 		return machine.Instance{}, fmt.Errorf("boxd: create %s: %w", name, err)
@@ -227,9 +243,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if err != nil {
 		return machine.Instance{}, fmt.Errorf("boxd: machine %s: %w", name, err)
 	}
-	inst := d.instance(info)
-	inst.Image, inst.ImageID, inst.Base = spec.Image, spec.ImageID, spec.Base
-	return inst, nil
+	return d.instance(info), nil
 }
 
 // fence sets the machine's egress allowlist, and reads it back: a machine
@@ -308,7 +322,7 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 	ref := vmRef{ID: inst.ID, Name: d.machineName(inst.Name)}
 	info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: ref.ID})
 	if err != nil {
-		return nil, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
+		return nil, d.refuseCommitted(ctx, api, inst, fmt.Errorf("boxd: machine %s: %w", ref.Name, err))
 	}
 	if info.GetStatus() == "stopping" {
 		// A stop is still settling: a `disco-vm stop` a moment ago. Start
@@ -393,6 +407,12 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	case isNotFound(err):
 		return nil, fmt.Errorf("boxd: machine %s is gone: %w", ref.Name, machine.ErrNotRunning)
 	case err != nil:
+		// A committed VM's ID is its snapshot's, which GetVm need not
+		// answer NotFound for: it has no machine, so it is not running,
+		// whatever boxd says of the ID.
+		if snap, snapErr := d.snapshotOf(ctx, api, inst); snapErr == nil && snap != nil {
+			return nil, fmt.Errorf("boxd: %s is a committed VM: %w", inst.Name, machine.ErrNotRunning)
+		}
 		return nil, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
 	}
 	switch state := info.GetStatus(); state {
@@ -403,69 +423,81 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	}
 }
 
-// Commit boots the stopped instance from its committed disk, snapshots it as
-// the image, and destroys the machine: a boxd snapshot can only be taken of a
-// running machine.
-func (d *Driver) Commit(ctx context.Context, inst machine.Instance, dst machine.Image) (machine.Image, error) {
+// Commit boots the stopped VM from its disk, snapshots it under its name,
+// and deletes the machine: a boxd snapshot can only be taken of a running
+// machine. The snapshot's disk is the one the guest flushed at its last
+// orderly shutdown.
+func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Instance, error) {
 	api, err := d.api.API()
 	if err != nil {
-		return machine.Image{}, err
+		return machine.Instance{}, err
 	}
 	ref := vmRef{ID: inst.ID, Name: d.machineName(inst.Name)}
 	info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: ref.ID})
 	if err != nil {
-		return machine.Image{}, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
+		return machine.Instance{}, d.refuseCommitted(ctx, api, inst, fmt.Errorf("boxd: machine %s: %w", ref.Name, err))
 	}
 	if info.GetStatus() != "stopped" {
-		return machine.Image{}, fmt.Errorf("boxd: commit needs a stopped machine; %s is %s", ref.Name, info.GetStatus())
+		return machine.Instance{}, fmt.Errorf("boxd: commit needs a stopped machine; %s is %s", ref.Name, info.GetStatus())
 	}
 	if _, err := api.StartVm(ctx, &boxdapi.StartVmRequest{VmId: ref.ID}); err != nil {
-		return machine.Image{}, fmt.Errorf("boxd: start %s: %w", ref.Name, err)
+		return machine.Instance{}, fmt.Errorf("boxd: start %s: %w", ref.Name, err)
 	}
 	if _, err := waitVM(ctx, api, ref.ID, "running"); err != nil {
-		return machine.Image{}, err
+		return machine.Instance{}, err
 	}
 	if err := waitGuest(ctx, api, ref.ID, nil); err != nil {
-		return machine.Image{}, err
+		return machine.Instance{}, err
 	}
-	img, err := d.snapshot(ctx, api, ref.ID, dst.ID)
+	created, err := api.CreateSnapshot(ctx, &boxdapi.CreateSnapshotRequest{Vm: ref.ID, Name: ref.Name})
 	if err != nil {
-		return machine.Image{}, err
+		return machine.Instance{}, fmt.Errorf("boxd: snapshot %s: %w", ref.Name, err)
 	}
+	snap, err := waitSnapshot(ctx, api, ref.Name, created.GetVersion())
+	if err != nil {
+		return machine.Instance{}, err
+	}
+	// The snapshot is the VM now. A machine left by a delete that fails is
+	// removed with it (Destroy).
 	d.destroyVM(ref.ID)
-	return img, nil
+	return d.committed(snap), nil
 }
 
+// Destroy removes a VM's machine, or a committed VM's snapshot and any
+// machine of its name a Commit left. A machine restored from the snapshot
+// has a disk of its own, and outlives it.
 func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	api, err := d.api.API()
 	if err != nil {
 		return err
 	}
+	name := d.machineName(inst.Name)
+	snap, err := d.snapshotOf(ctx, api, inst)
+	if err != nil {
+		return err
+	}
+	if snap != nil {
+		listed, err := api.ListVms(ctx, &boxdapi.ListVmsRequest{})
+		if err != nil {
+			return fmt.Errorf("boxd: list machines: %w", err)
+		}
+		for _, vm := range listed.GetVms() {
+			if vm.GetName() != name {
+				continue
+			}
+			if _, err := api.DestroyVm(ctx, &boxdapi.DestroyVmRequest{VmId: vm.GetVmId()}); err != nil && !isNotFound(err) {
+				return fmt.Errorf("boxd: destroy %s: %w", name, err)
+			}
+		}
+		if _, err := api.DeleteSnapshot(ctx, &boxdapi.DeleteSnapshotRequest{Name: name}); err != nil && !isNotFound(err) {
+			return fmt.Errorf("boxd: delete snapshot %s: %w", name, err)
+		}
+		return nil
+	}
 	if _, err := api.DestroyVm(ctx, &boxdapi.DestroyVmRequest{VmId: inst.ID}); err != nil && !isNotFound(err) {
-		return fmt.Errorf("boxd: destroy %s: %w", d.machineName(inst.Name), err)
+		return fmt.Errorf("boxd: destroy %s: %w", name, err)
 	}
 	return nil
-}
-
-// DeleteImage deletes the image's snapshot. No other image needs it: a
-// machine restored from a snapshot has a disk of its own.
-func (d *Driver) DeleteImage(ctx context.Context, id string) error {
-	return d.deleteSnapshot(ctx, d.imageName(id))
-}
-
-// snapshot captures a running machine as the image id, and waits until the
-// snapshot can be restored.
-func (d *Driver) snapshot(ctx context.Context, api boxdapi.BoxdApiClient, vm, id string) (machine.Image, error) {
-	name := d.imageName(id)
-	created, err := api.CreateSnapshot(ctx, &boxdapi.CreateSnapshotRequest{Vm: vm, Name: name})
-	if err != nil {
-		return machine.Image{}, fmt.Errorf("boxd: snapshot %s: %w", vm, err)
-	}
-	snap, err := waitSnapshot(ctx, api, name, created.GetVersion())
-	if err != nil {
-		return machine.Image{}, err
-	}
-	return machine.Image{ID: id, GuestOS: machine.Linux, Created: unixTime(snap.GetCreatedAt(), time.Millisecond)}, nil
 }
 
 // waitSnapshot waits until a snapshot can be restored.
@@ -490,17 +522,6 @@ func waitSnapshot(ctx context.Context, api boxdapi.BoxdApiClient, name string, v
 		case <-time.After(time.Second):
 		}
 	}
-}
-
-func (d *Driver) deleteSnapshot(ctx context.Context, name string) error {
-	api, err := d.api.API()
-	if err != nil {
-		return err
-	}
-	if _, err := api.DeleteSnapshot(ctx, &boxdapi.DeleteSnapshotRequest{Name: name}); err != nil && !isNotFound(err) {
-		return fmt.Errorf("boxd: delete snapshot %s: %w", name, err)
-	}
-	return nil
 }
 
 // powerOff stops a machine: the guest's writes flushed (syncDisks), then
@@ -535,7 +556,8 @@ func syncDisks(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error 
 	return nil
 }
 
-// destroyVM is best-effort cleanup of a machine the driver made for itself.
+// destroyVM is best-effort cleanup of a machine the driver made and will not
+// hand out.
 func (d *Driver) destroyVM(vm string) {
 	api, err := d.api.API()
 	if err != nil {

@@ -2,22 +2,26 @@
 
 The driver whose provider is this host's disk: the store and the shim that
 hcs, vz, and fake share (ADR 26-10-23-417). Each of them is a
-`local.Hypervisor`, which installs, clones, boots, commits, and destroys a
-disk in a directory it is given, and says whether its disks chain; this
-package keeps everything else.
+`local.Hypervisor`, which installs, copies, boots, freezes, and destroys a
+disk in a directory it is given, says whether its disks chain, and has a
+base or none (`Base`, from `machine.Config.Base`); this package keeps
+everything else.
 
 ## A directory of its own is the store
 
 `machine.Config.Dir` (`--root`, `$DISCO_VM_ROOT`, or the per-OS data
 directory) is the driver's, as `/var/lib/docker` is Docker's:
 
-- `images/layers/<id>/payload` (an image's disk) and `layer.json` (project,
-  guest OS, comment, and, for a hypervisor that chains, the parent), their
-  names from when images were layers;
-- `images/tags/<project>/<ref in hex>.json`;
 - `instances/<id>/machine` (the hypervisor's) and `instance.json` (project,
-  name, image, image ID or base, size, forwards, fence), and while a shim
-  holds it, `shim.json`, `shim.sock`, and `shim.log`;
+  name, the name and ID of the VM it was created from, guest OS, size,
+  forwards, fence, volumes), and while a shim holds it, `shim.json`,
+  `shim.sock`, and `shim.log`. A committed VM (ADR 26-11-03-606) is the
+  same, left where it is with its volumes gone: nothing marks it committed,
+  which is the caller's to record. A record from before that ADR, of an
+  image or a base (`imageID`, `layer`, `base`), is not read: its disk may
+  difference over an image this driver no longer knows. While a VM is
+  created from another, `from` in its directory names that one's ID, before
+  its chain is read and its record written;
 - `instances/.names/<project>/<name>`, the name's claim, holding the ID;
 - `caches/<project>/<key>.json`, a cache key, naming its current
   generation, and `caches/generations/<id>/payload` (the hypervisor's copy
@@ -30,7 +34,7 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   copy, so nothing but a key needs a generation;
 - `cache/<hypervisor>/`, what the hypervisor downloads: media it installs
   from, and, for vz, Linux guest images pulled per digest
-  (`cache/vz/linux/<digest>`). `Bases`, `Base`, and `Prepare` are given it;
+  (`cache/vz/linux/<digest>`). `Prepare` is given it;
 - `keys/<hash>.json`, a key the driver issued, named for the SHA-256 of its
   secret (ID, name, project, expiry, and that hash, never the secret), for a
   hypervisor whose capabilities issue keys. A call reads its own key's
@@ -39,9 +43,7 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
 
 Nothing takes a lock:
 
-- **An image is published by renaming its directory into place**, written
-  under a temporary name with its record inside, under a random ID.
-- **A tag is a file**, replaced by a rename.
+- **A record is replaced by a rename**, as Commit drops its volumes.
 - **A name is claimed by creating its file exclusively.** A claim with no
   instance behind it for ten minutes is what a crash left, and is taken.
 - **An instance's record goes in last when it is made, and out last when it
@@ -51,17 +53,22 @@ Nothing takes a lock:
 
 ## A chain is the driver's, below the seam
 
-Above the seam an image has no parent (ADR 26-10-23-410). An hcs snapshot,
-though, is a differencing disk over the disk of the image its instance ran
-from, so a hypervisor that `Chains` gets the parent recorded: Commit writes
-the instance's image ID as the snapshot's `parent`, Prepare, Boot, and
-Destroy get the whole chain (`InstanceSpec.Chain`, base first), and
-`DeleteImage` refuses with `machine.ErrInUse` while any image's record, in
-any project, names the image as its parent, so a disk another still needs is
-never deleted. `Image` reports an image not found when an ancestor is gone
-(deleted behind the driver's back); `Images` still lists it, so `rmi` can
-remove it. vz and fake do not chain: their images record no parent, and each
-is a copy of its own.
+A VM created from a committed one is a copy: an APFS clone on vz and a tree
+on fake, made at Create and its own from then on, so the committed VM can be
+removed and the copy lives on. An hcs copy, though, is a differencing disk
+over the committed VM's, so for a hypervisor that `Chains` the record keeps
+the ID of the VM it was created from (`fromID`); Prepare, Boot, Commit, and
+Destroy get the whole chain (`InstanceSpec.Chain`, base first); and a VM
+another VM's record names, in any project, is refused removal and boot with
+`machine.ErrInUse`, since a boot would write to a disk another differences
+over. A directory with no record yet whose `from` names the VM holds it too, for
+ten minutes, as a name's claim does: a Create writes `from` before it reads
+the chain, so a removal sees the copy being made, though a removal and a
+create in the same instant may both pass, since nothing takes a lock. An
+older `from` is what a crashed Create left, and holds nothing. Nothing marks a VM committed, so this is the one
+refusal `local` derives on its own. A VM whose chain was removed behind the driver's back is
+not found at boot, and is still removed. vz and fake get the committed VM
+alone, at Prepare only.
 
 ## Keys are the fake's, and checked on every call
 

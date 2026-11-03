@@ -1,9 +1,9 @@
-// Package engine is disco-vm as a library: images, instances, and their
-// lifecycle over one machine.Driver. The CLI is a thin layer over it, and a
+// Package engine is disco-vm as a library: VMs and their lifecycle over one
+// machine.Driver (ADR 26-11-03-606). The CLI is a thin layer over it, and a
 // discobox provider embeds it the same way.
 //
-// The engine keeps no state (ADR 26-10-23-417). Every image, tag, and
-// instance is the driver's, which keeps it in its provider, so any process
+// The engine keeps no state (ADR 26-10-23-417). Every VM is the driver's,
+// which keeps it in its provider, so any process
 // with the provider's credentials sees the same ones, and nothing the engine
 // knows can disagree with what the provider has. There is no daemon either: a
 // running instance is the provider's (boxd's API, the Docker daemon), or a
@@ -31,8 +31,8 @@ import (
 // Engine is one project, over a driver made for it.
 type Engine struct {
 	Driver machine.Driver
-	// Project is the driver's project, which every image and instance the
-	// engine reads and makes is in.
+	// Project is the driver's project, which every VM the engine reads and
+	// makes is in.
 	Project string
 }
 
@@ -61,14 +61,17 @@ const (
 	Unknown State = "unknown"
 )
 
-// Instance is one machine made from an image, as its driver keeps it.
+// Instance is one VM, committed or not, as its driver keeps it.
 type Instance = machine.Instance
 
-// CreateOptions describes a new instance.
+// CreateOptions describes a new VM.
 type CreateOptions struct {
-	// Name is the instance's name, unique in the project; empty is a random
-	// one.
-	Name   string
+	// Name is the VM's name, unique in the project; empty is a random one.
+	Name string
+	// From names the committed VM the new one is a copy of; empty is a
+	// fresh VM from the driver's base. That it is committed is the caller's
+	// to know.
+	From   string
 	CPUs   int
 	Memory uint64
 	// Forwards are served whenever the instance runs, each to a host socket
@@ -91,9 +94,9 @@ type CreateOptions struct {
 	Cache *machine.CacheVolume
 }
 
-// Create makes an instance from an image reference or ID, or from one of the
-// driver's bases by its name or ID, which it runs from with no image.
-func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (Instance, error) {
+// Create makes a VM: a copy of the committed VM opts.From, or a fresh one
+// from the driver's base.
+func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, error) {
 	if err := e.checkForwards(opts.Forwards); err != nil {
 		return Instance{}, err
 	}
@@ -110,7 +113,7 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (In
 		return Instance{}, err
 	}
 	spec := machine.InstanceSpec{
-		Name: opts.Name, Image: ref, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: opts.Forwards,
+		Name: opts.Name, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: opts.Forwards,
 		Isolated: opts.Isolated, Networks: opts.Networks, Egress: opts.Egress,
 	}
 	if opts.Data != nil {
@@ -119,15 +122,15 @@ func (e *Engine) Create(ctx context.Context, ref string, opts CreateOptions) (In
 	if opts.Cache != nil {
 		spec.Cache = &machine.CacheVolume{Key: opts.Cache.Key, Bytes: opts.Cache.Bytes}
 	}
-	img, err := e.Resolve(ctx, ref)
-	if err != nil {
-		b, err := e.ResolveBase(ctx, ref, err)
+	if opts.From != "" {
+		from, err := e.Get(ctx, opts.From)
 		if err != nil {
 			return Instance{}, err
 		}
-		spec.Base, spec.GuestOS = &b, b.GuestOS
-	} else {
-		spec.ImageID, spec.GuestOS = img.ID, img.GuestOS
+		if state := e.State(ctx, from); state != Stopped {
+			return Instance{}, fmt.Errorf("instance %s is %s; stop and commit it to create from it", from.Name, state)
+		}
+		spec.From = &from
 	}
 	if spec.Name == "" {
 		spec.Name = fsutil.RandomHex(6)
@@ -447,7 +450,7 @@ func (e *Engine) Boot(ctx context.Context, inst Instance, opts BootOptions) (*Bo
 
 // Shutdown powers a booted machine off in order: the guest is asked, and the
 // machine is killed only if it will not answer or will not stop in time. A
-// hard stop is a dirty unmount of the guest's disk, and an image cut from one
+// hard stop is a dirty unmount of the guest's disk, and a VM committed from one
 // is not trustworthy, so every stop comes through here. timeout
 // bounds the request and the stop together: a driver may do real work before
 // its guest accepts (boxd flushes the guest's disks, then asks StopVm).
@@ -477,7 +480,7 @@ func (b *Booted) Shutdown(ctx context.Context, timeout time.Duration) error {
 	return fmt.Errorf("forced off: %w", err)
 }
 
-// InstallOptions is an image installed from installation media.
+// InstallOptions is a VM installed from installation media.
 type InstallOptions struct {
 	// GuestOS is the OS to install; empty is the driver's only one.
 	GuestOS machine.OS
@@ -497,37 +500,35 @@ type InstallOptions struct {
 	Log io.Writer
 }
 
-// Install makes an image from installation media, on a driver that lists
-// the guest OS in Capabilities.Install, and tags it with each of refs. Where
-// the driver puts the agent in the guest, it is this binary, so the guest's
-// OS must be this host's.
-func (e *Engine) Install(ctx context.Context, opts InstallOptions, refs ...string) (machine.Image, error) {
+// Install makes the VM name from installation media, committed, on a driver
+// that lists the guest OS in Capabilities.Install: VMs are created from it,
+// and the caller never starts it. Where the driver puts the agent in the
+// guest, it is this binary, so the guest's OS must be this host's.
+func (e *Engine) Install(ctx context.Context, name string, opts InstallOptions) (Instance, error) {
 	caps := e.Driver.Capabilities()
 	if len(caps.Install) == 0 {
-		return machine.Image{}, fmt.Errorf("driver %s installs nothing from media; run one of its bases by name instead: %w", e.Driver.Name(), machine.ErrUnsupported)
+		return Instance{}, fmt.Errorf("driver %s installs nothing from media; create a fresh VM of its base instead: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
 	if opts.GuestOS == "" && len(caps.Install) == 1 {
 		opts.GuestOS = caps.Install[0]
 	}
 	if !caps.Installs(opts.GuestOS) {
-		return machine.Image{}, fmt.Errorf("driver %s cannot install %q guests from media (it installs %v; run a base for the others): %w", e.Driver.Name(), opts.GuestOS, caps.Install, machine.ErrUnsupported)
+		return Instance{}, fmt.Errorf("driver %s cannot install %q guests from media (it installs %v): %w", e.Driver.Name(), opts.GuestOS, caps.Install, machine.ErrUnsupported)
 	}
-	for _, ref := range refs {
-		if err := ValidateRef(ref); err != nil {
-			return machine.Image{}, err
-		}
+	if err := machine.ValidateName(name); err != nil {
+		return Instance{}, err
 	}
 	if err := e.CheckGUI(opts.GUI); err != nil {
-		return machine.Image{}, err
+		return Instance{}, err
 	}
 	agent := ""
 	if caps.Agent {
 		if opts.GuestOS != machine.OS(runtime.GOOS) {
-			return machine.Image{}, fmt.Errorf("a %s guest's agent is disco-vm built for %s, and this one is built for %s", opts.GuestOS, opts.GuestOS, runtime.GOOS)
+			return Instance{}, fmt.Errorf("a %s guest's agent is disco-vm built for %s, and this one is built for %s", opts.GuestOS, opts.GuestOS, runtime.GOOS)
 		}
 		exe, err := os.Executable()
 		if err != nil {
-			return machine.Image{}, err
+			return Instance{}, err
 		}
 		agent = exe
 	}
@@ -538,47 +539,33 @@ func (e *Engine) Install(ctx context.Context, opts InstallOptions, refs ...strin
 	if media != "latest" {
 		abs, err := filepath.Abs(media)
 		if err != nil {
-			return machine.Image{}, err
+			return Instance{}, err
 		}
 		media = abs
 	}
-	img, err := e.Driver.Install(ctx, machine.InstallSpec{
+	inst, err := e.Driver.Install(ctx, machine.InstallSpec{
 		GuestOS: opts.GuestOS, Media: media, Edition: opts.Edition,
 		DiskBytes: opts.DiskBytes, CPUs: opts.CPUs, Memory: opts.Memory,
 		Agent: agent, Options: opts.Options, GUI: opts.GUI, Log: opts.Log,
-	}, machine.Image{ID: fsutil.RandomHex(32), GuestOS: opts.GuestOS, Comment: "install " + string(opts.GuestOS)})
+	}, name)
 	if err != nil {
-		return machine.Image{}, fmt.Errorf("install %s: %w", opts.GuestOS, err)
+		return Instance{}, fmt.Errorf("install %s: %w", opts.GuestOS, err)
 	}
-	return img, e.tagAll(ctx, img, refs)
+	return inst, nil
 }
 
-// tagAll tags a new image with each of refs.
-func (e *Engine) tagAll(ctx context.Context, img machine.Image, refs []string) error {
-	for _, ref := range refs {
-		if err := e.Tag(ctx, ref, img.ID); err != nil {
-			return fmt.Errorf("image %s is made, but tag %s: %w", Short(img.ID), ref, err)
-		}
-	}
-	return nil
-}
-
-// Snapshot commits a stopped instance's disk as a new image, removes the
-// instance, and tags the image with each of refs. The instance is consumed, so
-// an image is always cut the same way, from a stopped guest that is then
-// destroyed; to go on from a snapshot, create an instance of it.
-func (e *Engine) Snapshot(ctx context.Context, inst Instance, refs ...string) (machine.Image, error) {
-	for _, ref := range refs {
-		if err := ValidateRef(ref); err != nil {
-			return machine.Image{}, err
-		}
-	}
+// Commit freezes a stopped VM under its name, so VMs are created from it
+// (ADR 26-11-03-606): its data volume and cache clone are removed. The
+// caller records that it is committed, and never starts it again; to
+// change it, create a VM from it, change that, and commit it under a new
+// name.
+func (e *Engine) Commit(ctx context.Context, inst Instance) (Instance, error) {
 	if state := e.State(ctx, inst); state != Stopped {
-		return machine.Image{}, fmt.Errorf("instance %s is %s; stop it first", inst.Name, state)
+		return Instance{}, fmt.Errorf("instance %s is %s; stop it first", inst.Name, state)
 	}
-	img, err := e.Driver.Commit(ctx, inst, machine.Image{ID: fsutil.RandomHex(32), GuestOS: inst.GuestOS, Comment: "snapshot " + inst.Name})
+	committed, err := e.Driver.Commit(ctx, inst)
 	if err != nil {
-		return machine.Image{}, fmt.Errorf("snapshot %s: %w", inst.Name, err)
+		return Instance{}, fmt.Errorf("commit %s: %w", inst.Name, err)
 	}
-	return img, e.tagAll(ctx, img, refs)
+	return committed, nil
 }

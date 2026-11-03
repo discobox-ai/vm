@@ -1,15 +1,15 @@
 // Package e2e drives the real disco-vm binary through its whole lifecycle:
-// install, images, run, exec, cp, stop, start, snapshot, tag, rm, rmi.
+// install, run, exec, cp, stop, start, commit, create --from, rm.
 // On the fake driver it is the neutral proof of everything above the driver
 // seam, and it runs on every OS.
 //
 // $DISCO_VM_DRIVER runs it against a real driver instead. That needs a signed
 // binary on macOS ($DISCO_VM_TEST_BINARY) and a persistent state root
-// ($DISCO_VM_E2E_ROOT), where the base install is made once, tagged
-// e2e/base, and found by every later run. On hcs it also needs a Windows ISO
-// ($DISCO_VM_E2E_ISO) and an elevated shell. The docker driver installs
-// nothing: e2e/base is a snapshot of an instance of debian:trixie, or of the
-// image $DISCO_VM_E2E_IMAGE names, so its state root is optional.
+// ($DISCO_VM_E2E_ROOT), where the base install is made once, as the
+// committed VM e2e-base, and found by every later run. On hcs it also needs a
+// Windows ISO ($DISCO_VM_E2E_ISO) and an elevated shell. The docker driver
+// installs nothing: e2e-base is a fresh VM of its base, debian:trixie or the
+// image $DISCO_VM_E2E_IMAGE names, committed, so its state root is optional.
 package e2e
 
 import (
@@ -42,10 +42,10 @@ var (
 type target struct {
 	driver string
 	// install is the arguments of the `disco-vm install` that makes
-	// e2e/base, on a driver that installs.
+	// e2e-base, on a driver that installs; nil makes it a fresh VM.
 	install []string
-	// base is the driver's base that e2e/base is a snapshot of, on a driver
-	// that does not.
+	// base is the driver's base ($DISCO_VM_BASE), which a fresh VM starts
+	// from; empty is the driver's default.
 	base string
 	// dir is where the suite writes in the guest. The fake guest's is its
 	// root, and a command there runs in it.
@@ -155,7 +155,7 @@ type env struct {
 
 // projectEnv names the project every command runs in, "e2e" by default. A
 // driver whose provider is a service (docker) keeps everything there, not
-// in the root, and the suite removes all of a project's instances and images,
+// in the root, and the suite removes all of a project's VMs,
 // so it never runs in the project of someone's own.
 const projectEnv = "DISCO_VM_E2E_PROJECT"
 
@@ -168,6 +168,9 @@ func (e env) run(args ...string) (string, int) {
 		project = "e2e"
 	}
 	cmd.Env = append(os.Environ(), "DISCO_VM_ROOT="+e.root, "DISCO_VM_DRIVER="+tg.driver, "DISCO_VM_PROJECT="+project)
+	if tg.base != "" {
+		cmd.Env = append(cmd.Env, "DISCO_VM_BASE="+tg.base)
+	}
 	cmd.Env = append(cmd.Env, e.extra...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -202,71 +205,50 @@ func mustContain(t *testing.T, out string, wants ...string) {
 	}
 }
 
-// newEnv is a state root for one test, holding e2e/base: a fresh one on the
-// fake driver, and on a real driver the persistent one, where e2e/base is
-// made once.
+// newEnv is a state root for one test, holding the committed VM e2e-base: a
+// fresh one on the fake driver, and on a real driver the persistent one,
+// where e2e-base is made once.
 func newEnv(t *testing.T) env {
 	t.Helper()
 	e := env{t: t, root: tg.root}
 	if tg.root == "" {
 		e.root = t.TempDir()
 		if tg.driver != "fake" {
-			// A real driver may hold images outside the state root (docker
+			// A real driver may hold VMs outside the state root (docker
 			// images), which a root thrown away would leave behind.
 			t.Cleanup(e.release)
 		}
 	} else {
-		// Whatever a failed run left, so that this one makes its images anew.
-		e.run("rm", "-f", "dev", "dev2", "svc", "snap", "snap2", "for-base", "solo")
-		for _, ref := range []string{"test/app:v1", "test/app:latest", "test/snap:v2", "test/snap:v1"} {
-			e.run("rmi", ref)
-		}
+		// Whatever a failed run left, newest first, since a VM created
+		// from another may need its disk.
+		e.run("rm", "-f", "dev", "dev2", "svc", "snap3", "snap2", "snap", "app-v1", "solo", "fenced", "vol-s", "vol-b", "vol-a")
 	}
-	if !strings.Contains(e.ok("images"), "e2e/base:latest") {
-		if tg.base != "" {
-			e.snapshotOf(tg.base, "for-base", "e2e/base")
+	if _, code := e.run("inspect", "e2e-base"); code != 0 {
+		if tg.install != nil {
+			e.ok(append([]string{"install", "e2e-base"}, tg.install...)...)
 		} else {
-			e.ok(append([]string{"install", "-t", "e2e/base"}, tg.install...)...)
+			e.ok("run", "e2e-base")
+			e.ok("stop", "e2e-base")
+			e.ok("commit", "e2e-base")
 		}
 	}
 	return e
 }
 
-// snapshotOf runs an instance of ref named name, stops it, and snapshots it
-// as tag, or untagged when tag is empty, and returns the image's ID.
-func (e env) snapshotOf(ref, name, tag string) string {
-	e.t.Helper()
-	e.ok("run", "--name", name, ref)
-	e.ok("stop", name)
-	args := []string{"snapshot", name}
-	if tag != "" {
-		args = append(args, tag)
-	}
-	return strings.TrimSpace(e.ok(args...))
-}
-
-// release removes every instance and image in the state root.
+// release removes every VM in the state root, a VM created from another
+// before that one.
 func (e env) release() {
-	rows := func(out string) []string {
-		var first []string
-		for _, line := range strings.Split(strings.TrimSpace(out), "\n")[1:] {
-			if f := strings.Fields(line); len(f) > 0 {
-				first = append(first, f[0])
+	for range 3 {
+		var names []string
+		for _, line := range strings.Split(strings.TrimSpace(e.ok("ls", "-a")), "\n")[1:] {
+			if f := strings.Fields(line); len(f) > 1 {
+				names = append(names, f[1])
 			}
 		}
-		return first
-	}
-	if ids := rows(e.ok("ls", "-a")); len(ids) > 0 {
-		e.run(append([]string{"rm", "-f"}, ids...)...)
-	}
-	for _, ref := range rows(e.ok("images")) {
-		e.run("rmi", ref)
-	}
-	// What is left is untagged, and named by its ID.
-	for _, line := range strings.Split(strings.TrimSpace(e.ok("images")), "\n")[1:] {
-		if f := strings.Fields(line); len(f) > 1 {
-			e.run("rmi", f[1])
+		if len(names) == 0 {
+			return
 		}
+		e.run(append([]string{"rm", "-f"}, names...)...)
 	}
 }
 
@@ -280,7 +262,7 @@ func catArgv(path string) []string {
 
 func TestLifecycle(t *testing.T) {
 	e := newEnv(t)
-	mustContain(t, e.ok("images"), "e2e/base:latest")
+	mustContain(t, e.ok("ls", "-a"), "e2e-base")
 	exitArgv := []string{"/bin/sh", "-c", "exit 7"}
 	writeArgv := []string{"/bin/sh", "-c", "echo hi > " + tg.cmd("greeting.txt")}
 	if runtime.GOOS == "windows" {
@@ -288,34 +270,21 @@ func TestLifecycle(t *testing.T) {
 		writeArgv = []string{"cmd", "/c", "echo hi> " + strings.ReplaceAll(tg.cmd("greeting.txt"), "/", `\`)}
 	}
 
-	// Shape an instance of the base, and snapshot it as the app's image.
+	// Shape a VM of the base, and commit it as the app.
 	local := t.TempDir()
 	if err := os.WriteFile(filepath.Join(local, "tool.txt"), []byte("tool v1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	e.ok("run", "--name", "dev", "e2e/base")
-	e.ok("cp", filepath.Join(local, "tool.txt"), "dev:"+tg.file("opt/app"))
-	e.ok(append([]string{"exec", "dev"}, writeArgv...)...)
-	e.ok("stop", "dev")
-	app := strings.TrimSpace(e.ok("snapshot", "dev", "test/app:v1"))
-	e.ok("tag", "test/app:v1", "test/app")
-	mustContain(t, e.ok("images"), "test/app:latest", "test/app:v1", app[:12], "e2e/base:latest")
+	e.ok("run", "app-v1", "--from", "e2e-base")
+	e.ok("cp", filepath.Join(local, "tool.txt"), "app-v1:"+tg.file("opt/app"))
+	e.ok(append([]string{"exec", "app-v1"}, writeArgv...)...)
+	e.ok("stop", "app-v1")
+	e.ok("commit", "app-v1")
+	mustContain(t, e.ok("ls", "-a"), "app-v1", "e2e-base")
 
-	// A snapshot without a tag is still an image: listed, and removed by its
-	// ID.
-	solo := e.snapshotOf("test/app:v1", "solo", "")
-	mustContain(t, e.ok("images"), "<none>", solo[:12])
-	mustContain(t, e.ok("rmi", solo), "deleted "+solo[:12])
-	if out := e.ok("images"); strings.Contains(out, "<none>") {
-		t.Fatalf("an untagged image survived rmi:\n%s", out)
-	}
-	if _, code := e.run("rmi", solo); code == 0 {
-		t.Fatal("rmi removed an image twice")
-	}
-
-	// Run an instance and look inside.
-	e.ok("run", "--name", "dev", "test/app:v1")
-	mustContain(t, e.ok("ls"), "dev", "running")
+	// Run a VM of it and look inside.
+	e.ok("run", "dev", "--from", "app-v1")
+	mustContain(t, e.ok("ls"), "dev", "running", "app-v1")
 	// ps is ls by its older name.
 	mustContain(t, e.ok("ps"), "dev", "running")
 	mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("greeting.txt")...)...), "hi")
@@ -323,9 +292,15 @@ func TestLifecycle(t *testing.T) {
 	if _, code := e.run(append([]string{"exec", "dev"}, exitArgv...)...); code != 7 {
 		t.Fatalf("exec exit code = %d, want 7", code)
 	}
-	mustContain(t, e.ok("inspect", "dev"), `"state": "running"`, `"imageID": "`+app)
+	mustContain(t, e.ok("inspect", "dev"), `"state": "running"`)
 	if tg.driver == "fake" {
-		mustContain(t, e.ok("inspect", "dev"), `"fake": true`)
+		mustContain(t, e.ok("inspect", "dev"), `"fake": true`, `"from": "app-v1"`)
+	}
+	if out, code := e.run("create", "dev3", "--from", ""); code == 0 || !strings.Contains(out, "leave it out for a fresh VM") {
+		t.Fatalf("an empty --from (exit %d):\n%s", code, out)
+	}
+	if out, code := e.run("create", "dev3", "--from", "dev"); code == 0 || !strings.Contains(out, "stop and commit it") {
+		t.Fatalf("a VM created from a running one (exit %d):\n%s", code, out)
 	}
 
 	// Copy both ways.
@@ -341,11 +316,11 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("cp out: %q %v", data, err)
 	}
 
-	// An instance's writes are its own: a second instance of the image does
-	// not see them, and they survive the first instance's restart.
-	e.ok("run", "--name", "dev2", "test/app:v1")
+	// A VM's writes are its own: a second VM of the same committed one does
+	// not see them, and they survive the first's restart.
+	e.ok("run", "dev2", "--from", "app-v1")
 	if _, code := e.run(append([]string{"exec", "dev2"}, catArgv("drop/note.txt")...)...); code == 0 {
-		t.Fatal("a second instance saw the first one's write")
+		t.Fatal("a second VM saw the first one's write")
 	}
 	e.ok("stop", "dev")
 	if strings.Contains(e.ok("ls"), "dev ") {
@@ -355,41 +330,29 @@ func TestLifecycle(t *testing.T) {
 	e.ok("start", "dev")
 	mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("drop/note.txt")...)...), "from host")
 
-	// An image in use is untagged but kept; once nothing runs it, its last
-	// tag deletes it.
-	if out := e.ok("rmi", "test/app:latest"); !strings.Contains(out, "untagged test/app:latest") || strings.Contains(out, "deleted") {
-		t.Fatalf("rmi of one of two tags:\n%s", out)
-	}
-	if _, code := e.run("rmi", app); code == 0 {
-		t.Fatal("rmi deleted a tagged image by its ID")
-	}
 	e.ok("rm", "-f", "dev", "dev2")
-	if strings.Contains(e.ok("ls", "-a"), "dev") {
-		t.Fatal("removed instances are still listed")
-	}
-	mustContain(t, e.ok("rmi", "test/app:v1"), "untagged test/app:v1", "deleted "+app[:12])
-	if strings.Contains(e.ok("images"), app[:12]) {
-		t.Fatal("a deleted image is still listed")
+	e.ok("rm", "app-v1")
+	if out := e.ok("ls", "-a"); strings.Contains(out, "dev") || strings.Contains(out, "app-v1") {
+		t.Fatalf("removed VMs are still listed:\n%s", out)
 	}
 
-	// run takes an image and nothing else; a command goes through exec.
-	if _, code := e.run(append([]string{"run", "e2e/base"}, catArgv("greeting.txt")...)...); code == 0 {
+	// run takes a name and nothing else; a command goes through exec.
+	if _, code := e.run(append([]string{"run", "--from", "e2e-base", "cmd"}, catArgv("greeting.txt")...)...); code == 0 {
 		t.Fatal("run took a command")
 	}
-	if _, code := e.run("run", "--rm", "e2e/base"); code == 0 {
+	if _, code := e.run("run", "--rm", "--from", "e2e-base"); code == 0 {
 		t.Fatal("run took --rm")
 	}
 }
 
-// TestSnapshot commits a stopped instance as an image, which consumes the
-// instance, then snapshots an instance of that image in turn: each snapshot
-// keeps what the instance wrote, and the second stands alone once the first
-// is removed. A driver whose second snapshot still needs the first's disk
-// (hcs) keeps the first, untagged, and says so.
-func TestSnapshot(t *testing.T) {
+// TestCommit freezes a stopped VM under its name and creates a VM from it,
+// which is committed in turn: each keeps what was written before it, and
+// the second outlives the first's removal. A driver whose second still
+// needs the first's disk (hcs) refuses the removal until the second is gone.
+func TestCommit(t *testing.T) {
 	e := newEnv(t)
 	dir := t.TempDir()
-	// write copies a file named name into the instance's snap directory.
+	// write copies a file named name into the VM's snap directory.
 	write := func(inst, name string) {
 		t.Helper()
 		local := filepath.Join(dir, name)
@@ -403,56 +366,42 @@ func TestSnapshot(t *testing.T) {
 		mustContain(t, e.ok(append([]string{"exec", inst}, catArgv("snap/"+name)...)...), name)
 	}
 
-	e.ok("run", "--name", "snap", "e2e/base")
+	e.ok("run", "snap", "--from", "e2e-base")
 	write("snap", "first")
-	if out, code := e.run("snapshot", "snap", "test/snap:v1"); code == 0 || !strings.Contains(out, "stop it first") {
-		t.Fatalf("a running instance was snapshotted (exit %d):\n%s", code, out)
+	if out, code := e.run("commit", "snap"); code == 0 || !strings.Contains(out, "stop it first") {
+		t.Fatalf("a running VM was committed (exit %d):\n%s", code, out)
 	}
 	e.ok("stop", "snap")
-	if out, code := e.run("snapshot", "snap", "Not A Tag"); code == 0 {
-		t.Fatalf("an invalid tag was accepted:\n%s", out)
-	}
+	e.ok("commit", "snap")
 	mustContain(t, e.ok("ls", "-a"), "snap")
-	first := strings.TrimSpace(e.ok("snapshot", "snap", "test/snap:v1"))
-	if strings.Contains(e.ok("ls", "-a"), "snap") {
-		t.Fatal("a snapshotted instance is still listed")
-	}
-	mustContain(t, e.ok("images"), "test/snap:v1", first[:12])
-	if _, code := e.run("snapshot", "snap"); code == 0 {
-		t.Fatal("a consumed instance was snapshotted again")
+	if out, code := e.run("create", "snap", "--from", "e2e-base"); code == 0 || !strings.Contains(out, "already exists") {
+		t.Fatalf("a VM named as a committed one (exit %d):\n%s", code, out)
 	}
 
-	e.ok("run", "--name", "snap2", "test/snap:v1")
+	e.ok("run", "snap2", "--from", "snap")
 	read("snap2", "first")
 	write("snap2", "second")
 	e.ok("stop", "snap2")
-	// Untagged, it is known by the ID it prints.
-	second := strings.TrimSpace(e.ok("snapshot", "snap2"))
-	if second == first {
-		t.Fatal("two snapshots share an ID")
-	}
-	mustContain(t, e.ok("images"), "<none>", second[:12])
-	e.ok("tag", second, "test/snap:v2")
+	e.ok("commit", "snap2")
 
-	// The first goes, or is kept untagged for the second; either way the
-	// second runs with both writes.
-	out := e.ok("rmi", "test/snap:v1")
-	mustContain(t, out, "untagged test/snap:v1")
-	kept := strings.Contains(out, "kept it, untagged")
-	if !kept {
-		mustContain(t, out, "deleted "+first[:12])
+	// The first goes, or is kept for the second; either way the second's
+	// VMs run with both writes.
+	out, code := e.run("rm", "snap")
+	kept := code != 0
+	if kept && !strings.Contains(out, "still needs its disk") {
+		t.Fatalf("rm snap: exit %d\n%s", code, out)
 	}
-	e.ok("run", "--name", "snap", "test/snap:v2")
-	read("snap", "first")
-	read("snap", "second")
+	e.ok("run", "snap3", "--from", "snap2")
+	read("snap3", "first")
+	read("snap3", "second")
 
-	e.ok("rm", "-f", "snap")
-	e.ok("rmi", "test/snap:v2")
+	e.ok("rm", "-f", "snap3")
+	e.ok("rm", "snap2")
 	if kept {
-		e.ok("rmi", first)
+		e.ok("rm", "snap")
 	}
-	if out := e.ok("images"); strings.Contains(out, first[:12]) || strings.Contains(out, second[:12]) {
-		t.Fatalf("a removed snapshot is still listed:\n%s", out)
+	if out := e.ok("ls", "-a"); strings.Contains(out, "snap") {
+		t.Fatalf("a removed VM is still listed:\n%s", out)
 	}
 }
 
@@ -461,7 +410,7 @@ func TestInfo(t *testing.T) {
 	mustContain(t, e.ok("info"), "driver:   "+tg.driver, "check:    ok", "fake")
 	if tg.driver == "fake" {
 		// A driver with no display refuses a window rather than ignoring it.
-		out, code := e.run("install", "--gui")
+		out, code := e.run("install", "gui", "--gui")
 		if code == 0 || !strings.Contains(out, "no display") {
 			t.Fatalf("install --gui on the fake driver: exit %d\n%s", code, out)
 		}
@@ -497,8 +446,8 @@ func TestKeys(t *testing.T) {
 	}
 
 	keyed := env{t: t, root: e.root, extra: []string{"DISCO_VM_FAKE_KEY=" + key.Secret}}
-	mustContain(t, keyed.ok("images"), "e2e/base:latest")
-	keyed.ok("run", "--name", "solo", "e2e/base")
+	mustContain(t, keyed.ok("ls", "-a"), "e2e-base")
+	keyed.ok("run", "solo", "--from", "e2e-base")
 	t.Cleanup(func() { e.run("rm", "-f", "solo") })
 	note := filepath.Join(t.TempDir(), "keyed.txt")
 	if err := os.WriteFile(note, []byte("with a key"), 0o644); err != nil {
@@ -567,7 +516,7 @@ func driverSelected(out, name string) bool {
 // guest is a host process, so the service is this test's server.
 func TestURL(t *testing.T) {
 	e := newEnv(t)
-	e.ok("create", "--name", "svc", "e2e/base")
+	e.ok("create", "svc", "--from", "e2e-base")
 	t.Cleanup(func() { e.run("rm", "-f", "svc") })
 	if out, code := e.run("url", "svc"); code == 0 || !strings.Contains(out, "not running") {
 		t.Fatalf("url of a stopped instance: exit %d\n%s", code, out)
@@ -667,20 +616,20 @@ func TestURL(t *testing.T) {
 func TestEgress(t *testing.T) {
 	e := newEnv(t)
 	t.Cleanup(func() { e.run("rm", "-f", "fenced") })
-	if out, code := e.run("create", "--name", "fenced", "--egress", "none,example.com", "e2e/base"); code == 0 || !strings.Contains(out, "takes no other entry") {
+	if out, code := e.run("create", "fenced", "--from", "e2e-base", "--egress", "none,example.com"); code == 0 || !strings.Contains(out, "takes no other entry") {
 		t.Fatalf("create --egress none,example.com: exit %d\n%s", code, out)
 	}
 	for _, empty := range [][]string{{"--egress", ""}, {"--egress", "", "--egress", "example.com"}, {"--egress", "example.com,"}} {
-		args := append(append([]string{"create", "--name", "fenced"}, empty...), "e2e/base")
+		args := append([]string{"create", "fenced", "--from", "e2e-base"}, empty...)
 		if out, code := e.run(args...); code == 0 || !strings.Contains(out, "no empty entry") {
 			t.Fatalf("create %q: exit %d\n%s", empty, code, out)
 		}
 	}
-	if out, code := e.run("create", "--name", "fenced", "--egress", "example.com", "e2e/base"); code == 0 || !strings.Contains(out, "cannot fence") {
+	if out, code := e.run("create", "fenced", "--from", "e2e-base", "--egress", "example.com"); code == 0 || !strings.Contains(out, "cannot fence") {
 		t.Fatalf("create --egress example.com on %s: exit %d\n%s", tg.driver, code, out)
 	}
 	if tg.driver == "vz" {
-		e.ok("create", "--name", "fenced", "--egress", "none", "e2e/base")
+		e.ok("create", "fenced", "--from", "e2e-base", "--egress", "none")
 		var fenced struct {
 			Egress *struct{} `json:"egress"`
 		}
@@ -690,7 +639,7 @@ func TestEgress(t *testing.T) {
 		e.ok("rm", "fenced")
 		return
 	}
-	if out, code := e.run("create", "--name", "fenced", "--egress", "none", "e2e/base"); code == 0 || !strings.Contains(out, "cannot fence") {
+	if out, code := e.run("create", "fenced", "--from", "e2e-base", "--egress", "none"); code == 0 || !strings.Contains(out, "cannot fence") {
 		t.Fatalf("create --egress none on %s: exit %d\n%s", tg.driver, code, out)
 	}
 	if out, code := e.run("inspect", "fenced"); code == 0 {
@@ -699,7 +648,7 @@ func TestEgress(t *testing.T) {
 }
 
 // TestVolumes gives instances a data volume and a cache volume: the data is
-// kept across a stop and never in a snapshot; a cache saved from a stopped
+// kept across a stop and never in a committed VM; a cache saved from a stopped
 // instance, and not a running one, is what the next instance of its key
 // starts from; a second save from it is refused once the key has moved,
 // unless forced; and a key removed lists no more. A driver that attaches no
@@ -707,22 +656,21 @@ func TestEgress(t *testing.T) {
 func TestVolumes(t *testing.T) {
 	e := newEnv(t)
 	t.Cleanup(func() {
-		e.run("rm", "-f", "vol-a", "vol-b", "vol-s")
+		e.run("rm", "-f", "vol-s", "vol-b", "vol-a")
 		e.run("cache", "rm", "e2e-cache")
-		e.run("rmi", "test/vol")
 	})
 	guestOS := map[string]machine.OS{"fake": machine.OS(runtime.GOOS), "docker": machine.Linux, "vz": machine.Darwin, "hcs": machine.Windows}[tg.driver]
 	data, cache := machine.VolumePath(guestOS, machine.VolumeData), machine.VolumePath(guestOS, machine.VolumeCache)
 	if tg.driver != "fake" && tg.driver != "docker" {
 		for _, flags := range [][]string{{"--data", "1GiB"}, {"--cache", "e2e-cache"}} {
-			args := append(append([]string{"create", "--name", "vol-a"}, flags...), "e2e/base")
+			args := append([]string{"create", "vol-a", "--from", "e2e-base"}, flags...)
 			if out, code := e.run(args...); code == 0 || !strings.Contains(out, "cannot attach") {
 				t.Fatalf("create %q on %s: exit %d\n%s", flags, tg.driver, code, out)
 			}
 		}
 		return
 	}
-	if out, code := e.run("create", "--name", "vol-a", "--cache-size", "1GiB", "e2e/base"); code == 0 || !strings.Contains(out, "needs --cache") {
+	if out, code := e.run("create", "vol-a", "--from", "e2e-base", "--cache-size", "1GiB"); code == 0 || !strings.Contains(out, "needs --cache") {
 		t.Fatalf("create --cache-size with no --cache: exit %d\n%s", code, out)
 	}
 	local := t.TempDir()
@@ -744,7 +692,7 @@ func TestVolumes(t *testing.T) {
 		return string(got)
 	}
 
-	e.ok("run", "--name", "vol-a", "--data", "1GiB", "--cache", "e2e-cache", "e2e/base")
+	e.ok("run", "vol-a", "--from", "e2e-base", "--data", "1GiB", "--cache", "e2e-cache")
 	write("data")
 	e.ok("cp", note, "vol-a:"+data)
 	write("cache a")
@@ -764,7 +712,7 @@ func TestVolumes(t *testing.T) {
 		t.Fatalf("a second guarded save: exit %d\n%s", code, out)
 	}
 
-	e.ok("run", "--name", "vol-b", "--cache", "e2e-cache", "e2e/base")
+	e.ok("run", "vol-b", "--from", "e2e-base", "--cache", "e2e-cache")
 	if got := read("vol-b", cache); got != "cache a" {
 		t.Fatalf("an instance of the saved key reads %q", got)
 	}
@@ -780,10 +728,10 @@ func TestVolumes(t *testing.T) {
 	forced := strings.TrimSpace(e.ok("cache", "save", "--force", "vol-a"))
 	mustContain(t, e.ok("cache", "ls"), forced)
 
-	e.ok("snapshot", "vol-a", "test/vol")
-	e.ok("run", "--name", "vol-s", "--data", "0", "test/vol")
+	e.ok("commit", "vol-a")
+	e.ok("run", "vol-s", "--from", "vol-a", "--data", "0")
 	if out, code := e.run("cp", "vol-s:"+data+"/note.txt", t.TempDir()); code == 0 {
-		t.Fatalf("a snapshot carried its instance's data volume:\n%s", out)
+		t.Fatalf("a committed VM carried its data volume:\n%s", out)
 	}
 	e.ok("cache", "rm", "e2e-cache")
 	if out := e.ok("cache", "ls"); strings.Contains(out, "e2e-cache") {
@@ -791,49 +739,20 @@ func TestVolumes(t *testing.T) {
 	}
 }
 
-// TestBases lists a driver's base among the images, runs it with no image,
-// and snapshots an instance of it; a base is not an image, so tag and rmi
-// refuse it.
-func TestBases(t *testing.T) {
+// TestFresh makes a fresh VM from the driver's base, which is the driver's
+// configuration ($DISCO_VM_BASE), and commits it; a VM created from it
+// starts from the same base.
+func TestFresh(t *testing.T) {
 	if tg.driver != "fake" {
-		t.Skip("only the fake driver is given its bases by the test")
+		t.Skip("only the fake driver's base writes a marker the test reads")
 	}
-	t.Setenv("DISCO_VM_FAKE_BASES", fmt.Sprintf(`[{"name":"stock","id":"stock-1","guestOS":%q,"options":{"image":"stock"}}]`, runtime.GOOS))
 	e := newEnv(t)
-	row := func() []string {
-		t.Helper()
-		out := e.ok("images")
-		for line := range strings.SplitSeq(out, "\n") {
-			if f := strings.Fields(line); len(f) > 1 && f[0] == "stock" {
-				return f
-			}
-		}
-		t.Fatalf("images lists no base stock:\n%s", out)
-		return nil
-	}
-	if r := row(); r[1] != "-" {
-		t.Fatalf("a base has an image ID: %v", r)
-	}
-	// A base runs with no image made of it.
-	e.ok("run", "--name", "b", "stock")
-	mustContain(t, e.ok(append([]string{"exec", "b"}, catArgv(".disco-vm-install")...)...), "base=stock-1", "option.image=stock")
-	if images := e.ok("images"); strings.Contains(images, "<none>") {
-		t.Fatalf("running a base made an image:\n%s", images)
-	}
-	for _, args := range [][]string{{"tag", "stock", "test/stock"}, {"rmi", "stock"}} {
-		if out, code := e.run(args...); code == 0 || !strings.Contains(out, "bases, not an image") {
-			t.Fatalf("disco-vm %s on a base (exit %d):\n%s", strings.Join(args, " "), code, out)
-		}
-	}
-
-	// An instance of a base snapshots to an image like any other.
+	e.extra = []string{"DISCO_VM_BASE=stock"}
+	e.ok("run", "b")
+	mustContain(t, e.ok(append([]string{"exec", "b"}, catArgv(".disco-vm-install")...)...), "base=stock")
 	e.ok("stop", "b")
-	e.ok("snapshot", "b", "test/from-b")
-	e.ok("run", "--name", "b2", "test/from-b")
-	mustContain(t, e.ok(append([]string{"exec", "b2"}, catArgv(".disco-vm-install")...)...), "base=stock-1")
-	e.ok("rm", "-f", "b2")
-	e.ok("rmi", "test/from-b")
-	if r := row(); r[1] != "-" {
-		t.Fatalf("the base is not listed as it was: %v", r)
-	}
+	e.ok("commit", "b")
+	e.ok("run", "b2", "--from", "b")
+	mustContain(t, e.ok(append([]string{"exec", "b2"}, catArgv(".disco-vm-install")...)...), "base=stock")
+	e.ok("rm", "-f", "b2", "b")
 }

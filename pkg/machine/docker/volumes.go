@@ -360,6 +360,9 @@ func (d *Driver) guard(ctx context.Context, save machine.CacheSave) error {
 // saves racing in the same moment may both pass the check: the one begun
 // last wins (prune).
 func (d *Driver) SaveCache(ctx context.Context, inst machine.Instance, save machine.CacheSave) (machine.Cache, error) {
+	if err := refuseCommitted(inst); err != nil {
+		return machine.Cache{}, err
+	}
 	if err := machine.ValidateCacheKey(save.Key); err != nil {
 		return machine.Cache{}, err
 	}
@@ -371,7 +374,7 @@ func (d *Driver) SaveCache(ctx context.Context, inst machine.Instance, save mach
 	if c.State.Running {
 		return machine.Cache{}, fmt.Errorf("instance %s is running; stop it first", inst.Name)
 	}
-	cur := d.instance(c, nil)
+	cur := d.instance(c)
 	if cur.Cache == nil {
 		return machine.Cache{}, fmt.Errorf("instance %s has no cache volume", inst.Name)
 	}

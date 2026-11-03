@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/Microsoft/go-winio/vhd"
 	"golang.org/x/sys/windows"
@@ -19,8 +18,8 @@ import (
 //
 // A differencing disk records where its parent is. Create it where it will
 // live: a child moved to another directory can resolve its relative locator
-// to the wrong file (sandboxi saw it name itself, 0xC03A000E). A move that
-// cannot be avoided is followed by setParent.
+// to the wrong file (sandboxi saw it name itself, 0xC03A000E). A VM's disk is
+// never moved: a committed VM's stays in its own directory (Commit).
 func createDiff(path, parent string) error {
 	if err := vhd.CreateDiffVhd(path, parent, 0); err != nil {
 		return fmt.Errorf("create differencing disk %s over %s: %w", path, parent, err)
@@ -100,43 +99,4 @@ func attach(path string) (*attached, error) {
 func (a *attached) detach() {
 	_ = vhd.DetachVirtualDisk(a.handle)
 	_ = syscall.CloseHandle(a.handle)
-}
-
-var (
-	virtdisk                      = windows.NewLazySystemDLL("virtdisk.dll")
-	procSetVirtualDiskInformation = virtdisk.NewProc("SetVirtualDiskInformation")
-)
-
-// setVirtualDiskInfoParentPathWithDepth is SET_VIRTUAL_DISK_INFO, version
-// PARENT_PATH_WITH_DEPTH. The union after Version is 8-aligned (it holds a
-// pointer), and its largest arm is a GUID and a pointer.
-type setVirtualDiskInfoParentPathWithDepth struct {
-	version    uint32
-	_          uint32
-	childDepth uint32
-	_          uint32
-	parentPath *uint16
-	_          [8]byte
-}
-
-// setParent rewrites a differencing disk's parent locator to parent. It is
-// what makes moving a child across directories safe: the locator is written
-// fresh for the child's new home instead of being resolved from its old one.
-func setParent(path, parent string) error {
-	h, err := vhd.OpenVirtualDiskWithParameters(path, vhd.VirtualDiskAccessNone, vhd.OpenVirtualDiskFlagNoParents,
-		&vhd.OpenVirtualDiskParameters{Version: 2})
-	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer func() { _ = syscall.CloseHandle(h) }()
-	parentp, err := windows.UTF16PtrFromString(parent)
-	if err != nil {
-		return err
-	}
-	const parentPathWithDepth = 3
-	info := setVirtualDiskInfoParentPathWithDepth{version: parentPathWithDepth, childDepth: 1, parentPath: parentp}
-	if rc, _, _ := procSetVirtualDiskInformation.Call(uintptr(h), uintptr(unsafe.Pointer(&info))); rc != 0 {
-		return fmt.Errorf("point %s at parent %s: %w", path, parent, syscall.Errno(rc))
-	}
-	return nil
 }

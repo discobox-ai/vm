@@ -25,30 +25,42 @@
   window; a failure is returned, so the caller falls back to `Kill`.
   (ADR 26-10-15-833.)
 - **Nothing above the seam keeps state, and a driver keeps it only in its
-  provider.** A field an instance or an image needs goes on the provider's
-  resource (a Docker label, a boxd name, a local driver's record beside its
-  disk), never in a file or a table of the engine's; a remote driver writes
-  nothing on the host. A fact boxd cannot keep (an image's comment, the image
-  a machine was restored from) is reported missing, not remembered elsewhere.
-  (ADR 26-10-23-417.)
-- **A listing that fails is no answer.** `rmi` reads a failed listing of
-  tags or instances as "in use", never as "unused", and a reaper
-  above the engine does the same. (ADR 26-10-23-417.)
-- **No image names another above the seam.** An image has no parent, an
-  instance runs from one image, and `rmi` deletes one image. A hypervisor
-  whose disks chain (hcs, `local.Hypervisor.Chains`) has `local` record the
-  parent beside its disk and refuse `DeleteImage` with `machine.ErrInUse`
-  while another image's record, in any project, names it; nothing above the
-  seam may record or walk a chain. (ADR 26-10-23-410.)
-- **`local` reads every image record before it deletes a disk.** A record
-  it cannot read (a parse error, a permission) makes the listing an error,
-  never a record left out: `DeleteImage` learns from it which disks another
-  image differences over, and a record skipped is a parent deleted from
-  under its child. (ADR 26-10-23-410.)
-- **A change to a shared method in `pkg/guest` or `pkg/machine` needs a
-  search of `pkg/machine/vz` by hand.** Its cgo files, its tests among them,
-  compile only on a Mac, so neither Linux nor `GOOS=windows` vet sees a
-  caller left behind there. (Commit 335ed4b.)
+  provider.** A field a VM needs goes on the provider's resource (a Docker
+  label, a boxd name, a local driver's record beside its disk), never in a
+  file or a table of the engine's; a remote driver writes nothing on the
+  host. A fact a provider cannot keep (the snapshot a boxd machine was
+  restored from) is reported missing, not remembered elsewhere. (ADR
+  26-10-23-417.)
+- **Whether a VM is committed is the caller's.** The seam reports no
+  committed mark, since a provider like Archil keeps a committed sandbox as a
+  stopped one. A driver refuses a committed VM only where its provider cannot
+  do what was asked (docker's image, boxd's snapshot: `ErrCommitted`), or
+  where it would corrupt a disk (`ErrInUse`); it never writes a marker of
+  its own to tell. (ADR 26-11-03-606.)
+- **A listing that fails is no answer.** A reaper above the engine reads a
+  failed listing as "in use", never as "unused". (ADR 26-10-23-417.)
+- **No VM names another above the seam but by `From`.** A hypervisor whose
+  disks chain (hcs, `local.Hypervisor.Chains`) has `local` record the ID of
+  the VM a copy was made from, and refuse to remove or boot that VM with
+  `machine.ErrInUse` while another VM's record, in any project, names it;
+  nothing above the seam records or walks a chain. (ADR 26-11-03-606.)
+- **`local` reads every VM record before it removes or boots a VM whose
+  disk may be chained.** A record it cannot read (a parse error, a
+  permission) is an error, never a record left out: a record skipped is a
+  disk removed or written under its child. (ADR 26-11-03-606.)
+- **A record read from an unchanged path is read whether or not the upgrade
+  meant to.** A model change that keeps a record's file name (`local`'s
+  `instance.json`, docker's labels) reads what the old model wrote unless it
+  tells that apart and leaves it out, as ADR 26-10-23-417 says it must: an
+  old record half-read loses the fields only it had, and rewriting it erases
+  them. Tell an old record by a field only the old model wrote. (ADR
+  26-11-03-606.)
+- **A change to a shared method, or to a field's type, in `pkg/guest`,
+  `pkg/machine`, or `pkg/machine/vz` itself needs a search of
+  `pkg/machine/vz` by hand.** Its cgo files, its tests among them, compile
+  only on a Mac, so neither Linux nor `GOOS=windows` vet sees a caller or a
+  literal left behind there. (Commit 335ed4b; ADR 26-11-03-606, where
+  `vz_test.go` kept a field's old type.)
 - **A field removed from a struct that is read from a file and written back
   stays, as `json.RawMessage`.** vz's `vz.json` and hcs's `state.json` are
   read into a struct and rewritten whole, so a field that is no longer

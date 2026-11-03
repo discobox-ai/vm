@@ -21,8 +21,6 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-
-	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // What a Linux guest is made of (ADR 26-10-31-990). These are pure Go, so
@@ -49,15 +47,13 @@ const (
 	initrdAgentPath = initrdAgentDir + "/disco-vm"
 )
 
-// DefaultLinuxBase is the Linux guest image a reference of LinuxBaseName
-// runs: disco-vm's own (pkg/guest/linux), from its linux/v* release line.
+// DefaultLinuxBase is the Linux guest image a fresh VM starts from when the
+// driver is configured with no base (machine.Config.Base): disco-vm's own
+// (pkg/guest/linux), from its linux/v* release line.
 //
 // It is a tag until the first release is published and its digest pinned
 // here; ADR 26-10-31-990 pins it by digest.
 const DefaultLinuxBase = "ghcr.io/discobox-ai/disco-vm-linux:v1"
-
-// LinuxBaseName is the base that runs DefaultLinuxBase.
-const LinuxBaseName = "linux"
 
 // AgentEnv names the disco-vm built for linux on this host's architecture,
 // which every boot of a Linux guest hands the guest. A darwin disco-vm
@@ -68,23 +64,45 @@ const AgentEnv = "DISCO_VM_AGENT"
 // linuxArtifacts are the files a Linux guest image must carry.
 var linuxArtifacts = []string{kernelName, initrdName, rootName}
 
-// linuxBase is the base ref names: LinuxBaseName, an absolute directory
-// holding a guest image's artifacts (used as it is: a guest built from the
-// checkout), or a registry reference to a guest image, which Prepare pulls.
-func linuxBase(ref string) (machine.Base, bool) {
+// linuxImage is vz's base: the Linux guest image a fresh VM starts from
+// (ADR 26-11-03-606). Exactly one of ref and dir is set, or neither, which is
+// DefaultLinuxBase.
+type linuxImage struct {
+	// ref is a registry reference to a guest image, which Prepare pulls.
+	ref string
+	// dir is an absolute directory holding a guest image's artifacts, used
+	// as it is: a guest built from the checkout.
+	dir string
+}
+
+// parseLinuxBase is the base machine.Config.Base configures: empty, for
+// DefaultLinuxBase; an absolute directory holding a guest image's artifacts;
+// or a registry reference to a guest image.
+func parseLinuxBase(base string) (linuxImage, error) {
 	switch {
-	case ref == LinuxBaseName:
-		return machine.Base{Name: LinuxBaseName, ID: DefaultLinuxBase, GuestOS: machine.Linux, Options: map[string]string{"image": DefaultLinuxBase}}, true
-	case filepath.IsAbs(ref):
-		if completeArtifacts(ref) != nil {
-			return machine.Base{}, false
+	case base == "":
+		return linuxImage{}, nil
+	case filepath.IsAbs(base):
+		if err := completeArtifacts(base); err != nil {
+			return linuxImage{}, err
 		}
-		return machine.Base{Name: ref, ID: ref, GuestOS: machine.Linux, Options: map[string]string{"dir": ref}}, true
+		return linuxImage{dir: base}, nil
 	}
-	if _, err := name.ParseReference(ref, name.StrictValidation); err != nil {
-		return machine.Base{}, false
+	if _, err := name.ParseReference(base, name.StrictValidation); err != nil {
+		return linuxImage{}, fmt.Errorf("vz: base %q is neither a Linux guest image's reference nor an absolute directory holding one: %w", base, err)
 	}
-	return machine.Base{Name: ref, ID: ref, GuestOS: machine.Linux, Options: map[string]string{"image": ref}}, true
+	return linuxImage{ref: base}, nil
+}
+
+// String names the image, for an error.
+func (l linuxImage) String() string {
+	switch {
+	case l.dir != "":
+		return l.dir
+	case l.ref != "":
+		return l.ref
+	}
+	return DefaultLinuxBase
 }
 
 // linuxSource is a cached guest image's source.json: the reference it was
@@ -99,15 +117,6 @@ type cachedImage struct {
 	dir     string
 	src     linuxSource
 	created time.Time
-}
-
-// pinned is the image's reference by its digest, which never moves.
-func (c cachedImage) pinned() string {
-	r, err := name.ParseReference(c.src.Ref)
-	if err != nil {
-		return c.src.Digest
-	}
-	return r.Context().Digest(c.src.Digest).String()
 }
 
 // cachedImages is every complete guest image cached under cacheDir, newest
@@ -132,19 +141,6 @@ func cachedImages(cacheDir string) []cachedImage {
 		out = append(out, c)
 	}
 	slices.SortFunc(out, func(a, b cachedImage) int { return b.created.Compare(a.created) })
-	return out
-}
-
-// linuxBases is the default base and every guest image cached under
-// cacheDir, each by its reference pinned to the digest it was pulled at, so
-// running a listed one boots exactly that image, with no network.
-func linuxBases(cacheDir string) []machine.Base {
-	def, _ := linuxBase(LinuxBaseName)
-	out := []machine.Base{def}
-	for _, c := range cachedImages(cacheDir) {
-		pinned := c.pinned()
-		out = append(out, machine.Base{Name: pinned, ID: c.src.Digest, GuestOS: machine.Linux, Options: map[string]string{"image": pinned}, Created: c.created})
-	}
 	return out
 }
 
@@ -174,16 +170,16 @@ func completeArtifacts(dir string) error {
 	return nil
 }
 
-// linuxArtifactDir is the directory holding b's artifacts: its own, or the
+// linuxArtifactDir is the directory holding l's artifacts: its own, or the
 // cache's copy of its image for this host's architecture, pulled once per
 // manifest digest.
-func linuxArtifactDir(ctx context.Context, cacheDir string, b machine.Base, arch string) (string, error) {
-	if dir := b.Options["dir"]; dir != "" {
-		return dir, completeArtifacts(dir)
+func linuxArtifactDir(ctx context.Context, cacheDir string, l linuxImage, arch string) (string, error) {
+	if l.dir != "" {
+		return l.dir, completeArtifacts(l.dir)
 	}
-	ref := b.Options["image"]
+	ref := l.ref
 	if ref == "" {
-		ref = b.ID
+		ref = DefaultLinuxBase
 	}
 	return pullLinuxImage(ctx, cacheDir, ref, arch)
 }

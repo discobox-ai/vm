@@ -157,28 +157,6 @@ type imageInfo struct {
 	} `json:"Config"`
 }
 
-// distribution asks the image's registry, through the daemon, whether it
-// has ref, without pulling it (isUnknownToRegistry).
-func (a *api) distribution(ctx context.Context, ref string) error {
-	return a.call(ctx, http.MethodGet, "/distribution/"+ref+"/json", nil, nil, nil)
-}
-
-// isUnknownToRegistry reports the daemon's answer, from /distribution, that
-// the registry has no such image: 404 for a tag it lacks, and 401 or 403,
-// which Docker Hub gives a repository that does not exist. Any other error
-// is the registry not being reached.
-func isUnknownToRegistry(err error) bool {
-	var apiErr *apiError
-	if !errors.As(err, &apiErr) {
-		return false
-	}
-	switch apiErr.Status {
-	case http.StatusNotFound, http.StatusUnauthorized, http.StatusForbidden:
-		return true
-	}
-	return false
-}
-
 func (a *api) inspectImage(ctx context.Context, ref string) (imageInfo, error) {
 	var out imageInfo
 	return out, a.call(ctx, http.MethodGet, "/images/"+ref+"/json", nil, nil, &out)
@@ -222,14 +200,18 @@ func splitRef(ref string) (string, string) {
 	return ref, "latest"
 }
 
-// tagImage tags the image ref as repo:tag, moving the tag from any other
-// image.
-func (a *api) tagImage(ctx context.Context, ref, repo, tag string) error {
-	return a.call(ctx, http.MethodPost, "/images/"+ref+"/tag", url.Values{"repo": {repo}, "tag": {tag}}, nil, nil)
-}
-
 func (a *api) removeImage(ctx context.Context, ref string) error {
 	err := a.call(ctx, http.MethodDelete, "/images/"+ref, nil, nil, nil)
+	if isNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// removeImageForce removes a tag even where a container runs its image,
+// which the daemon then only untags: the container keeps it, by ID.
+func (a *api) removeImageForce(ctx context.Context, ref string) error {
+	err := a.call(ctx, http.MethodDelete, "/images/"+ref, url.Values{"force": {"1"}}, nil, nil)
 	if isNotFound(err) {
 		return nil
 	}

@@ -16,21 +16,33 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// BaseEnv names an installed hcs image, by its ID, in the driver's directory
-// ($DISCO_VM_ROOT, or %LOCALAPPDATA%\disco-vm): an image `disco-vm install`
-// made, which `disco-vm images` lists. It gates the tests that need a real
-// hypervisor and an installed Windows.
+// BaseEnv names a committed hcs VM, in the default project of the driver's
+// directory ($DISCO_VM_ROOT, or %LOCALAPPDATA%\disco-vm): one `disco-vm
+// install NAME` made, which `disco-vm ls -a` lists. It gates the tests that
+// need a real hypervisor and an installed Windows.
 const BaseEnv = "DISCO_VM_HCS_BASE"
 
 // basePayload is the directory holding BaseEnv's disk.vhdx, for a test that
-// drives the hypervisor without the driver's store.
+// drives the hypervisor without the driver's store. The VM is an install's,
+// so its disk is whole: a chain of it alone.
 func basePayload(t *testing.T) string {
 	t.Helper()
-	id := os.Getenv(BaseEnv)
-	if id == "" {
-		t.Skipf("set %s to an installed hcs image to run on HCS", BaseEnv)
+	name := os.Getenv(BaseEnv)
+	if name == "" {
+		t.Skipf("set %s to a committed hcs VM, an install, to run on HCS", BaseEnv)
 	}
-	return filepath.Join(machine.DefaultDir(), "images", "layers", id, "payload")
+	driver, err := local.New(machine.Config{}, &Hypervisor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm, err := driver.Instance(t.Context(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vm.From != "" {
+		t.Fatalf("%s=%s was created from %s, not installed", BaseEnv, name, vm.From)
+	}
+	return filepath.Join(driver.Dir(), "instances", vm.ID, "machine")
 }
 
 // TestConformance runs the suite on HCS. Each started instance's shim is
@@ -38,7 +50,7 @@ func basePayload(t *testing.T) string {
 func TestConformance(t *testing.T) {
 	base := os.Getenv(BaseEnv)
 	if base == "" {
-		t.Skipf("set %s to an installed hcs image to run the conformance suite on HCS", BaseEnv)
+		t.Skipf("set %s to a committed hcs VM to run the conformance suite on HCS", BaseEnv)
 	}
 	binary := os.Getenv("DISCO_VM_TEST_BINARY")
 	if binary == "" {
@@ -53,7 +65,7 @@ func TestConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	machinetest.Run(t, driver, machinetest.Config{
-		Image:      base,
+		From:       base,
 		CPUs:       4,
 		Memory:     4 << 30,
 		Timeout:    10 * time.Minute,
@@ -107,37 +119,31 @@ func TestDocument(t *testing.T) {
 	}
 }
 
-// Commit moves a differencing disk into another directory. The moved child
-// must still open with its whole chain.
-func TestMovedChildFindsItsParent(t *testing.T) {
+// A committed VM's disk stays where it was made, so a VM created from it, and
+// one from a VM committed from that, open their whole chain with no locator
+// rewritten.
+func TestAChainOfCommittedDisksOpens(t *testing.T) {
 	root := t.TempDir()
-	for _, dir := range []string{"layer", "inst", "committed"} {
+	for _, dir := range []string{"install", "child", "grandchild"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	parent := filepath.Join(root, "layer", diskName)
-	if err := vhd.CreateVhdx(parent, 1, 1); err != nil {
+	install := filepath.Join(root, "install", diskName)
+	if err := vhd.CreateVhdx(install, 1, 1); err != nil {
 		t.Fatal(err)
 	}
-	child := filepath.Join(root, "inst", diskName)
-	if err := createDiff(child, parent); err != nil {
+	child := filepath.Join(root, "child", diskName)
+	if err := createDiff(child, install); err != nil {
 		t.Fatal(err)
 	}
-	moved := filepath.Join(root, "committed", diskName)
-	if err := os.Rename(child, moved); err != nil {
-		t.Fatal(err)
-	}
-	if err := setParent(moved, parent); err != nil {
-		t.Fatal(err)
-	}
-	grandchild := filepath.Join(root, "inst", "next.vhdx")
-	if err := createDiff(grandchild, moved); err != nil {
-		t.Fatalf("a disk over the moved child: %v", err)
+	grandchild := filepath.Join(root, "grandchild", diskName)
+	if err := createDiff(grandchild, child); err != nil {
+		t.Fatalf("a disk over the committed child: %v", err)
 	}
 	h, err := vhd.OpenVirtualDisk(grandchild, vhd.VirtualDiskAccessNone, vhd.OpenVirtualDiskFlagNone)
 	if err != nil {
-		t.Fatalf("open the chain through the moved child: %v", err)
+		t.Fatalf("open the chain: %v", err)
 	}
 	_ = syscall.CloseHandle(h)
 }

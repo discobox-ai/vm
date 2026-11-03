@@ -94,11 +94,12 @@ func listenControl(ctx context.Context, dir string) (net.Listener, string, func(
 // its URL, and its forwards, and return when the machine stops. Canceling ctx
 // (a signal) shuts the guest down in order first.
 func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
-	inst, err := d.readInstance(id)
+	rec, err := d.readProject(id)
 	if err != nil {
 		return err
 	}
-	hs, err := d.spec(inst)
+	inst := rec.Instance
+	hs, err := d.spec(rec)
 	if err != nil {
 		return err
 	}
@@ -477,6 +478,9 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 	}
 	if opts.GUI && !d.hv.Capabilities().Display {
 		return nil, fmt.Errorf("%s has no display to show: %w", d.hv.Name(), machine.ErrUnsupported)
+	}
+	if _, err := d.runnable(inst); err != nil {
+		return nil, err
 	}
 	if shim, err := d.openShim(inst.ID); err == nil && shim.status(ctx) == nil {
 		return nil, fmt.Errorf("instance %s is already running", inst.Name)

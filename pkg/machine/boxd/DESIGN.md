@@ -1,29 +1,35 @@
 # pkg/machine/boxd
 
-An image is a snapshot, and the guest is reached through Exec.
+A committed VM is a snapshot, and the guest is reached through Exec.
 
 boxd offers machines and snapshots of running machines, not disk images, no
-labels on either, and no socket into a guest. The boxd driver maps the seam
-onto what it has, with nothing of disco-vm's in the guest and nothing on the
-host: what it knows is in the names of its snapshots and machines (the root
+labels on either, and no socket into a guest. The boxd driver maps the
+seam's VMs (ADR 26-11-03-606) onto what it has, with nothing of disco-vm's
+in the guest and nothing on the host: what it knows is in the names of its
+machines and snapshots (the root
 [DESIGN.md](../../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider)). See
 [docs/drivers/boxd.md](../../../docs/drivers/boxd.md).
 
-- **An image is a snapshot** (memory and disk) of the guest booted from the
-  committed disk, named `dvm-<project>--<image ID>`; a tag is a second
-  snapshot of it, `dvm-<project>--<image ID>--t-<ref>`, the ref's punctuation
-  escaped. Commit starts the stopped instance and snapshots it, because
-  boxd only snapshots a running machine. The image is still cut from an
-  orderly shutdown: the snapshot's disk is the one the guest flushed. There
-  is no install: boxd's images and snapshots are bases. A machine the driver
-  makes for a moment (to save a tag's snapshot) is named as an instance of
-  the project's, `save-<random>`, so one a killed process leaves, which boxd
-  bills, is listed and `rm` removes it.
-- **A clone** restores the image's snapshot as the machine
-  `dvm-<project>--<name>`, at the instance's size, and stops it, so its first
-  boot is a cold boot of that disk. **An instance of a base** is made from the
-  image (`CreateVm`) or the snapshot (`CreateVmFromSnapshot`) and stopped the
-  same way, so a first `run` of one is two boots.
+- **A VM is a machine, and a committed VM a snapshot, of one name**,
+  `dvm-<project>--<name>`. A name is the project's across both: Create
+  refuses one a machine or a ready snapshot holds. Commit starts the stopped
+  machine, because boxd only snapshots a running one, snapshots it under its
+  own name, and deletes it. The snapshot is still cut from an orderly
+  shutdown: its disk is the one the guest flushed. A listing that finds a
+  snapshot and a machine of one name is a Commit that has not deleted the
+  machine yet: it lists the committed VM, and Destroy removes both. That a
+  VM is committed is the caller's to record (ADR 26-11-03-606); the driver
+  tells one by its kind, the ready snapshot of its name whose ID is the
+  VM's, and refuses to boot, start, serve, or commit it (`ErrCommitted`),
+  or to restore from a machine. There is no install.
+- **A fresh VM** is made with `CreateVm` from the driver's base
+  (`machine.Config.Base`), or boxd's default image (`GetConfig`) when it has
+  none; **a VM from a committed one** restores its snapshot by name
+  (`CreateVmFromSnapshot`). Either is made at the VM's size and stopped, so
+  its first boot is a cold boot of its disk, and a fresh one's first `run`
+  is two boots. boxd does not say which snapshot a machine was restored
+  from, so `Instance.From` is empty, and a restored machine outlives its
+  snapshot's removal.
 - **The guest's operations are Exec streams.** Each is one command line run
   as boxd's own user: `sudo -n -H -u USER -- env -C DIR -- K=V... ARGV...`,
   every word quoted, root unless the request names a user. Stdin, stdout,

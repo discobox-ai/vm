@@ -6,12 +6,13 @@
 // Windows (hcs) and macOS (vz) with nothing but the driver differing.
 //
 // A driver is also the only place anything is kept (ADR 26-10-23-417). The
-// engine holds no state: every image, tag, and instance is read from the
-// driver, which reads it from its provider every time, and keeps what it knows
-// about each on the provider's own resources, in the provider's way: labels on
-// Docker's images and containers, the names of boxd's snapshots and machines,
-// and files beside each disk in the directory of a driver whose provider is
-// this host's disk (hcs, vz, fake; package local).
+// engine holds no state: every VM, committed or not (ADR 26-11-03-606), is
+// read from the driver, which reads it from its provider every time, and
+// keeps what it knows about each on the provider's own resources, in the
+// provider's way: labels on Docker's images and containers, the names of
+// boxd's snapshots and machines, and files beside each disk in the directory
+// of a driver whose provider is this host's disk (hcs, vz, fake; package
+// local).
 //
 // The contract is the intersection of what the hypervisors can do honestly.
 // Where they differ — host directory sharing, a display, and macOS guests
@@ -43,16 +44,23 @@ var ErrUnsupported = errors.New("machine: not supported by this driver")
 // differently in an error message and in a test.
 var ErrNotImplemented = errors.New("machine: not implemented yet")
 
-// ErrNotFound reports an image, a tag, or an instance the provider does not
-// have.
+// ErrNotFound reports a VM the provider does not have.
 var ErrNotFound = errors.New("not found")
 
-// ErrExists reports an instance name the provider already has in the project.
+// ErrExists reports a VM name the provider already has in the project,
+// committed or not.
 var ErrExists = errors.New("already exists")
 
-// ErrInUse reports an image the driver will not delete because another
-// image's disk still needs it (Driver.DeleteImage).
-var ErrInUse = errors.New("its disk is still another image's")
+// ErrInUse reports a VM the driver will not remove or boot because a VM
+// created from it still needs its disk as it is (Driver.Destroy, Boot, and
+// Start, on a driver whose copies chain below the seam).
+var ErrInUse = errors.New("a VM created from it still needs its disk")
+
+// ErrCommitted reports a committed VM where its provider has no machine
+// left to run (docker's image, boxd's snapshot). Whether a VM is committed
+// is the caller's to record (ADR 26-11-03-606); a driver says so only where
+// its provider cannot do what was asked.
+var ErrCommitted = errors.New("the VM is committed, and its provider has nothing to run")
 
 // ErrNotRunning reports that an instance has no running machine to attach to.
 var ErrNotRunning = errors.New("machine: the instance is not running")
@@ -88,13 +96,12 @@ type Capabilities struct {
 	Ports bool `json:"ports"`
 	// Agent reports that the driver puts the disco-vm agent in the guest and
 	// reaches the guest's operations through it: Install bakes it in
-	// (InstallSpec.Agent) on hcs and vz, and docker adds it to a base's image
+	// (InstallSpec.Agent) on hcs and vz, and docker adds it to its base
 	// at Create. boxd reaches them through its own API, and needs none.
 	Agent bool `json:"agent"`
-	// Install is every guest OS the driver makes an image of from
+	// Install is every guest OS the driver makes a committed VM of from
 	// installation media (Install). An OS it boots but does not install
-	// comes from its bases instead (Bases, Base), as every OS does on a
-	// driver that installs none.
+	// comes from its base (Config.Base), or from a VM committed from one.
 	Install []OS `json:"install,omitempty"`
 	// Keys is whether the driver issues keys (IssueKey), and the narrowest
 	// scope one reaches.
@@ -152,14 +159,21 @@ func (c Capabilities) Fences(e *Egress) bool {
 
 // Config is what a driver is made with.
 type Config struct {
-	// Project scopes every image, tag, and instance the driver lists and
-	// makes: it is in the name of each, or on its label. Empty is
-	// DefaultProject.
+	// Project scopes every VM the driver lists and makes: it is in the name
+	// of each, or on its label. Empty is DefaultProject.
 	Project string
+	// Base is what a fresh VM starts from (InstanceSpec.From nil), in the
+	// driver's own terms: docker's image reference, vz's Linux guest image
+	// (a reference or a directory), boxd's image, fake's name. Empty is the
+	// provider's default, where it has one (boxd's default image, vz's
+	// DefaultLinuxBase, fake's), or none (docker). It is the driver's
+	// configuration, never a create's (ADR 26-11-03-606). A driver with no
+	// base (hcs, docker unconfigured) refuses a fresh VM.
+	Base string
 	// Dir is where a driver whose provider is this host's disk (hcs, vz,
-	// fake) keeps its images, instances, and the media it downloads. Empty
-	// is DefaultDir(). A driver whose provider is a service (boxd, docker)
-	// keeps nothing on the host and ignores it.
+	// fake) keeps its VMs and the media it downloads. Empty is DefaultDir().
+	// A driver whose provider is a service (boxd, docker) keeps nothing on
+	// the host and ignores it.
 	Dir string
 	// ShimCommand starts the process that holds a running instance, for a
 	// driver whose machine dies with the process that booted it (vz) or
@@ -208,8 +222,7 @@ func DefaultDir() string {
 	return filepath.Join(os.TempDir(), "disco-vm")
 }
 
-// DefaultProject is the project of everything made without one named, and of
-// everything made before there were projects.
+// DefaultProject is the project of everything made without one named.
 const DefaultProject = "default"
 
 // ValidateProject checks a project name: 1 to 32 lowercase letters, digits,
@@ -223,14 +236,15 @@ func ValidateProject(project string) error {
 	return nil
 }
 
-// ValidateName checks an instance's name: 1 to 63 lowercase letters, digits,
-// and single hyphens, starting and ending with a letter or digit. It is in
-// the name of what the driver makes for the instance (a boxd machine, a
-// container), which must be a DNS label in a proxy's domain, so a driver may
-// refuse a name that is valid here but too long beside its project.
+// ValidateName checks a VM's name: 1 to 63 lowercase letters, digits, and
+// single hyphens, starting and ending with a letter or digit. It is unique in
+// the project across every VM, committed or not, and in the name of what the
+// driver makes for the VM (a boxd machine or snapshot, a container or a
+// Docker image), which must be a DNS label in a proxy's domain, so a driver
+// may refuse a name that is valid here but too long beside its project.
 func ValidateName(name string) error {
 	if !label(name, 63) || strings.Contains(name, "--") {
-		return fmt.Errorf("machine: instance name %q is not 1 to 63 lowercase letters, digits, and single hyphens, starting and ending with a letter or digit", name)
+		return fmt.Errorf("machine: VM name %q is not 1 to 63 lowercase letters, digits, and single hyphens, starting and ending with a letter or digit", name)
 	}
 	return nil
 }
@@ -276,43 +290,6 @@ func ResourceProject(prefix, name string) string {
 	return project
 }
 
-// Image is one immutable, committed disk state: an install from media, or a
-// snapshot of a stopped instance (ADR 26-10-23-410). It is a differencing
-// VHDX, an APFS-cloned macOS bundle, a boxd snapshot, a Docker image. Above
-// the seam every image stands alone: it has no parent, an instance runs from
-// one image, and removing one never touches another. A driver whose disks
-// chain below the seam (an hcs snapshot differences over the disk of the
-// image its instance ran from) keeps the chain to itself. Its ID is random:
-// nothing reproducible made it.
-type Image struct {
-	ID      string `json:"id"`
-	GuestOS OS     `json:"guestOS"`
-	// Comment says what made the image: "install windows", "snapshot dev".
-	// A driver that cannot keep it reports none.
-	Comment string    `json:"comment,omitempty"`
-	Created time.Time `json:"created,omitzero"`
-}
-
-// Tag is one name:tag, normalized, and the image it names.
-type Tag struct {
-	Ref   string `json:"ref"`
-	Image string `json:"image"`
-}
-
-// Base is something a driver already has that an instance can run from with
-// no image.
-type Base struct {
-	// Name is what `images` lists, and a reference may name the base by it.
-	Name string `json:"name"`
-	// ID is the service's own ID for it, which a reference may name too.
-	ID      string `json:"id"`
-	GuestOS OS     `json:"guestOS"`
-	// Options are the driver's own: what it makes a machine from (boxd: an
-	// image or a snapshot; docker: an image).
-	Options map[string]string `json:"options,omitempty"`
-	Created time.Time         `json:"created,omitzero"`
-}
-
 // Forward sends the connections a guest process opens to the host on a port
 // (guest.DialHost: vsock to the host on vz, hvsocket on HCS) to a Unix socket
 // on the host, which something there serves, or to a guest port of another
@@ -335,19 +312,18 @@ type Forward struct {
 // socket.
 func (f Forward) Peer() bool { return f.Instance != "" }
 
-// InstanceSpec is a new instance.
+// InstanceSpec is a new VM (ADR 26-11-03-606).
 type InstanceSpec struct {
-	// Name is unique in the project (ValidateName).
+	// Name is unique in the project, across every VM, committed or not
+	// (ValidateName).
 	Name string
-	// Image is the reference it was asked for by, kept to be shown.
-	Image string
-	// ImageID is the image it is a clone of, or empty for an instance of
-	// Base.
-	ImageID string
-	// Base is the driver's base it runs from instead of an image: one Bases
-	// listed or Base found.
-	Base    *Base
-	GuestOS OS
+	// From is the committed VM the new one is a copy of, as the driver
+	// found it; its guest OS is the new VM's. That it was committed is the
+	// caller's to know: a driver whose provider cannot tell (Archil) copies
+	// any stopped VM. Nil is a fresh VM, from the
+	// driver's base (Config.Base), whose guest OS is the base's; a driver
+	// with no base refuses it with ErrUnsupported.
+	From *Instance
 	// CPUs and Memory size every boot; zero is the driver's default.
 	CPUs   int
 	Memory uint64
@@ -356,8 +332,8 @@ type InstanceSpec struct {
 	Forwards []Forward
 	// Isolated strips the machine of what its provider gives one by default
 	// (boxd: the in-VM CLI and its token, the git credential helper and
-	// integrations, and the default network's peers), for good: a snapshot
-	// of it, and an instance of that, stay isolated. A driver that does not
+	// integrations, and the default network's peers), for good: a VM
+	// committed from it, and a VM created from that, stay isolated. A driver that does not
 	// list Capabilities.Isolation refuses it.
 	Isolated bool
 	// Networks are the provider's networks the machine peers on, in place
@@ -366,12 +342,13 @@ type InstanceSpec struct {
 	Networks []string
 	// Egress fences what the machine reaches beyond its networks, in place
 	// before Create returns and across stop and start; nil is the
-	// provider's default. It is the spec's, never the image's. A driver that
+	// provider's default. It is the spec's, never a committed VM's. A driver that
 	// does not hold the fence asked for (Capabilities.Fences) refuses it.
 	Egress *Egress
 	// Data is the instance's data volume, and Cache its cache volume; nil is
 	// none. A driver that does not list the volume in
-	// Capabilities.Volumes refuses it. Neither is ever part of an image.
+	// Capabilities.Volumes refuses it. Neither is ever part of a committed
+	// VM.
 	Data  *DataVolume
 	Cache *CacheVolume
 }
@@ -384,20 +361,18 @@ type Egress struct {
 	Allow []string `json:"allow,omitempty"`
 }
 
-// Instance is one machine made from an image or a base, as its provider has
-// it.
+// Instance is one VM, as its provider has it, committed or not: which it is
+// is the caller's to record, since not every provider can tell (ADR
+// 26-11-03-606).
 type Instance struct {
-	// ID is the provider's own: a container's ID, a boxd machine's, the
-	// directory of a local driver's instance.
+	// ID is the provider's own: a container's or a Docker image's ID, a boxd
+	// machine's or snapshot's, the directory of a local driver's VM.
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// Image is the reference it was made from, or what the provider says it
-	// was made from when it kept no reference.
-	Image string `json:"image"`
-	// ImageID is its image, or empty for an instance of a base, or where the
-	// provider does not say.
-	ImageID string    `json:"imageID,omitempty"`
-	Base    *Base     `json:"base,omitempty"`
+	// From is the name of the committed VM this one was created from, where
+	// the provider says; empty for a fresh VM, an install, or where it does
+	// not.
+	From    string    `json:"from,omitempty"`
 	GuestOS OS        `json:"guestOS"`
 	CPUs    int       `json:"cpus,omitempty"`
 	Memory  uint64    `json:"memory,omitempty"`
@@ -412,12 +387,12 @@ type Instance struct {
 	// none.
 	Egress *Egress `json:"egress,omitempty"`
 	// Data and Cache are its volumes, as the provider reports them; Cache
-	// says which generation it was cloned from.
+	// says which generation it was cloned from. A committed VM has neither.
 	Data  *DataVolume  `json:"data,omitempty"`
 	Cache *CacheVolume `json:"cache,omitempty"`
 }
 
-// InstallSpec creates an image from installation media.
+// InstallSpec makes a committed VM from installation media.
 type InstallSpec struct {
 	GuestOS OS
 	// Media is the installer: a Windows ISO, a macOS IPSW, or "latest" where
@@ -429,7 +404,7 @@ type InstallSpec struct {
 	CPUs      int
 	Memory    uint64
 	// Agent is the disco-vm binary built for GuestOS, given to a driver that
-	// lists Capabilities.Agent. The driver bakes it into the image and
+	// lists Capabilities.Agent. The driver bakes it into the disk and
 	// arranges for `disco-vm guest` to start at boot, as a SYSTEM service on
 	// Windows and a launchd daemon on macOS.
 	Agent string
@@ -445,7 +420,7 @@ type InstallSpec struct {
 
 // Service is an instance's one service: where a program in the guest listens,
 // and where any process reaches it. The driver picks it, never the caller or
-// the image, and it is the same for every boot of an instance.
+// a committed VM, and it is the same for every boot of a VM.
 type Service struct {
 	// Listen is the address a guest program listens on, in guest.Listen's
 	// form: vsock:PORT (AF_VSOCK on vz, the hvsocket service ID of the port
@@ -485,9 +460,9 @@ type BootOptions struct {
 }
 
 // Driver is one hypervisor, and the provider that keeps everything disco-vm
-// knows: the images, tags, and instances of the project it was made for
-// (Config.Project). Every listing and lookup reads the provider; nothing is
-// cached between calls.
+// knows: the VMs of the project it was made for (Config.Project), committed
+// or not (ADR 26-11-03-606). Every listing and lookup reads the provider;
+// nothing is cached between calls.
 type Driver interface {
 	Name() string
 	Capabilities() Capabilities
@@ -496,60 +471,36 @@ type Driver interface {
 	// fix.
 	Check(ctx context.Context) error
 
-	// Install creates the image img (its ID, GuestOS, and Comment) from
-	// installation media, and returns it as the provider keeps it. A driver
-	// that does not list Capabilities.Install returns ErrUnsupported.
-	Install(ctx context.Context, spec InstallSpec, img Image) (Image, error)
-	// Image is the image of an ID, or ErrNotFound. An image whose disk the
-	// provider no longer has (a snapshot deleted behind disco-vm's back) is
-	// not found.
-	Image(ctx context.Context, id string) (Image, error)
-	// Images lists the project's images.
-	Images(ctx context.Context) ([]Image, error)
-	// DeleteImage deletes an image. The caller deletes one only when no tag
-	// or instance names it. A driver whose disks chain below the seam (hcs)
-	// refuses, with ErrInUse, an image whose disk another image's still
-	// differences over, and deletes nothing. An image already gone is not an
-	// error.
-	DeleteImage(ctx context.Context, id string) error
+	// Install makes the VM name from installation media, committed (the
+	// caller records it), and returns it as the provider keeps it. A name the project already has is
+	// ErrExists. A driver that does not list Capabilities.Install returns
+	// ErrUnsupported.
+	Install(ctx context.Context, spec InstallSpec, name string) (Instance, error)
 
-	// Tags lists the project's tags.
-	Tags(ctx context.Context) ([]Tag, error)
-	// Tag points ref, a normalized name:tag, at an image, moving it from any
-	// other.
-	Tag(ctx context.Context, ref, image string) error
-	// Untag drops a tag. A tag that is not there is not an error.
-	Untag(ctx context.Context, ref string) error
-
-	// Bases lists what the driver already has that an instance can run from
-	// with no image (InstanceSpec.Base): boxd's default image, and the
-	// snapshots in the account that disco-vm did not make. A driver with
-	// nothing of the kind, or nothing it can list (docker's registries),
-	// returns none.
-	Bases(ctx context.Context) ([]Base, error)
-	// Base is the base ref names, by its name or ID, or found false. A
-	// driver may know bases it cannot list: docker's is any image the daemon
-	// has or its registry answers for, which Create pulls. It never pulls or
-	// makes anything itself.
-	Base(ctx context.Context, ref string) (base Base, found bool, err error)
-
-	// Create makes a stopped instance: a copy-on-write clone of its image,
-	// or a machine made from its base, that boots from power-off with a machine
-	// identity of its own. A name the project already has is ErrExists. Its
-	// data volume is made empty, and its cache volume a clone of the key's
-	// current generation.
+	// Create makes a stopped VM: a copy-on-write copy of the committed VM
+	// spec.From, or a fresh one from the driver's base, that boots from
+	// power-off with a machine identity of its own. A name the project
+	// already has, committed or not, is ErrExists; a From the provider no
+	// longer has is ErrNotFound, and a running one is refused; a fresh VM
+	// on a driver with no base is ErrUnsupported. Its data volume is made empty, and its cache
+	// volume a clone of the key's current generation.
 	Create(ctx context.Context, spec InstanceSpec) (Instance, error)
-	// Instance is the project's instance of a name, or ErrNotFound.
+	// Instance is the project's VM of a name, committed or not, or
+	// ErrNotFound.
 	Instance(ctx context.Context, name string) (Instance, error)
-	// Instances lists the project's instances.
+	// Instances lists the project's VMs, committed or not.
 	Instances(ctx context.Context) ([]Instance, error)
-	// Destroy removes an instance and everything made for it, its volumes
+	// Destroy removes a VM and everything made for it, its volumes
 	// included, stopping it first if it runs. One already gone is not an
-	// error.
+	// error. A driver whose copies chain below the seam (hcs) refuses, with
+	// ErrInUse, a VM that a VM created from it still needs, and removes
+	// nothing; elsewhere a VM created from one outlives it.
 	Destroy(ctx context.Context, inst Instance) error
 
-	// Boot starts a stopped instance in this process and returns once its
-	// guest operations answer. The machine is this process's: it lives
+	// Boot starts a stopped VM in this process and returns once its guest
+	// operations answer. A committed VM whose provider has no machine left
+	// is ErrCommitted, and one whose disk a VM created from it differences
+	// over is ErrInUse, as they are to Start. The machine is this process's: it lives
 	// until it powers off or is killed, and a driver whose machines die
 	// with their process (vz) ends it when this process ends. It is not
 	// bound to ctx, which only bounds starting it.
@@ -566,11 +517,14 @@ type Driver interface {
 	// Err, or Kill is called, so attaching to run a command costs nothing
 	// that outlives the call.
 	Attach(ctx context.Context, inst Instance) (Machine, error)
-	// Commit captures a stopped instance's disk as the image img (its ID,
-	// GuestOS, and Comment): a snapshot. It removes the instance, its volumes
-	// included, which the image never holds, and returns the image as the
-	// provider keeps it.
-	Commit(ctx context.Context, inst Instance, img Image) (Image, error)
+	// Commit freezes a stopped VM under its name for copying, and returns it
+	// (ADR 26-11-03-606): its data volume and cache clone are removed, and
+	// its disk is what VMs are created from. A running VM is refused. The
+	// caller records that it is committed and never starts it again: a
+	// driver whose provider keeps a committed VM apart (docker's image,
+	// boxd's snapshot) refuses to, and one that cannot tell (Archil) does
+	// not.
+	Commit(ctx context.Context, inst Instance) (Instance, error)
 	// Service is the instance's service. A URL that exists only while the
 	// instance runs (a port the daemon publishes, a shim's) is asked for
 	// while it is stopped: then the driver returns ErrNotRunning. A URL
@@ -608,17 +562,6 @@ type Driver interface {
 	// driver did not issue for this project is refused. A driver with no
 	// keys returns ErrNoKey.
 	RevokeKey(ctx context.Context, key Key) error
-}
-
-// FindBase is the base in bases that ref names, by name or ID: Driver.Base
-// for a driver that knows only the bases it lists.
-func FindBase(bases []Base, ref string) (Base, bool) {
-	for _, b := range bases {
-		if b.Name == ref || b.ID == ref {
-			return b, true
-		}
-	}
-	return Base{}, false
 }
 
 // HostListener is a running machine whose guest processes can connect out to

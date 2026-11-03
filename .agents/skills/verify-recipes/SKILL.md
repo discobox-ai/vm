@@ -1,6 +1,6 @@
 ---
 name: verify-recipes
-description: How to verify a disco-vm change at runtime — the CLI against real boxd or a real Docker daemon (run, exec, cp, stop, start, ps, rm, snapshot, rmi), including from inside a discobox whose boxd credential is a five-minute sentinel. Read before verifying anything that touches the engine, the CLI, or the boxd or docker driver.
+description: How to verify a disco-vm change at runtime — the CLI against real boxd or a real Docker daemon (run, exec, cp, stop, start, ps, rm, commit, create --from), including from inside a discobox whose boxd credential is a five-minute sentinel. Read before verifying anything that touches the engine, the CLI, or the boxd or docker driver.
 ---
 
 # Verifying disco-vm
@@ -39,18 +39,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   its alias `ls`, and no `--debug`, or the judge may refuse the run.
   `unset BOXD_API_KEY` first: a box may carry a stale one, and the driver
   reads it before `BOXD_TOKEN`, so every call is a 401. A use that says it
-  makes only `dvm-*` machines gets `--name` refused unless the instance's
-  name starts with `dvm-` too (`run --name dvm-dev`), although the machine
-  is named `dvm-<project>--...` either way.
+  makes only `dvm-*` machines gets a name refused unless the VM's name
+  starts with `dvm-` too (`run dvm-dev`), although the machine is named
+  `dvm-<project>--...` either way.
 - Isolate state: `export DISCO_VM_PROJECT=<a scratch project, e.g. vtest>
   DISCO_VM_DRIVER=boxd`. boxd keeps
-  everything (ADR 26-10-23-417): images and tags are snapshots, instances are
-  machines, all named `dvm-<project>--...`, so the project is what keeps a
-  run apart.
-- Start from a base: `images` lists boxd's default image and the account's
-  own snapshots, and `run --name dvm-dev <that name>` takes one (about 6s).
-  An image is `stop` then `snapshot dvm-dev NAME`: a cold boot and a
-  snapshot (~40s).
+  everything (ADR 26-10-23-417): a committed VM is a snapshot and a VM a
+  machine, both named `dvm-<project>--<name>`, so the project is what keeps
+  a run apart.
+- Start fresh: `run dvm-dev` makes a machine of boxd's default image
+  (`$DISCO_VM_BASE` names another), about 6s. `stop dvm-dev` then `commit
+  dvm-dev` is a cold boot and a snapshot (~40s), and the machine is deleted;
+  `run dvm-dev2 --from dvm-dev` restores it.
 
 ## docker
 
@@ -62,18 +62,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   it fails at create or boot on an image without that libc. Off linux,
   `DISCO_VM_AGENT` names the linux build.
 - Isolate state: `export DISCO_VM_PROJECT=<a scratch project>
-  DISCO_VM_DRIVER=docker`. The daemon
-  keeps everything: images are Docker images named
-  `disco-vm-layer:<project>--<id>` (and an instance's readied base
-  `...--base-<name>--<random>`), tags `disco-vm/<project>/<ref>`, and
-  instances containers named `dvm-<project>--<name>`, labeled
-  `ai.discobox.vm.*`.
-- Start from any registry image: `run --name dev debian:trixie`. Create
-  takes 30s to 2 minutes (apt installs systemd); a snapshot costs a shutdown
-  and a `docker commit`.
+  DISCO_VM_DRIVER=docker DISCO_VM_BASE=debian:trixie`. The daemon keeps
+  everything: a committed VM is a Docker image `disco-vm-vm:<project>--<name>`
+  (and a fresh VM's readied base `disco-vm-base:<project>--<name>--<random>`),
+  and a VM a container named `dvm-<project>--<name>`, labeled
+  `ai.discobox.vm.*`. With no `DISCO_VM_BASE`, a fresh VM is refused.
+- Start fresh from the base: `run dev`. Create takes 30s to 2 minutes (apt
+  installs systemd); a commit costs a shutdown and a `docker commit`, and
+  `run dev2 --from dev` is a container of it.
 - `internal/e2e` against docker takes the static binary too:
   `DISCO_VM_TEST_BINARY=$PWD/build/linux-amd64/disco-vm DISCO_VM_DRIVER=docker
-  go test ./internal/e2e` (about 3 minutes). Its own `go build` is dynamic,
+  go test ./internal/e2e` (about 2 minutes; debian:trixie by default,
+  `DISCO_VM_E2E_IMAGE` names another). Its own `go build` is dynamic,
   and readying debian fails with `exec: /usr/local/libexec/disco-vm: not
   found`.
 - Inside a discobox, `exec` of anything that uses the network needs the
@@ -88,10 +88,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   (different), a guest's own `systemctl reboot` (back, still `running`), and
   `docker kill` or `docker rm -f` on the container behind disco-vm's back,
   then `ls -a`, `start`, `rm -f`. No `disco-vm shim` process should exist.
-- Clean up: `ls -a` and `images` list nothing, and no `dvm-*` containers or
-  `disco-vm-layer` images are left (`docker ps -a`, `docker images`). `rmi`
-  untags an image an instance runs and keeps it; `rmi` an untagged leftover
-  by its ID.
+- Clean up: `ls -a` lists nothing, and no `dvm-*` containers or
+  `disco-vm-vm` and `disco-vm-base` images are left (`docker ps -a`,
+  `docker images`). `rm` of a committed VM removes its tag; a container
+  created from it keeps the image until it is removed too.
 
 ## The Linux guest image, without a Mac
 

@@ -3,6 +3,7 @@ package vz
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -16,11 +17,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-
-	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-func TestLinuxBase(t *testing.T) {
+func TestParseLinuxBase(t *testing.T) {
 	dir := t.TempDir()
 	for _, artifact := range linuxArtifacts {
 		if err := os.WriteFile(filepath.Join(dir, artifact), []byte(artifact), 0o600); err != nil {
@@ -28,24 +27,24 @@ func TestLinuxBase(t *testing.T) {
 		}
 	}
 	for _, c := range []struct {
-		ref   string
-		found bool
-		image string
-		dir   string
+		base string
+		ok   bool
+		want linuxImage
+		name string
 	}{
-		{LinuxBaseName, true, DefaultLinuxBase, ""},
-		{"ghcr.io/example/guest:v2", true, "ghcr.io/example/guest:v2", ""},
-		{dir, true, "", dir},
-		{filepath.Join(dir, "missing"), false, "", ""},
-		{"not a reference!", false, "", ""},
+		{"", true, linuxImage{}, DefaultLinuxBase},
+		{"ghcr.io/example/guest:v2", true, linuxImage{ref: "ghcr.io/example/guest:v2"}, "ghcr.io/example/guest:v2"},
+		{dir, true, linuxImage{dir: dir}, dir},
+		{filepath.Join(dir, "missing"), false, linuxImage{}, ""},
+		{"not a reference!", false, linuxImage{}, ""},
 	} {
-		b, found := linuxBase(c.ref)
-		if found != c.found || b.Options["image"] != c.image || b.Options["dir"] != c.dir {
-			t.Errorf("linuxBase(%q) = %+v, %v", c.ref, b, found)
+		got, err := parseLinuxBase(c.base)
+		if (err == nil) != c.ok || got != c.want {
+			t.Errorf("parseLinuxBase(%q) = %+v, %v", c.base, got, err)
 			continue
 		}
-		if found && b.GuestOS != machine.Linux {
-			t.Errorf("linuxBase(%q) is a %s guest", c.ref, b.GuestOS)
+		if c.ok && got.String() != c.name {
+			t.Errorf("parseLinuxBase(%q) is named %q, want %q", c.base, got, c.name)
 		}
 	}
 }
@@ -84,9 +83,9 @@ func guestFiles() map[string][]byte {
 }
 
 // A guest image is pulled once per digest into the cache, its artifacts and
-// nothing else, and listed as a base pinned to that digest, which runs with
-// no registry, as a tag does from its last pull; one for another
-// architecture, or lacking an artifact, is refused.
+// nothing else, and a base pinned to that digest runs with no registry, as a
+// tag does from its last pull; one for another architecture, or lacking an
+// artifact, is refused.
 func TestPullLinuxImage(t *testing.T) {
 	ctx := context.Background()
 	cache := t.TempDir()
@@ -117,18 +116,17 @@ func TestPullLinuxImage(t *testing.T) {
 		t.Fatalf("an image with no initrd: %v", err)
 	}
 
-	var listed *machine.Base
-	for _, b := range linuxBases(cache) {
-		if strings.HasPrefix(b.Name, strings.TrimSuffix(ref, ":v1")+"@sha256:") {
-			listed = &b
-		}
+	var src linuxSource
+	if data, err := os.ReadFile(filepath.Join(dir, linuxSourceName)); err != nil || json.Unmarshal(data, &src) != nil || src.Digest == "" {
+		t.Fatalf("the cached image records no digest: %+v, %v", src, err)
 	}
-	if listed == nil || listed.Options["image"] != listed.Name {
-		t.Fatalf("the cached image is not listed pinned to its digest: %+v", linuxBases(cache))
+	pinned, err := parseLinuxBase(strings.TrimSuffix(ref, ":v1") + "@" + src.Digest)
+	if err != nil {
+		t.Fatal(err)
 	}
 	server.Close()
-	if got, err := linuxArtifactDir(ctx, cache, *listed, "arm64"); err != nil || got != dir {
-		t.Fatalf("a listed base with no registry: %s, %v", got, err)
+	if got, err := linuxArtifactDir(ctx, cache, pinned, "arm64"); err != nil || got != dir {
+		t.Fatalf("a base pinned to the cached digest, with no registry: %s, %v", got, err)
 	}
 	if got, err := pullLinuxImage(ctx, cache, ref, "arm64"); err != nil || got != dir {
 		t.Fatalf("a tag with no registry, from its last pull: %s, %v", got, err)

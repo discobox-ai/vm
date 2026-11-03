@@ -9,8 +9,8 @@ operations (`machine.Guest`) are command lines over boxd's Exec stream (ADR
 1. `machinetest.Run` passes against boxd itself: `TestConformance` with
    `BOXD_API_KEY` set, starting from boxd's default image.
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=boxd`.
-3. An instance of boxd's default image is shaped through `exec`, stopped, and
-   snapshotted, and the snapshot runs.
+3. A fresh VM of boxd's default image is shaped through `exec`, stopped, and
+   committed, and a VM created from the committed one runs.
 
 Status: on 2026-10-07, with an agent in the guest, `TestConformance` passed
 against boxd. On 2026-10-15 and 16, with no agent (ADR 0001), the CLI built
@@ -21,6 +21,8 @@ default image ran and was snapshotted with no build. `TestConformance` has
 not been run against boxd since, because a discobox's five-minute credential
 does not outlive it. Criterion 2 waits on a layout for
 `DISCO_VM_DRIVER=boxd` in `internal/e2e`.
+Since ADR 26-11-03-606 (images, tags, and bases give way to committed VMs)
+the driver has run against the fake API only.
 `TestConformanceFakeAPI` runs the same suite in CI against an in-process fake
 of boxd's API (`fakeapi_test.go`), whose "machines" are directory roots: its
 Exec reads back the driver's command lines and runs them on the host.
@@ -47,13 +49,11 @@ use. The parts that matter here:
 
 | seam | boxd |
 |---|---|
-| `Install` | not offered (`Capabilities.Install` is off): boxd's images and snapshots are bases. No agent either: `Capabilities.Agent` is off. |
-| image | the snapshot `dvm-<project>--<image id>`, the whole 64-character ID (boxd takes names of at least 110 characters, by hand, 2026-10-23). `Image` is `GetSnapshot`: gone, `pending`, or `failed` is not found. `Images` is `ListSnapshots`, keeping the project's names that are a hex ID and nothing more. boxd keeps no comment. `DeleteImage` deletes the snapshot; no other image needs it, since a restored machine has a disk of its own. |
-| tag | boxd cannot name or label a snapshot after the fact, and snapshots only a running machine. `Tag` restores the image's snapshot into a machine (named as an instance, `dvm-<project>--save-<random>`, so one a killed process leaves is listed and `rm` removes it), saves it as `dvm-<project>--<image id>--t-<ref>`, destroys the machine, and deletes the tag's snapshots on any other image. The ref is escaped to what a name holds: lowercase letters and digits stand for themselves, and every other byte is `-` and its two hex digits (`a/b:v1` is `a-2fb-3av1`), so `Tags` reads it back from `ListSnapshots`. `Untag` deletes them. Each tag costs a restore and a whole snapshot. |
-| `Create` | the machine `dvm-<project>--<name>`, at most 63 characters: restored from the image's snapshot (`CreateVmFromSnapshot`, at the instance's size when it asks for one), or made from a base, with `CreateVm` and its image (restart policy `never`) or `CreateVmFromSnapshot` and its snapshot. An `Egress` set at once and read back ([Egress](#egress)), idle timers off, then the proxy pinned (`SetBotProtection` off, `SetProxyPort` pins the default proxy, the one `ListProxies` marks `is_default`, to 7302), then `sync` in the guest, `StopVm`, and wait for `stopped`: the first boot is a cold boot of the disk. A step that fails destroys the machine. A name boxd already has is `ErrExists`. |
-| instance | `Instances` is `ListVms`, keeping the project's names; `Instance` finds a name there. An instance is its machine: its ID, its name less the project's prefix, its image (`image_ref`, which for a restored machine is the image under the snapshot, not the snapshot: boxd does not say which), its size, when it was made, and its isolation, networks, and egress allowlist. It has no image ID. |
-| `Boot`, `Start` | `StartVm` (after `ResizeVm` when the instance asks for another size), `ResumeVm`, or `WakeVm`, by state. A machine still `stopping` is waited out first. Returns once the guest answers: an Exec of `sudo -n systemctl is-system-running --wait` returns, once a second, for up to 5 minutes. A machine that stops meanwhile (`GetVm` every 2s) ends the wait. boxd owns the machine, so `Start` is `Boot`. |
-| `Attach` | `GetVm`: `running` or `starting` is the machine; not found, `stopped`, or any other state is `ErrNotRunning`. |
+| `Install` | not offered (`Capabilities.Install` is off): a fresh VM starts from boxd's image. No agent either: `Capabilities.Agent` is off. |
+| `Create` | the machine `dvm-<project>--<name>`, at most 63 characters: fresh, with `CreateVm` (restart policy `never`) of the driver's base (`machine.Config.Base`), or of `GetConfig`'s `default_image` when it has none; or, from a committed VM, restored from its snapshot by name (`CreateVmFromSnapshot`, at the VM's size when it asks for one); a `From` that is no ready snapshot of its name and ID, a machine or a snapshot gone, is `ErrNotFound`, since boxd restores only a snapshot. An `Egress` set at once and read back ([Egress](#egress)), idle timers off, then the proxy pinned (`SetBotProtection` off, `SetProxyPort` pins the default proxy, the one `ListProxies` marks `is_default`, to 7302), then `sync` in the guest, `StopVm`, and wait for `stopped`: the first boot is a cold boot of the disk. A step that fails destroys the machine. A name the project has, as a machine or a committed VM's snapshot, is `ErrExists`. |
+| VM | `Instances` is `ListVms` and `ListSnapshots`, keeping the project's names whose rest is a VM name (`machine.ValidateName`). That a VM is committed is the caller's to record (ADR 26-11-03-606); the driver tells a committed VM by its kind, the ready snapshot of its name whose ID is the VM's, when a call on it as a machine fails. A VM is its machine: its ID, its name less the project's prefix, its size, when it was made, and its isolation, networks, and egress allowlist. boxd does not say which snapshot a machine was restored from, so `From` is empty. A committed VM is a `ready` snapshot of the same name: its ID is the snapshot's, its size and creation the snapshot's. A snapshot and a machine of one name are a `Commit` that has not deleted the machine yet: the committed VM is listed, and the machine is not. `Instance` finds a name among them. |
+| `Boot`, `Start` | a committed VM, a snapshot with no machine, is `ErrCommitted`. `StartVm` (after `ResizeVm` when the instance asks for another size), `ResumeVm`, or `WakeVm`, by state. A machine still `stopping` is waited out first. Returns once the guest answers: an Exec of `sudo -n systemctl is-system-running --wait` returns, once a second, for up to 5 minutes. A machine that stops meanwhile (`GetVm` every 2s) ends the wait. boxd owns the machine, so `Start` is `Boot`. |
+| `Attach` | a committed VM is `ErrNotRunning`. `GetVm`: `running` or `starting` is the machine; not found, `stopped`, or any other state is `ErrNotRunning`. |
 | `Machine.Done` | watching starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to run a command polls nothing. `GetVm` every 2s: `stopped` is a power-off, and `failed`, `destroying`, or not-found is an error. |
 | `Machine.Kill` | `StopVm`, retried until boxd takes it, then wait for `stopped`. Callers pass no deadline, so Kill has its own (5 minutes). Past it, Kill gives the machine up: `Done` closes, and `Err` says it may still be running. The machine is still listed, so `rm` destroys it later. |
 | `Machine.Exec` | one Exec stream: `sudo -n -H -u USER -- env -C DIR -- K=V... ARGV...`, every word single-quoted (a program whose path has an `=` in it would be read by `env` as a variable). The user is root unless the request names one, and the directory `/` unless it names one. sudo gives the account's HOME, USER, LOGNAME, and `secure_path`; the request's variables are added to them. Stdin chunks, a half-close for EOF, stdout and stderr apart, and the exit code in the last chunk. A TTY sets `tty` with `rows` and `cols`, and a resize is a chunk with `window_change`. Closing the process cancels the call, which kills the command. |
@@ -61,26 +61,26 @@ use. The parts that matter here:
 | `Machine.CopyFrom` | Exec of a script that fails on a missing path, else writes one ready byte, then `tar -c` of the path rooted at its base name. |
 | `Machine.Info` | Exec of `uname -m; hostname`: linux, the GOARCH of the machine, its hostname. No version: there is no agent. |
 | `Machine.Shutdown` | a power-off is an Exec of `sync` as root, then `StopVm`; the watcher sees `stopped`. A reboot is `RebootVm`. Nothing in the guest is asked to power off. |
-| `Commit` | the guest is stopped after an orderly shutdown. Start it, wait for the guest, snapshot as the image, and destroy the machine. |
-| `Destroy` | `DestroyVm`; one already gone is not an error. |
-| `Bases`, `Base` | `GetConfig`'s `default_image` (named and ID'd by the image), then every `ready` snapshot of `ListSnapshots` whose name does not start with `dvm-`, oldest first (named by its name, ID'd by its ID, made from by its ID). `Base` finds a ref among them. Two calls on every `images`, and on a ref no image has. |
-| `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `https://` and the default proxy's domain, `ListProxies`, the same across stop and start. The private URL is `http://<machine>.boxd:7302` for a machine on networks, and the URL for one on none. |
+| `Commit` | a committed VM is `ErrCommitted`, and the machine must be `stopped`, after an orderly shutdown. Start it, wait for the guest, snapshot it as `dvm-<project>--<name>`, the machine's own name, wait for the snapshot `ready`, and destroy the machine: boxd snapshots only a running machine. The snapshot's disk is the one the guest flushed. The committed VM keeps nothing else. |
+| `Destroy` | `DestroyVm`; one already gone is not an error. A committed VM, the ready snapshot of its name and ID: `DeleteSnapshot`, and `DestroyVm` of any machine of its name a `Commit` left. A machine restored from the snapshot has a disk of its own, and outlives it. |
+| `Service` | a committed VM is `ErrCommitted`. Listen on `tcp:0.0.0.0:7302`; the URL is `https://` and the default proxy's domain, `ListProxies`, the same across stop and start. The private URL is `http://<machine>.boxd:7302` for a machine on networks, and the URL for one on none. |
 
 Exec runs as boxd's `boxd` user, who has passwordless sudo, so every guest
 operation goes through `sudo -n`, as root by default. An image installed
 before the driver stopped carrying an agent still has
 `disco-vm-guest.service`, and one installed before ADR 26-10-15-833 a
 shutdown hook in `/usr/lib/systemd/system-shutdown/disco-vm`; nothing reads
-either, and they do no harm. A snapshot of an instance of boxd's default
+either, and they do no harm. A VM committed from a fresh VM of boxd's default
 image has neither.
 
 Nothing is kept on the host: every name carries what disco-vm knows, and the
-API reports the rest, so any host with the account's key sees the same
-images and instances. A snapshot named as before ADR 26-10-23-417
-(`dvm-<project>--<id prefix>-<random>`), and a machine or snapshot named
-before projects (`dvm-<id>-<random>`), is not listed; delete it with `boxd`.
-A machine named as before, `dvm-<project>--<id prefix>-<random>`, is listed
-under the name after its project's prefix, and `rm` removes it.
+API reports the rest, so any host with the account's key sees the same VMs.
+What disco-vm made before ADR 26-11-03-606 is not read (as ADR
+26-10-23-417): an image's snapshot, `dvm-<project>--<64-digit ID>`, a tag's,
+with `--t-` in its name, and a snapshot named before projects
+(`dvm-<id>-<random>`) are not listed; delete them with `boxd snap rm`. A
+machine named as before is listed under the name after its project's
+prefix where that is a VM name, and `rm` removes it.
 
 ## Try it
 
@@ -93,31 +93,29 @@ export BOXD_API_KEY=$(boxd auth keys create disco-vm)   # once; keep it somewher
 export DISCO_VM_DRIVER=boxd
 
 ./disco-vm info                                         # check: ok means the key works
-./disco-vm images                                       # boxd's default image, and your own snapshots
-./disco-vm run --name stock <default image's name>      # the machine is made from the image
+./disco-vm run stock                                    # a fresh VM of boxd's default image
 ./disco-vm exec stock sh -c 'apt-get update && apt-get install -y tree'
-./disco-vm stop stock && ./disco-vm snapshot stock demo/boxd   # consumes stock
-./disco-vm images
-./disco-vm run --name dev demo/boxd
+./disco-vm stop stock && ./disco-vm commit stock        # stock is now a snapshot, and no machine
+./disco-vm ls -a                                        # stock, committed
+./disco-vm run --from stock dev
 ./disco-vm exec dev tree --version
 ./disco-vm exec -it dev bash
 ./disco-vm cp ./README.md dev:/tmp
 ./disco-vm url dev                                      # https://<machine>.boxd.sh
 ./disco-vm stop dev && ./disco-vm start dev
 ./disco-vm rm -f dev
-./disco-vm rmi demo/boxd
+./disco-vm rm stock
 ```
 
-Each instance is a machine named `dvm-default--...` in `boxd ls`, and each
-image is a snapshot named `dvm-default--...` in `boxd snap ls` (`--project`
-names the project). `rm` destroys the machine, and `rmi` deletes the
-snapshots, a tag's with the tag. disco-vm keeps nothing on the host, so every
-host with the account's key sees the same images and instances.
-boxd's default image, and any snapshot of the account not named `dvm-`, is a
-base (ADR 26-10-15-833): `images` lists it by its name, and `run` or
-`create` with that name or its ID makes a machine from it, with no image.
-`snapshot` of such an instance makes an image. `tag` and `rmi` refuse a base, which is
-boxd's and never deleted.
+Each VM is a machine named `dvm-default--<name>` in `boxd ls`, and each
+committed VM a snapshot of the same name in `boxd snap ls` (`--project`
+names the project). `rm` destroys the machine, or deletes a committed VM's
+snapshot; a VM created from it keeps running. disco-vm keeps nothing on the
+host, so every host with the account's key sees the same VMs. A fresh VM is
+made from the driver's base, `machine.Config.Base`, or boxd's default image
+when it has none (ADR 26-11-03-606): a caller never names the image at
+`create`, and a snapshot the account made by hand is not one disco-vm
+reads.
 
 ## Configuration
 
@@ -305,7 +303,10 @@ its listener on it.
 ## Not verified yet
 
 - `ResizeVm` on a stopped machine, which a boot at a size other than the
-  image's uses. It passes against the fake only.
+  snapshot's uses. It passes against the fake only.
+- Committed VMs (ADR 26-11-03-606) on boxd itself: a snapshot named as its
+  machine is, taken while the machine still exists. It passes against the
+  fake only.
 - The `suspended`/`standby` status strings, and `WakeVm` from `hibernated`.
   The driver turns off auto-suspend and auto-hibernate on every machine, so
   these show up only when something else suspends one.

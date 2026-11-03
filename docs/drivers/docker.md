@@ -14,15 +14,16 @@ kept on the host.
 **Done means:**
 
 1. `machinetest.Run` passes against a real Docker daemon: `TestConformance`
-   with `DISCO_VM_DOCKER_IMAGE` set, which it runs as a base.
+   with `DISCO_VM_DOCKER_IMAGE` set, which it configures as the base.
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=docker`.
-3. A registry image runs by name, and an instance of it is shaped through
-   `exec`, stopped, and snapshotted.
+3. A fresh VM from the configured base is shaped through `exec`, stopped,
+   and committed, and a VM is created from the committed one.
 
 Status, 2026-10-09: all three held on Docker 29.8 (runc 1.5, containerd
 snapshotter, cgroup v2), on Linux 7.0, when images were built from a spec
-and a registry image was installed as a base layer. Since ADR 26-10-23-410
-a registry image is a base; see "Confirmed" below for what has run since.
+and a registry image was installed as a base layer. Since ADR 26-11-03-606
+the base is configured, and there are only VMs; see "Confirmed" below for
+what has run since.
 
 ## What the guest is
 
@@ -107,36 +108,38 @@ reaches syscalls the default profile would block, but as an unprivileged uid.
 A seccomp profile that is Docker's default plus namespace creation and `mount`
 would narrow that, and is not written yet.
 
-## A registry image is shifted once for each instance of it
+## The base is shifted once for each fresh VM
 
 Image files belong to uid 0 on the host, which the guest's namespace does not
 map, so unshifted, the whole root filesystem would be `nobody`'s. Create of
-an instance of a registry image moves every file's owner into the guest's
-range once: `docker-init --shift` (`Shift`) walks the readying container's
+a fresh VM moves every file of the base's image into the guest's range
+once: `docker-init --shift` (`Shift`) walks the readying container's
 root filesystem and chowns uid N to 16777216+N. chown clears setuid and
 setgid bits and file capabilities, so it puts them back. It shifts a hard
-link once, and leaves an id already in range alone. A snapshot is written by
-the guest, so it is in range already, and `docker commit` keeps it that way.
+link once, and leaves an id already in range alone. A committed VM is
+written by the guest, so it is in range already, and `docker commit` keeps it
+that way.
 
 Idmapped mounts would avoid the copy, but making one takes `CAP_SYS_ADMIN` on
 the container's side, and Docker does not offer one per container. Shifting
 costs disk: on overlay, a chown copies the file up, so an instance's readied
-image stores the registry image's files a second time (debian:trixie with
-systemd: 434 MB on disk). The offset is in every image, so all of a daemon's
+image stores the base's files a second time (debian:trixie with
+systemd: 434 MB on disk). The offset is in every committed VM, so all of a daemon's
 guests share it.
 
 ## How the seam maps
 
 | seam | docker |
 |---|---|
-| `Install` | not offered (`Capabilities.Install` is off): registry images are bases. |
-| `Bases`, `Base` | `Bases` lists none: no one lists every registry. `Base` takes a lowercase ref the daemon has (`/images/<ref>/json`) or its registry answers for (`/distribution/<ref>/json`), without pulling; a 401, 403, or 404 from the registry is no base, and any other error is returned, so an unreachable registry is not read as a missing image. A `disco-vm-layer:` or `disco-vm/` ref, a Docker image ID or its prefix, and any Docker image the daemon has tagged under `disco-vm-layer:` or `disco-vm/` (the driver's own, of any project, however the ref is spelled) are never one; an image's labels do not decide, since one built on a snapshot inherits them, so no project runs another's image. Its name and ID are the ref. |
-| `Create` of a base | refused at once for a name the daemon has. Pull the image if the daemon lacks it; in a container from it (`dvm-<project>--base-<random>`, labeled as an instance of the project's, so one a crash leaves is listed and `rm` removes it), as root: install systemd and dbus if missing (apt-get, dnf, or zypper), install the agent (`$DISCO_VM_AGENT`, or this binary on linux; its CPU must be the daemon's) as `disco-vm-guest.service`, mask units a container cannot run, remove Docker's `policy-rc.d`, empty `/etc/machine-id` and make D-Bus's copy a link to it, and shift; commit with `docker-init` as the entrypoint as `disco-vm-layer:<project>--base-<name>--<random>` (the `-` keeps it out of `Images`, and the random end keeps two creates racing for one name apart), and create the container from it as below. |
-| image | the committed Docker image, tagged `disco-vm-layer:<project>--<image id>` (its repository's name from when images were layers) and labeled `ai.discobox.vm.layer` (the image ID), `.project`, and `.comment` by the commit (`LABEL` changes, which also blank the instance's labels the container carried). `Image` inspects the tag, `Images` lists the repository, and `DeleteImage` removes the tag, and the Docker image with it unless another tag holds it or another image is built on it, which the daemon keeps. |
-| tag | a tag of the image's Docker image, `disco-vm/<project>/<ref>`, so a ref is Docker's grammar. `Tags` lists every Docker image and reads its tags under the project's prefix; `Untag` removes the tag, which leaves the Docker image to its image's tag. |
-| `Create` | create the container from the image's Docker image, with the settings above, named `dvm-<project>--<name>`, with the instance's name as its hostname, labeled `ai.discobox.vm.instance` (the name), `.project`, `.layer` (the image ID), `.image` (the reference), `.cpus`, and `.memory`, publishing 7302/tcp on `127.0.0.1` at a port the daemon picks at each start. A name the daemon has is `ErrExists`. Cold only. |
-| instance | `Instances` lists the containers named and labeled for the project; `Instance` inspects one by its name. An instance's image is the one whose Docker image its container runs. A container or image from before ADR 26-10-23-417, whose labels name no project and whose tag is `<project>--<id prefix>-<random>`, is not listed; remove it with `docker`. |
+| `Install` | not offered (`Capabilities.Install` is off): a fresh VM is readied from the base. |
+| base | `machine.Config.Base` (the command line's `$DISCO_VM_BASE`), an image reference; none is configured by default, and a fresh `Create` is then `ErrUnsupported`. The caller never names a base at create (ADR 26-11-03-606). |
+| `Create`, fresh | refused at once for a name the project's committed VMs or containers hold. Pull the base if the daemon lacks it; in a container from it (`dvm-<project>--base-<random>`, labeled as a VM of the project's, so one a crash leaves is listed and `rm` removes it), as root: install systemd and dbus if missing (apt-get, dnf, or zypper), install the agent (`$DISCO_VM_AGENT`, or this binary on linux; its CPU must be the daemon's) as `disco-vm-guest.service`, mask units a container cannot run, remove Docker's `policy-rc.d`, empty `/etc/machine-id` and make D-Bus's copy a link to it, and shift; commit with `docker-init` as the entrypoint as `disco-vm-base:<project>--<name>--<random>` (the random end keeps two creates racing for one name apart), and create the container from it as below. |
+| `Create` from a committed VM | the container of the committed VM's Docker image, by its ID. |
+| `Create` | create the container, with the settings above, named `dvm-<project>--<name>`, with the VM's name as its hostname, labeled `ai.discobox.vm.instance` (the name), `.project`, `.from` (the committed VM it came from, or empty), `.cpus`, and `.memory`, and `.committed` blank over its image's, publishing 7302/tcp on `127.0.0.1` at a port the daemon picks at each start. A name the daemon has is `ErrExists`, and so is one a committed VM took meanwhile, checked once the container is made. Cold only. |
+| committed VM | a Docker image `disco-vm-vm:<project>--<name>`, labeled `ai.discobox.vm.committed`, `.instance`, `.project`, `.from`, `.cpus`, and `.memory` by the commit (`LABEL` changes, which also blank the volume labels the container carried). Its ID is the Docker image's, `sha256:...`, which is how the driver tells it from a container's bare hex ID; the seam reports no committed mark, which is the caller's to record (ADR 26-11-03-606). |
+| VM | `Instances` lists the project's committed VMs' images and its containers; `Instance` inspects the committed VM's tag, then the container. A container whose name a committed VM holds is what a failed commit left, and is not listed. Containers and images from before ADR 26-11-03-606 are not read: a container whose `ai.discobox.vm.image` label names an image, which since then only a readying container (`base-<6 hex>`) carries, and the `disco-vm-layer:` and `disco-vm/` tags. Remove them with `docker`, a container's readied `disco-vm-layer:<project>--base-*` image with it. |
 | `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `http://127.0.0.1:<published port>` while the container runs, and the private URL `http://<the container's address on its network>:7302`, which another container dials. `Egress` is refused. |
+| `Boot`, `Start`, `Commit`, `SaveCache` of a committed VM | `ErrCommitted`: an image has no container to run. `Attach` and `Service` answer `ErrNotRunning`. |
 | `Boot`, `Start` | size the container (`docker update`: CPUs, and memory with no swap) and start it, then wait for the agent; a container that stops meanwhile (inspected every 2s) ends the wait. The daemon owns the container, so `Start` is `Boot`. |
 | `Attach` | inspect the container: running is a machine, and stopped or gone is `ErrNotRunning`. A guest that powered itself off has already stopped its container, because Init exits with it. |
 | `Machine.Done` | waiting starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to run a command leaves nothing running. The daemon's `wait` on the container: exit 0 is a power-off. A failed wait (the daemon restarted) inspects and waits again. |
@@ -144,8 +147,8 @@ guests share it.
 | `Machine` guest operations | the agent (`guest.Client`), each connection a docker exec of `disco-vm pipe unix:/run/disco-vm-relay/guest/run/disco-vm/agent.sock`, on the container's side. |
 | volumes | `Data`: a named volume `dvm-<project>--<name>--data-<random>` at `/.discobox/data`; `Cache`: `--cache-<random>` at `/.discobox/cache`, filled at Create from the key's current generation. Both are mounted with `NoCopy` and labeled `ai.discobox.vm.volume`, `.project`, and `.instance`; the container carries `.data` and `.cache`, `.cache-bytes`, and `.generation`. docker-init chowns a root-owned `/.discobox` and each mount point into the guest's uids at every start. The local volume driver has no quota, so a size is a hint. |
 | caches | a generation is a volume `dvm-<project>--cachegen--<key>--<id>`, and the key's pointer to it an empty volume `--cachekey--<key>--<id>`, both labeled `.volume`, `.project`, `.cache`, `.generation`, `.cache-bytes`, and `.saved`. `SaveCache` makes the generation, copies the stopped instance's `/.discobox/cache` into it (`GET /containers/<id>/archive`, then `PUT` into a container made, never started, from the instance's image with the generation mounted), checks the guard again, makes the pointer, and removes the key's pointers and generations saved before it but one a copy still mounts, so of two saves at once the one begun last wins. Create mounts the key's current generation in such a container before it reads it, which keeps a save from removing it meanwhile: the daemon makes a missing volume a mount names, so one found unlabeled once mounted was removed in between, and the next is tried. `Caches` reads each key's newest pointer whose generation is there; `DeleteCache` removes its pointers, then its generations. |
-| `Commit` | empty the stopped container's `/etc/machine-id`, so every instance of the image makes its own, `docker commit` it as the image, and destroy the instance. `docker commit` never holds a volume. |
-| `Destroy` | `docker rm -f`, then its data and cache volumes, found by their labels (one a later instance of the name mounts is left), then remove the `disco-vm-layer:<project>--base-<name>--*` tag of the image the container ran, and every other one of the name older than 30 minutes that no container runs: what a Destroy that failed partway or a create that lost a race left, and never a create of the name still readying (no name has `--`, so another name's are never matched). The daemon keeps what a snapshot of it is built on, and refuses a tag a later instance of the name runs. |
+| `Commit` | refuse a running container; empty its `/etc/machine-id`, so every VM created from it makes its own, `docker commit` it as `disco-vm-vm:<project>--<name>`, then remove the container as `Destroy` does. `docker commit` never holds a volume. |
+| `Destroy` | of a VM: `docker rm -f`, then its data and cache volumes, found by their labels (one a later VM of the name mounts is left), then the image the container ran if no tag names it any more, then the `disco-vm-base:<project>--<name>--*` tag of the image the container ran, and every other one of the name older than 30 minutes that no container runs: what a Destroy that failed partway or a create that lost a race left, and never a create of the name still readying (no name has `--`, so another name's are never matched). Of a committed VM: a container a failed commit left, then its tag, removed with `force`, which the daemon turns into an untag where a container runs the image: a VM created from it stands alone, and its own `Destroy` removes the untagged image. |
 
 The driver talks to the Docker Engine API over `DOCKER_HOST` itself, not
 through the docker CLI or SDK, as boxd's does.
@@ -160,22 +163,24 @@ container's init, where it runs on the image's libc, so build it static:
 CGO_ENABLED=0 go build -o disco-vm ./cmd/disco-vm   # or: go tool task build:linux-agent (amd64)
 export DISCO_VM_DRIVER=docker
 
+export DISCO_VM_BASE=debian:trixie
+
 ./disco-vm info                                            # check: ok
-./disco-vm run --name dev debian:trixie                    # pulls, readies, and starts it
+./disco-vm run dev                                         # pulls, readies, and starts it
 ./disco-vm exec dev systemctl is-system-running            # running
 ./disco-vm exec dev sh -c 'apt-get update && apt-get install -y tree'
-./disco-vm stop dev && ./disco-vm snapshot dev demo/docker # consumes dev
-./disco-vm run --name dev demo/docker
-./disco-vm exec -it dev bash
-./disco-vm stop dev && ./disco-vm start dev
-./disco-vm rm -f dev && ./disco-vm rmi demo/docker
+./disco-vm stop dev && ./disco-vm commit dev               # dev is frozen
+./disco-vm run --from dev dev2
+./disco-vm exec -it dev2 bash
+./disco-vm stop dev2 && ./disco-vm start dev2
+./disco-vm rm -f dev2 && ./disco-vm rm dev
 ```
 
 From a host whose daemon is elsewhere, the agent must be built for the
 daemon's OS and CPU, static:
 `CGO_ENABLED=0 GOOS=linux go build -o disco-vm-linux ./cmd/disco-vm`, and
 `DISCO_VM_AGENT=./disco-vm-linux`. Create checks only the CPU, so a binary
-linked against a libc the image lacks fails at create, where the readying
+linked against a libc the base lacks fails at create, where the readying
 script runs it to shift the image's owners (exit 127), before any guest
 boots.
 
@@ -184,7 +189,8 @@ boots.
 | env | default | |
 |---|---|---|
 | `DOCKER_HOST` | `unix:///var/run/docker.sock` | `unix://` or `tcp://` without TLS. Docker contexts, `ssh://`, and TLS are not read. |
-| `DISCO_VM_AGENT` | this binary, on linux | the static linux disco-vm, for the daemon's CPU, that Create puts in a registry image |
+| `DISCO_VM_AGENT` | this binary, on linux | the static linux disco-vm, for the daemon's CPU, that Create puts in the base |
+| `DISCO_VM_BASE` | none | the base, an image reference such as `debian:trixie` (`machine.Config.Base`); with none, a fresh VM is refused |
 
 `Check` refuses a daemon on cgroup v1, one that runs Windows containers, and a
 rootless one, whose user namespace has too few uids to map the guest's 65536.
@@ -233,6 +239,13 @@ Since ADR 26-11-02-180 (2026-11-02, Docker 29.9.2, Linux 7.1):
 `TestConformance` from `debian:trixie`, a-data-volume and a-cache-volume
 included, and `internal/e2e` TestVolumes with the static binary; no volume
 or container left behind.
+
+Since ADR 26-11-03-606 (2026-11-03, Docker 29.9.2, containerd snapshotter,
+Linux 7.1): `TestConformance` with `debian:trixie` as the configured base,
+every subtest but the fence's and the ports', which docker refuses (68 s);
+by hand, a VM created from a committed one booted and read its writes after
+the committed VM was removed, and its own Destroy removed the untagged
+image. Nothing was left on the daemon. ⬜ `internal/e2e`.
 
 ## Not verified yet
 

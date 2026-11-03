@@ -1,6 +1,6 @@
 // Package fake is a driver with no hypervisor. A "guest" is a disco-vm guest
 // agent process on the host, confined to a directory that stands in for its
-// disk; clones and commits are directory copies.
+// disk; a copy of a committed VM is a directory copy.
 //
 // It exists so that everything above the driver seam — the builder, the
 // engine, the guest protocol, the CLI — and the local driver's store and shim
@@ -10,17 +10,14 @@ package fake
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,7 +32,7 @@ import (
 
 func init() {
 	machine.Register("fake", func(cfg machine.Config) (machine.Driver, error) {
-		hv, err := New()
+		hv, err := New(cfg.Base)
 		if err != nil {
 			return nil, err
 		}
@@ -50,24 +47,25 @@ const KeyEnv = "DISCO_VM_FAKE_KEY" //nolint:gosec // G101: an environment variab
 // AgentEnv overrides the agent binary; by default it is the running disco-vm.
 const AgentEnv = "DISCO_VM_AGENT"
 
-// BasesEnv is a JSON array of machine.Base, the Catalog a driver from New
-// lists, so a test of the CLI has bases to run.
-const BasesEnv = "DISCO_VM_FAKE_BASES"
+// DefaultBase is the base of a driver from New given none.
+const DefaultBase = "scratch"
 
 // Hypervisor is the fake driver's hypervisor, under a local.Driver.
 type Hypervisor struct {
 	// Agent is the disco-vm binary each guest runs as `disco-vm guest`.
 	Agent string
-	// Catalog is what Bases lists. An instance of one starts from an empty
-	// root whose marker names the base, as an install's names its media.
-	Catalog []machine.Base
+	// BaseName names the hypervisor's base, a fresh VM's start: an empty
+	// root whose marker names it, as an install's names its media. Empty
+	// is none, and a fresh VM is refused.
+	BaseName string
 }
 
 var _ local.Hypervisor = (*Hypervisor)(nil)
 
 // New returns a fake hypervisor whose guests run this binary, or
-// $DISCO_VM_AGENT.
-func New() (*Hypervisor, error) {
+// $DISCO_VM_AGENT, and whose base is base (machine.Config.Base), or
+// DefaultBase.
+func New(base string) (*Hypervisor, error) {
 	agent := os.Getenv(AgentEnv)
 	if agent == "" {
 		exe, err := os.Executable()
@@ -76,13 +74,10 @@ func New() (*Hypervisor, error) {
 		}
 		agent = exe
 	}
-	d := &Hypervisor{Agent: agent}
-	if raw := os.Getenv(BasesEnv); raw != "" {
-		if err := json.Unmarshal([]byte(raw), &d.Catalog); err != nil {
-			return nil, fmt.Errorf("fake: %s: %w", BasesEnv, err)
-		}
+	if base == "" {
+		base = DefaultBase
 	}
-	return d, nil
+	return &Hypervisor{Agent: agent, BaseName: base}, nil
 }
 
 func (*Hypervisor) Name() string { return "fake" }
@@ -98,8 +93,11 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 	}
 }
 
-// Chains is false: an image is a tree of its own.
+// Chains is false: a copy of a committed VM is a tree of its own.
 func (*Hypervisor) Chains() bool { return false }
+
+// Base is the host's OS, where the hypervisor has a base.
+func (d *Hypervisor) Base() (machine.OS, bool) { return machine.OS(runtime.GOOS), d.BaseName != "" }
 
 // SharesLoopback is true: a fake guest is a process on the host's loopback,
 // and so are its peers.
@@ -175,8 +173,8 @@ func (d *Hypervisor) Install(_ context.Context, spec local.InstallSpec, dst loca
 }
 
 func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
-	if len(inst.Chain) == 0 && inst.Base == nil {
-		return errors.New("fake: instance has no image")
+	if len(inst.Chain) == 0 && d.BaseName == "" {
+		return errors.New("fake: a fresh VM, and no base")
 	}
 	if err := os.MkdirAll(inst.Dir, 0o755); err != nil {
 		return err
@@ -184,19 +182,12 @@ func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 	if err := pickServicePort(inst.Dir); err != nil {
 		return err
 	}
-	if b := inst.Base; b != nil {
-		if b.GuestOS != machine.OS(runtime.GOOS) {
-			return fmt.Errorf("fake: a %s host can only fake %s guests, not %s", runtime.GOOS, runtime.GOOS, b.GuestOS)
-		}
+	if len(inst.Chain) == 0 {
 		if err := os.MkdirAll(rootfs(inst.Dir), 0o755); err != nil {
 			return err
 		}
-		var marker strings.Builder
-		fmt.Fprintf(&marker, "os=%s\nbase=%s\n", b.GuestOS, b.ID)
-		for _, key := range slices.Sorted(maps.Keys(b.Options)) {
-			fmt.Fprintf(&marker, "option.%s=%s\n", key, b.Options[key])
-		}
-		if err := os.WriteFile(filepath.Join(rootfs(inst.Dir), markerName), []byte(marker.String()), 0o644); err != nil { //nolint:gosec // G306: the fake guest's marker, no secrets
+		marker := fmt.Sprintf("os=%s\nbase=%s\n", runtime.GOOS, d.BaseName)
+		if err := os.WriteFile(filepath.Join(rootfs(inst.Dir), markerName), []byte(marker), 0o644); err != nil { //nolint:gosec // G306: the fake guest's marker, no secrets
 			return err
 		}
 		return prepareVolumes(inst)
@@ -272,12 +263,10 @@ listening:
 	return m, nil
 }
 
-func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst local.Layer) error {
-	if err := os.MkdirAll(dst.Dir, 0o755); err != nil {
-		return err
-	}
-	// The image never holds a volume; its mount point stays, as an empty
-	// directory a real driver's would.
+// Commit empties the VM's volumes in place: a committed VM never holds one,
+// and its mount point stays, as an empty directory a real driver's would.
+// What only a running guest needs goes too.
+func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec) error {
 	for v, attached := range map[machine.Volume]bool{machine.VolumeData: inst.Data != nil, machine.VolumeCache: inst.Cache != nil} {
 		if attached {
 			if err := freshDir(volume(inst, v)); err != nil {
@@ -285,8 +274,12 @@ func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec, dst loca
 			}
 		}
 	}
-	// Moved, not copied: Commit consumes the instance.
-	return os.Rename(rootfs(inst.Dir), rootfs(dst.Dir))
+	for _, name := range []string{addrName, hostPortsName} {
+		if err := os.RemoveAll(filepath.Join(inst.Dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SaveCache copies the instance's cache volume into the generation dst.
@@ -296,15 +289,6 @@ func (d *Hypervisor) SaveCache(_ context.Context, inst local.InstanceSpec, dst l
 
 func (d *Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {
 	return os.RemoveAll(inst.Dir)
-}
-
-// Bases is the Catalog the driver was given.
-func (d *Hypervisor) Bases(context.Context, string) ([]machine.Base, error) { return d.Catalog, nil }
-
-// Base is the base of the Catalog ref names.
-func (d *Hypervisor) Base(_ context.Context, _, ref string) (machine.Base, bool, error) {
-	b, found := machine.FindBase(d.Catalog, ref)
-	return b, found, nil
 }
 
 // pickServicePort gives the instance a free port on the host's loopback for

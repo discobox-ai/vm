@@ -108,10 +108,10 @@ tasks:
     cmds:
       - go test {{.RACE}} {{.PACKAGES}}
 
-  # The vz conformance suite on real hardware. DISCO_VM_VZ_BASE names an
-  # installed image's ID, and DISCO_VM_VZ_LINUX_BASE a Linux base (linux, a
-  # guest image's reference, or a directory of its artifacts; see
-  # docs/drivers/vz.md); a suite with neither skips. Each started instance's
+  # The vz conformance suite on real hardware. DISCO_VM_VZ_BASE names a
+  # committed macOS VM (an install), and DISCO_VM_VZ_LINUX_BASE the base fresh
+  # Linux VMs start from (default, a guest image's reference, or a directory
+  # of its artifacts; see docs/drivers/vz.md); a suite with neither skips. Each started instance's
   # shim is the signed build, and a Linux guest's agent the linux one beside
   # it. caffeinate -d keeps the display awake for the hours a run takes.
   test:vz:

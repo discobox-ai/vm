@@ -1,24 +1,23 @@
 // Package local is a machine.Driver whose provider is this host's disk: the
 // store and the supervisor that hcs, vz, and the fake driver share. Each of
-// them is a Hypervisor, which knows only how to install, clone, boot, and
-// commit a disk in a directory it is given; this package keeps everything
+// them is a Hypervisor, which knows only how to install, copy, boot, and
+// freeze a disk in a directory it is given; this package keeps everything
 // else, in a directory of its own (machine.Config.Dir), the way a Docker
 // daemon keeps /var/lib/docker:
 //
-//	images/layers/<id>/payload/      an image's disk (Layer.Dir)
-//	images/layers/<id>/layer.json    the image: project, guest OS, parent
-//	images/tags/<project>/<ref>.json a tag, named by its ref in hex
-//	instances/<id>/machine/          the hypervisor's instance (InstanceSpec.Dir)
-//	instances/<id>/instance.json     the instance: project, name, image, size
+//	instances/<id>/machine/          the hypervisor's VM (InstanceSpec.Dir)
+//	instances/<id>/instance.json     the VM: project, name, from, size
 //	instances/<id>/shim.json         its shim, while one holds it
 //	instances/.names/<project>/<name> the name's claim, holding the ID
 //	caches/<project>/<key>.json      a cache key: its current generation
 //	caches/generations/<id>/payload/ a cache generation's volume (Layer.Dir)
 //	cache/<hypervisor>/              media the hypervisor downloads
 //
-// Nothing is kept anywhere else, and nothing needs a lock: an image is
-// published by renaming its directory into place, a tag by renaming its file,
-// and a name is claimed by creating its file exclusively.
+// A committed VM (ADR 26-11-03-606) is its record and its disk, left where
+// it is, with its volumes gone; that it is committed is the caller's to
+// record. Nothing is kept anywhere else, and nothing needs a
+// lock: a record is replaced by a rename, and a name is claimed by creating
+// its file exclusively.
 //
 // A Virtualization.framework machine dies with the process that booted it,
 // and an HCS machine belongs to vmcompute, so Start runs each instance under
@@ -35,12 +34,13 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Layer is a committed image's disk, in the directory the hypervisor wrote it
-// to: one link of a chain, for a hypervisor that Chains. Dir is final once
-// the image is committed, but an image is written under a temporary name and
-// renamed into place, so a hypervisor must not record the image's own Dir
-// inside its files. Recording a parent's Dir (a differencing disk's parent
-// path) is fine: a parent is final before its child is written.
+// Layer is a committed VM's disk, in its own directory (its InstanceSpec.Dir,
+// final from its Prepare or Install on), or a cache generation's: one link of
+// a chain, for a hypervisor that Chains. A cache generation is written under
+// a temporary name and renamed into place, so a hypervisor must not record a
+// generation's own Dir inside its files. Recording a parent's Dir (a
+// differencing disk's parent path) is fine: a parent is final before its
+// child is written.
 type Layer struct {
 	ID  string
 	Dir string
@@ -60,17 +60,16 @@ type InstanceSpec struct {
 	// Dir is the hypervisor's for this instance. Prepare creates it.
 	Dir     string
 	GuestOS machine.OS
-	// Chain is the instance's image last, after the images its disk
-	// differences over, for a hypervisor that Chains; a hypervisor that does
-	// not gets the image alone. It is empty when the instance runs from
-	// Base.
+	// Chain is the committed VM the instance was created from last, after
+	// the committed VMs its disk differences over, for a hypervisor that
+	// Chains, which is given it at every call. A hypervisor that does not
+	// chain gets that one alone, and only at Prepare: its copy is a disk of
+	// its own, which outlives the committed VM. It is empty for a fresh VM,
+	// which Prepare makes from the hypervisor's base.
 	Chain []Layer
-	// Base is the hypervisor's base the instance runs from instead of an
-	// image: one Bases listed.
-	Base *machine.Base
 	// CacheDir is where the hypervisor caches what it downloads, which
-	// Prepare may fill from a base (vz pulls a Linux guest image there). It
-	// may not exist yet.
+	// Prepare may fill from its base (vz pulls a Linux guest image there).
+	// It may not exist yet.
 	CacheDir string
 	// Egress is the fence the instance was created with, which its record
 	// keeps: nil is none. A hypervisor holds it at every boot (vz: an empty
@@ -78,7 +77,7 @@ type InstanceSpec struct {
 	Egress *machine.Egress
 	// Data and Cache are the instance's volumes, which its record keeps:
 	// nil is none. Prepare makes them, at the guest's machine.VolumePath;
-	// Commit leaves them out of the image; Destroy removes them.
+	// Commit removes them; Destroy removes them.
 	Data  *machine.DataVolume
 	Cache *machine.CacheVolume
 	// CacheFrom is the generation Prepare clones the cache volume from, a
@@ -87,7 +86,7 @@ type InstanceSpec struct {
 	CacheFrom *Layer
 }
 
-// Parent is the image the instance is a clone of. An instance of a Base has
+// Parent is the committed VM the instance is a copy of. A fresh VM has
 // none.
 func (s InstanceSpec) Parent() Layer { return s.Chain[len(s.Chain)-1] }
 
@@ -110,27 +109,35 @@ type Hypervisor interface {
 	Name() string
 	Capabilities() machine.Capabilities
 	Check(ctx context.Context) error
-	// Chains reports that a committed image's disk differences over the disk
-	// of the image its instance ran from (hcs's VHDX), so that one must
-	// outlive the other: the driver records the parent, gives Prepare, Boot,
-	// and Destroy the whole chain, and refuses to delete a disk another
-	// image's still needs. A hypervisor whose images are copies of their own
-	// (vz's APFS clones, fake's trees) reports false.
+	// Chains reports that a VM's disk differences over the disk of the
+	// committed VM it was created from (hcs's VHDX), so that one must
+	// outlive the other: the driver gives Prepare, Boot, and Destroy the
+	// whole chain, and refuses to destroy a committed VM another VM's disk
+	// still needs, or to boot one, which would write to it
+	// (machine.ErrInUse). A hypervisor whose copies are disks of
+	// their own (vz's APFS clones, fake's trees) reports false.
 	Chains() bool
-	// Install creates an image in dst.Dir from installation media.
+	// Base is the guest OS of the hypervisor's base, what Prepare makes a
+	// fresh VM from (machine.Config.Base), or false where it has none (hcs,
+	// and vz for macOS guests): then a fresh VM is refused.
+	Base() (machine.OS, bool)
+	// Install lays a committed VM's disk into dst.Dir from installation
+	// media. dst.Dir is the VM's own directory, final.
 	Install(ctx context.Context, spec InstallSpec, dst Layer) error
-	// Prepare creates the instance's disk from its chain in inst.Dir: a
-	// copy-on-write clone of the image that boots from power-off with a fresh
+	// Prepare creates the instance's disk in inst.Dir: a copy-on-write copy
+	// of its Chain's last committed VM, or, with no Chain, a fresh disk from
+	// the hypervisor's base; either boots from power-off with a fresh
 	// machine identity.
 	Prepare(ctx context.Context, inst InstanceSpec) error
 	// Boot starts a prepared instance and returns once its guest operations
 	// answer. The returned machine lives until it powers off or is killed; it
 	// is not bound to ctx, which only bounds starting it.
 	Boot(ctx context.Context, inst InstanceSpec, opts BootOptions) (machine.Machine, error)
-	// Commit captures a stopped instance's disk as the new image dst,
-	// without its volumes. The instance is destroyed afterwards, so a
-	// hypervisor may move rather than copy.
-	Commit(ctx context.Context, inst InstanceSpec, dst Layer) error
+	// Commit freezes a stopped instance in place: it removes the instance's
+	// volumes and whatever only a running VM needs, and leaves inst.Dir a
+	// disk that Prepare copies from (Layer{ID: inst.ID, Dir: inst.Dir}).
+	// The caller never boots it again; a boot of it may fail.
+	Commit(ctx context.Context, inst InstanceSpec) error
 	// SaveCache writes a stopped instance's cache volume into dst.Dir, as a
 	// generation a later Prepare clones (InstanceSpec.CacheFrom). The
 	// instance keeps its volume. A hypervisor that does not list
@@ -138,15 +145,6 @@ type Hypervisor interface {
 	SaveCache(ctx context.Context, inst InstanceSpec, dst Layer) error
 	// Destroy removes everything Prepare and Boot created for the instance.
 	Destroy(ctx context.Context, inst InstanceSpec) error
-	// Bases lists what the hypervisor already has that an instance can run
-	// from with no image, given the directory it caches what it downloads
-	// in.
-	Bases(ctx context.Context, cacheDir string) ([]machine.Base, error)
-	// Base is the base ref names, by its name or ID, or found false. A
-	// hypervisor may know bases it does not list (vz: any reference to a
-	// Linux guest image, which Prepare pulls into cacheDir). It never pulls
-	// or makes anything itself.
-	Base(ctx context.Context, cacheDir, ref string) (base machine.Base, found bool, err error)
 	// Service is where a prepared instance's service listens in its guest
 	// (machine.Service.Listen), and the guest port the shim dials it on.
 	Service(inst InstanceSpec) (listen string, port uint32, err error)
