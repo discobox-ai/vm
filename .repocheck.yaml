@@ -1,0 +1,7 @@
+waivers:
+  - rule: ci.runners
+    path: .github/workflows/ci.yml
+    reason: the libkrun job boots VMs on KVM (ADR 26-11-03-530 §9), and GitHub's own ubuntu-24.04 runners expose /dev/kvm which Depot's are not known to
+  - rule: ci.runners
+    path: .github/workflows/krun-runtime.yml
+    reason: a libkrun runtime release boots the pinned guest on KVM, and publishes that build, in one job (ADR 26-11-03-530 §3), and GitHub's own ubuntu-24.04 runners expose /dev/kvm which Depot's are not known to

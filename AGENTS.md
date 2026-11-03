@@ -3,6 +3,7 @@
 Read [DESIGN.md](DESIGN.md) first. If you are implementing a driver, your
 brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
 [docs/drivers/vz.md](docs/drivers/vz.md),
+[docs/drivers/libkrun.md](docs/drivers/libkrun.md),
 [docs/drivers/boxd.md](docs/drivers/boxd.md),
 [docs/drivers/docker.md](docs/drivers/docker.md), or
 [docs/drivers/archil.md](docs/drivers/archil.md).
@@ -28,17 +29,18 @@ brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
 ## Project Structure
 
 - Root module `github.com/discobox-ai/vm`: disco-vm, which runs VMs on Host
-  Compute Service (hcs), Virtualization.framework (vz), boxd, or Archil
-  (archil), or as Docker containers that boot systemd (docker), and commits
-  them for copying.
+  Compute Service (hcs), Virtualization.framework (vz), libkrun on KVM
+  (libkrun), boxd, or Archil (archil), or as Docker containers that boot
+  systemd (docker), and commits them for copying.
 - The root holds only top-level containers (`cmd`, `pkg`, `internal`, `docs`,
   `test`, `scripts`), never packages.
 - `cmd/disco-vm`: the `disco-vm` binary: CLI, guest agent, and shim.
 - `pkg/engine`: the OS-neutral core above the seam. It keeps no state: every
   image, tag, and instance is the driver's (ADR 26-10-23-417).
 - `pkg/machine`: the driver seam; `pkg/machine/<driver>` holds each
-  hypervisor, `pkg/machine/local` the store and shim that hcs, vz, and fake
-  share, and `machinetest` the conformance suite.
+  hypervisor, `pkg/machine/local` the store and shim that hcs, vz, libkrun,
+  and fake share, `pkg/machine/linuximage` the Linux guest image vz and
+  libkrun boot, and `machinetest` the conformance suite.
 - `pkg/guest`: the guest agent.
 - `internal/cli`: the command line. `internal/e2e`: the CLI lifecycle test.
 - `scripts/codesign-exec`: the `go test -exec` wrapper vz tests need.
@@ -73,6 +75,7 @@ go tool task generate   # regenerate generated files
 go tool task verify     # fmt, go.mod, generated and managed files are current
 go tool task ci         # everything CI runs: verify, check, test
 go tool task test:vz    # vz conformance on a Mac (DISCO_VM_VZ_BASE)
+go tool task test:libkrun  # libkrun conformance and e2e on Linux amd64 with KVM
 go tool task test:e2e:vz
 ```
 

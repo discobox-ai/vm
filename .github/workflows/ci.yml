@@ -62,6 +62,24 @@ jobs:
         with:
           target: build:linux-guest
 
+  # The libkrun driver booted (ADR 26-11-03-530 §9): its runtime and the
+  # guest image's libkrun kernel built and verified from the checkout, then
+  # machinetest and internal/e2e on them. GitHub's own Linux runners expose
+  # /dev/kvm; the first step lets the runner's user open it.
+  libkrun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        with:
+          target: ci:kvm
+      - uses: ./.github/actions/task
+        with:
+          target: test:libkrun
+
   # disco-vm ships on macOS, and vz is cgo: darwin is linted and tested only
   # here.
   macos:

@@ -75,7 +75,7 @@ tasks:
 
   # The Linux guest image's release, on its own line: a linux/vN tag pushes
   # ghcr.io/discobox-ai/disco-vm-linux:vN for both architectures and prints
-  # the digest to pin as vz.DefaultLinuxBase. arm64 builds under QEMU.
+  # the digest to pin as linuximage.DefaultBase. arm64 builds under QEMU.
   release:linux-guest:
     desc: Push the Linux guest image for linux/arm64 and linux/amd64 as ghcr.io/discobox-ai/disco-vm-linux:TAG (CI, on a linux/v* tag; needs GITHUB_TOKEN and GITHUB_ACTOR)
     requires:
@@ -88,7 +88,76 @@ tasks:
       - printenv GITHUB_TOKEN | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - mkdir -p build/linux-guest
       - docker buildx build --platform linux/arm64,linux/amd64 --tag {{.IMAGE}} --push --metadata-file build/linux-guest/metadata.json pkg/guest/linux
-      - 'echo "pin vz.DefaultLinuxBase to {{.IMAGE}}@$(sed -n ''s/.*"containerimage.digest": *"\([^"]*\)".*/\1/p'' build/linux-guest/metadata.json)"'
+      - 'echo "pin linuximage.DefaultBase to {{.IMAGE}}@$(sed -n ''s/.*"containerimage.digest": *"\([^"]*\)".*/\1/p'' build/linux-guest/metadata.json)"'
+
+  # disco-vm's libkrun runtime (pkg/machine/libkrun/runtime, ADR
+  # 26-11-03-530 §3): libkrun, passt, and the launcher, with the libc they
+  # load, verified in its build by running the launcher through its own loader
+  # in an empty filesystem. Name it to the driver with
+  # DISCO_VM_KRUN_RUNTIME=$PWD/build/krun-runtime.
+  # RUNTIME_VERSION (a krun/vN tag, in a release) is what runtime.json says,
+  # dev by default; a release builds with the same one, so it pushes the
+  # build this boots from the cache.
+  build:krun-runtime:
+    desc: Build the libkrun runtime for linux/amd64 into build/krun-runtime
+    vars:
+      VERSION: '{{trimPrefix "krun/" (.RUNTIME_VERSION | default "dev")}}'
+    cmds:
+      - docker buildx build --platform linux/amd64 --build-arg RUNTIME_VERSION={{.VERSION}} --output type=local,dest=build/krun-runtime pkg/machine/libkrun/runtime
+
+  # The libkrun runtime's release, on its own line: a krun/vN tag pushes
+  # ghcr.io/discobox-ai/disco-vm-krun:vN and prints the digest to pin as
+  # libkrun.DefaultRuntime. Run after test:libkrun with RUNTIME_VERSION set
+  # to the tag, it pushes the build that booted, from the cache.
+  release:krun-runtime:
+    desc: Push the libkrun runtime for linux/amd64 as ghcr.io/discobox-ai/disco-vm-krun:TAG (CI, on a krun/v* tag; needs GITHUB_TOKEN and GITHUB_ACTOR)
+    requires:
+      vars: [TAG]
+    vars:
+      VERSION: '{{trimPrefix "krun/" .TAG}}'
+      IMAGE: ghcr.io/discobox-ai/disco-vm-krun:{{trimPrefix "krun/" .TAG}}
+    cmds:
+      - printenv GITHUB_TOKEN | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - mkdir -p build/krun-runtime
+      - docker buildx build --platform linux/amd64 --build-arg RUNTIME_VERSION={{.VERSION}} --tag {{.IMAGE}} --push --metadata-file build/krun-runtime.metadata.json pkg/machine/libkrun/runtime
+      - 'echo "pin libkrun.DefaultRuntime to {{.IMAGE}}@$(sed -n ''s/.*"containerimage.digest": *"\([^"]*\)".*/\1/p'' build/krun-runtime.metadata.json)"'
+
+  # A GitHub-hosted Linux runner has /dev/kvm, but only root may open it, and
+  # restricts user namespaces.
+  ci:kvm:
+    desc: Let every user open /dev/kvm and make user namespaces (CI, on a GitHub-hosted Linux runner; needs sudo)
+    platforms: [linux]
+    cmds:
+      - echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+      - sudo udevadm control --reload-rules
+      - sudo udevadm trigger --name-match=kvm
+      # Ubuntu 24.04 keeps unprivileged users out of user namespaces, which
+      # passt sandboxes itself in.
+      - sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+  # The libkrun driver on this Linux amd64 host with KVM: machinetest and
+  # internal/e2e, on the runtime and the guest image built from the checkout
+  # unless DISCO_VM_KRUN_RUNTIME and DISCO_VM_LIBKRUN_BASE name others
+  # (DISCO_VM_LIBKRUN_BASE=default is the pinned guest image). Each shim, and
+  # every guest's agent, is the static build.
+  test:libkrun:
+    desc: Run the libkrun conformance suite and internal/e2e on this Linux amd64 host (needs /dev/kvm)
+    platforms: [linux/amd64]
+    deps:
+      - build
+      - build:krun-runtime
+      - task: build:linux-guest
+        vars:
+          GUEST_ARCH: amd64
+    env:
+      DISCO_VM_TEST_BINARY: '{{.ROOT_DIR}}/{{.BINARY}}'
+      DISCO_VM_KRUN_RUNTIME:
+        sh: echo "${DISCO_VM_KRUN_RUNTIME:-{{.ROOT_DIR}}/build/krun-runtime}"
+      DISCO_VM_LIBKRUN_BASE:
+        sh: echo "${DISCO_VM_LIBKRUN_BASE:-{{.ROOT_DIR}}/build/linux-guest/amd64}"
+    cmds:
+      - go test -count=1 -timeout 30m -v ./pkg/machine/libkrun
+      - DISCO_VM_DRIVER=libkrun go test -count=1 -timeout 30m -v ./internal/e2e
 
   # disco-vm has nothing long-running to serve, so the loop only rebuilds.
   dev:
