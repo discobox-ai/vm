@@ -29,16 +29,21 @@ func TestConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// no-commit is a driver that does not report Capabilities.Commit, so
+	// the suite checks its refusals and runs everything else fresh (ADR
+	// 26-11-03-868).
 	for _, from := range []struct {
-		name    string
-		install machine.InstallSpec
+		name     string
+		install  machine.InstallSpec
+		noCommit bool
 	}{
-		{"install", machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"}},
-		{"fresh", machine.InstallSpec{}},
+		{"install", machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"}, false},
+		{"fresh", machine.InstallSpec{}, false},
+		{"no-commit", machine.InstallSpec{}, true},
 	} {
 		t.Run(from.name, func(t *testing.T) {
 			dir := t.TempDir()
-			hv := &fake.Hypervisor{Agent: agent, BaseName: "stock"}
+			hv := &fake.Hypervisor{Agent: agent, BaseName: "stock", NoCommit: from.noCommit}
 			newDriver := func(keys machine.KeySource) machine.Driver {
 				driver, err := local.New(machine.Config{
 					Dir:         dir,

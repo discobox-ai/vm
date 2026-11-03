@@ -259,6 +259,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if spec.Isolated || len(spec.Networks) > 0 {
 		return machine.Instance{}, fmt.Errorf("%s: isolation: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
+	if spec.From != nil && !d.hv.Capabilities().Commit {
+		return machine.Instance{}, fmt.Errorf("%s cannot create a VM from another: %w", d.hv.Name(), machine.ErrUnsupported)
+	}
 	if !d.hv.Capabilities().Fences(spec.Egress) {
 		return machine.Instance{}, fmt.Errorf("%s cannot fence an instance's egress to %q: %w", d.hv.Name(), spec.Egress.Allow, machine.ErrUnsupported)
 	}
@@ -592,10 +595,14 @@ func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.B
 // Commit freezes the stopped VM in place: the hypervisor removes its volumes
 // and what only a running VM needs, and its record drops them, so its disk
 // is what VMs are created from. Nothing marks it committed: that is the
-// caller's to record.
+// caller's to record. A hypervisor that does not report
+// Capabilities.Commit is refused, and the VM left as it was.
 func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Instance, error) {
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return machine.Instance{}, err
+	}
+	if !d.hv.Capabilities().Commit {
+		return machine.Instance{}, fmt.Errorf("%s cannot commit a VM: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
 	rec, err := d.readProject(inst.ID)
 	if err != nil {

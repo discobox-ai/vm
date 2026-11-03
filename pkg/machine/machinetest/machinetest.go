@@ -8,10 +8,13 @@
 // is found and listed by its name, which no second VM can take, committed or
 // not; a booted machine's guest operations answer, and exec carries stdin,
 // stdout, stderr, the environment, the working directory, and the exit code;
-// an orderly shutdown stops the machine; a committed VM carries its writes to
-// VMs created from it and to no one else, and a copy of a copy outlives the
-// first's removal, or the driver refuses the removal with ErrInUse; VMs run
-// side by side; Kill always works; a VM fenced at create keeps its fence
+// an orderly shutdown stops the machine; on a driver that reports
+// Capabilities.Commit, a committed VM carries its writes to VMs created from
+// it and to no one else, and a copy of a copy outlives the first's removal,
+// or the driver refuses the removal with ErrInUse, while a driver that does
+// not refuses a commit and a copy and changes nothing (ADR 26-11-03-868),
+// and every other subtest starts from a fresh VM, so needs no commit; VMs
+// run side by side; Kill always works; a VM fenced at create keeps its fence
 // across a boot, or the driver refuses the fence; a started machine is
 // attached to from another call, its service has a URL, and a private URL
 // where it has one, and it is found stopped once its guest powers off; a
@@ -82,6 +85,11 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if len(caps.GuestOS) == 0 {
 			t.Fatal("no guest OS")
 		}
+		// A driver that installs makes VMs only from what it installs, by
+		// copying it (ADR 26-11-03-868 §3).
+		if len(caps.Install) > 0 && !caps.Commit {
+			t.Fatalf("the driver installs %v, and does not report Commit", caps.Install)
+		}
 	})
 	if err := driver.Check(ctx); err != nil {
 		t.Fatalf("check: %v", err)
@@ -99,6 +107,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	var start machine.InstanceSpec
 	switch {
 	case cfg.From != "":
+		if !caps.Commit {
+			t.Fatalf("Config.From %s, on a driver that does not report Commit", cfg.From)
+		}
 		from, err := driver.Instance(ctx, cfg.From)
 		if err != nil {
 			t.Fatalf("committed VM %s: %v", cfg.From, err)
@@ -146,6 +157,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		if spec.From != nil && inst.GuestOS != spec.From.GuestOS {
 			t.Fatalf("created %+v from a %s guest", inst, spec.From.GuestOS)
+		}
+		if !caps.Commit && inst.From != "" {
+			t.Fatalf("a driver that does not commit created %+v from %s", inst, inst.From)
 		}
 		if !caps.SupportsOS(inst.GuestOS) {
 			t.Fatalf("created a %q guest, which the driver does not run", inst.GuestOS)
@@ -199,8 +213,12 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	}
 	marker := strings.TrimRight(cfg.ScratchDir, `/\`) + "/disco-vm-conformance"
 
-	// Boot a VM of the start, write a marker, shut down, and commit.
+	// Boot a VM of the start, write a marker, shut down, and commit. A
+	// driver that does not commit refuses, running or stopped, and refuses a
+	// copy, and the VM is as it was: still found, and booted again with the
+	// marker.
 	var committed machine.Instance
+	wrote := false
 	t.Run("boot-write-commit", func(t *testing.T) {
 		inst := create(t, start)
 		if start.From == nil {
@@ -218,15 +236,59 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("write marker: %v", err)
 		}
 		checkExec(t, m, guestOS, marker)
+		if !caps.Commit {
+			if _, err := driver.Commit(ctx, inst); !errors.Is(err, machine.ErrUnsupported) {
+				t.Fatalf("a driver that does not commit committed a running VM: %v, want ErrUnsupported", err)
+			}
+			if got := readMarker(t, m, marker+"/proof.txt"); got != "committed" {
+				t.Fatalf("a refused commit left the running VM reading %q", got)
+			}
+		}
 		shutdown(t, m)
-		committed = commit(t, inst)
+		if caps.Commit {
+			committed = commit(t, inst)
+			wrote = true
+			return
+		}
+		if _, err := driver.Commit(ctx, inst); !errors.Is(err, machine.ErrUnsupported) {
+			t.Fatalf("a driver that does not commit committed a stopped VM: %v, want ErrUnsupported", err)
+		}
+		if found, err := driver.Instance(ctx, inst.Name); err != nil || found.ID != inst.ID {
+			t.Fatalf("a refused commit: %s is %+v, %v; created %+v", inst.Name, found, err, inst)
+		}
+		copied := of(inst)
+		copied.Name = fmt.Sprintf("conformance-%s-copied", run)
+		if made, err := driver.Create(ctx, copied); !errors.Is(err, machine.ErrUnsupported) {
+			if err == nil {
+				_ = driver.Destroy(context.Background(), made)
+			}
+			t.Fatalf("a driver that does not commit made a copy: %v, want ErrUnsupported", err)
+		}
+		if _, err := driver.Instance(ctx, copied.Name); !errors.Is(err, machine.ErrNotFound) {
+			t.Fatalf("a refused copy left %s: %v, want ErrNotFound", copied.Name, err)
+		}
+		m = boot(t, inst)
+		if got := readMarker(t, m, marker+"/proof.txt"); got != "committed" {
+			t.Fatalf("a VM whose commit was refused reads %q once booted again", got)
+		}
+		shutdown(t, m)
+		wrote = true
 	})
-	if committed.ID == "" {
+	if !wrote {
 		t.FailNow()
+	}
+	// copied is a VM of the committed one, where the driver commits, and of
+	// the start where it does not.
+	copied := start
+	if caps.Commit {
+		copied = of(committed)
 	}
 
 	// A committed VM is listed, and its name is taken, as any VM's.
 	t.Run("a-committed-vm-is-found-and-listed", func(t *testing.T) {
+		if !caps.Commit {
+			t.Skip("the driver does not commit")
+		}
 		list, err := driver.Instances(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -248,9 +310,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	t.Run("an-instance-is-found-listed-and-its-name-taken", func(t *testing.T) {
-		inst := create(t, of(committed))
+		inst := create(t, start)
 		got, err := driver.Instance(ctx, inst.Name)
-		if err != nil || got.ID != inst.ID || got.Name != inst.Name || got.GuestOS != guestOS || (got.From != "" && got.From != committed.Name) {
+		if err != nil || got.ID != inst.ID || got.Name != inst.Name || got.GuestOS != guestOS || (got.From != "" && (start.From == nil || got.From != start.From.Name)) {
 			t.Fatalf("instance %s: %+v, %v; created %+v", inst.Name, got, err, inst)
 		}
 		list, err := driver.Instances(ctx)
@@ -260,7 +322,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if !slices.ContainsFunc(list, func(i machine.Instance) bool { return i.Name == inst.Name && i.ID == inst.ID }) {
 			t.Fatalf("instances do not list %s: %+v", inst.Name, list)
 		}
-		again := of(committed)
+		again := start
 		again.Name = inst.Name
 		if _, err := driver.Create(ctx, again); !errors.Is(err, machine.ErrExists) {
 			t.Fatalf("a second instance named %s: %v, want ErrExists", inst.Name, err)
@@ -285,6 +347,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		spec := machine.InstanceSpec{Name: newName(), CPUs: cfg.CPUs, Memory: cfg.Memory}
 		inst, err := driver.Create(ctx, spec)
 		if errors.Is(err, machine.ErrUnsupported) {
+			if !caps.Commit {
+				t.Fatalf("a driver with no base does not report Commit, so makes no VM at all: %v", err)
+			}
 			t.Skipf("the driver has no base: %v", err)
 		}
 		if err != nil {
@@ -306,9 +371,10 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	// A VM created from the committed one sees the marker; one of the start
-	// does not; both run at once.
+	// does not; both run at once. Where the driver does not commit, both
+	// are of the start.
 	t.Run("copies-are-isolated-and-concurrent", func(t *testing.T) {
-		child := create(t, of(committed))
+		child := create(t, copied)
 		sibling := create(t, start)
 		limit := caps.MaxRunning[guestOS]
 		childM := boot(t, child)
@@ -317,7 +383,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		siblingM := boot(t, sibling)
 
-		if limit != 1 {
+		if limit != 1 && caps.Commit {
 			if got := readMarker(t, childM, marker+"/proof.txt"); got != "committed" {
 				t.Fatalf("a VM created from the committed one reads %q", got)
 			}
@@ -328,7 +394,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	t.Run("kill", func(t *testing.T) {
-		m := boot(t, create(t, of(committed)))
+		m := boot(t, create(t, start))
 		if err := m.Kill(ctx); err != nil {
 			t.Fatalf("kill: %v", err)
 		}
@@ -340,7 +406,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	// An instance fenced at create, to nothing from the start and to a list
-	// from a committed VM, reports the fence as asked, while it runs and once it
+	// from a committed VM where the driver commits, reports the fence as asked, while it runs and once it
 	// stops. A driver refuses each fence it does not hold.
 	t.Run("a-fenced-instance", func(t *testing.T) {
 		held := 0
@@ -349,7 +415,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			allow []string
 		}{
 			{start, nil},
-			{of(committed), []string{"example.com"}},
+			{copied, []string{"example.com"}},
 		} {
 			spec := from.spec
 			spec.Egress = &machine.Egress{Allow: from.allow}
@@ -387,7 +453,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// agent's, where an HTTP request for its health is answered. A driver
 	// that reaches no guest port refuses the dial.
 	t.Run("a-guest-port", func(t *testing.T) {
-		inst := create(t, of(committed))
+		inst := create(t, start)
 		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
 		started, err := driver.Start(startCtx, inst, machine.BootOptions{})
@@ -429,7 +495,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// again is followed.
 	t.Run("a-peer-forward", func(t *testing.T) {
 		if !caps.Ports {
-			spec := of(committed)
+			spec := start
 			spec.Name = fmt.Sprintf("conformance-%s-forwarded", run)
 			spec.Forwards = []machine.Forward{{Port: 7402, Instance: "peer", InstancePort: guest.AgentPort}}
 			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
@@ -454,13 +520,13 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Cleanup(func() { _ = m.Kill(context.Background()) })
 			return m
 		}
-		peer := create(t, of(committed))
+		peer := create(t, copied)
 		pm := start(t, peer)
 		proof := randomHex(8)
 		if err := pm.CopyTo(ctx, marker, tarOf(t, "peer.txt", proof)); err != nil {
 			t.Fatal(err)
 		}
-		spec := of(committed)
+		spec := copied
 		spec.Forwards = []machine.Forward{{Port: 7402, Instance: peer.Name, InstancePort: guest.AgentPort}}
 		inst := create(t, spec)
 		got, err := driver.Instance(ctx, inst.Name)
@@ -508,7 +574,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// where it has any, and a guest that powers itself off while nothing
 	// watches is found stopped.
 	t.Run("start-attach-and-stop", func(t *testing.T) {
-		inst := create(t, of(committed))
+		inst := create(t, start)
 		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
 		started, err := driver.Start(startCtx, inst, machine.BootOptions{})
@@ -641,10 +707,10 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	// A data volume is the instance's: empty at Create, kept across a stop
-	// and a boot, gone with the instance, and never in a committed VM. A
-	// driver that attaches none refuses it.
+	// and a boot, gone with the instance, and never in a committed VM, where
+	// the driver commits. A driver that attaches none refuses it.
 	t.Run("a-data-volume", func(t *testing.T) {
-		spec := of(committed)
+		spec := start
 		spec.Data = &machine.DataVolume{}
 		if !caps.Attaches(machine.VolumeData) {
 			spec.Name = fmt.Sprintf("conformance-%s-data", run)
@@ -671,7 +737,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("the data volume reads %q after a stop and a boot", got)
 		}
 		shutdown(t, m)
-		gone := of(committed)
+		gone := start
 		gone.Name, gone.Data = fmt.Sprintf("conformance-%s-data-gone", run), &machine.DataVolume{}
 		destroyed, err := driver.Create(ctx, gone)
 		if err != nil {
@@ -693,6 +759,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		m = boot(t, reborn)
 		absent(t, m, dir+"/data.txt", "a new instance of a destroyed one's name")
 		shutdown(t, m)
+		if !caps.Commit {
+			return
+		}
 		img := commit(t, inst)
 		again := of(img)
 		again.Data = &machine.DataVolume{}
@@ -711,11 +780,12 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// which only a save moves: a write is seen by no live peer and by no
 	// later instance until it is saved; a guarded save is refused once the
 	// key has moved; another key sees nothing; and an instance keeps its
-	// clone once its key is removed. A driver that attaches none refuses it.
+	// clone once its key is removed; and a committed VM has no cache, where
+	// the driver commits. A driver that attaches none refuses it.
 	t.Run("a-cache-volume", func(t *testing.T) {
 		key, other := "conformance-"+run, "conformance-"+run+"-other"
 		withCache := func(key string) machine.InstanceSpec {
-			spec := of(committed)
+			spec := start
 			spec.Cache = &machine.CacheVolume{Key: key}
 			return spec
 		}
@@ -818,6 +888,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("a clone of %s reads %q", other, got)
 		}
 		shutdown(t, m)
+		if !caps.Commit {
+			return
+		}
 		img := commit(t, second)
 		bare := create(t, of(img))
 		if got, err := driver.Instance(ctx, bare.Name); err != nil || got.Cache != nil || got.Data != nil {
@@ -833,6 +906,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// ErrInUse instead. Last, since it removes the VM the others are made
 	// from.
 	t.Run("a-copy-of-a-copy", func(t *testing.T) {
+		if !caps.Commit {
+			t.Skip("the driver does not commit")
+		}
 		inst := create(t, of(committed))
 		m := boot(t, inst)
 		if err := m.CopyTo(ctx, marker, tarOf(t, "second.txt", "second")); err != nil {

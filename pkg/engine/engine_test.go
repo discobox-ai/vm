@@ -97,3 +97,44 @@ func withFrom(opts engine.CreateOptions, from string) engine.CreateOptions {
 	opts.From = from
 	return opts
 }
+
+// noCommit is a driver that does not report Capabilities.Commit, over one
+// that would commit, so a refusal proves the engine never asked it.
+type noCommit struct{ machine.Driver }
+
+func (n noCommit) Capabilities() machine.Capabilities {
+	caps := n.Driver.Capabilities()
+	caps.Commit, caps.Install = false, nil
+	return caps
+}
+
+// An engine whose driver does not report Commit refuses a commit and a
+// copy before it reaches the driver: the VM keeps its data volume, and
+// nothing is made (ADR 26-11-03-868).
+func TestCommitNeedsADriverThatCommits(t *testing.T) {
+	ctx := context.Background()
+	d, err := local.New(machine.Config{Dir: t.TempDir()}, &fake.Hypervisor{BaseName: "stock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := engine.Open(noCommit{d}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm, err := e.Create(ctx, engine.CreateOptions{Name: "vm", Data: &machine.DataVolume{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Commit(ctx, vm); !errors.Is(err, machine.ErrUnsupported) || !strings.Contains(err.Error(), "fake") {
+		t.Fatalf("commit on a driver that does not: %v, want ErrUnsupported naming the driver", err)
+	}
+	if got, err := e.Get(ctx, "vm"); err != nil || got.Data == nil {
+		t.Fatalf("a refused commit changed the VM: %+v, %v", got, err)
+	}
+	if _, err := e.Create(ctx, engine.CreateOptions{Name: "copy", From: "vm"}); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("a copy on a driver that does not commit: %v, want ErrUnsupported", err)
+	}
+	if list, err := e.List(ctx); err != nil || len(list) != 1 {
+		t.Fatalf("VMs after a refused copy, vm alone: %+v, %v", list, err)
+	}
+}

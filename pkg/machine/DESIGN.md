@@ -44,6 +44,7 @@ a `Capabilities` field, never a faked method:
 | agent (`disco-vm guest` in the guest) | yes, from Install | yes: macOS from Install; Linux handed it in the initrd at every boot | **no**: boxd's Exec | yes, from Create of a base | yes |
 | install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest` | **none** | **none** | the host's |
 | base (`Config.Base`: what a fresh VM starts from) | **none** | Linux: a guest image, `DefaultLinuxBase` by default | an image, boxd's default by default | an image; **none** unless configured | a name, `scratch` by default |
+| commit (`Commit`: `Driver.Commit` and `InstanceSpec.From`) | yes | yes | yes | yes | yes, unless made with `NoCommit` (a test option) |
 | a committed VM (`Commit`) | its record and disk, left in place | its record and bundle, left in place | a snapshot `dvm-<project>--<name>`; the machine deleted | an image `disco-vm-vm:<project>--<name>`; the container removed | its record and tree, left in place |
 | disks chain below the seam (`local.Hypervisor.Chains`) | yes: a copy is a differencing VHDX over the committed VM's | no | no | no | no |
 | keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | issue, scope `project` |
@@ -54,6 +55,21 @@ a `Capabilities` field, never a faked method:
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
 ([below](#every-copy-is-cold-and-a-vm-is-made-fast-by-what-is-in-it)).
+
+## Commit is a capability, and a driver without it makes every VM fresh
+
+`Capabilities.Commit` reports `Driver.Commit` and `InstanceSpec.From`
+together, since neither is any use without the other (ADR 26-11-03-868). It
+is reported, never probed: a pool that would provision a VM to commit it
+reads it first, since finding out by trying costs a whole provisioning. A
+driver without it keeps `Commit` on its interface and returns
+`ErrUnsupported`, leaving the VM as it was, running or stopped, with its
+volumes; it refuses `Create` with a `From`, and makes nothing; and no VM it
+lists has a `From`. `Destroy` is the same on every driver, and returns only
+once the provider no longer has the VM. A driver that installs, or has no
+base, makes VMs only by copying, so reports `Commit`; `machinetest` asserts
+both. Every driver reports it today; fake's `NoCommit` is the one without,
+so the refusals, and the suite's paths that skip a commit, run on every OS.
 
 ## A driver is given its key, and issues keys that cannot issue
 

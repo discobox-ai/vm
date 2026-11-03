@@ -38,7 +38,7 @@ type createFlags struct {
 }
 
 func (f *createFlags) register(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.from, "from", "", "a committed VM to copy (default: a fresh VM of the driver's base, $DISCO_VM_BASE)")
+	cmd.Flags().StringVar(&f.from, "from", "", "a committed VM to copy, on a driver that commits (default: a fresh VM of the driver's base, $DISCO_VM_BASE)")
 	f.fromSet = func() bool { return cmd.Flags().Changed("from") }
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "vCPUs (default: the driver's)")
 	cmd.Flags().StringVar(&f.memory, "memory", "", "memory, e.g. 8GiB (default: the driver's)")

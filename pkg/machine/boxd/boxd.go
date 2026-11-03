@@ -82,6 +82,7 @@ func (*Driver) Name() string { return "boxd" }
 func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS:   []machine.OS{machine.Linux},
+		Commit:    true,
 		Keys:      keyCapabilities,
 		Isolation: true,
 		Egress:    []machine.EgressFence{machine.EgressNone, machine.EgressAllow},
