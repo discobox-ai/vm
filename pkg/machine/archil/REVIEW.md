@@ -38,3 +38,8 @@
   with it. A chunk read from a pipe with BusyBox's `head` takes more than it
   asked for (stdio), so copy out reads a regular file with `dd`. Run a
   changed script on an Alpine guest.
+- **A data disk with no sandbox is a VM, never a leftover.** An upgrade
+  deletes the sandbox before it makes it again, and one stopped between
+  leaves only the disk: listing, Create (`ErrExists`), Start, and Destroy
+  treat it as that VM, and nothing removes it as stale. Create once deleted
+  such a disk, which would now delete the data of a VM mid-upgrade.

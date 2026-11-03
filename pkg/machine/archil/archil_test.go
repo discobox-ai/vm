@@ -37,6 +37,17 @@ func TestNames(t *testing.T) {
 		if got := d.nameOf(d.dataDiskName(name)); got != "" {
 			t.Errorf("the data volume %s read as VM %q", d.dataDiskName(name), got)
 		}
+		if got := d.nameOfDisk(d.dataDiskName(name)); got != name {
+			t.Errorf("nameOfDisk(%s) = %q", d.dataDiskName(name), got)
+		}
+		if got := testDriver("p").nameOfDisk(d.dataDiskName(name)); got != "" {
+			t.Errorf("project p reads p1's disk %s as %q", d.dataDiskName(name), got)
+		}
+	}
+	for _, dk := range []string{"dvm-p1--dev", "dvm-p1--dev--data--data", "dvm-p1-0a1b2c3d-data", "other--data"} {
+		if got := d.nameOfDisk(dk); got != "" {
+			t.Errorf("disk %s read as VM %q's data volume", dk, got)
+		}
 	}
 	for _, sb := range []string{"dvm-p1-0a1b2c3d", "dvm-p1--i--dev--0a1b2c3d", "dvm-p1--", "other"} {
 		if got := d.nameOf(sb); got != "" {

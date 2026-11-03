@@ -17,10 +17,17 @@ the guest and nothing on the host:
   `dvm-<project>-<key>`, is not listed.
 - **The data volume is the disk `dvm-<project>--<name>--data`**, made once
   the name is taken and mounted at each start. Archil answers a disk of a
-  name it has rather than making one, so Create first removes one an earlier
-  VM of the name left, whether or not the new VM has a data volume, since
-  Start would mount it. A sandbox's name is at most 63 characters, so a
-  project and a name are at most 57 together.
+  name it has rather than making one, so a data disk with no sandbox is a
+  VM: listed, and Create of its name is `ErrExists`. A sandbox's name is at
+  most 63 characters, so a project and a name are at most 57 together.
+- **Upgrade** (ADR 26-11-03-782) deletes the stopped VM's sandbox and makes
+  it again under its name, fresh or a fork, at its size and fence, after
+  checking all that could refuse it. One stopped in between is its data disk
+  alone, listed with no size and the fence `none`: Start refuses it, Destroy
+  removes the disk, and Upgrade again finishes it with the Instance's size
+  and fence. A VM with no data disk is gone if its upgrade fails or stops
+  after the delete: the one exception to ADR 26-11-03-782 §3. A sandbox not found by an Instance's ID is found by its name,
+  so an Instance from before an upgrade still names the VM.
 - **A fresh VM** is a sandbox of `Config.Base`, an OCI image, or of
   Archil's default image. **A VM created from another** is a fork of its
   sandbox, which must be stopped and have no mounts, since a fork boots with

@@ -42,6 +42,16 @@ func (d *Driver) nameOf(sandboxName string) string {
 	return name
 }
 
+// nameOfDisk is the VM a data disk is the volume of, or "" for a disk that
+// is none of the project's VMs'.
+func (d *Driver) nameOfDisk(diskName string) string {
+	base, ok := strings.CutSuffix(diskName, dataSuffix)
+	if !ok {
+		return ""
+	}
+	return d.nameOf(base)
+}
+
 // checkName refuses a VM name whose sandbox's name would be longer than
 // Archil takes.
 func (d *Driver) checkName(name string) error {

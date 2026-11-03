@@ -53,7 +53,7 @@ a `Capabilities` field, never a faked method:
 | egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | none | `none` and `allow`: `network.egress`, default `deny` |
 | private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | the URL (a shared loopback) | the URL |
 | volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<project>--<name>--data` |
-| upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | a new root beside the old, its volumes moved into it | ⬜ |
+| upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
 ([below](#every-copy-is-cold-and-a-vm-is-made-fast-by-what-is-in-it)).
