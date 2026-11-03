@@ -2,7 +2,8 @@
 
 - **Status**: Accepted (supersedes 26-10-15-882; and in part 26-10-23-410,
   its images and tags, and 26-10-15-833, an instance run from a base the
-  caller names)
+  caller names; its §4 requiring `Commit` and `InstanceSpec.From` of every
+  driver superseded by 26-11-03-868)
 - **Date**: 2026-11-03
 - **Supersedes**: [26-10-15-882](26-10-15-882-a-snapshot-consumes-its-instance.md)
 
