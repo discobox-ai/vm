@@ -80,7 +80,9 @@ func commitCommand(g *globals) *cobra.Command {
 removed, and VMs are created from it with ` + "`create --from VM`" + `. Never start
 it again; to change it, create a VM from it, change that, and commit it under
 a new name. Some drivers cannot tell a committed VM from a stopped one, so
-keep your own record of which VMs you committed.`,
+keep your own record of which VMs you committed. A driver that cannot commit
+(` + "`disco-vm info`" + ` reports "commit": false) refuses it, and refuses --from on
+create and run too.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return eachInstance(cmd.Context(), g, args, func(e *engine.Engine, inst engine.Instance) error {

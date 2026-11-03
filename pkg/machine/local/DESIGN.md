@@ -5,7 +5,9 @@ hcs, vz, and fake share (ADR 26-10-23-417). Each of them is a
 `local.Hypervisor`, which installs, copies, boots, freezes, and destroys a
 disk in a directory it is given, says whether its disks chain, and has a
 base or none (`Base`, from `machine.Config.Base`); this package keeps
-everything else.
+everything else. It refuses what the hypervisor's `Capabilities` leave
+out, before the hypervisor is asked: a commit and a copy where it does not
+report `Commit` (fake's `NoCommit`; ADR 26-11-03-868).
 
 ## A directory of its own is the store
 

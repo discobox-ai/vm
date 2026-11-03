@@ -93,14 +93,20 @@ three ways:
   `$DISCO_VM_BASE` on the command line), never a create's. A driver with no
   base (hcs, docker unconfigured) refuses it with `ErrUnsupported`.
 - **From a committed VM** (`CreateOptions.From`; `create NAME --from VM`), a
-  copy of its disk. A running VM is refused as a `From`.
+  copy of its disk, on a driver that reports `Capabilities.Commit`. A
+  running VM is refused as a `From`.
 - **By installing** (`Engine.Install`, `install NAME`), on a driver that
   lists `Capabilities.Install` (hcs, vz, fake): an OS from media, with the
   agent, this binary, baked in, left committed.
 
 `Engine.Commit` (`commit VM`) freezes a stopped VM under its name: its data
 volume and cache clone go, and its disk is what VMs are created from. A
-running VM is refused. To change a committed VM, create a VM from it, change
+running VM is refused. On a driver that does not report
+`Capabilities.Commit` (ADR 26-11-03-868), the engine refuses `Commit` and a
+`From` with an error wrapping `machine.ErrUnsupported` that names the
+driver, before it asks the driver, as it refuses `Isolated` and `Egress`; so
+do `commit`, and `--from` on `create` and `run`. A caller there makes every
+VM fresh, and `info` reports `"commit": false` up front. To change a committed VM, create a VM from it, change
 that, and commit it under a new name; versions are names (`app-v1`,
 `app-v2`), and a caller that wants a "current" one keeps its own pointer.
 

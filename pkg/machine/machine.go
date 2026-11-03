@@ -102,7 +102,16 @@ type Capabilities struct {
 	// Install is every guest OS the driver makes a committed VM of from
 	// installation media (Install). An OS it boots but does not install
 	// comes from its base (Config.Base), or from a VM committed from one.
+	// A driver that installs any reports Commit.
 	Install []OS `json:"install,omitempty"`
+	// Commit reports that the driver commits a stopped VM (Driver.Commit)
+	// and creates VMs from a committed one (InstanceSpec.From), which go
+	// together (ADR 26-11-03-868). A driver without it refuses both with
+	// ErrUnsupported and changes nothing, so a caller plans without
+	// trying: a pool on such a driver makes every VM fresh. A driver that
+	// installs (Install) or has no base reports it, since it makes VMs no
+	// other way.
+	Commit bool `json:"commit"`
 	// Keys is whether the driver issues keys (IssueKey), and the narrowest
 	// scope one reaches.
 	Keys KeyCapabilities `json:"keys"`
@@ -320,7 +329,8 @@ type InstanceSpec struct {
 	// From is the committed VM the new one is a copy of, as the driver
 	// found it; its guest OS is the new VM's. That it was committed is the
 	// caller's to know: a driver whose provider cannot tell (Archil) copies
-	// any stopped VM. Nil is a fresh VM, from the
+	// any stopped VM. A driver that does not report Capabilities.Commit
+	// refuses it with ErrUnsupported. Nil is a fresh VM, from the
 	// driver's base (Config.Base), whose guest OS is the base's; a driver
 	// with no base refuses it with ErrUnsupported.
 	From *Instance
@@ -370,8 +380,8 @@ type Instance struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	// From is the name of the committed VM this one was created from, where
-	// the provider says; empty for a fresh VM, an install, or where it does
-	// not.
+	// the provider says; empty for a fresh VM, an install, where it does
+	// not, and always on a driver that does not report Capabilities.Commit.
 	From    string    `json:"from,omitempty"`
 	GuestOS OS        `json:"guestOS"`
 	CPUs    int       `json:"cpus,omitempty"`
@@ -481,9 +491,11 @@ type Driver interface {
 	// spec.From, or a fresh one from the driver's base, that boots from
 	// power-off with a machine identity of its own. A name the project
 	// already has, committed or not, is ErrExists; a From the provider no
-	// longer has is ErrNotFound, and a running one is refused; a fresh VM
-	// on a driver with no base is ErrUnsupported. Its data volume is made empty, and its cache
-	// volume a clone of the key's current generation.
+	// longer has is ErrNotFound, and a running one is refused; a From on a
+	// driver that does not report Capabilities.Commit, and a fresh VM on a
+	// driver with no base, are ErrUnsupported, and make nothing. Its data
+	// volume is made empty, and its cache volume a clone of the key's
+	// current generation.
 	Create(ctx context.Context, spec InstanceSpec) (Instance, error)
 	// Instance is the project's VM of a name, committed or not, or
 	// ErrNotFound.
@@ -523,7 +535,9 @@ type Driver interface {
 	// caller records that it is committed and never starts it again: a
 	// driver whose provider keeps a committed VM apart (docker's image,
 	// boxd's snapshot) refuses to, and one that cannot tell (Archil) does
-	// not.
+	// not. A driver that does not report Capabilities.Commit returns
+	// ErrUnsupported and leaves the VM as it was, running or stopped, with
+	// its volumes (ADR 26-11-03-868).
 	Commit(ctx context.Context, inst Instance) (Instance, error)
 	// Service is the instance's service. A URL that exists only while the
 	// instance runs (a port the daemon publishes, a shim's) is asked for

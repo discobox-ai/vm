@@ -103,10 +103,15 @@ tasks:
     cmds:
       - ./{{.BINARY}} {{.CLI_ARGS}}
 
+  # internal/e2e runs a second time on a fake driver that does not commit
+  # (ADR 26-11-03-868), so the suite's no-commit paths run on every OS. Only
+  # the binary it runs reads the variable, which go test's cache does not
+  # see, hence -count=1.
   test:
     desc: Run tests with the race detector
     cmds:
       - go test {{.RACE}} {{.PACKAGES}}
+      - DISCO_VM_FAKE_NO_COMMIT=1 go test -count=1 {{.RACE}} ./internal/e2e
 
   # The vz conformance suite on real hardware. DISCO_VM_VZ_BASE names a
   # committed macOS VM (an install), and DISCO_VM_VZ_LINUX_BASE the base fresh
