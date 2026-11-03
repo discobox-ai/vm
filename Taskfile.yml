@@ -182,20 +182,6 @@ tasks:
       - go test {{.RACE}} {{.PACKAGES}}
       - DISCO_VM_FAKE_NO_COMMIT=1 go test -count=1 {{.RACE}} ./internal/e2e
 
-  # CI's windows job: test with Go's own build cache. Depot's GOCACHEPROG
-  # races vet.exe on Windows (#41; see ci.yml). The job clears it, and an empty
-  # value falls back to a go.env file, so check what Go actually uses.
-  test:local-cache:
-    desc: Run tests, failing first if Go uses a GOCACHEPROG
-    cmds:
-      - cmd: |
-          prog="$(go env GOCACHEPROG)"
-          if [ -n "$prog" ]; then
-            echo "GOCACHEPROG is still set: $prog" >&2
-            exit 1
-          fi
-      - task: test
-
   # The vz conformance suite on real hardware. DISCO_VM_VZ_BASE names a
   # committed macOS VM (an install), and DISCO_VM_VZ_LINUX_BASE the base fresh
   # Linux VMs start from (default, a guest image's reference, or a directory
