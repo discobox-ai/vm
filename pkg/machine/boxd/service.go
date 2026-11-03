@@ -27,7 +27,7 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 	}
 	def, err := defaultProxy(ctx, api, inst.ID)
 	if err != nil {
-		return machine.Service{}, err
+		return machine.Service{}, d.refuseCommitted(ctx, api, inst, err)
 	}
 	if def.GetDomain() == "" {
 		return machine.Service{}, fmt.Errorf("boxd: %s's proxy has no domain", d.machineName(inst.Name))

@@ -1,7 +1,6 @@
 # pkg/engine
 
-Images, instances, and their lifecycle, above the driver seam, with no state
-of its own (see the root [DESIGN.md](../../DESIGN.md)). The engine is OS-neutral:
+VMs and their lifecycle, above the driver seam, with no state of its own (see the root [DESIGN.md](../../DESIGN.md)). The engine is OS-neutral:
 everything it does, it does through `machine.Driver` and `machine.Guest`, and
 the fake driver tests all of it on every OS.
 
@@ -33,13 +32,13 @@ binary, and its VMs outlive it.
 
 ## Every instance has one service, at one HTTP URL, and a private one
 
-The driver, not the caller or the image, picks where an instance's one
+The driver, not the caller or a committed VM, picks where an instance's one
 service listens in the guest (`Driver.Service`, `machine.Service`;
 [ADR 0005](../../docs/adr/0005-every-instance-has-one-http-url-and-the-driver-picks-its-port.md)):
 `vsock:7302` on vz and hcs (`guest.ServicePort`, listed in every hcs VM's
 ServiceTable), `tcp:0.0.0.0:7302` on boxd and docker, and a loopback port
-picked at Create on fake, whose guests share the host's. An image declares
-no service.
+picked at Create on fake, whose guests share the host's. A committed VM
+declares no service.
 
 At every start, before it returns, the engine writes that address with the
 guest's CopyTo to its `guest.ServiceFile` (`/var/lib/disco-vm/service`, or
@@ -81,112 +80,75 @@ refuse it. Where vz and hcs give no private URL, a guest reaches a peer's
 port through a `Forward` to that instance instead
 ([pkg/machine](../machine/DESIGN.md#ports-not-guids)).
 
-## An image is a snapshot, and stands alone
+## There are only VMs, and a VM is made fresh or from a committed VM
 
-An image is an immutable, committed disk state, which its driver keeps ([ADR
-26-10-23-410](../../docs/adr/26-10-23-410-images-are-snapshots-and-stand-alone.md)).
-There is no image build. An image is made two ways, each from a guest shut
-down in order:
+disco-vm has one kind of thing, a VM, named in its project, unique across
+every VM, committed or not ([ADR
+26-11-03-606](../../docs/adr/26-11-03-606-disco-vm-has-only-vms-and-a-vm-is-made-fresh-or-from-a-committed-vm.md)).
+There are no images, image IDs, tags, or bases a caller names. A VM is made
+three ways:
 
-- **`snapshot`** (`Engine.Snapshot`, `disco-vm snapshot INSTANCE
-  [NAME[:TAG]]`): a stopped instance's disk, committed (`Driver.Commit`). A
-  snapshot consumes the instance, so an image is always cut the same way; to
-  go on from one, create an instance of it (ADR 26-10-15-882).
-- **`install`** (`Engine.Install`, `disco-vm install`), on a driver that
+- **Fresh** (`Engine.Create` with no `From`; `create NAME`, `run NAME`),
+  from the driver's base: its configuration (`machine.Config.Base`,
+  `$DISCO_VM_BASE` on the command line), never a create's. A driver with no
+  base (hcs, docker unconfigured) refuses it with `ErrUnsupported`.
+- **From a committed VM** (`CreateOptions.From`; `create NAME --from VM`), a
+  copy of its disk. A running VM is refused as a `From`.
+- **By installing** (`Engine.Install`, `install NAME`), on a driver that
   lists `Capabilities.Install` (hcs, vz, fake): an OS from media, with the
-  agent, this binary, baked in. A driver that does not has bases instead
-  ([below](#an-instance-runs-straight-from-a-drivers-base)).
+  agent, this binary, baked in, left committed.
 
-What a driver commits:
+`Engine.Commit` (`commit VM`) freezes a stopped VM under its name: its data
+volume and cache clone go, and its disk is what VMs are created from. A
+running VM is refused. To change a committed VM, create a VM from it, change
+that, and commit it under a new name; versions are names (`app-v1`,
+`app-v2`), and a caller that wants a "current" one keeps its own pointer.
 
-- hcs: a VHDX, a differencing one for a snapshot
-- vz: an APFS-cloned bundle
-- boxd: a boxd snapshot, `dvm-<project>--<image ID>`
-- docker: a Docker image committed from the stopped guest,
-  `disco-vm-layer:<project>--<image ID>`
-- fake: a directory tree
+**That a VM is committed is the caller's to record.** Not every provider
+can tell: Archil keeps a committed sandbox as a stopped one. So
+`machine.Instance` carries no committed mark, `ls` shows a committed VM as
+stopped, and the caller never starts one again. A driver refuses only what
+its provider cannot do (docker's committed image and boxd's snapshot have no
+machine to run: `machine.ErrCommitted`), or what would corrupt a disk (hcs
+boots no VM another VM's disk differences over: `machine.ErrInUse`).
 
-An image's ID is random: nothing reproducible made it, and nothing is
-cached. Above the seam every image stands alone: it has no parent, an
-instance runs from one image, and removing one never touches another. A
-driver whose disks chain below it keeps that to itself
-([local](../machine/local/DESIGN.md)): hcs records each snapshot's parent and
-refuses to delete a disk another image's differences over
-(`machine.ErrInUse`).
+What a driver keeps for a committed VM:
 
-Tags name images, and the driver keeps them too: a second snapshot on boxd,
-`dvm-<project>--<image ID>--t-<ref>`, the ref's punctuation escaped; an image
-tag `disco-vm/<project>/<ref>` on docker; a file on hcs, vz, and fake. A ref
-is Docker's grammar (`engine.ValidateRef`). An image with no tag is listed
-by `images` as `<none>`, and `rmi` takes its ID. `rmi` untags, then deletes
-the image if nothing else tags it or was made from it, as `docker rmi` does;
-a listing that fails is no answer, and never read as unused. An image the
-driver keeps (`ErrInUse`) is left untagged, and `rmi` says why. Installation
-media a driver downloads itself (`--media latest`) is not an image; a local
-driver keeps it in `cache/<driver>/` under its directory, so it is fetched
-once per host.
+- hcs, vz, fake: its record and disk, left where they are
+- boxd: a snapshot `dvm-<project>--<name>`, and the machine deleted
+- docker: a Docker image `disco-vm-vm:<project>--<name>`, and the container
+  removed
 
-What the driver keeps can be deleted behind disco-vm's back (`boxd snap rm`,
-`docker rmi`, an image's directory), and an image that is gone is not found.
-A boxd snapshot and a Docker image are whole, so an image snapshotted from
-one that was lost still boots. A local image whose recorded parent is gone
-is not found either (`local.Driver.Image`); `images` still lists it, so
-`rmi` removes it.
+`rm` removes a committed VM like any. On docker, boxd, vz, and fake a VM
+created from it is a disk of its own, and outlives it. On hcs, whose copies
+are differencing disks over it, the removal is refused with `ErrInUse` while
+a VM created from it exists. Installation media a driver downloads itself
+(`--media latest`) is not a VM; a local driver keeps it in `cache/<driver>/`
+under its directory, so it is fetched once per host.
 
 ## A project scopes everything, and is in every name
 
 `--project` (`$DISCO_VM_PROJECT`, `machine.Config.Project`; `default` when not
 given; ADR 0004) names the project a command works in. A project is 1 to 32
 lowercase letters, digits, and single hyphens. A driver is made for one
-project, and lists and makes only its images, tags, and instances: a
-project's `images`, `ls`, names, and tags are its own, and every image ID is
-random, so two projects never share one.
+project, and lists and makes only its VMs: a project's `ls` and names are its own.
 
 The driver puts the project in the name of everything it makes
 (`machine.ResourcePrefix`): boxd's machines and snapshots and docker's
-containers are `dvm-<project>--...`, docker's images
-`disco-vm-layer:<project>--...` and tags `disco-vm/<project>/...`; a local
-driver records it in each `layer.json` and `instance.json`. `--` cannot occur
+containers are `dvm-<project>--...`, docker's committed images
+`disco-vm-vm:<project>--...` and readied bases `disco-vm-base:<project>--...`;
+a local driver records it in each `instance.json`. `--` cannot occur
 in a project, so a name belongs to exactly one project.
 
 There are no orphans in disco-vm (ADR 26-10-23-417): everything under a
 project's names is that project's, and is listed. A program that embeds the
 engine and owns a set of its own (discobox's control plane) reaps against it,
-as its pool agent reaps Docker: list the project's instances and images,
+as its pool agent reaps Docker: list the project's VMs,
 remove what it does not hold, treat a failed listing as no answer, and spare
 what is younger than a grace period. A driver's own short-lived resources are listed as
-instances while they run (docker's `base-<random>` readying container, boxd's
-`save-<random>` machine), and a readying takes minutes, so the grace period
+VMs while they run (docker's `base-<random>` readying container), and a
+readying takes minutes, so the grace period
 is longer than that.
-
-## An instance runs straight from a driver's base
-
-A driver may have what an instance can run from with no image: a base
-(`machine.Base`; ADR 26-10-15-833). `Driver.Bases` lists what it can, and
-`Driver.Base` finds one by name or ID, so a driver can have bases it cannot
-list:
-
-- **boxd**: its default image (`GetConfig`), and every ready snapshot in the
-  account whose name does not start with `dvm-`, so nothing disco-vm made, in
-  any project, is a base. Create makes the machine from the image
-  (`CreateVm`) or the snapshot (`CreateVmFromSnapshot`), at the size asked
-  for, and stops it.
-- **docker**: any image the daemon has or its registry answers for
-  (`/distribution`), found without a pull; it lists none. Create pulls it,
-  adds systemd and the agent, shifts it into the guest's uids, and commits
-  that as the instance's own Docker image, which Destroy removes; so every
-  instance of a registry image readies it again (ADR 26-10-23-410), and a
-  snapshot of one does not need to.
-- hcs and vz have none; fake has the catalog a test gives it.
-
-`images` lists what `Bases` lists on rows of its own, after the images, with
-`-` for its ID. A ref goes to the images first, a tag or an image ID, then to
-`Driver.Base` (`Engine.ResolveBase`), so a tag of the same name hides a base
-and its ID still reaches it. `create` and `run` of a base make an instance
-of the base instead of an image (`InstanceSpec.Base`), cold. `snapshot` of
-such an instance is an image like any other. A base is not an image: `tag`
-and `rmi` refuse it (`ErrBase`), since disco-vm never deletes what it did
-not make.
 
 ## An instance's volumes, and a cache saved only on request
 
@@ -197,12 +159,12 @@ cache volume (`--cache KEY`, `--cache-size SIZE`), at
 `Engine.Create` refuses, with `ErrUnsupported`, a volume the driver does not
 list in `Capabilities.Volumes`, and never makes a directory on the root disk
 in its place; it refuses a negative size and a key that is not one
-(`machine.ValidateCacheKey`), before it resolves the image.
+(`machine.ValidateCacheKey`), before it finds the `From`.
 
 `Engine.SaveCache` (`cache save INSTANCE [KEY]`) publishes a stopped
 instance's cache volume as a new generation of a key, the instance's own by
 default, and keeps the instance; one not found stopped is refused, as
-`Snapshot` refuses it. A save to the key the instance started from is
+`Commit` refuses it. A save to the key the instance started from is
 guarded by the generation it was cloned from (`Instance.Cache.Generation`),
 so a run that began from an older cache never replaces a newer one; another
 key is saved unguarded, and `SaveOptions.Force` (`--force`) drops the guard.
@@ -212,9 +174,8 @@ key has moved to its own first save: force it, or save from a new instance.
 
 ## disco-vm does not converge guests
 
-Deciding what an image holds is a client's, above
-disco-vm ([ADR 26-10-15-703](../../docs/adr/26-10-15-703-disco-vm-does-not-converge-guests.md)).
+Deciding what a committed VM holds is a client's, above disco-vm ([ADR
+26-10-15-703](../../docs/adr/26-10-15-703-disco-vm-does-not-converge-guests.md)).
 disco-vm offers what a client converges with: exec and copy
-(`Engine.Guest`), `Engine.Stop`, and `Engine.Snapshot`. A converged image is
-an instance that was created, changed through exec and copy, stopped, and
-snapshotted.
+(`Engine.Guest`), `Engine.Stop`, and `Engine.Commit`. A converged VM is one
+that was created, changed through exec and copy, stopped, and committed.

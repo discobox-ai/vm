@@ -4,26 +4,27 @@
 Above the `machine.Driver` seam, the driver needed only neutral additions:
 for windows `BootOptions.Title`, `InstallSpec.GUI`, and `machine.Main` (see
 GUI). `vz.Hypervisor` is a `local.Hypervisor`: `pkg/machine/local` keeps its
-images, tags, and instances in its directory (`--root`, `$DISCO_VM_ROOT`, or
-`~/Library/Application Support/disco-vm`), gives it a cache there for media
-and Linux guest images (`<root>/cache/vz`, see Install and
-[Linux guests](#linux-guests)), and runs each started instance
-under a shim, since a VM dies with the process that made it (ADR
-26-10-23-417).
+VMs, committed or not (ADR 26-11-03-606), in its directory (`--root`,
+`$DISCO_VM_ROOT`, or `~/Library/Application Support/disco-vm`), gives it a
+cache there for media and Linux guest images (`<root>/cache/vz`, see Install
+and [Linux guests](#linux-guests)), and runs each started VM under a shim,
+since a VM dies with the process that made it (ADR 26-10-23-417).
 
 **Done means:**
 
 1. `machinetest.Run` passes against the vz driver on an Apple silicon Mac
-   (`go tool task test:vz`: `DISCO_VM_VZ_BASE` names an installed image's
-   ID, and `DISCO_VM_TEST_BINARY` the signed disco-vm each started
-   instance's shim runs).
+   (`go tool task test:vz`: `DISCO_VM_VZ_BASE` names a committed macOS VM
+   that `disco-vm install` made, and `DISCO_VM_TEST_BINARY` the signed
+   disco-vm each started VM's shim runs).
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=vz` (`go tool task test:e2e:vz`).
-3. `disco-vm install` makes a macOS image (media `latest`), and an instance of
-   it runs, is shaped through `exec`, and is snapshotted.
+3. `disco-vm install NAME` makes a committed macOS VM (media `latest`), and a
+   VM created from it runs, is shaped through `exec`, and is committed.
 4. A Linux guest boots beside a macOS one, with no network device, and its
    caller reaches a vsock port in it (issue #27): `go tool task test:vz` with
-   `DISCO_VM_VZ_LINUX_BASE` naming a Linux base runs `TestConformanceLinux`,
-   and with `DISCO_VM_VZ_BASE` too, `TestLinuxBesideMacOS`.
+   `DISCO_VM_VZ_LINUX_BASE` naming the base fresh Linux VMs start from
+   (`default`, a guest image's reference, or a directory) runs
+   `TestConformanceLinux`, and with `DISCO_VM_VZ_BASE` too,
+   `TestLinuxBesideMacOS`.
 
 Where each stands is in the proof table in [DESIGN.md](../../DESIGN.md).
 
@@ -51,7 +52,7 @@ structure is not.
 
 A macOS guest is a **bundle**: files that belong together in one directory.
 
-| file | image | instance |
+| file | committed VM | VM |
 |---|---|---|
 | `disk.img` | ✓ | ✓ |
 | `aux.img` (NVRAM) | ✓ | ✓ |
@@ -60,16 +61,18 @@ A macOS guest is a **bundle**: files that belong together in one directory.
 | `machineidentifier` | | its own |
 | `macaddress` | | its own, from its first boot |
 
-There are no chains (`Chains` is false). An instance is a full APFS clone
-(`clonefile`) of its image, and a snapshot is the instance's files renamed,
-so each image's files are its own and deleting one never touches another. A
-clone across volumes is an error that says so, never a silent 100 GiB copy.
+There are no chains (`Chains` is false). A VM created from a committed VM is
+a full APFS clone (`clonefile`) of its layer files (`layerFiles`), and a
+commit freezes the VM's bundle in place, so each bundle's files are its own
+and removing a committed VM never touches a VM created from it. A clone
+across volumes is an error that says so, never a silent 100 GiB copy.
 
 ## Method by method
 
 **Check:** Apple silicon, and an entitled binary.
 
-**Install(spec, dst):**
+**Install(spec, dst):** a committed macOS VM, in `dst.Dir`, the VM's own
+directory:
 
 1. The restore image is `spec.Media`, or for `latest` the newest one this Mac
    supports, downloaded once into `spec.CacheDir` under the name Apple gives
@@ -100,7 +103,7 @@ clone across volumes is an error that says so, never a silent 100 GiB copy.
    another uid (see below). It keeps its SecureToken, so it
    stays the disk's volume owner.
 5. Options (`disco-vm install --option KEY=VALUE`): `username` (default
-   `admin`), `password` (default random, recorded in the image's `vz.json`,
+   `admin`), `password` (default random, recorded in the VM's `vz.json`,
    which is private to the owner), `fullname`, `uid` (default 600),
    `autologin` (default true), and `disk-format`. An unknown key is an error.
    `--disk` is required.
@@ -112,7 +115,7 @@ Learned the hard way:
   from it `dscl` fails with `-14120` and `sysadminctl -addUser -UID` silently
   picks another uid; SSH has it. So everything that touches accounts (moving
   the install account) goes over SSH as the
-  install account with `sudo`, whose password the image records.
+  install account with `sudo`, whose password the VM's `vz.json` records.
 
 - **A new guest restarts itself during first-boot setup, and to the framework
   a restart is a stop.** A guest that stops cleanly before the agent is in is
@@ -126,8 +129,9 @@ Learned the hard way:
   behind `runtime.GC()` with a **new VM object each time**: a VM whose start
   failed goes straight to the error state if it is started again.
 
-**Prepare(inst):** clone the image's files, then write a new machine
-identifier. The MAC is created on the first boot.
+**Prepare(inst):** clone the committed VM's layer files, then write a new
+machine identifier. The MAC is created on the first boot. A fresh VM (no
+`Chain`) is a Linux guest from the base ([Linux guests](#linux-guests)).
 
 **Boot(inst, opts):** one configuration for install and every boot: the Mac
 platform, virtio block, NAT with the bundle's MAC, the Mac framebuffer (always
@@ -163,8 +167,9 @@ a `vz.VirtualMachine`, so `vmObject` reads it by reflection, and the C side
 checks its class before using it. The clean fix is an exported accessor in
 discobox's fork.
 
-**Commit(inst, dst):** rename the stopped instance's image files into
-`dst.Dir`. The identifier and MAC stay behind.
+**Commit(inst):** freeze the stopped VM's bundle in place: its layer files
+stay, and everything else goes, the identifier and MAC among them. The end of
+Install freezes the same way.
 
 **Destroy:** remove the bundle.
 
@@ -183,7 +188,7 @@ works).
 ADR 26-10-31-990. A Linux guest is a bundle too, booted directly, not
 through EFI:
 
-| file | image | instance |
+| file | committed VM | VM |
 |---|---|---|
 | `vmlinux` (uncompressed) | ✓ | ✓ |
 | `initrd.img` | ✓ | ✓ |
@@ -195,21 +200,24 @@ through EFI:
 `vz.json`'s `guestOS` says which kind a bundle is; one from before Linux
 guests has none and is macOS.
 
-- **Bases, not media.** `Bases` lists `linux` (`vz.DefaultLinuxBase`,
-  disco-vm's own image, a placeholder tag until its first `linux/v*` release
-  is pinned by digest) and every image cached. `Base` also knows any
-  registry reference, and the absolute path of a directory holding the
-  three artifacts, used as it is (how a guest built with
-  `go tool task build:linux-guest` boots unpublished). Install of a Linux
-  guest is refused (`Capabilities.Install` is darwin alone).
-- **Prepare** pulls a base's image with go-containerregistry, with no
-  daemon, refusing one whose platform is not linux on this Mac's
+- **A base, not media** (ADR 26-11-03-606). A fresh VM is a Linux guest
+  from the driver's one base, `machine.Config.Base`: a registry reference,
+  or the absolute path of a directory holding the three artifacts, used as
+  it is (how a guest built with `go tool task build:linux-guest` boots
+  unpublished); empty is `vz.DefaultLinuxBase`, disco-vm's own image, a
+  placeholder tag until its first `linux/v*` release is pinned by digest.
+  The driver refuses a base that is neither when it is made. Nothing lists
+  bases. Install of a Linux guest is refused (`Capabilities.Install` is
+  darwin alone).
+- **Prepare** of a fresh VM pulls the base's image with go-containerregistry,
+  with no daemon, refusing one whose platform is not linux on this Mac's
   architecture or that lacks an artifact, into `<root>/cache/vz/linux/<manifest
-  digest>` once. It clones the kernel and initrd, clones `root.ext4` as the
-  instance's `disk.img` and extends it, sparse, to 64 GiB (the base's
-  `disk` option, in bytes, sets another ceiling), and writes a new machine ID
-  and MAC. An instance of a Linux snapshot clones its layer and gets a new
-  identity the same way.
+  digest>` once (a tag the registry cannot answer for runs from its last
+  pull, and a digest the cache has needs no network). It clones the kernel
+  and initrd, clones `root.ext4` as the VM's `disk.img` and extends it,
+  sparse, to 64 GiB, and writes a new machine ID and MAC. A VM created from
+  a committed Linux VM clones its layer and gets a new identity the same
+  way.
 - **Boot** refuses a window, checks `$DISCO_VM_AGENT` names a linux
   executable of this Mac's architecture (`go tool task build` builds
   `build/linux-arm64/disco-vm` beside the darwin one), and writes

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"golang.org/x/sys/unix"
 
@@ -37,10 +38,10 @@ type bundle string
 
 func (b bundle) path(name string) string { return filepath.Join(string(b), name) }
 
-// layerFiles are what a layer of a guest OS is made of, and what a clone of
-// it copies. The machine's identity is not among them: a clone gets its own.
-// A Linux layer carries its kernel and initrd, so a snapshot boots the
-// kernel its base did.
+// layerFiles are what a committed VM (a layer) of a guest OS keeps, and what
+// a clone of it copies. The machine's identity is not among them: a clone
+// gets its own. A Linux layer carries its kernel and initrd, so a VM created
+// from one boots the kernel its base did.
 func layerFiles(guestOS machine.OS) []string {
 	if guestOS == machine.Linux {
 		return []string{kernelName, initrdName, diskName, metaName}
@@ -153,15 +154,24 @@ func cloneLayer(src, dst bundle, guestOS machine.OS) error {
 	return nil
 }
 
-// moveLayer moves a stopped guest's layer files into dst. It is how Commit
-// consumes an instance: a rename within the volume, so nothing is copied.
-func moveLayer(src, dst bundle, guestOS machine.OS) error {
-	if err := os.MkdirAll(string(dst), 0o700); err != nil {
+// freezeLayer makes a stopped guest's bundle a layer in place: every layer
+// file must be there, and everything else is removed. It is how Commit
+// freezes a VM, so nothing is copied or moved.
+func freezeLayer(b bundle, guestOS machine.OS) error {
+	if err := b.installedLayer(guestOS); err != nil {
 		return err
 	}
-	for _, name := range layerFiles(guestOS) {
-		if err := os.Rename(src.path(name), dst.path(name)); err != nil {
-			return fmt.Errorf("vz: move %s into the layer: %w", name, err)
+	keep := layerFiles(guestOS)
+	entries, err := os.ReadDir(string(b))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if slices.Contains(keep, entry.Name()) {
+			continue
+		}
+		if err := os.RemoveAll(b.path(entry.Name())); err != nil {
+			return fmt.Errorf("vz: commit: %w", err)
 		}
 	}
 	return nil

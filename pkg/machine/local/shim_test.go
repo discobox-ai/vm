@@ -43,11 +43,11 @@ func TestShimCommand(t *testing.T) {
 	}
 	ctx := context.Background()
 	guestOS := machine.OS(runtime.GOOS)
-	img, err := d.Install(ctx, machine.InstallSpec{GuestOS: guestOS, Media: "latest"}, machine.Image{ID: "0123456789abcdef", GuestOS: guestOS})
+	installed, err := d.Install(ctx, machine.InstallSpec{GuestOS: guestOS, Media: "latest"}, "installed")
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "one", ImageID: img.ID, GuestOS: guestOS})
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "one", From: &installed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,11 +98,11 @@ func TestShimSocket(t *testing.T) {
 	}
 	ctx := context.Background()
 	guestOS := machine.OS(runtime.GOOS)
-	img, err := d.Install(ctx, machine.InstallSpec{GuestOS: guestOS, Media: "latest"}, machine.Image{ID: "0123456789abcdef", GuestOS: guestOS})
+	installed, err := d.Install(ctx, machine.InstallSpec{GuestOS: guestOS, Media: "latest"}, "installed")
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "sock", ImageID: img.ID, GuestOS: guestOS})
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "sock", From: &installed})
 	if err != nil {
 		t.Fatal(err)
 	}

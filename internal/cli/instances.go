@@ -23,18 +23,23 @@ import (
 )
 
 type createFlags struct {
-	name, memory string
-	cpus         int
-	isolated     bool
-	networks     []string
-	egress       []string
+	from, memory string
+	// fromSet is whether --from was given, so an empty one, such as an
+	// unset variable in --from "$VM", is refused rather than read as a
+	// fresh VM.
+	fromSet  func() bool
+	cpus     int
+	isolated bool
+	networks []string
+	egress   []string
 	// data and cacheSize are sizes; data unset is no data volume, and cache
 	// unset no cache volume.
 	data, cache, cacheSize string
 }
 
 func (f *createFlags) register(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.name, "name", "", "instance name: lowercase letters, digits, and single hyphens (default: a random one)")
+	cmd.Flags().StringVar(&f.from, "from", "", "a committed VM to copy (default: a fresh VM of the driver's base, $DISCO_VM_BASE)")
+	f.fromSet = func() bool { return cmd.Flags().Changed("from") }
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "vCPUs (default: the driver's)")
 	cmd.Flags().StringVar(&f.memory, "memory", "", "memory, e.g. 8GiB (default: the driver's)")
 	cmd.Flags().BoolVar(&f.isolated, "isolated", false, "strip the machine of what its provider gives one by default (boxd: the in-VM CLI and token, git credentials, integrations, default-network peers), for good")
@@ -92,7 +97,11 @@ func (f *createFlags) fence() (*machine.Egress, error) {
 	return &machine.Egress{Allow: allow}, nil
 }
 
-func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) (engine.Instance, error) {
+// create makes the VM name, or one of a random name when name is empty.
+func (f *createFlags) create(ctx context.Context, e *engine.Engine, name string) (engine.Instance, error) {
+	if f.from == "" && f.fromSet() {
+		return engine.Instance{}, errors.New("--from takes a committed VM's name; leave it out for a fresh VM")
+	}
 	memory, err := units.ParseBytes(f.memory)
 	if err != nil {
 		return engine.Instance{}, err
@@ -105,8 +114,8 @@ func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) 
 	if err != nil {
 		return engine.Instance{}, err
 	}
-	return e.Create(ctx, ref, engine.CreateOptions{
-		Name: f.name, CPUs: f.cpus, Memory: memory, Isolated: f.isolated, Networks: f.networks, Egress: egress,
+	return e.Create(ctx, engine.CreateOptions{
+		Name: name, From: f.from, CPUs: f.cpus, Memory: memory, Isolated: f.isolated, Networks: f.networks, Egress: egress,
 		Data: data, Cache: cache,
 	})
 }
@@ -114,15 +123,18 @@ func (f *createFlags) create(ctx context.Context, e *engine.Engine, ref string) 
 func createCommand(g *globals) *cobra.Command {
 	var flags createFlags
 	cmd := &cobra.Command{
-		Use:   "create IMAGE",
-		Short: "Create an instance without starting it",
-		Args:  cobra.ExactArgs(1),
+		Use:   "create [NAME] [--from VM]",
+		Short: "Create a VM, fresh or from a committed one, without starting it",
+		Long: `Create the VM NAME (a random name when it is not given) without starting
+it: a copy of the committed VM --from, or a fresh VM of the driver's base,
+which is the driver's configuration ($DISCO_VM_BASE), never the create's.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
 			if err != nil {
 				return err
 			}
-			inst, err := flags.create(cmd.Context(), e, args[0])
+			inst, err := flags.create(cmd.Context(), e, firstArg(args))
 			if err != nil {
 				return err
 			}
@@ -141,16 +153,16 @@ func runCommand(g *globals) *cobra.Command {
 		timeout time.Duration
 	)
 	cmd := &cobra.Command{
-		Use:   "run [flags] IMAGE",
-		Short: "Create and start an instance",
-		Args:  cobra.ExactArgs(1),
+		Use:   "run [NAME] [--from VM] [flags]",
+		Short: "Create a VM, fresh or from a committed one, and start it",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
 			if err != nil {
 				return err
 			}
 			ctx := cmd.Context()
-			inst, err := flags.create(ctx, e, args[0])
+			inst, err := flags.create(ctx, e, firstArg(args))
 			if err != nil {
 				return err
 			}
@@ -217,6 +229,14 @@ func rmCommand(g *globals) *cobra.Command {
 	return cmd
 }
 
+// firstArg is args' first, or empty.
+func firstArg(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return args[0]
+}
+
 func eachInstance(ctx context.Context, g *globals, refs []string, fn func(*engine.Engine, engine.Instance) error) error {
 	e, err := g.engine()
 	if err != nil {
@@ -242,7 +262,7 @@ func lsCommand(g *globals) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "ls",
 		Aliases: []string{"ps"},
-		Short:   "List instances",
+		Short:   "List VMs: running ones, and with -a stopped and committed ones",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			e, err := g.engine()
@@ -254,18 +274,18 @@ func lsCommand(g *globals) *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tNAME\tIMAGE\tOS\tSTATE\tCREATED")
+			fmt.Fprintln(w, "ID\tNAME\tFROM\tOS\tSTATE\tCREATED")
 			for _, inst := range instances {
 				state := e.State(cmd.Context(), inst)
 				if state == engine.Stopped && !all {
 					continue
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", engine.Short(inst.ID), inst.Name, inst.Image, inst.GuestOS, state, ago(inst.Created))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", short(inst.ID), inst.Name, dash(inst.From), inst.GuestOS, state, ago(inst.Created))
 			}
 			return w.Flush()
 		},
 	}
-	cmd.Flags().BoolVarP(&all, "all", "a", false, "include stopped instances")
+	cmd.Flags().BoolVarP(&all, "all", "a", false, "include stopped VMs, committed ones among them")
 	return cmd
 }
 
@@ -496,4 +516,20 @@ func infoCommand(g *globals) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// short is the 12-character form of an ID people read.
+func short(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+// dash is s, or "-" when it is empty.
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }

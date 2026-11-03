@@ -3,13 +3,12 @@
 // management stack (vmms), no Windows Sandbox (CmService), and no WSL. It
 // works on Home.
 //
-// An image is a VHDX (disk.vhdx) in the image's directory: an install is a
-// whole disk that Install wrote from a retail ISO and booted once through
-// Windows Setup, and a snapshot is the differencing disk of an instance, over
-// the disk of the image the instance ran from. Above the seam every image
-// stands alone; the hypervisor Chains, so package local keeps each image's
-// parent, hands Prepare the whole chain, and refuses to delete a disk another
-// image's still needs. Guests
+// A VM's disk is a VHDX (disk.vhdx) in its directory: an install is a whole
+// disk that Install wrote from a retail ISO and booted once through Windows
+// Setup, and a VM created from a committed one is a differencing disk over
+// that one's, which commit leaves where it is (ADR 26-11-03-606). The
+// hypervisor Chains, so package local hands Prepare the whole chain, and
+// refuses to remove or boot a VM another VM's disk still needs. Guests
 // get a NIC on an HNS network of the driver's own, and the agent is reached
 // over hvsocket.
 //

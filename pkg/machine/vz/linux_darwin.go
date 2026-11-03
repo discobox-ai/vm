@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/Code-Hex/vz/v3"
@@ -25,12 +24,9 @@ const (
 	// asks for none.
 	linuxCPUs   = 2
 	linuxMemory = 2 << 30
-	// linuxDisk is a Linux instance's disk ceiling when its base asks for
-	// none: sparse, so it costs what the guest writes.
+	// linuxDisk is a fresh Linux VM's disk ceiling: sparse, so it costs
+	// what the guest writes.
 	linuxDisk = 64 << 30
-	// diskOption is the base option that sets a Linux instance's disk
-	// ceiling, in bytes.
-	diskOption = "disk"
 )
 
 // newMachineID is a systemd machine ID: 32 lowercase hex digits.
@@ -42,24 +38,14 @@ func newMachineID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// prepareLinux makes a Linux instance from its base (ADR 26-10-31-990): the
-// base's image pulled into the cache once per digest, or its directory; its
-// kernel and initrd cloned; its root cloned as the instance's own disk and
-// grown, sparse, to the disk ceiling, which the guest's filesystem grows into
-// at boot; and an identity of its own.
-func prepareLinux(ctx context.Context, inst local.InstanceSpec) error {
-	if inst.Base.GuestOS != machine.Linux {
-		return fmt.Errorf("vz: base %s is a %s guest, and vz's bases are Linux guests", inst.Base.Name, inst.Base.GuestOS)
-	}
-	ceiling := int64(linuxDisk)
-	if raw := inst.Base.Options[diskOption]; raw != "" {
-		n, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || n <= 0 {
-			return fmt.Errorf("vz: base %s: %s=%q is not a size in bytes", inst.Base.Name, diskOption, raw)
-		}
-		ceiling = n
-	}
-	src, err := linuxArtifactDir(ctx, inst.CacheDir, *inst.Base, runtime.GOARCH)
+// prepareLinux makes a fresh Linux VM from the base (ADR 26-10-31-990,
+// 26-11-03-606): its image pulled into the cache once per digest, or its
+// directory; its kernel and initrd cloned; its root cloned as the VM's own
+// disk and grown, sparse, to the disk ceiling, which the guest's filesystem
+// grows into at boot; and an identity of its own.
+func prepareLinux(ctx context.Context, inst local.InstanceSpec, base linuxImage) error {
+	const ceiling = int64(linuxDisk)
+	src, err := linuxArtifactDir(ctx, inst.CacheDir, base, runtime.GOARCH)
 	if err != nil {
 		return err
 	}

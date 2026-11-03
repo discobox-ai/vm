@@ -3,25 +3,25 @@
 // every OS, and the hcs and vz drivers run it on real hardware.
 //
 // The suite speaks only the machine interfaces, so it checks exactly the
-// contract the engine relies on: an image can be installed (or an instance
-// run from a base), found, listed, cloned, booted, and reached; an instance
-// is found and listed by its name, which no second instance can take; a
-// booted machine's guest operations answer, and exec carries stdin, stdout,
-// stderr, the environment, the working directory, and the exit code; an
-// orderly shutdown stops the machine; a snapshot carries its writes to clones
-// of it and to no one else, and stands alone once the image it came from is
-// deleted; an instance runs from a base the driver lists or finds, and is
-// snapshotted; a tag is set, moved, and dropped; clones run side by side;
-// Kill always works; an instance fenced at create keeps its fence across a
-// boot, or the driver refuses the fence; a started machine is attached to from
-// another call, its service has a URL, and a private URL where it has one, and
-// it is found stopped once its guest powers off; a guest port is dialed
-// through an attached machine, and a guest reaches a peer's port through a
-// forward, or the driver refuses both; a data volume is kept across a boot
-// and never in a snapshot; a cache volume is a private clone of its key's
-// generation, which only a save moves; and a key the driver issues
-// runs the project's machines, cannot issue another, and works no more once
-// it is revoked.
+// contract the engine relies on (ADR 26-11-03-606): a VM is made fresh from
+// the driver's base, or installed, found, listed, booted, and reached; a VM
+// is found and listed by its name, which no second VM can take, committed or
+// not; a booted machine's guest operations answer, and exec carries stdin,
+// stdout, stderr, the environment, the working directory, and the exit code;
+// an orderly shutdown stops the machine; a committed VM carries its writes to
+// VMs created from it and to no one else, and a copy of a copy outlives the
+// first's removal, or the driver refuses the removal with ErrInUse; VMs run
+// side by side; Kill always works; a VM fenced at create keeps its fence
+// across a boot, or the driver refuses the fence; a started machine is
+// attached to from another call, its service has a URL, and a private URL
+// where it has one, and it is found stopped once its guest powers off; a
+// guest port is dialed through an attached machine, and a guest reaches a
+// peer's port through a forward, or the driver refuses both; a data volume
+// is kept across a boot and never in a committed VM; a cache volume is a
+// private clone of its key's generation, which only a save moves; and a key
+// the driver issues runs the project's machines, cannot issue another, and
+// works no more once it is revoked. That a VM is committed is the caller's
+// to record, so the suite never boots one again.
 package machinetest
 
 import (
@@ -42,17 +42,15 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Config adapts the suite to a driver. The suite starts from Image, else
-// from an Install on a driver that lists Capabilities.Install, else from
-// Base, else from the first base the driver lists.
+// Config adapts the suite to a driver. The suite starts from From, else
+// from an Install on a driver that lists Capabilities.Install, else from a
+// fresh VM of the driver's base.
 type Config struct {
-	// Install makes the image the suite starts from.
+	// Install makes the committed VM the suite starts from.
 	Install machine.InstallSpec
-	// Image is the ID of an image already made to start from, which is how
-	// a real driver keeps the suite from reinstalling an OS on every run.
-	Image string
-	// Base is a base to start from, on a driver that installs nothing.
-	Base *machine.Base
+	// From names a committed VM already made to start from, which is how a
+	// real driver keeps the suite from reinstalling an OS on every run.
+	From string
 	// CPUs and Memory size every instance the suite makes.
 	CPUs   int
 	Memory uint64
@@ -71,7 +69,7 @@ type Config struct {
 }
 
 // Run runs the suite. The driver is one project's, and the suite makes and
-// removes images, tags, and instances in it, every name its own.
+// removes VMs in it, every name its own.
 func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	t.Helper()
 	if cfg.Timeout == 0 {
@@ -91,50 +89,44 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 
 	suite := t
 	run := randomHex(4)
-	newID := func() string { return randomHex(32) }
-	// start is what the first instances run from: an image or a base.
+	names := 0
+	newName := func() string {
+		names++
+		return fmt.Sprintf("conformance-%s-%d", run, names)
+	}
+	// start is what the first VMs are made from: a committed VM, or the
+	// driver's base.
 	var start machine.InstanceSpec
 	switch {
-	case cfg.Image != "":
-		img, err := driver.Image(ctx, cfg.Image)
+	case cfg.From != "":
+		from, err := driver.Instance(ctx, cfg.From)
 		if err != nil {
-			t.Fatalf("image %s: %v", cfg.Image, err)
+			t.Fatalf("committed VM %s: %v", cfg.From, err)
 		}
-		start = machine.InstanceSpec{ImageID: img.ID, GuestOS: img.GuestOS}
+		start.From = &from
 	case cfg.Install.GuestOS != "" && caps.Installs(cfg.Install.GuestOS):
-		img, err := driver.Install(ctx, cfg.Install, machine.Image{ID: newID(), GuestOS: cfg.Install.GuestOS, Comment: "conformance install"})
+		installed, err := driver.Install(ctx, cfg.Install, newName())
 		if err != nil {
 			t.Fatalf("install: %v", err)
 		}
-		t.Cleanup(func() { _ = driver.DeleteImage(context.Background(), img.ID) })
-		start = machine.InstanceSpec{ImageID: img.ID, GuestOS: img.GuestOS}
-	default:
-		b := cfg.Base
-		if b == nil {
-			bases, err := driver.Bases(ctx)
-			if err != nil || len(bases) == 0 {
-				t.Fatalf("no Image, Install, or Base to start from, and the driver lists no bases: %v", err)
-			}
-			b = &bases[0]
+		t.Cleanup(func() { _ = driver.Destroy(context.Background(), installed) })
+		if installed.GuestOS != cfg.Install.GuestOS {
+			t.Fatalf("installed %+v, want a %s guest", installed, cfg.Install.GuestOS)
 		}
-		start = machine.InstanceSpec{Base: b, GuestOS: b.GuestOS}
+		start.From = &installed
 	}
-	if start.GuestOS == "" {
-		start.GuestOS = caps.GuestOS[0]
+	// guestOS is the start's, which a fresh VM learns from the first one.
+	var guestOS machine.OS
+	if start.From != nil {
+		guestOS = start.From.GuestOS
 	}
-	start.Image = "conformance"
-	guestOS := start.GuestOS
-	of := func(id string) machine.InstanceSpec {
-		return machine.InstanceSpec{Image: "conformance", ImageID: id, GuestOS: guestOS}
-	}
-	names := 0
+	of := func(from machine.Instance) machine.InstanceSpec { return machine.InstanceSpec{From: &from} }
+	// suiteOwned are the VMs committed, which the suite removes, not the
+	// subtest that made them.
+	suiteOwned := map[string]bool{}
 	create := func(t *testing.T, spec machine.InstanceSpec) machine.Instance {
 		t.Helper()
-		names++
-		spec.Name = fmt.Sprintf("conformance-%s-%d", run, names)
-		if spec.GuestOS == "" {
-			spec.GuestOS = guestOS
-		}
+		spec.Name = newName()
 		if spec.CPUs == 0 {
 			spec.CPUs, spec.Memory = cfg.CPUs, cfg.Memory
 		}
@@ -142,11 +134,21 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err != nil {
 			t.Fatalf("create %s: %v", spec.Name, err)
 		}
-		// A step that fails before the instance is removed would leave, on a
+		// A step that fails before the VM is removed would leave, on a
 		// cloud driver, a billed machine.
-		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+		t.Cleanup(func() {
+			if !suiteOwned[inst.Name] {
+				_ = driver.Destroy(context.Background(), inst)
+			}
+		})
 		if inst.Name != spec.Name || inst.ID == "" {
 			t.Fatalf("created %+v for name %s", inst, spec.Name)
+		}
+		if spec.From != nil && inst.GuestOS != spec.From.GuestOS {
+			t.Fatalf("created %+v from a %s guest", inst, spec.From.GuestOS)
+		}
+		if !caps.SupportsOS(inst.GuestOS) {
+			t.Fatalf("created a %q guest, which the driver does not run", inst.GuestOS)
 		}
 		return inst
 	}
@@ -175,29 +177,35 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatal("the guest did not power off after an orderly shutdown")
 		}
 	}
-	snapshot := func(t *testing.T, inst machine.Instance, comment string) machine.Image {
+	// commit freezes a stopped VM, which stays under its name, with no
+	// volume. The suite removes it once every subtest is done, since later
+	// subtests create from it; a VM created from it is removed first.
+	commit := func(t *testing.T, inst machine.Instance) machine.Instance {
 		t.Helper()
-		want := machine.Image{ID: newID(), GuestOS: inst.GuestOS, Comment: comment}
-		img, err := driver.Commit(ctx, inst, want)
+		committed, err := driver.Commit(ctx, inst)
 		if err != nil {
 			t.Fatalf("commit %s: %v", inst.Name, err)
 		}
-		// The suite's, not the subtest's: later subtests run from it.
-		suite.Cleanup(func() { _ = driver.DeleteImage(context.Background(), img.ID) })
-		if img.ID != want.ID || img.GuestOS != inst.GuestOS {
-			t.Fatalf("committed %+v, want %+v", img, want)
+		suiteOwned[inst.Name] = true
+		suite.Cleanup(func() { _ = driver.Destroy(context.Background(), committed) })
+		if committed.Name != inst.Name || committed.GuestOS != inst.GuestOS || committed.Data != nil || committed.Cache != nil {
+			t.Fatalf("committed %+v from %+v", committed, inst)
 		}
-		if _, err := driver.Instance(ctx, inst.Name); !errors.Is(err, machine.ErrNotFound) {
-			t.Fatalf("an instance committed is still there: %v", err)
+		found, err := driver.Instance(ctx, inst.Name)
+		if err != nil || found.ID != committed.ID {
+			t.Fatalf("the committed VM %s: %+v, %v; committed %+v", inst.Name, found, err, committed)
 		}
-		return img
+		return committed
 	}
 	marker := strings.TrimRight(cfg.ScratchDir, `/\`) + "/disco-vm-conformance"
 
-	// Boot an instance of the start, write a marker, shut down, and commit.
-	var committed machine.Image
+	// Boot a VM of the start, write a marker, shut down, and commit.
+	var committed machine.Instance
 	t.Run("boot-write-commit", func(t *testing.T) {
 		inst := create(t, start)
+		if start.From == nil {
+			guestOS = inst.GuestOS
+		}
 		m := boot(t, inst)
 		info, err := m.Info(ctx)
 		if err != nil {
@@ -211,29 +219,38 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		checkExec(t, m, guestOS, marker)
 		shutdown(t, m)
-		committed = snapshot(t, inst, "conformance commit")
+		committed = commit(t, inst)
 	})
 	if committed.ID == "" {
 		t.FailNow()
 	}
 
-	t.Run("an-image-is-found-and-listed", func(t *testing.T) {
-		got, err := driver.Image(ctx, committed.ID)
-		if err != nil || got.ID != committed.ID {
-			t.Fatalf("image %s: %+v, %v", committed.ID, got, err)
+	// A committed VM is listed, and its name is taken, as any VM's.
+	t.Run("a-committed-vm-is-found-and-listed", func(t *testing.T) {
+		list, err := driver.Instances(ctx)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if _, err := driver.Image(ctx, newID()); !errors.Is(err, machine.ErrNotFound) {
-			t.Fatalf("an image never made: %v, want ErrNotFound", err)
+		if !slices.ContainsFunc(list, func(i machine.Instance) bool { return i.Name == committed.Name && i.ID == committed.ID }) {
+			t.Fatalf("instances do not list the committed VM %s: %+v", committed.Name, list)
 		}
-		if !hasImage(t, driver, committed.ID) {
-			t.Fatalf("images do not list %s", committed.ID)
+		again := of(committed)
+		again.Name = committed.Name
+		if inst, err := driver.Create(ctx, again); !errors.Is(err, machine.ErrExists) {
+			if err == nil {
+				_ = driver.Destroy(context.Background(), inst)
+			}
+			t.Fatalf("a VM named as the committed VM %s: %v, want ErrExists", committed.Name, err)
+		}
+		if _, err := driver.Attach(ctx, committed); !errors.Is(err, machine.ErrNotRunning) {
+			t.Fatalf("attach to a committed VM: %v, want ErrNotRunning", err)
 		}
 	})
 
 	t.Run("an-instance-is-found-listed-and-its-name-taken", func(t *testing.T) {
-		inst := create(t, of(committed.ID))
+		inst := create(t, of(committed))
 		got, err := driver.Instance(ctx, inst.Name)
-		if err != nil || got.ID != inst.ID || got.Name != inst.Name || got.GuestOS != guestOS {
+		if err != nil || got.ID != inst.ID || got.Name != inst.Name || got.GuestOS != guestOS || (got.From != "" && got.From != committed.Name) {
 			t.Fatalf("instance %s: %+v, %v; created %+v", inst.Name, got, err, inst)
 		}
 		list, err := driver.Instances(ctx)
@@ -243,7 +260,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if !slices.ContainsFunc(list, func(i machine.Instance) bool { return i.Name == inst.Name && i.ID == inst.ID }) {
 			t.Fatalf("instances do not list %s: %+v", inst.Name, list)
 		}
-		again := of(committed.ID)
+		again := of(committed)
 		again.Name = inst.Name
 		if _, err := driver.Create(ctx, again); !errors.Is(err, machine.ErrExists) {
 			t.Fatalf("a second instance named %s: %v, want ErrExists", inst.Name, err)
@@ -262,85 +279,36 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 	})
 
-	// Every base the driver lists names itself and is found by its name,
-	// and an instance of the first runs from it with no image, and is
-	// snapshotted.
-	t.Run("an-instance-of-a-base", func(t *testing.T) {
-		bases, err := driver.Bases(ctx)
+	// A fresh VM is made from the driver's base, and runs a guest OS it
+	// lists; a driver with no base refuses it.
+	t.Run("a-fresh-vm", func(t *testing.T) {
+		spec := machine.InstanceSpec{Name: newName(), CPUs: cfg.CPUs, Memory: cfg.Memory}
+		inst, err := driver.Create(ctx, spec)
+		if errors.Is(err, machine.ErrUnsupported) {
+			t.Skipf("the driver has no base: %v", err)
+		}
 		if err != nil {
-			t.Fatalf("bases: %v", err)
+			t.Fatalf("create a fresh VM: %v", err)
 		}
-		for _, b := range bases {
-			if b.Name == "" || b.ID == "" || !caps.SupportsOS(b.GuestOS) {
-				t.Fatalf("base %+v has no name, no ID, or a guest OS the driver does not run", b)
-			}
-			if found, ok, err := driver.Base(ctx, b.Name); err != nil || !ok || found.ID != b.ID {
-				t.Fatalf("base %s by name = %+v, %v, %v", b.Name, found, ok, err)
-			}
+		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+		if inst.From != "" || !caps.SupportsOS(inst.GuestOS) {
+			t.Fatalf("a fresh VM %+v", inst)
 		}
-		if _, ok, err := driver.Base(ctx, "disco-vm-conformance/no-such-base:none"); err != nil || ok {
-			t.Fatalf("a base no one has: found %v, %v", ok, err)
-		}
-		if len(bases) == 0 {
-			t.Skip("the driver lists no bases")
-		}
-		b := bases[0]
-		inst := create(t, machine.InstanceSpec{Image: b.Name, Base: &b, GuestOS: b.GuestOS})
 		m := boot(t, inst)
 		info, err := m.Info(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.OS != string(b.GuestOS) {
-			t.Fatalf("a guest of base %s reports OS %q, want %q", b.Name, info.OS, b.GuestOS)
-		}
-		if err := m.CopyTo(ctx, marker, tarOf(t, "proof.txt", "on a base")); err != nil {
-			t.Fatalf("write marker: %v", err)
+		if info.OS != string(inst.GuestOS) {
+			t.Fatalf("a fresh VM reports OS %q, want %q", info.OS, inst.GuestOS)
 		}
 		shutdown(t, m)
-		img := snapshot(t, inst, "conformance on a base")
-		if _, err := driver.Image(ctx, img.ID); err != nil {
-			t.Fatalf("the image snapshotted from a base: %v", err)
-		}
 	})
 
-	// A tag is set, moved, listed, and dropped any number of times, and a tag
-	// never set is dropped without complaint.
-	t.Run("tag-move-and-untag", func(t *testing.T) {
-		other := committed.ID
-		if start.ImageID != "" {
-			other = start.ImageID
-		}
-		ref := "conformance/" + run + ":latest"
-		t.Cleanup(func() { _ = driver.Untag(context.Background(), ref) })
-		for range 2 {
-			if err := driver.Tag(ctx, ref, other); err != nil {
-				t.Fatalf("tag: %v", err)
-			}
-		}
-		if got := tagged(t, driver, ref); got != other {
-			t.Fatalf("%s names %q, want %s", ref, got, other)
-		}
-		if err := driver.Tag(ctx, ref, committed.ID); err != nil {
-			t.Fatalf("move a tag: %v", err)
-		}
-		if got := tagged(t, driver, ref); got != committed.ID {
-			t.Fatalf("%s names %q after a move, want %s", ref, got, committed.ID)
-		}
-		for range 2 {
-			if err := driver.Untag(ctx, ref); err != nil {
-				t.Fatalf("untag: %v", err)
-			}
-		}
-		if got := tagged(t, driver, ref); got != "" {
-			t.Fatalf("%s names %s after untag", ref, got)
-		}
-	})
-
-	// A clone of the snapshot sees the marker; a clone of the start does
-	// not; both run at once.
-	t.Run("clones-are-isolated-and-concurrent", func(t *testing.T) {
-		child := create(t, of(committed.ID))
+	// A VM created from the committed one sees the marker; one of the start
+	// does not; both run at once.
+	t.Run("copies-are-isolated-and-concurrent", func(t *testing.T) {
+		child := create(t, of(committed))
 		sibling := create(t, start)
 		limit := caps.MaxRunning[guestOS]
 		childM := boot(t, child)
@@ -351,16 +319,16 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 
 		if limit != 1 {
 			if got := readMarker(t, childM, marker+"/proof.txt"); got != "committed" {
-				t.Fatalf("the snapshot's clone reads %q", got)
+				t.Fatalf("a VM created from the committed one reads %q", got)
 			}
 		}
 		if _, err := siblingM.CopyFrom(ctx, marker+"/proof.txt"); err == nil {
-			t.Fatal("a clone of the start saw a write committed to a snapshot")
+			t.Fatal("a VM of the start saw a write committed to another")
 		}
 	})
 
 	t.Run("kill", func(t *testing.T) {
-		m := boot(t, create(t, of(committed.ID)))
+		m := boot(t, create(t, of(committed)))
 		if err := m.Kill(ctx); err != nil {
 			t.Fatalf("kill: %v", err)
 		}
@@ -372,7 +340,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	// An instance fenced at create, to nothing from the start and to a list
-	// from a snapshot, reports the fence as asked, while it runs and once it
+	// from a committed VM, reports the fence as asked, while it runs and once it
 	// stops. A driver refuses each fence it does not hold.
 	t.Run("a-fenced-instance", func(t *testing.T) {
 		held := 0
@@ -381,7 +349,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			allow []string
 		}{
 			{start, nil},
-			{of(committed.ID), []string{"example.com"}},
+			{of(committed), []string{"example.com"}},
 		} {
 			spec := from.spec
 			spec.Egress = &machine.Egress{Allow: from.allow}
@@ -419,7 +387,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// agent's, where an HTTP request for its health is answered. A driver
 	// that reaches no guest port refuses the dial.
 	t.Run("a-guest-port", func(t *testing.T) {
-		inst := create(t, of(committed.ID))
+		inst := create(t, of(committed))
 		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
 		started, err := driver.Start(startCtx, inst, machine.BootOptions{})
@@ -461,7 +429,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// again is followed.
 	t.Run("a-peer-forward", func(t *testing.T) {
 		if !caps.Ports {
-			spec := of(committed.ID)
+			spec := of(committed)
 			spec.Name = fmt.Sprintf("conformance-%s-forwarded", run)
 			spec.Forwards = []machine.Forward{{Port: 7402, Instance: "peer", InstancePort: guest.AgentPort}}
 			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
@@ -486,13 +454,13 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Cleanup(func() { _ = m.Kill(context.Background()) })
 			return m
 		}
-		peer := create(t, of(committed.ID))
+		peer := create(t, of(committed))
 		pm := start(t, peer)
 		proof := randomHex(8)
 		if err := pm.CopyTo(ctx, marker, tarOf(t, "peer.txt", proof)); err != nil {
 			t.Fatal(err)
 		}
-		spec := of(committed.ID)
+		spec := of(committed)
 		spec.Forwards = []machine.Forward{{Port: 7402, Instance: peer.Name, InstancePort: guest.AgentPort}}
 		inst := create(t, spec)
 		got, err := driver.Instance(ctx, inst.Name)
@@ -540,7 +508,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// where it has any, and a guest that powers itself off while nothing
 	// watches is found stopped.
 	t.Run("start-attach-and-stop", func(t *testing.T) {
-		inst := create(t, of(committed.ID))
+		inst := create(t, of(committed))
 		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
 		started, err := driver.Start(startCtx, inst, machine.BootOptions{})
@@ -673,10 +641,10 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	// A data volume is the instance's: empty at Create, kept across a stop
-	// and a boot, gone with the instance, and never in a snapshot of it. A
+	// and a boot, gone with the instance, and never in a committed VM. A
 	// driver that attaches none refuses it.
 	t.Run("a-data-volume", func(t *testing.T) {
-		spec := of(committed.ID)
+		spec := of(committed)
 		spec.Data = &machine.DataVolume{}
 		if !caps.Attaches(machine.VolumeData) {
 			spec.Name = fmt.Sprintf("conformance-%s-data", run)
@@ -703,7 +671,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("the data volume reads %q after a stop and a boot", got)
 		}
 		shutdown(t, m)
-		gone := of(committed.ID)
+		gone := of(committed)
 		gone.Name, gone.Data = fmt.Sprintf("conformance-%s-data-gone", run), &machine.DataVolume{}
 		destroyed, err := driver.Create(ctx, gone)
 		if err != nil {
@@ -725,18 +693,18 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		m = boot(t, reborn)
 		absent(t, m, dir+"/data.txt", "a new instance of a destroyed one's name")
 		shutdown(t, m)
-		img := snapshot(t, inst, "conformance data")
-		again := of(img.ID)
+		img := commit(t, inst)
+		again := of(img)
 		again.Data = &machine.DataVolume{}
 		m = boot(t, create(t, again))
-		absent(t, m, dir+"/data.txt", "a snapshot's instance's data volume")
+		absent(t, m, dir+"/data.txt", "the data volume of a VM created from a committed one")
 		shutdown(t, m)
-		bare := create(t, of(img.ID))
+		bare := create(t, of(img))
 		if got, err := driver.Instance(ctx, bare.Name); err != nil || got.Data != nil {
-			t.Fatalf("an instance of a snapshot, made with no volume, reports data %+v: %v", got.Data, err)
+			t.Fatalf("a VM created from a committed one, with no volume, reports data %+v: %v", got.Data, err)
 		}
 		m = boot(t, bare)
-		absent(t, m, dir+"/data.txt", "a snapshot")
+		absent(t, m, dir+"/data.txt", "a committed VM")
 	})
 
 	// A cache volume is a private clone of its key's current generation,
@@ -747,7 +715,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	t.Run("a-cache-volume", func(t *testing.T) {
 		key, other := "conformance-"+run, "conformance-"+run+"-other"
 		withCache := func(key string) machine.InstanceSpec {
-			spec := of(committed.ID)
+			spec := of(committed)
 			spec.Cache = &machine.CacheVolume{Key: key}
 			return spec
 		}
@@ -850,44 +818,44 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("a clone of %s reads %q", other, got)
 		}
 		shutdown(t, m)
-		img := snapshot(t, second, "conformance cache")
-		bare := create(t, of(img.ID))
+		img := commit(t, second)
+		bare := create(t, of(img))
 		if got, err := driver.Instance(ctx, bare.Name); err != nil || got.Cache != nil || got.Data != nil {
-			t.Fatalf("an instance of a snapshot, made with no volume, reports cache %+v and data %+v: %v", got.Cache, got.Data, err)
+			t.Fatalf("a VM created from a committed one, with no volume, reports cache %+v and data %+v: %v", got.Cache, got.Data, err)
 		}
 		m = boot(t, bare)
-		absent(t, m, dir+"/cache.txt", "a snapshot of an instance with a cache volume")
+		absent(t, m, dir+"/cache.txt", "a committed VM that had a cache volume")
 	})
 
-	// A snapshot of an instance of a snapshot keeps both writes, and stands
-	// alone: once the image it came from is deleted, it still boots with
-	// both. A driver whose snapshot still needs the other's disk refuses the
-	// delete with ErrInUse instead. Last, since it deletes the snapshot the
-	// others run from.
-	t.Run("a-snapshot-stands-alone", func(t *testing.T) {
-		inst := create(t, of(committed.ID))
+	// A committed copy of a committed VM keeps both writes, and outlives the
+	// first's removal: a VM created from it still boots with both. A driver
+	// whose copy still needs the other's disk refuses the removal with
+	// ErrInUse instead. Last, since it removes the VM the others are made
+	// from.
+	t.Run("a-copy-of-a-copy", func(t *testing.T) {
+		inst := create(t, of(committed))
 		m := boot(t, inst)
 		if err := m.CopyTo(ctx, marker, tarOf(t, "second.txt", "second")); err != nil {
 			t.Fatalf("write marker: %v", err)
 		}
 		shutdown(t, m)
-		second := snapshot(t, inst, "conformance second")
-		switch err := driver.DeleteImage(ctx, committed.ID); {
+		second := commit(t, inst)
+		switch err := driver.Destroy(ctx, committed); {
 		case errors.Is(err, machine.ErrInUse):
-			t.Logf("the driver keeps %s for %s: %v", committed.ID, second.ID, err)
+			t.Logf("the driver keeps %s for %s: %v", committed.Name, second.Name, err)
 		case err != nil:
-			t.Fatalf("delete %s: %v", committed.ID, err)
+			t.Fatalf("remove %s: %v", committed.Name, err)
 		default:
-			if _, err := driver.Image(ctx, committed.ID); !errors.Is(err, machine.ErrNotFound) {
-				t.Fatalf("a deleted image: %v, want ErrNotFound", err)
+			if _, err := driver.Instance(ctx, committed.Name); !errors.Is(err, machine.ErrNotFound) {
+				t.Fatalf("a removed committed VM: %v, want ErrNotFound", err)
 			}
 		}
-		m = boot(t, create(t, of(second.ID)))
+		m = boot(t, create(t, of(second)))
 		if got := readMarker(t, m, marker+"/proof.txt"); got != "committed" {
-			t.Fatalf("a clone of the second snapshot reads %q from the first", got)
+			t.Fatalf("a VM of the second committed VM reads %q from the first", got)
 		}
 		if got := readMarker(t, m, marker+"/second.txt"); got != "second" {
-			t.Fatalf("a clone of the second snapshot reads %q from its own", got)
+			t.Fatalf("a VM of the second committed VM reads %q from its own", got)
 		}
 	})
 }
@@ -900,30 +868,6 @@ func absent(t *testing.T, g machine.Guest, path, what string) {
 		stream.Close()
 		t.Fatalf("%s has %s", what, path)
 	}
-}
-
-func hasImage(t *testing.T, driver machine.Driver, id string) bool {
-	t.Helper()
-	images, err := driver.Images(context.Background())
-	if err != nil {
-		t.Fatalf("images: %v", err)
-	}
-	return slices.ContainsFunc(images, func(img machine.Image) bool { return img.ID == id })
-}
-
-// tagged is the image ref names, or empty.
-func tagged(t *testing.T, driver machine.Driver, ref string) string {
-	t.Helper()
-	tags, err := driver.Tags(context.Background())
-	if err != nil {
-		t.Fatalf("tags: %v", err)
-	}
-	for _, tag := range tags {
-		if tag.Ref == ref {
-			return tag.Image
-		}
-	}
-	return ""
 }
 
 func randomHex(n int) string {

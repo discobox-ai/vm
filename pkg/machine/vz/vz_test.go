@@ -19,15 +19,17 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// BaseEnv names an installed image, by its ID, in the driver's directory
-// ($DISCO_VM_ROOT, or the per-OS data directory): an image `disco-vm install`
-// made, which `disco-vm images` lists. The conformance suite clones it rather
-// than installing macOS on every run, and skips without it.
+// BaseEnv names a committed macOS VM, in the default project of the driver's
+// directory ($DISCO_VM_ROOT, or the per-OS data directory): one `disco-vm
+// install NAME` made, which `disco-vm ls -a` lists. The conformance suite
+// creates from it rather than installing macOS on every run, and skips
+// without it.
 const BaseEnv = "DISCO_VM_VZ_BASE"
 
-// LinuxBaseEnv names a Linux base to run the conformance suite from:
-// LinuxBaseName, a guest image's reference, or a directory holding one's
-// artifacts. Without it the Linux suite skips. Its agent is $DISCO_VM_AGENT.
+// LinuxBaseEnv is the base the Linux suite's fresh VMs start from
+// (machine.Config.Base): a guest image's reference, a directory holding one's
+// artifacts, or "default" for DefaultLinuxBase. Without it the Linux suite
+// skips. Its agent is $DISCO_VM_AGENT.
 const LinuxBaseEnv = "DISCO_VM_VZ_LINUX_BASE"
 
 // TestConformance is the vz driver's definition of done. It creates VMs, so
@@ -37,7 +39,7 @@ const LinuxBaseEnv = "DISCO_VM_VZ_LINUX_BASE"
 func TestConformance(t *testing.T) {
 	base := os.Getenv(BaseEnv)
 	if base == "" {
-		t.Skipf("$%s names no installed image", BaseEnv)
+		t.Skipf("$%s names no committed macOS VM", BaseEnv)
 	}
 	binary := os.Getenv("DISCO_VM_TEST_BINARY")
 	if binary == "" {
@@ -52,7 +54,7 @@ func TestConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	machinetest.Run(t, driver, machinetest.Config{
-		Image:      base,
+		From:       base,
 		CPUs:       4,
 		Memory:     8 << 30,
 		Timeout:    10 * time.Minute,
@@ -60,16 +62,11 @@ func TestConformance(t *testing.T) {
 	})
 }
 
-// TestConformanceLinux is the suite from a Linux base: its guests boot
+// TestConformanceLinux is the suite from fresh Linux VMs: their guests boot
 // beside macOS ones and do not count against their limit.
 func TestConformanceLinux(t *testing.T) {
-	driver, ref := linuxDriver(t)
-	base, found, err := driver.Base(t.Context(), ref)
-	if err != nil || !found {
-		t.Fatalf("base %s: found %v, %v", ref, found, err)
-	}
+	driver := linuxDriver(t)
 	machinetest.Run(t, driver, machinetest.Config{
-		Base:       &base,
 		CPUs:       2,
 		Memory:     2 << 30,
 		Timeout:    5 * time.Minute,
@@ -84,10 +81,14 @@ func TestConformanceLinux(t *testing.T) {
 func TestLinuxBesideMacOS(t *testing.T) {
 	macOS := os.Getenv(BaseEnv)
 	if macOS == "" {
-		t.Skipf("$%s names no installed macOS image", BaseEnv)
+		t.Skipf("$%s names no committed macOS VM", BaseEnv)
 	}
-	driver, ref := linuxDriver(t)
+	driver := linuxDriver(t)
 	ctx := t.Context()
+	from, err := driver.Instance(ctx, macOS)
+	if err != nil {
+		t.Fatal(err)
+	}
 	start := func(spec machine.InstanceSpec) machine.Machine {
 		t.Helper()
 		inst, err := driver.Create(ctx, spec)
@@ -102,12 +103,8 @@ func TestLinuxBesideMacOS(t *testing.T) {
 		t.Cleanup(func() { _ = m.Kill(context.Background()) })
 		return m
 	}
-	start(machine.InstanceSpec{Name: "beside-macos", ImageID: macOS, GuestOS: machine.Darwin})
-	base, found, err := driver.Base(ctx, ref)
-	if err != nil || !found {
-		t.Fatalf("base %s: found %v, %v", ref, found, err)
-	}
-	linux := start(machine.InstanceSpec{Name: "beside-linux", Base: &base, GuestOS: machine.Linux, Egress: &machine.Egress{}})
+	start(machine.InstanceSpec{Name: "beside-macos", From: &from})
+	linux := start(machine.InstanceSpec{Name: "beside-linux", Egress: &machine.Egress{}})
 	var out bytes.Buffer
 	if code, err := machine.Run(ctx, linux, machine.ExecRequest{Argv: []string{"ls", "/sys/class/net"}}, nil, &out, &out); err != nil || code != 0 {
 		t.Fatalf("ls /sys/class/net: exit %d, %v\n%s", code, err, out.String())
@@ -129,13 +126,21 @@ func TestLinuxBesideMacOS(t *testing.T) {
 	}
 }
 
-// linuxDriver is the vz driver for the Linux suites, and the base they run,
-// or skips.
-func linuxDriver(t *testing.T) (*local.Driver, string) {
+// linuxDriver is the vz driver for the Linux suites, configured with the base
+// their fresh VMs start from, or skips.
+func linuxDriver(t *testing.T) *local.Driver {
 	t.Helper()
 	ref := os.Getenv(LinuxBaseEnv)
 	if ref == "" {
 		t.Skipf("$%s names no Linux base", LinuxBaseEnv)
+	}
+	if ref == "default" {
+		ref = ""
+	}
+	// Checked here, though the driver parses it only when it makes a
+	// fresh VM, so a bad base fails the test before it boots anything.
+	if _, err := parseLinuxBase(ref); err != nil {
+		t.Fatal(err)
 	}
 	if os.Getenv(AgentEnv) == "" {
 		t.Fatalf("$%s names no linux/arm64 disco-vm to boot the guest with", AgentEnv)
@@ -148,11 +153,11 @@ func linuxDriver(t *testing.T) (*local.Driver, string) {
 	driver, err := local.New(machine.Config{
 		Dir:         dir,
 		ShimCommand: []string{binary, "--root", dir, "--driver", "vz", "shim"},
-	}, &Hypervisor{})
+	}, &Hypervisor{base: ref})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return driver, ref
+	return driver
 }
 
 func TestLeaseFor(t *testing.T) {

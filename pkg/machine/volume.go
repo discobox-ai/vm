@@ -13,7 +13,7 @@ type Volume string
 
 const (
 	// VolumeData is the instance's own: made at Create, kept across stop and
-	// start, removed by Destroy, and never part of an image.
+	// start, removed by Destroy, and never part of a committed VM.
 	VolumeData Volume = "data"
 	// VolumeCache is a private clone of a cache key's current generation,
 	// made at Create, which only SaveCache publishes.

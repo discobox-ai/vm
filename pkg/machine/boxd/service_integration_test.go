@@ -30,16 +30,22 @@ func TestService(t *testing.T) {
 	}
 	d := New(machine.Config{Keys: machine.KeyFromEnv("boxd")})
 	ctx := context.Background()
-	image := os.Getenv(BaseEnv)
-	if image == "" {
-		installed, err := snapshotOfBase(ctx, d, randomID())
+	var from machine.Instance
+	if name := os.Getenv(FromEnv); name != "" {
+		found, err := d.Instance(ctx, name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		image = installed.ID
-		t.Cleanup(func() { _ = d.DeleteImage(context.Background(), image) })
+		from = found
+	} else {
+		committed, err := commitFresh(ctx, d, "service-base-"+randomID()[:8])
+		if err != nil {
+			t.Fatal(err)
+		}
+		from = committed
+		t.Cleanup(func() { _ = d.Destroy(context.Background(), committed) })
 	}
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "service-" + randomID()[:8], ImageID: image, GuestOS: machine.Linux})
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "service-" + randomID()[:8], From: &from})
 	if err != nil {
 		t.Fatal(err)
 	}

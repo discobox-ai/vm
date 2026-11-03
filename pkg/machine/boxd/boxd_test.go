@@ -3,7 +3,6 @@ package boxd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"runtime"
@@ -20,10 +19,10 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// BaseEnv names an image of the default project by its ID, a snapshot
-// dvm-default--<ID>, for the real-boxd test to start from. Unset, it starts
-// from boxd's default image.
-const BaseEnv = "DISCO_VM_BOXD_BASE"
+// FromEnv names a committed VM of the default project for the real-boxd
+// test to start from. Unset, it starts from a fresh VM of boxd's default
+// image.
+const FromEnv = "DISCO_VM_BOXD_FROM"
 
 // TestConformance runs the conformance suite against boxd itself. It needs an
 // account, so it runs only where BOXD_API_KEY is set.
@@ -37,7 +36,7 @@ func TestConformance(t *testing.T) {
 		// back after one.
 		ScratchDir: "/var/lib",
 	}
-	cfg.Image = os.Getenv(BaseEnv)
+	cfg.From = os.Getenv(FromEnv)
 	machinetest.Run(t, New(machine.Config{Keys: machine.KeyFromEnv("boxd")}), cfg)
 }
 
@@ -56,6 +55,17 @@ func TestConformanceFakeAPI(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	d, fake := fakeDriver(t, dir)
+	// Registered first, so it runs once the suite's own cleanups have.
+	t.Cleanup(func() {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		if left := len(fake.vms); left != 0 {
+			t.Errorf("%d machines were left behind", left)
+		}
+		if left := len(fake.snapshots); left != 0 {
+			t.Errorf("%d snapshots were left behind", left)
+		}
+	})
 
 	machinetest.Run(t, d, machinetest.Config{
 		// Not the fake's default size, so every clone is made at its own.
@@ -67,36 +77,24 @@ func TestConformanceFakeAPI(t *testing.T) {
 			return fakeKeyed(t, fake, machine.DefaultProject, keys)
 		},
 	})
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if left := len(fake.vms); left != 0 {
-		t.Errorf("%d machines were left behind", left)
-	}
-	// The first snapshot was deleted to show the second stands alone.
-	if left := len(fake.snapshots); left != 2 {
-		t.Errorf("%d snapshots remain, want the 2 the suite has yet to delete", left)
-	}
 }
 
-// snapshotOfBase makes the image id, as every boxd image is made: a snapshot
-// of an instance of boxd's default image.
-func snapshotOfBase(ctx context.Context, d *Driver, id string) (machine.Image, error) {
-	bases, err := d.Bases(ctx)
-	if err != nil || len(bases) == 0 {
-		return machine.Image{}, fmt.Errorf("bases = %v, %w", bases, err)
-	}
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "for-" + id[:8], Base: &bases[0], GuestOS: machine.Linux})
+// commitFresh makes the committed VM name, as every boxd one is made: a
+// fresh VM of the driver's image, committed.
+func commitFresh(ctx context.Context, d *Driver, name string) (machine.Instance, error) {
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: name})
 	if err != nil {
-		return machine.Image{}, err
+		return machine.Instance{}, err
 	}
-	return d.Commit(ctx, inst, machine.Image{ID: id, GuestOS: machine.Linux})
+	return d.Commit(ctx, inst)
 }
 
-// TestTagsAreSnapshots checks that a tag is a snapshot of its own beside the
-// image's, named so that a listing says what it is and the ref reads back,
-// that moving a tag deletes it from the other image, and that untagging
-// deletes only it.
-func TestTagsAreSnapshots(t *testing.T) {
+// TestCommittedVMsAreSnapshots checks that a committed VM is a snapshot under
+// its name and no machine, that its name is taken from machines too, that a
+// VM created from it outlives its removal, that a committed VM never boots or
+// commits again, and that what disco-vm or anyone else named otherwise is
+// not listed.
+func TestCommittedVMsAreSnapshots(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
@@ -108,101 +106,145 @@ func TestTagsAreSnapshots(t *testing.T) {
 	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
 
-	base, err := snapshotOfBase(ctx, d, "0123456789abcdef")
-	if err != nil {
-		t.Fatal(err)
-	}
-	other, err := snapshotOfBase(ctx, d, "fedcba9876543210")
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := func() []string {
-		fake.mu.Lock()
-		defer fake.mu.Unlock()
-		if len(fake.vms) != 0 {
-			t.Fatalf("%d machines were left behind", len(fake.vms))
-		}
-		var names []string
-		for name := range fake.snapshots {
-			names = append(names, name)
-		}
-		slices.Sort(names)
-		return names
-	}
-	if got, want := names(), []string{"dvm-default--0123456789abcdef", "dvm-default--fedcba9876543210"}; !slices.Equal(got, want) {
-		t.Fatalf("image snapshots %v, want %v", got, want)
-	}
-	// Every call the tags make is reported, with its answer and its time.
+	// Every call is reported, with its answer and its time.
 	var calls strings.Builder
 	machine.SetDebug(&calls)
 	t.Cleanup(func() { machine.SetDebug(nil) })
-	defer func() {
-		for _, want := range []string{"boxd CreateVmFromSnapshot {snapshot:", "boxd GetSnapshot {name:\"dvm-default--0123456789abcdef--t-discobox-2fbase-3alatest\"", "status:\"ready\"", "boxd DeleteSnapshot {name:"} {
-			if !strings.Contains(calls.String(), want) {
-				t.Errorf("debug output lacks %q:\n%s", want, calls.String())
-			}
-		}
-	}()
-	for _, tag := range []machine.Tag{
-		{Ref: "discobox/base:latest", Image: other.ID},
-		{Ref: "discobox/base:latest", Image: base.ID},
-		{Ref: "discobox-base:v1.0", Image: base.ID},
-		{Ref: "discobox/base:latest", Image: base.ID},
-	} {
-		if err := d.Tag(ctx, tag.Ref, tag.Image); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want := []string{
-		"dvm-default--0123456789abcdef",
-		"dvm-default--0123456789abcdef--t-discobox-2dbase-3av1-2e0",
-		"dvm-default--0123456789abcdef--t-discobox-2fbase-3alatest",
-		"dvm-default--fedcba9876543210",
-	}
-	if got := names(); !slices.Equal(got, want) {
-		t.Fatalf("snapshots %v, want %v", got, want)
-	}
-	tags, err := d.Tags(ctx)
+	base, err := commitFresh(ctx, d, "base")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []machine.Tag{{Ref: "discobox-base:v1.0", Image: base.ID}, {Ref: "discobox/base:latest", Image: base.ID}}; !slices.Equal(tags, want) {
-		t.Fatalf("tags %v, want %v", tags, want)
+	machine.SetDebug(nil)
+	for _, want := range []string{"boxd CreateVm {name:\"dvm-default--base\"", "image_ref:\"ubuntu-24.04\"", "boxd CreateSnapshot {vm:", "status:\"ready\"", "boxd DestroyVm {vm_id:"} {
+		if !strings.Contains(calls.String(), want) {
+			t.Errorf("debug output lacks %q:\n%s", want, calls.String())
+		}
 	}
-	if images, err := d.Images(ctx); err != nil || len(images) != 2 {
-		t.Fatalf("images %v, %v; want the two, and no tag's", images, err)
+	if base.Name != "base" || base.ID == "" || base.GuestOS != machine.Linux {
+		t.Fatalf("committed %+v", base)
 	}
-	if err := d.Untag(ctx, "discobox/base:latest"); err != nil {
-		t.Fatal(err)
+	state := func() (vms, snaps []string) {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		for _, v := range fake.vms {
+			vms = append(vms, v.name)
+		}
+		for name := range fake.snapshots {
+			snaps = append(snaps, name)
+		}
+		slices.Sort(vms)
+		slices.Sort(snaps)
+		return vms, snaps
 	}
-	if got := names(); len(got) != 3 || slices.Contains(got, want[2]) {
-		t.Fatalf("snapshots %v after untagging one of two", got)
+	if vms, snaps := state(); len(vms) != 0 || !slices.Equal(snaps, []string{"dvm-default--base"}) {
+		t.Fatalf("machines %v and snapshots %v, want none and the committed VM's", vms, snaps)
+	}
+	fake.mu.Lock()
+	snapID := fake.snapshots["dvm-default--base"].id
+	fake.mu.Unlock()
+	if base.ID != snapID {
+		t.Fatalf("the committed VM's ID is %s, not its snapshot's, %s", base.ID, snapID)
+	}
+	if got, err := d.Instance(ctx, "base"); err != nil || got.ID != base.ID {
+		t.Fatalf("instance base = %+v, %v; want the snapshot", got, err)
+	}
+	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "base"}); !errors.Is(err, machine.ErrExists) {
+		t.Fatalf("a fresh VM of a committed VM's name: %v, want ErrExists", err)
+	}
+	if _, err := d.Boot(ctx, base, machine.BootOptions{}); !errors.Is(err, machine.ErrCommitted) {
+		t.Fatalf("boot of a committed VM: %v, want ErrCommitted", err)
+	}
+	if _, err := d.Commit(ctx, base); !errors.Is(err, machine.ErrCommitted) {
+		t.Fatalf("commit of a committed VM: %v, want ErrCommitted", err)
+	}
+	if _, err := d.Attach(ctx, base); !errors.Is(err, machine.ErrNotRunning) {
+		t.Fatalf("attach to a committed VM: %v, want ErrNotRunning", err)
+	}
+	// Whatever boxd answers GetVm of a snapshot's ID, a committed VM is not
+	// running, so the engine reads it as stopped.
+	fake.snapshotIDRefused.Store(true)
+	if _, err := d.Attach(ctx, base); !errors.Is(err, machine.ErrNotRunning) {
+		t.Fatalf("attach to a committed VM whose ID GetVm refuses: %v, want ErrNotRunning", err)
+	}
+	fake.snapshotIDRefused.Store(false)
+	if _, err := d.Service(ctx, base); !errors.Is(err, machine.ErrCommitted) {
+		t.Fatalf("the service of a committed VM: %v, want ErrCommitted", err)
 	}
 
-	// A snapshot deleted behind the driver's back is an image that is gone.
+	// What is not a VM's name in the project is not listed: an image's
+	// snapshot and a tag's from before, another project's, and one the
+	// account made by hand.
 	fake.mu.Lock()
-	delete(fake.snapshots, "dvm-default--fedcba9876543210")
+	for _, name := range []string{
+		"dvm-default--" + strings.Repeat("ab", 32),
+		"dvm-default--0123456789abcdef--t-discobox-2fbase-3alatest",
+		"dvm-other--base",
+		"hand-made",
+	} {
+		fake.snapshots[name] = &fakeSnapshot{id: "snap_" + name, name: name, dir: t.TempDir()}
+	}
 	fake.mu.Unlock()
-	if _, err := d.Image(ctx, other.ID); !errors.Is(err, machine.ErrNotFound) {
-		t.Fatalf("an image whose snapshot was deleted: %v, want ErrNotFound", err)
+	all, err := d.Instances(ctx)
+	if err != nil || len(all) != 1 || all[0].Name != "base" {
+		t.Fatalf("instances %+v, %v; want base alone", all, err)
+	}
+
+	copied, err := d.Create(ctx, machine.InstanceSpec{Name: "copy", From: &base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), copied) })
+	if copied.ID == base.ID || copied.From != "" {
+		t.Fatalf("a VM created from a committed one: %+v", copied)
+	}
+	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "copy-of-copy", From: &copied}); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("a VM created from a machine, which boxd cannot restore: %v, want ErrNotFound", err)
+	}
+	if err := d.Destroy(ctx, base); err != nil {
+		t.Fatal(err)
+	}
+	if vms, snaps := state(); !slices.Equal(vms, []string{"dvm-default--copy"}) || slices.Contains(snaps, "dvm-default--base") {
+		t.Fatalf("machines %v and snapshots %v after removing the committed VM", vms, snaps)
+	}
+	if _, err := d.Instance(ctx, "copy"); err != nil {
+		t.Fatalf("the copy after its committed VM's removal: %v", err)
+	}
+	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "again", From: &base}); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("a VM created from a removed committed VM: %v, want ErrNotFound", err)
 	}
 }
 
-func TestEscapeRef(t *testing.T) {
-	for _, ref := range []string{"a:latest", "org/app_x:V1.0-rc", "x-y:z"} {
-		escaped := escapeRef(ref)
-		for _, r := range escaped {
-			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
-				t.Fatalf("%q escapes to %q, which has %q", ref, escaped, r)
-			}
-		}
-		if back, ok := unescapeRef(escaped); !ok || back != ref {
-			t.Fatalf("%q escapes to %q, which reads back as %q, %v", ref, escaped, back, ok)
-		}
+// TestFreshVMsUseTheConfiguredImage checks that a fresh VM is made from the
+// driver's configured image, and from boxd's default one when none is.
+func TestFreshVMsUseTheConfiguredImage(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
-	for _, bad := range []string{"a-", "a-z1", "-4"} {
-		if _, ok := unescapeRef(bad); ok {
-			t.Errorf("%q read back", bad)
+	dir, err := os.MkdirTemp("", "boxd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	d, fake := fakeDriver(t, dir)
+	ctx := context.Background()
+	for _, base := range []string{"", "debian-13"} {
+		d.base = base
+		inst, err := d.Create(ctx, machine.InstanceSpec{Name: "fresh"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fake.mu.Lock()
+		image := fake.vms[inst.ID].imageRef
+		fake.mu.Unlock()
+		want := base
+		if want == "" {
+			want = fake.defaultImage
+		}
+		if image != want {
+			t.Errorf("configured %q: made from %q, want %q", base, image, want)
+		}
+		if err := d.Destroy(ctx, inst); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
@@ -341,8 +383,7 @@ func TestCreateUndone(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	d, fake := fakeDriver(t, dir)
 	ctx := context.Background()
-	base := machine.Base{Name: "ubuntu-24.04", ID: "ubuntu-24.04", GuestOS: machine.Linux, Options: map[string]string{"image": "ubuntu-24.04"}}
-	spec := machine.InstanceSpec{Name: "first", GuestOS: machine.Linux, Base: &base}
+	spec := machine.InstanceSpec{Name: "first"}
 	fake.mu.Lock()
 	fake.proxyErr = errors.New("proxy unavailable")
 	fake.mu.Unlock()

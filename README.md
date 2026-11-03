@@ -1,7 +1,7 @@
 # disco-vm
 
-Run OS images as VMs, and snapshot them as new images, from one codebase and
-one command line:
+Run VMs, fresh or from committed ones, and commit them to make more, from one
+codebase and one command line:
 
 - **Windows guests on Windows**, through Host Compute Service. There is no
   Hyper-V manager, no Windows Sandbox, and no WSL, so it works on Home.
@@ -17,15 +17,15 @@ disco-vm works on its own, and it is also meant to become a
 embeds `pkg/engine` as a library.
 
 > **Status: the shell.** Everything above the hypervisor is built and tested on
-> every OS through a `fake` driver. That covers the CLI, instance lifecycle,
-> snapshots, the local driver's store and its shim per VM, and the guest agent
+> every OS through a `fake` driver. That covers the CLI, the VM lifecycle,
+> commits, the local driver's store and its shim per VM, and the guest agent
 > and its protocol. The `vz` driver runs macOS 27 guests on Apple silicon, with a
 > native window (`--gui`) ([docs/drivers/vz.md](docs/drivers/vz.md)). The
 > `hcs` driver's brief is [docs/drivers/hcs.md](docs/drivers/hcs.md). The
-> `boxd` driver runs boxd's own images and snapshots by hand, and passes the
+> `boxd` driver runs fresh VMs of boxd's images by hand, and passes the
 > conformance suite against a fake of boxd's API; `internal/e2e` does not run
 > on it yet (see [docs/drivers/boxd.md](docs/drivers/boxd.md)). The `docker`
-> driver runs any registry image (see
+> driver makes fresh VMs of a registry image it is configured with (see
 > [docs/drivers/docker.md](docs/drivers/docker.md)).
 
 List the drivers compiled into the current binary, then select one with the
@@ -36,25 +36,28 @@ disco-vm drivers
 disco-vm --driver docker info
 ```
 
-## Images are snapshots
+## There are only VMs
 
-There is no image build. An image is an install from media (hcs, vz), or a
-snapshot of a stopped instance; a driver may also have bases that run with
-no image at all (boxd's images and snapshots, any Docker registry image).
-Shape an image by running one, changing the guest through `exec` and `cp`,
-stopping it, and taking a snapshot:
+A VM is made fresh, from the driver's base (its configuration,
+`$DISCO_VM_BASE`: a Docker image, boxd's default image, vz's Linux guest
+image), installed from media (hcs, vz), or created from a committed VM.
+`commit` freezes a stopped VM under its name: create VMs from it, and never
+start it again. There are no images or tags; versions are names
+(ADR 26-11-03-606). Some providers cannot tell a committed VM from a stopped
+one, so keep your own record of which VMs you committed.
 
 ```sh
-disco-vm install -t discobox/windows:11 --media D:\iso\Win11.iso --edition "Windows 11 Pro" --disk 128GiB
-disco-vm run --name dev discobox/windows:11
+disco-vm install win11 --media D:\iso\Win11.iso --edition "Windows 11 Pro" --disk 128GiB
+disco-vm run dev --from win11
 disco-vm cp ./install-toolchains.ps1 dev:C:\setup
 disco-vm exec dev powershell -File C:\setup\install-toolchains.ps1
-disco-vm stop dev && disco-vm snapshot dev discobox/base   # consumes dev
-disco-vm run --name work discobox/base
+disco-vm stop dev && disco-vm commit dev
+disco-vm run work --from dev
 ```
 
-Each image stands alone: removing the one a snapshot came from leaves the
-snapshot whole.
+On most drivers a VM created from a committed one outlives it. On hcs, whose
+disks chain, a committed VM cannot be removed while a VM created from it
+exists.
 
 ## Run macOS guests
 
@@ -63,10 +66,10 @@ virtualization entitlement a VM needs:
 
 ```sh
 go tool task build
-build/disco-vm install -t discobox/macos:27 --disk 128GiB   # downloads the restore image once, ~5 min after that
-build/disco-vm run --name mac discobox/macos:27
+build/disco-vm install macos-27 --disk 128GiB   # downloads the restore image once, ~5 min after that
+build/disco-vm run mac --from macos-27
 build/disco-vm exec mac sw_vers
-build/disco-vm run --gui --name desk discobox/macos:27   # the guest's screen in a window
+build/disco-vm run desk --gui --from macos-27   # the guest's screen in a window
 ```
 
 ## Try it without a hypervisor
@@ -86,7 +89,7 @@ go test ./...          # includes the full CLI lifecycle on the fake driver
 |---|---|
 | `cmd/disco-vm` | the one binary: CLI, guest agent (`guest`), per-VM supervisor (`shim`) |
 | `pkg/machine` | the driver seam; `boxd`, `docker`, `fake`, `hcs` (windows), `vz` (darwin); `local`, the store and shim of the drivers on this host's disk; `machinetest` conformance suite |
-| `pkg/engine` | images, tags, instances, lifecycle, install, and snapshot, kept by the driver |
+| `pkg/engine` | VMs, their lifecycle, install, and commit, kept by the driver |
 | `pkg/guest` | agent protocol, server, and host client |
 | `internal/e2e` | the CLI end to end |
 

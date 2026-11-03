@@ -46,6 +46,9 @@ type fakeAPI struct {
 
 	// down makes GetVm and StopVm fail as an unreachable API does.
 	down atomic.Bool
+	// snapshotIDRefused makes GetVm of a snapshot's ID fail with
+	// InvalidArgument, not NotFound: what boxd answers is not proven.
+	snapshotIDRefused atomic.Bool
 	// proxyErr, when set, is SetProxyPort's answer.
 	proxyErr error
 	// syncFails makes the guest's sync exit 1.
@@ -62,6 +65,8 @@ type fakeAPI struct {
 
 type fakeVM struct {
 	id, name string
+	// imageRef is the image CreateVm made it from.
+	imageRef string
 	dir      string
 	status   string
 	vcpu     uint32
@@ -180,6 +185,10 @@ func (f *fakeAPI) CreateVm(_ context.Context, req *boxdapi.CreateVmRequest) (*bo
 	}
 	v := f.newVM(req.GetName(), req.GetConfig().GetVcpu(), req.GetConfig().GetMemoryBytes())
 	v.isolated, v.networks = req.GetIsolated(), req.GetNetworks()
+	v.imageRef = req.GetImageRef()
+	if v.imageRef == "" {
+		v.imageRef = f.defaultImage
+	}
 	if err := os.MkdirAll(f.root(v), 0o755); err != nil {
 		return nil, err
 	}
@@ -251,6 +260,13 @@ func (f *fakeAPI) GetVm(_ context.Context, req *boxdapi.GetVmRequest) (*boxdapi.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	v, err := f.vm(req.GetVmId())
+	if err != nil && f.snapshotIDRefused.Load() {
+		for _, snap := range f.snapshots {
+			if snap.id == req.GetVmId() {
+				return nil, status.Errorf(codes.InvalidArgument, "%q is a snapshot", snap.id)
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

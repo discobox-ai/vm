@@ -41,16 +41,18 @@ func (*Hypervisor) Check(context.Context) error {
 	return nil
 }
 
-// Prepare clones the parent layer's bundle into the instance, with its own
+// Prepare clones the committed VM's bundle into the instance, with its own
 // machine identity: a macOS guest's machine identifier (and a MAC address on
-// its first boot), a Linux guest's machine ID and MAC address. An instance of
-// a base is a Linux guest made from its image, pulled into the cache first.
-func (*Hypervisor) Prepare(ctx context.Context, inst local.InstanceSpec) error {
-	if inst.Base != nil {
-		return prepareLinux(ctx, inst)
-	}
+// its first boot), a Linux guest's machine ID and MAC address. A fresh VM is
+// a Linux guest made from the configured guest image, pulled into the cache
+// first.
+func (h *Hypervisor) Prepare(ctx context.Context, inst local.InstanceSpec) error {
 	if len(inst.Chain) == 0 {
-		return errors.New("vz: instance has no image")
+		base, err := parseLinuxBase(h.base)
+		if err != nil {
+			return err
+		}
+		return prepareLinux(ctx, inst, base)
 	}
 	src, dst := bundle(inst.Parent().Dir), bundle(inst.Dir)
 	m, err := src.readMeta()

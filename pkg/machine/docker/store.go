@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,160 +17,53 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Image is the image's Docker image, as its tag and its labels say.
-func (d *Driver) Image(ctx context.Context, id string) (machine.Image, error) {
-	img, err := d.api.inspectImage(ctx, imageRepo+":"+imageTag(d.project, id))
-	if isNotFound(err) || (err == nil && !validImageID(id)) {
-		return machine.Image{}, fmt.Errorf("docker: image %s: %w", id, machine.ErrNotFound)
+// A committed VM (ADR 26-11-03-606) is a Docker image in vmRepo tagged
+// `<project>--<name>`, committed from the VM's stopped container and labeled
+// with its name, project, size, the committed VM it came from, and
+// labelCommitted. Its container is removed once it is committed. A VM is
+// the project's container dvm-<project>--<name>, or that image; a name
+// whose image is there is the committed VM's, whatever container a failed
+// commit left.
+
+// vmTag is a committed VM's Docker image: vmRepo:<project>--<name>.
+func vmTag(project, name string) string {
+	return vmRepo + ":" + machine.ResourcePrefix("", project) + name
+}
+
+// committed is the project's committed VM of a name, found false where its
+// Docker image is not there or is not one.
+func (d *Driver) committed(ctx context.Context, name string) (machine.Instance, bool, error) {
+	img, err := d.api.inspectImage(ctx, vmTag(d.project, name))
+	if isNotFound(err) {
+		return machine.Instance{}, false, nil
 	}
 	if err != nil {
-		return machine.Image{}, fmt.Errorf("docker: image %s: %w", id, err)
+		return machine.Instance{}, false, fmt.Errorf("docker: image %s: %w", vmTag(d.project, name), err)
+	}
+	labels := img.Config.Labels
+	if labels[labelCommitted] == "" || labels[labelProject] != d.project || labels[labelInstance] != name {
+		return machine.Instance{}, false, nil
 	}
 	created, _ := time.Parse(time.RFC3339Nano, img.Created)
-	return imageOf(id, img.Config.Labels, created), nil
+	return committedOf(img.ID, name, labels, created), true, nil
 }
 
-// imageOf is an image as its Docker image's labels describe it. Every image
-// is a linux guest's.
-func imageOf(id string, labels map[string]string, created time.Time) machine.Image {
-	img := machine.Image{ID: id, GuestOS: machine.Linux, Created: created}
-	// An image whose labels name another inherited them from the image it
-	// was committed over: it was made before images were labeled.
-	if labels[labelID] == id {
-		img.Comment = labels[labelComment]
-	}
-	return img
+// committedOf is a committed VM as its Docker image's labels describe it.
+func committedOf(id, name string, labels map[string]string, created time.Time) machine.Instance {
+	inst := machine.Instance{ID: id, Name: name, From: labels[labelFrom], GuestOS: machine.Linux, Created: created.UTC()}
+	inst.CPUs, _ = strconv.Atoi(labels[labelCPUs])
+	inst.Memory, _ = strconv.ParseUint(labels[labelMemory], 10, 64)
+	return inst
 }
 
-// validImageID refuses a tag of imageRepo that is not an image's whole ID:
-// a tag from before ADR 26-10-23-417, `<project>--<id prefix>-<random>`, and
-// an instance's readied base, `<project>--base-<name>`, are not.
-func validImageID(id string) bool { return id != "" && !strings.Contains(id, "-") }
-
-// Images lists the Docker images tagged in imageRepo for the project.
-func (d *Driver) Images(ctx context.Context) ([]machine.Image, error) {
-	images, err := d.api.images(ctx, imageRepo)
-	if err != nil {
-		return nil, fmt.Errorf("docker: list images: %w", err)
-	}
-	var out []machine.Image
-	for _, img := range images {
-		for _, tag := range img.RepoTags {
-			id, ok := strings.CutPrefix(tag, imageRepo+":"+imageTag(d.project, ""))
-			if ok && validImageID(id) {
-				out = append(out, imageOf(id, img.Labels, time.Unix(img.Created, 0)))
-			}
-		}
-	}
-	return out, nil
-}
-
-// DeleteImage removes the image's tag, and with it the Docker image unless
-// another tag holds it. The daemon keeps what another image is built on, so
-// no image needs another's.
-func (d *Driver) DeleteImage(ctx context.Context, id string) error {
-	ref := imageRepo + ":" + imageTag(d.project, id)
-	if err := d.api.removeImage(ctx, ref); err != nil {
-		return fmt.Errorf("docker: remove image %s: %w", ref, err)
-	}
-	return nil
-}
-
-// tagPrefix starts every tag of the project: disco-vm/<project>/.
-func (d *Driver) tagPrefix() string { return tagRepo + d.project + "/" }
-
-// Tags lists the images tagged under disco-vm/<project>/, each the Docker
-// image of the image its labels or its imageRepo tag name.
-func (d *Driver) Tags(ctx context.Context) ([]machine.Tag, error) {
-	images, err := d.api.images(ctx, "")
-	if err != nil {
-		return nil, fmt.Errorf("docker: list images: %w", err)
-	}
-	var out []machine.Tag
-	for _, img := range images {
-		image := img.Labels[labelID]
-		for _, tag := range img.RepoTags {
-			if id, ok := strings.CutPrefix(tag, imageRepo+":"+imageTag(d.project, "")); ok && validImageID(id) {
-				image = id
-			}
-		}
-		for _, tag := range img.RepoTags {
-			if ref, ok := strings.CutPrefix(tag, d.tagPrefix()); ok && image != "" {
-				out = append(out, machine.Tag{Ref: ref, Image: image})
-			}
-		}
-	}
-	slices.SortFunc(out, func(a, b machine.Tag) int { return strings.Compare(a.Ref, b.Ref) })
-	return out, nil
-}
-
-// Tag tags the image's Docker image disco-vm/<project>/<ref>.
-func (d *Driver) Tag(ctx context.Context, ref, image string) error {
-	name, tag, _ := strings.Cut(ref, ":")
-	err := d.api.tagImage(ctx, imageRepo+":"+imageTag(d.project, image), d.tagPrefix()+name, tag)
-	if isNotFound(err) {
-		return fmt.Errorf("docker: image %s: %w", image, machine.ErrNotFound)
-	}
-	if err != nil {
-		return fmt.Errorf("docker: tag %s: %w", ref, err)
-	}
-	return nil
-}
-
-// Untag removes the tag, which leaves the Docker image to its image's tag.
-func (d *Driver) Untag(ctx context.Context, ref string) error {
-	if err := d.api.removeImage(ctx, d.tagPrefix()+ref); err != nil {
-		return fmt.Errorf("docker: untag %s: %w", ref, err)
-	}
-	return nil
-}
-
-// Bases is empty: the bases are every image of every registry, which no one
-// lists. Base finds one by name.
-func (*Driver) Bases(context.Context) ([]machine.Base, error) { return nil, nil }
-
-// Base is ref as a base when the daemon has the image, or its registry
-// answers for it. Nothing is pulled until Create. An image or a tag of the
-// driver's, of any project, is never a base, nor is a Docker image ID.
-func (d *Driver) Base(ctx context.Context, ref string) (machine.Base, bool, error) {
-	// A project's images and tags are its own, so neither they nor a Docker
-	// image ID, which could name another project's, are a base.
-	if ref == "" || strings.HasPrefix(ref, imageRepo+":") || strings.HasPrefix(ref, tagRepo) ||
-		strings.HasPrefix(ref, "sha256:") || strings.ToLower(ref) != ref {
-		return machine.Base{}, false, nil
-	}
-	b := machine.Base{Name: ref, ID: ref, GuestOS: machine.Linux, Options: map[string]string{"image": ref}}
-	if img, err := d.api.inspectImage(ctx, ref); err == nil {
-		// The daemon takes an image ID's prefix for a name, and more than one
-		// spelling of a name (docker.io/...), so what it found decides: a
-		// Docker image tagged as one of the driver's, of any project, is never
-		// a base. Its labels do not decide, since an image built on a
-		// snapshot elsewhere inherits them, and would be a base until pulled.
-		if strings.HasPrefix(img.ID, "sha256:"+ref) || slices.ContainsFunc(img.RepoTags, func(tag string) bool {
-			return strings.HasPrefix(tag, imageRepo+":") || strings.HasPrefix(tag, tagRepo)
-		}) {
-			return machine.Base{}, false, nil
-		}
-		return b, true, nil
-	} else if !isNotFound(err) {
-		return machine.Base{}, false, err
-	}
-	switch err := d.api.distribution(ctx, ref); {
-	case err == nil:
-		return b, true, nil
-	case isUnknownToRegistry(err):
-		return machine.Base{}, false, nil
-	default:
-		// The registry could not be asked (DNS, a proxy, a timeout): say
-		// so, rather than that the image does not exist.
-		return machine.Base{}, false, fmt.Errorf("docker: ask the registry for %s: %w", ref, err)
-	}
-}
-
-// Instance is the project's container of the name.
+// Instance is the project's VM of the name: its committed Docker image, or
+// else its container.
 func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, error) {
 	if machine.ValidateName(name) != nil {
 		return machine.Instance{}, fmt.Errorf("instance %q: %w", name, machine.ErrNotFound)
+	}
+	if inst, found, err := d.committed(ctx, name); err != nil || found {
+		return inst, err
 	}
 	c, err := d.api.inspectContainer(ctx, containerName(d.project, name))
 	if isNotFound(err) || (err == nil && !d.managed(c.Config.Labels)) {
@@ -178,31 +72,58 @@ func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, e
 	if err != nil {
 		return machine.Instance{}, err
 	}
-	images, err := d.imageIDs(ctx)
-	if err != nil {
-		return machine.Instance{}, err
-	}
-	return d.instance(c, images), nil
+	return d.instance(c), nil
 }
 
-// managed reports whether a container is an instance of the project's, not an
-// readying base's, something else of the daemon's, or one from before ADR
-// 26-10-23-417, whose labels name no project.
+// managed reports whether a container is a VM of the project's, or a
+// readying base's, which is listed so one a crash leaves is removed; not
+// something else of the daemon's, one from before ADR 26-10-23-417, whose
+// labels name no project, or one from before ADR 26-11-03-606, an instance
+// of an image, which labelImage names: since then only a readying
+// container carries it.
 func (d *Driver) managed(labels map[string]string) bool {
+	if labels[labelImage] != "" && !readyingName(labels[labelInstance]) {
+		return false
+	}
 	return labels[labelInstance] != "" && labels[labelProject] == d.project
 }
 
-// Instances lists the project's containers.
+// readyingName reports whether name is a readying container's,
+// base-<6 hex>.
+func readyingName(name string) bool {
+	rest, ok := strings.CutPrefix(name, "base-")
+	if !ok || len(rest) != 6 {
+		return false
+	}
+	_, err := hex.DecodeString(rest)
+	return err == nil
+}
+
+// Instances lists the project's committed VMs and containers. A container
+// whose name a committed VM holds is what a failed commit left, and is the
+// committed VM's to remove.
 func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
+	images, err := d.api.images(ctx, vmRepo)
+	if err != nil {
+		return nil, fmt.Errorf("docker: list images: %w", err)
+	}
+	var out []machine.Instance
+	taken := map[string]bool{}
+	for _, img := range images {
+		for _, tag := range img.RepoTags {
+			name, ok := strings.CutPrefix(tag, vmTag(d.project, ""))
+			if !ok || machine.ValidateName(name) != nil || img.Labels[labelCommitted] == "" ||
+				img.Labels[labelProject] != d.project || img.Labels[labelInstance] != name {
+				continue
+			}
+			taken[name] = true
+			out = append(out, committedOf(img.ID, name, img.Labels, time.Unix(img.Created, 0)))
+		}
+	}
 	listed, err := d.api.containers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("docker: list containers: %w", err)
 	}
-	images, err := d.imageIDs(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []machine.Instance
 	for _, c := range listed {
 		name := c.ID
 		if len(c.Names) > 0 {
@@ -214,47 +135,27 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 		info := containerInfo{ID: c.ID, Name: "/" + name, Image: c.ImageID}
 		info.Config.Labels = c.Labels
 		info.Created = time.Unix(c.Created, 0).UTC().Format(time.RFC3339Nano)
-		out = append(out, d.instance(info, images))
+		inst := d.instance(info)
+		if taken[inst.Name] {
+			continue
+		}
+		out = append(out, inst)
 	}
 	slices.SortFunc(out, func(a, b machine.Instance) int { return a.Created.Compare(b.Created) })
 	return out, nil
 }
 
-// imageIDs maps each image's Docker image ID to the image's ID.
-func (d *Driver) imageIDs(ctx context.Context) (map[string]string, error) {
-	images, err := d.api.images(ctx, imageRepo)
-	if err != nil {
-		return nil, fmt.Errorf("docker: list images: %w", err)
-	}
-	out := map[string]string{}
-	for _, img := range images {
-		for _, tag := range img.RepoTags {
-			if id, ok := strings.CutPrefix(tag, imageRepo+":"+imageTag(d.project, "")); ok && validImageID(id) {
-				out[img.ID] = id
-			}
-		}
-	}
-	return out, nil
-}
-
-// instance is a container as an instance: its name is the container's, less
-// the project's prefix, and its image the one whose Docker image it runs.
-func (d *Driver) instance(c containerInfo, images map[string]string) machine.Instance {
+// instance is a container as a VM: its name is the container's, less the
+// project's prefix, and its labels say the rest.
+func (d *Driver) instance(c containerInfo) machine.Instance {
 	labels := c.Config.Labels
 	inst := machine.Instance{
 		ID:      c.ID,
 		Name:    strings.TrimPrefix(strings.TrimPrefix(c.Name, "/"), machine.ResourcePrefix(namePrefix, d.project)),
-		Image:   labels[labelImage],
-		ImageID: images[c.Image],
+		From:    labels[labelFrom],
 		GuestOS: machine.Linux,
 	}
 	inst.Created, _ = time.Parse(time.RFC3339Nano, c.Created)
-	if inst.ImageID == "" {
-		inst.ImageID = labels[labelID]
-	}
-	if inst.Image == "" && inst.ImageID != "" {
-		inst.Image = inst.ImageID[:min(12, len(inst.ImageID))]
-	}
 	inst.CPUs, _ = strconv.Atoi(labels[labelCPUs])
 	inst.Memory, _ = strconv.ParseUint(labels[labelMemory], 10, 64)
 	volumesOf(&inst, labels)

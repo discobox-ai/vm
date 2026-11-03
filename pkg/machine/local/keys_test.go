@@ -18,12 +18,12 @@ import (
 func TestEveryCallChecksTheKey(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
-	hv := &fake.Hypervisor{}
+	hv := &fake.Hypervisor{BaseName: "b"}
 	owner, err := local.New(machine.Config{Dir: root}, hv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst, err := owner.Create(ctx, machine.InstanceSpec{Name: "kept", Base: &machine.Base{Name: "b", GuestOS: machine.OS(runtime.GOOS)}, GuestOS: machine.OS(runtime.GOOS)})
+	inst, err := owner.Create(ctx, machine.InstanceSpec{Name: "kept"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,20 +31,12 @@ func TestEveryCallChecksTheKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	img := machine.Image{ID: "0123456789abcdef", GuestOS: inst.GuestOS}
 	calls := map[string]func() error{
-		"Check":       func() error { return d.Check(ctx) },
-		"Install":     func() error { _, err := d.Install(ctx, machine.InstallSpec{GuestOS: inst.GuestOS}, img); return err },
-		"Image":       func() error { _, err := d.Image(ctx, img.ID); return err },
-		"Images":      func() error { _, err := d.Images(ctx); return err },
-		"DeleteImage": func() error { return d.DeleteImage(ctx, img.ID) },
-		"Tags":        func() error { _, err := d.Tags(ctx); return err },
-		"Tag":         func() error { return d.Tag(ctx, "a:b", img.ID) },
-		"Untag":       func() error { return d.Untag(ctx, "a:b") },
-		"Bases":       func() error { _, err := d.Bases(ctx); return err },
-		"Base":        func() error { _, _, err := d.Base(ctx, "b"); return err },
-		"Create": func() error {
-			_, err := d.Create(ctx, machine.InstanceSpec{Name: "new", Base: &machine.Base{Name: "b", GuestOS: machine.OS(runtime.GOOS)}})
+		"Check":   func() error { return d.Check(ctx) },
+		"Install": func() error { _, err := d.Install(ctx, machine.InstallSpec{GuestOS: inst.GuestOS}, "new"); return err },
+		"Create":  func() error { _, err := d.Create(ctx, machine.InstanceSpec{Name: "new"}); return err },
+		"CreateFrom": func() error {
+			_, err := d.Create(ctx, machine.InstanceSpec{Name: "new", From: &inst})
 			return err
 		},
 		"Instance":   func() error { _, err := d.Instance(ctx, inst.Name); return err },
@@ -53,7 +45,7 @@ func TestEveryCallChecksTheKey(t *testing.T) {
 		"Boot":       func() error { _, err := d.Boot(ctx, inst, machine.BootOptions{}); return err },
 		"Start":      func() error { _, err := d.Start(ctx, inst, machine.BootOptions{}); return err },
 		"Attach":     func() error { _, err := d.Attach(ctx, inst); return err },
-		"Commit":     func() error { _, err := d.Commit(ctx, inst, img); return err },
+		"Commit":     func() error { _, err := d.Commit(ctx, inst); return err },
 		"Service":    func() error { _, err := d.Service(ctx, inst); return err },
 		"IssueKey":   func() error { _, err := d.IssueKey(ctx, machine.IssueRequest{Name: "k", TTL: time.Hour}); return err },
 		"IssuedKeys": func() error { _, err := d.IssuedKeys(ctx, ""); return err },
@@ -74,12 +66,12 @@ func TestEveryCallChecksTheKey(t *testing.T) {
 func TestAKeyIsItsProjects(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
-	hv := &fake.Hypervisor{}
+	hv := &fake.Hypervisor{BaseName: "b"}
 	other, err := local.New(machine.Config{Dir: root, Project: "other"}, hv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	theirs, err := other.Create(ctx, machine.InstanceSpec{Name: "theirs", Base: &machine.Base{Name: "b", GuestOS: machine.OS(runtime.GOOS)}, GuestOS: machine.OS(runtime.GOOS)})
+	theirs, err := other.Create(ctx, machine.InstanceSpec{Name: "theirs"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,12 +96,12 @@ func TestAKeyIsItsProjects(t *testing.T) {
 	if _, err := other.Instance(ctx, "theirs"); err != nil {
 		t.Fatalf("their instance: %v", err)
 	}
-	img, err := other.Install(ctx, machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"}, machine.Image{ID: "00112233445566778899aabbccddeeff", GuestOS: machine.OS(runtime.GOOS)})
+	installed, err := other.Install(ctx, machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"}, "installed")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := keyed.Create(ctx, machine.InstanceSpec{Name: "stolen", ImageID: img.ID, GuestOS: img.GuestOS}); !errors.Is(err, machine.ErrNotFound) {
-		t.Fatalf("an instance of another project's image: %v, want ErrNotFound", err)
+	if _, err := keyed.Create(ctx, machine.InstanceSpec{Name: "stolen", From: &installed}); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("a VM created from another project's committed VM: %v, want ErrNotFound", err)
 	}
 
 	// An unreadable record authorizes nothing and breaks nothing.

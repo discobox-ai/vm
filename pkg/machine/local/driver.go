@@ -2,7 +2,7 @@ package local
 
 import (
 	"context"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,7 +17,7 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Driver keeps a Hypervisor's images, tags, and instances in a directory.
+// Driver keeps a Hypervisor's VMs, committed or not, in a directory.
 type Driver struct {
 	hv      Hypervisor
 	dir     string
@@ -63,346 +63,140 @@ func (d *Driver) Check(ctx context.Context) error {
 	return d.hv.Check(ctx)
 }
 
-// Bases is the hypervisor's.
-func (d *Driver) Bases(ctx context.Context) ([]machine.Base, error) {
-	if err := d.authorize(ctx); err != nil {
-		return nil, err
-	}
-	return d.hv.Bases(ctx, d.cacheDir())
-}
-
 // cacheDir is where the hypervisor caches what it downloads: media, and
 // guest images.
 func (d *Driver) cacheDir() string { return filepath.Join(d.dir, "cache", d.hv.Name()) }
 
-// Base is the base the hypervisor lists that ref names.
-func (d *Driver) Base(ctx context.Context, ref string) (machine.Base, bool, error) {
-	if err := d.authorize(ctx); err != nil {
-		return machine.Base{}, false, err
-	}
-	return d.hv.Base(ctx, d.cacheDir(), ref)
-}
-
 const (
-	// imageFile is an image's record. It keeps the name it had when images
-	// were layers, as does the directory the images are in.
-	imageFile    = "layer.json"
 	instanceFile = "instance.json"
-	payloadDir   = "payload"
-	machineDir   = "machine"
+	// fromName holds the ID of the VM an instance is created from, written
+	// before its disk is, for the moment before its record is.
+	fromName   = "from"
+	payloadDir = "payload"
+	machineDir = "machine"
 )
 
-func (d *Driver) imagesDir() string            { return filepath.Join(d.dir, "images", "layers") }
-func (d *Driver) imageDir(id string) string    { return filepath.Join(d.imagesDir(), id) }
-func (d *Driver) tagsDir() string              { return filepath.Join(d.dir, "images", "tags", d.project) }
 func (d *Driver) instancesDir() string         { return filepath.Join(d.dir, "instances") }
 func (d *Driver) instanceDir(id string) string { return filepath.Join(d.instancesDir(), id) }
+func (d *Driver) machineDir(id string) string  { return filepath.Join(d.instanceDir(id), machineDir) }
 func (d *Driver) namesDir() string             { return filepath.Join(d.instancesDir(), ".names", d.project) }
-
-// imageRecord is an image's layer.json.
-type imageRecord struct {
-	machine.Image
-	Project string `json:"project"`
-	// Parent is the image whose disk this one's differences over, kept only
-	// for a hypervisor that Chains. It is the driver's alone: above the
-	// seam an image has no parent.
-	Parent string `json:"parent,omitempty"`
+func (d *Driver) fromFile(id string) string    { return filepath.Join(d.instanceDir(id), fromName) }
+func (d *Driver) recordFile(id string) string  { return filepath.Join(d.instanceDir(id), instanceFile) }
+func (d *Driver) writeRecord(rec instanceRecord) error {
+	return fsutil.WriteJSON(d.recordFile(rec.ID), rec)
 }
 
-// instanceRecord is an instance's instance.json.
+// instanceRecord is a VM's instance.json.
 type instanceRecord struct {
 	machine.Instance
 	Project string `json:"project"`
-	// Layer is the image of an instance made when images were layers,
-	// read as its ImageID.
-	Layer string `json:"layer,omitempty"`
+	// FromID is the ID of the committed VM this one was created from, by
+	// which a chain is walked: the driver's own, since a name is reused
+	// once its VM is removed.
+	FromID string `json:"fromID,omitempty"`
 }
 
-func (d *Driver) readRecord(id string) (imageRecord, error) {
-	if !validID(id) {
-		return imageRecord{}, fmt.Errorf("image %s: %w", id, machine.ErrNotFound)
-	}
-	var rec imageRecord
-	if err := fsutil.ReadJSON(filepath.Join(d.imageDir(id), imageFile), &rec); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return imageRecord{}, fmt.Errorf("image %s: %w", id, machine.ErrNotFound)
-		}
-		return imageRecord{}, err
-	}
-	if rec.ID != id {
-		return imageRecord{}, fmt.Errorf("image %s: %w", id, machine.ErrNotFound)
-	}
-	return rec, nil
+// oldRecord is what an instance.json written before ADR 26-11-03-606 has
+// and a VM's never does: the image it was cloned from, or the base it ran
+// from. Such a record is not read (ADR 26-10-23-417): its disk may
+// difference over an image this driver no longer knows, so neither a VM
+// created from it nor a rewrite of its record could keep that chain.
+type oldRecord struct {
+	ImageID string          `json:"imageID"`
+	Layer   string          `json:"layer"`
+	Base    json.RawMessage `json:"base"`
 }
 
-// readImage reads a published image of the driver's project.
-func (d *Driver) readImage(id string) (machine.Image, error) {
-	rec, err := d.readRecord(id)
-	if err == nil && rec.Project != d.project {
-		err = fmt.Errorf("image %s: %w", id, machine.ErrNotFound)
-	}
-	return rec.Image, err
-}
+func (o oldRecord) old() bool { return o.ImageID != "" || o.Layer != "" || len(o.Base) > 0 }
 
 // validID refuses an ID that is not a plain directory name.
 func validID(id string) bool {
 	return id != "" && !strings.ContainsAny(id, `/\.:`) && filepath.Base(id) == id
 }
 
-// Image is an image whose disk can boot: its own, and, for a hypervisor that
-// Chains, every disk it differences over, are all there.
-func (d *Driver) Image(ctx context.Context, id string) (machine.Image, error) {
-	if err := d.authorize(ctx); err != nil {
-		return machine.Image{}, err
+// readRecord reads a VM's record by its ID, of any project.
+func (d *Driver) readRecord(id string) (instanceRecord, error) {
+	var rec instanceRecord
+	if !validID(id) {
+		return rec, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
 	}
-	img, err := d.readImage(id)
-	if err != nil {
-		return machine.Image{}, err
+	if err := fsutil.ReadJSON(d.recordFile(id), &rec); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return instanceRecord{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
+		}
+		return instanceRecord{}, err
 	}
-	if _, err := d.chain(id); err != nil {
-		return machine.Image{}, err
+	var old oldRecord
+	if err := fsutil.ReadJSON(d.recordFile(id), &old); err != nil {
+		return instanceRecord{}, err
 	}
-	return img, nil
+	if old.old() {
+		return instanceRecord{}, fmt.Errorf("instance %s is from before ADR 26-11-03-606, and not read: %w", id, machine.ErrNotFound)
+	}
+	if rec.ID != id {
+		return instanceRecord{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
+	}
+	return rec, nil
 }
 
-func (d *Driver) Images(ctx context.Context) ([]machine.Image, error) {
-	if err := d.authorize(ctx); err != nil {
-		return nil, err
+// readProject reads a VM of the driver's project by its ID.
+func (d *Driver) readProject(id string) (instanceRecord, error) {
+	rec, err := d.readRecord(id)
+	if err == nil && rec.Project != d.project {
+		err = fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
 	}
-	records, err := d.records()
-	if err != nil {
-		return nil, err
-	}
-	var out []machine.Image
-	for _, rec := range records {
-		if rec.Project == d.project {
-			out = append(out, rec.Image)
-		}
-	}
-	return out, nil
+	return rec, err
 }
 
-// records reads every published image's record, of every project: the disks
-// of every project share the directory. A record that cannot be read is an
-// error, not one left out: DeleteImage reads this list to learn which disks
-// another image needs, and a listing that fails is no answer.
-func (d *Driver) records() ([]imageRecord, error) {
-	entries, err := os.ReadDir(d.imagesDir())
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var out []imageRecord
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-		rec, err := d.readRecord(entry.Name())
-		switch {
-		case err == nil:
-			out = append(out, rec)
-		case errors.Is(err, machine.ErrNotFound):
-			// A directory with no record is one being made or deleted.
-		default:
-			return nil, err
-		}
-	}
-	return out, nil
+// readInstance reads a VM of the driver's project by its ID.
+func (d *Driver) readInstance(id string) (machine.Instance, error) {
+	rec, err := d.readProject(id)
+	return rec.Instance, err
 }
 
-// chain is an image and the images its disk differences over, as the
-// hypervisor sees them, base first. An image whose parent is gone is not
-// found.
-func (d *Driver) chain(id string) ([]Layer, error) {
+// runnable reads a VM that can boot: the project's, and, for a hypervisor
+// that Chains, one whose disk no other VM's differences over, since a boot
+// writes to it. Whether a VM was committed is the caller's to know.
+func (d *Driver) runnable(inst machine.Instance) (instanceRecord, error) {
+	rec, err := d.readProject(inst.ID)
+	if err == nil && d.hv.Chains() {
+		err = d.inUse(rec)
+	}
+	return rec, err
+}
+
+// chain is the committed VM fromID and, for a hypervisor that Chains, the
+// committed VMs its disk differences over, base first. One that is gone is
+// not found.
+func (d *Driver) chain(fromID string) ([]Layer, error) {
 	var chain []Layer
-	child := ""
-	for id != "" {
+	for id := fromID; id != ""; {
 		rec, err := d.readRecord(id)
 		if err != nil {
-			if child != "" {
-				return nil, fmt.Errorf("image %s: the image its disk differences over, %s: %w", short(child), short(id), err)
-			}
-			return nil, err
+			return nil, fmt.Errorf("the committed VM %s: %w", short(id), err)
 		}
-		chain = append([]Layer{{ID: id, Dir: filepath.Join(d.imageDir(id), payloadDir)}}, chain...)
-		child, id = id, d.parent(rec)
+		chain = append([]Layer{{ID: id, Dir: d.machineDir(id)}}, chain...)
+		if !d.hv.Chains() {
+			break
+		}
+		id = rec.FromID
 	}
 	return chain, nil
 }
 
-// parent is the image a record's disk differences over, for a hypervisor
-// that Chains. A record from when images were layers names a parent for every
-// hypervisor, which one that does not chain never needed.
-func (d *Driver) parent(rec imageRecord) string {
-	if !d.hv.Chains() {
-		return ""
-	}
-	return rec.Parent
-}
-
-// pending is an image being written, under a temporary name.
-type pending struct {
-	d   *Driver
-	rec imageRecord
-	tmp string
-}
-
-func (d *Driver) begin(img machine.Image, parent string) (*pending, error) {
-	if !validID(img.ID) {
-		return nil, fmt.Errorf("local: image ID %q is not a directory name", img.ID)
-	}
-	tmp := filepath.Join(d.imagesDir(), ".tmp-"+short(img.ID)+"-"+fsutil.RandomHex(4))
-	if err := os.MkdirAll(filepath.Join(tmp, payloadDir), 0o755); err != nil {
-		return nil, err
-	}
-	rec := imageRecord{Image: img, Project: d.project}
-	if d.hv.Chains() {
-		rec.Parent = parent
-	}
-	return &pending{d: d, rec: rec, tmp: tmp}, nil
-}
-
-func (p *pending) layer() Layer { return Layer{ID: p.rec.ID, Dir: filepath.Join(p.tmp, payloadDir)} }
-
-// publish records the image and renames it into place.
-func (p *pending) publish() (machine.Image, error) {
-	if p.rec.Created.IsZero() {
-		p.rec.Created = time.Now().UTC()
-	}
-	if err := fsutil.WriteJSON(filepath.Join(p.tmp, imageFile), p.rec); err != nil {
-		p.abort()
-		return machine.Image{}, err
-	}
-	if err := os.Rename(p.tmp, p.d.imageDir(p.rec.ID)); err != nil {
-		p.abort()
-		return machine.Image{}, err
-	}
-	return p.rec.Image, nil
-}
-
-func (p *pending) abort() { _ = os.RemoveAll(p.tmp) }
-
-func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, img machine.Image) (machine.Image, error) {
-	if err := d.authorize(ctx); err != nil {
-		return machine.Image{}, err
-	}
-	if !d.hv.Capabilities().Installs(spec.GuestOS) {
-		return machine.Image{}, fmt.Errorf("%s installs no %s guest from media: %w", d.hv.Name(), spec.GuestOS, machine.ErrUnsupported)
-	}
-	p, err := d.begin(img, "")
-	if err != nil {
-		return machine.Image{}, err
-	}
-	err = d.hv.Install(ctx, InstallSpec{InstallSpec: spec, CacheDir: d.cacheDir()}, p.layer())
-	if err != nil {
-		p.abort()
-		return machine.Image{}, err
-	}
-	return p.publish()
-}
-
-// DeleteImage refuses an image whose disk another image's differences over,
-// in any project, since every project's disks share the directory; otherwise
-// it renames the image out of the listing, then removes it.
-func (d *Driver) DeleteImage(ctx context.Context, id string) error {
-	if err := d.authorize(ctx); err != nil {
-		return err
-	}
-	if _, err := d.readImage(id); errors.Is(err, machine.ErrNotFound) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	records, err := d.records()
-	if err != nil {
-		return err
-	}
-	for _, rec := range records {
-		if d.parent(rec) == id {
-			return fmt.Errorf("image %s: image %s's disk differences over its disk; remove that one first: %w", short(id), short(rec.ID), machine.ErrInUse)
-		}
-	}
-	gone := filepath.Join(d.imagesDir(), ".del-"+short(id)+"-"+fsutil.RandomHex(4))
-	if err := os.Rename(d.imageDir(id), gone); err != nil {
-		return err
-	}
-	return os.RemoveAll(gone)
-}
-
-// tagFile is a tag's file: its ref in hex, since a ref's ':' and '/' are not
-// file names everywhere.
-func (d *Driver) tagFile(ref string) string {
-	return filepath.Join(d.tagsDir(), hex.EncodeToString([]byte(ref))+".json")
-}
-
-func (d *Driver) Tags(ctx context.Context) ([]machine.Tag, error) {
-	if err := d.authorize(ctx); err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(d.tagsDir())
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var out []machine.Tag
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		// A tag from when images were layers names its image "layer".
-		var t struct {
-			machine.Tag
-			Layer string `json:"layer"`
-		}
-		if err := fsutil.ReadJSON(filepath.Join(d.tagsDir(), entry.Name()), &t); err == nil && t.Ref != "" {
-			if t.Image == "" {
-				t.Image = t.Layer
-			}
-			out = append(out, t.Tag)
-		}
-	}
-	slices.SortFunc(out, func(a, b machine.Tag) int { return strings.Compare(a.Ref, b.Ref) })
-	return out, nil
-}
-
-func (d *Driver) Tag(ctx context.Context, ref, image string) error {
-	if err := d.authorize(ctx); err != nil {
-		return err
-	}
-	if _, err := d.readImage(image); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(d.tagsDir(), 0o755); err != nil {
-		return err
-	}
-	return fsutil.WriteJSON(d.tagFile(ref), machine.Tag{Ref: ref, Image: image})
-}
-
-func (d *Driver) Untag(ctx context.Context, ref string) error {
-	if err := d.authorize(ctx); err != nil {
-		return err
-	}
-	if err := os.Remove(d.tagFile(ref)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
-// spec is the hypervisor's view of an instance.
-func (d *Driver) spec(inst machine.Instance) (InstanceSpec, error) {
-	if !validID(inst.ID) {
-		return InstanceSpec{}, fmt.Errorf("local: instance ID %q is not a directory name", inst.ID)
+// spec is the hypervisor's view of a VM: its chain only for a hypervisor
+// that Chains, since a copy that does not is a disk of its own once
+// Prepare has made it.
+func (d *Driver) spec(rec instanceRecord) (InstanceSpec, error) {
+	if !validID(rec.ID) {
+		return InstanceSpec{}, fmt.Errorf("local: instance ID %q is not a directory name", rec.ID)
 	}
 	spec := InstanceSpec{
-		ID: inst.ID, Dir: filepath.Join(d.instanceDir(inst.ID), machineDir), GuestOS: inst.GuestOS, Base: inst.Base,
-		CacheDir: d.cacheDir(), Egress: inst.Egress, Data: inst.Data, Cache: inst.Cache,
+		ID: rec.ID, Dir: d.machineDir(rec.ID), GuestOS: rec.GuestOS,
+		CacheDir: d.cacheDir(), Egress: rec.Egress, Data: rec.Data, Cache: rec.Cache,
 	}
-	if inst.Base == nil {
-		chain, err := d.chain(inst.ImageID)
+	if d.hv.Chains() && rec.FromID != "" {
+		chain, err := d.chain(rec.FromID)
 		if err != nil {
 			return InstanceSpec{}, err
 		}
@@ -445,6 +239,8 @@ func (d *Driver) claim(name, id string) error {
 	return fmt.Errorf("an instance named %q: %w", name, machine.ErrExists)
 }
 
+// Create copies the committed VM spec.From, or makes a fresh VM from the
+// hypervisor's base.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	if err := d.authorize(ctx); err != nil {
 		return machine.Instance{}, err
@@ -469,45 +265,109 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if err := checkVolumes(d.hv, spec); err != nil {
 		return machine.Instance{}, err
 	}
-	if spec.Base == nil {
-		if _, err := d.readImage(spec.ImageID); err != nil {
-			return machine.Instance{}, err
-		}
-	}
-	inst := machine.Instance{
-		ID: fsutil.RandomHex(6), Name: spec.Name, Image: spec.Image, ImageID: spec.ImageID, Base: spec.Base,
-		GuestOS: spec.GuestOS, CPUs: spec.CPUs, Memory: spec.Memory,
+	rec := instanceRecord{
+		Project: d.project, ID: fsutil.RandomHex(6), Name: spec.Name, CPUs: spec.CPUs, Memory: spec.Memory,
 		Created: time.Now().UTC(), Forwards: spec.Forwards, Egress: spec.Egress,
 	}
+	if spec.From == nil {
+		guestOS, ok := d.hv.Base()
+		if !ok {
+			return machine.Instance{}, fmt.Errorf("%s has no base to make a fresh VM from; create one from a committed VM: %w", d.hv.Name(), machine.ErrUnsupported)
+		}
+		rec.GuestOS = guestOS
+	} else {
+		from, err := d.readProject(spec.From.ID)
+		if err == nil && from.Name != spec.From.Name {
+			err = fmt.Errorf("instance %s: %w", spec.From.Name, machine.ErrNotFound)
+		}
+		if err != nil {
+			return machine.Instance{}, err
+		}
+		if shim, err := d.openShim(from.ID); err == nil && shim.status(ctx) == nil {
+			return machine.Instance{}, fmt.Errorf("instance %s is running; stop and commit it to create from it", from.Name)
+		}
+		rec.GuestOS, rec.From, rec.FromID = from.GuestOS, from.Name, from.ID
+	}
 	if spec.Data != nil {
-		inst.Data = &machine.DataVolume{Bytes: spec.Data.Bytes}
+		rec.Data = &machine.DataVolume{Bytes: spec.Data.Bytes}
 	}
-	if inst.Base != nil {
-		inst.ImageID = ""
-	}
-	if err := d.claim(inst.Name, inst.ID); err != nil {
+	if err := d.claim(rec.Name, rec.ID); err != nil {
 		return machine.Instance{}, err
 	}
-	hs, err := d.spec(inst)
+	// The VM it is created from is named in its directory before its chain
+	// is read, so a removal of that VM (inUse) sees this one before its
+	// record is written. A removal and a create in the same instant may
+	// both pass, as two cache saves may: nothing takes a lock.
+	var chain []Layer
+	err := os.MkdirAll(d.instanceDir(rec.ID), 0o755)
+	if err == nil && rec.FromID != "" {
+		err = os.WriteFile(d.fromFile(rec.ID), []byte(rec.FromID), 0o600)
+		if err == nil {
+			chain, err = d.chain(rec.FromID)
+		}
+	}
+	var hs InstanceSpec
 	if err == nil {
-		err = os.MkdirAll(d.instanceDir(inst.ID), 0o755)
+		hs, err = d.spec(rec)
+		hs.Chain = chain
 	}
 	if err == nil {
-		err = d.prepare(ctx, &inst, &hs, spec.Cache)
+		err = d.prepare(ctx, &rec.Instance, &hs, spec.Cache)
 	}
 	if err == nil {
 		// The record is the instance: until it is written, nothing lists it.
-		err = fsutil.WriteJSON(filepath.Join(d.instanceDir(inst.ID), instanceFile), instanceRecord{Instance: inst, Project: d.project})
+		err = d.writeRecord(rec)
 	}
 	if err != nil {
 		if hs.Dir != "" {
 			_ = d.hv.Destroy(context.Background(), hs)
 		}
-		_ = os.RemoveAll(d.instanceDir(inst.ID))
-		_ = os.Remove(filepath.Join(d.namesDir(), inst.Name))
+		_ = os.RemoveAll(d.instanceDir(rec.ID))
+		_ = os.Remove(filepath.Join(d.namesDir(), rec.Name))
 		return machine.Instance{}, err
 	}
-	return inst, nil
+	return rec.Instance, nil
+}
+
+// Install lays a committed VM's disk from installation media into a VM
+// directory of its own, and records it committed.
+func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, name string) (machine.Instance, error) {
+	if err := d.authorize(ctx); err != nil {
+		return machine.Instance{}, err
+	}
+	if !d.hv.Capabilities().Installs(spec.GuestOS) {
+		return machine.Instance{}, fmt.Errorf("%s installs no %s guest from media: %w", d.hv.Name(), spec.GuestOS, machine.ErrUnsupported)
+	}
+	if err := machine.ValidateName(name); err != nil {
+		return machine.Instance{}, err
+	}
+	rec := instanceRecord{
+		Project: d.project, ID: fsutil.RandomHex(6), Name: name, GuestOS: spec.GuestOS,
+		CPUs: spec.CPUs, Memory: spec.Memory,
+	}
+	if err := d.claim(rec.Name, rec.ID); err != nil {
+		return machine.Instance{}, err
+	}
+	hs, err := d.spec(rec)
+	if err == nil {
+		err = os.MkdirAll(hs.Dir, 0o755)
+	}
+	if err == nil {
+		err = d.hv.Install(ctx, InstallSpec{InstallSpec: spec, CacheDir: d.cacheDir()}, Layer{ID: rec.ID, Dir: hs.Dir})
+	}
+	if err == nil {
+		rec.Created = time.Now().UTC()
+		err = d.writeRecord(rec)
+	}
+	if err != nil {
+		if hs.Dir != "" {
+			_ = d.hv.Destroy(context.Background(), hs)
+		}
+		_ = os.RemoveAll(d.instanceDir(rec.ID))
+		_ = os.Remove(filepath.Join(d.namesDir(), rec.Name))
+		return machine.Instance{}, err
+	}
+	return rec.Instance, nil
 }
 
 // checkVolumes refuses a volume the hypervisor does not attach, and a cache
@@ -547,27 +407,6 @@ func (d *Driver) prepare(ctx context.Context, inst *machine.Instance, hs *Instan
 		}
 		_ = d.hv.Destroy(ctx, *hs)
 	}
-}
-
-// readInstance reads an instance of the driver's project by its ID.
-func (d *Driver) readInstance(id string) (machine.Instance, error) {
-	var rec instanceRecord
-	if !validID(id) {
-		return machine.Instance{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
-	}
-	if err := fsutil.ReadJSON(filepath.Join(d.instanceDir(id), instanceFile), &rec); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return machine.Instance{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
-		}
-		return machine.Instance{}, err
-	}
-	if rec.Project != d.project || rec.ID != id {
-		return machine.Instance{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
-	}
-	if rec.ImageID == "" {
-		rec.ImageID = rec.Layer
-	}
-	return rec.Instance, nil
 }
 
 func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, error) {
@@ -623,10 +462,24 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 // Destroy ends the instance's shim if one holds it, then removes its disk and
 // everything else of it, then its record, and last its name. A removal that
 // fails partway leaves the record, so the instance is still listed and can be
-// removed again, and a name is never taken twice.
+// removed again, and a name is never taken twice. For a hypervisor that
+// Chains, a VM another VM's record names as the one it was created from is
+// refused, with machine.ErrInUse.
 func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return err
+	}
+	rec, err := d.readRecord(inst.ID)
+	if errors.Is(err, machine.ErrNotFound) {
+		// A record not written yet, or removed already: what a crash left.
+		rec = instanceRecord{Instance: inst}
+	} else if err != nil {
+		return err
+	}
+	if d.hv.Chains() {
+		if err := d.inUse(rec); err != nil {
+			return err
+		}
 	}
 	if shim, err := d.openShim(inst.ID); err == nil {
 		_ = shim.kill(ctx)
@@ -635,9 +488,10 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 		return d.release(inst)
 	}
-	hs := InstanceSpec{ID: inst.ID, Dir: filepath.Join(dir, machineDir), GuestOS: inst.GuestOS, Base: inst.Base, Data: inst.Data, Cache: inst.Cache}
-	if chain, err := d.chain(inst.ImageID); err == nil && inst.Base == nil {
-		hs.Chain = chain
+	hs, err := d.spec(rec)
+	if err != nil {
+		// A chain whose base is gone: its disks are removed all the same.
+		hs = InstanceSpec{ID: rec.ID, Dir: d.machineDir(rec.ID), GuestOS: rec.GuestOS, Data: rec.Data, Cache: rec.Cache}
 	}
 	if err := d.hv.Destroy(ctx, hs); err != nil {
 		return err
@@ -658,6 +512,44 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 		return err
 	}
 	return d.release(inst)
+}
+
+// inUse refuses a VM whose disk another VM's differences over, in any
+// project, since every project's disks share the directory. A record that
+// cannot be read is no answer, and refuses.
+func (d *Driver) inUse(committed instanceRecord) error {
+	entries, err := os.ReadDir(d.instancesDir())
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || entry.Name() == committed.ID {
+			continue
+		}
+		rec, err := d.readRecord(entry.Name())
+		switch {
+		case errors.Is(err, machine.ErrNotFound):
+			// A directory with no record is one being made, whose disk may
+			// already difference over this one's, or one being removed.
+			// One older than staleClaim is what a crashed Create left, as
+			// a name's claim is, and holds nothing.
+			from, err := os.ReadFile(d.fromFile(entry.Name()))
+			if err != nil || string(from) != committed.ID {
+				break
+			}
+			if info, err := os.Stat(d.fromFile(entry.Name())); err == nil && time.Since(info.ModTime()) < staleClaim {
+				return fmt.Errorf("instance %s: a VM is being created from it in %s; try again once it is: %w", committed.Name, d.instanceDir(entry.Name()), machine.ErrInUse)
+			}
+		case err != nil:
+			return err
+		case rec.FromID == committed.ID:
+			return fmt.Errorf("instance %s: %s was created from it, and its disk differences over this one's; remove that one first: %w", committed.Name, rec.Name, machine.ErrInUse)
+		}
+	}
+	return nil
 }
 
 // release gives up an instance's name, if it still names the instance.
@@ -682,7 +574,11 @@ func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.B
 	if opts.GUI && !d.hv.Capabilities().Display {
 		return nil, fmt.Errorf("%s has no display to show: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
-	hs, err := d.spec(inst)
+	rec, err := d.runnable(inst)
+	if err != nil {
+		return nil, err
+	}
+	hs, err := d.spec(rec)
 	if err != nil {
 		return nil, err
 	}
@@ -693,35 +589,33 @@ func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.B
 	return d.hv.Boot(ctx, hs, BootOptions{CPUs: inst.CPUs, Memory: inst.Memory, GUI: opts.GUI, Title: title, Console: opts.Console})
 }
 
-// Commit moves the stopped instance's disk into a new image, publishes it,
-// and removes the instance. For a hypervisor that Chains, the new image's
-// disk differences over the instance's image's, which it records as its
-// parent.
-func (d *Driver) Commit(ctx context.Context, inst machine.Instance, img machine.Image) (machine.Image, error) {
+// Commit freezes the stopped VM in place: the hypervisor removes its volumes
+// and what only a running VM needs, and its record drops them, so its disk
+// is what VMs are created from. Nothing marks it committed: that is the
+// caller's to record.
+func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Instance, error) {
 	if err := d.authorizeInstance(ctx, inst); err != nil {
-		return machine.Image{}, err
+		return machine.Instance{}, err
+	}
+	rec, err := d.readProject(inst.ID)
+	if err != nil {
+		return machine.Instance{}, err
 	}
 	if shim, err := d.openShim(inst.ID); err == nil && shim.status(ctx) == nil {
-		return machine.Image{}, fmt.Errorf("instance %s is running; stop it first", inst.Name)
+		return machine.Instance{}, fmt.Errorf("instance %s is running; stop it first", inst.Name)
 	}
-	hs, err := d.spec(inst)
+	hs, err := d.spec(rec)
 	if err != nil {
-		return machine.Image{}, err
+		return machine.Instance{}, err
 	}
-	p, err := d.begin(img, inst.ImageID)
-	if err != nil {
-		return machine.Image{}, err
+	if err := d.hv.Commit(ctx, hs); err != nil {
+		return machine.Instance{}, err
 	}
-	if err := d.hv.Commit(ctx, hs, p.layer()); err != nil {
-		p.abort()
-		return machine.Image{}, err
+	rec.Data, rec.Cache = nil, nil
+	if err := d.writeRecord(rec); err != nil {
+		return machine.Instance{}, err
 	}
-	committed, err := p.publish()
-	if err != nil {
-		return machine.Image{}, err
-	}
-	_ = d.Destroy(ctx, inst)
-	return committed, nil
+	return rec.Instance, nil
 }
 
 // Service is the hypervisor's address in the guest, and the loopback URL the
@@ -731,7 +625,11 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return machine.Service{}, err
 	}
-	hs, err := d.spec(inst)
+	rec, err := d.runnable(inst)
+	if err != nil {
+		return machine.Service{}, err
+	}
+	hs, err := d.spec(rec)
 	if err != nil {
 		return machine.Service{}, err
 	}

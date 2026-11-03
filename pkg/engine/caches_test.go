@@ -28,12 +28,12 @@ func TestSaveCacheGuards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Install(ctx, engine.InstallOptions{}, "base"); err != nil {
+	if _, err := e.Install(ctx, "base", engine.InstallOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	create := func(name, key string) engine.Instance {
 		t.Helper()
-		inst, err := e.Create(ctx, "base", engine.CreateOptions{Name: name, Cache: &machine.CacheVolume{Key: key}})
+		inst, err := e.Create(ctx, engine.CreateOptions{From: "base", Name: name, Cache: &machine.CacheVolume{Key: key}})
 		if err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
@@ -70,14 +70,14 @@ func TestSaveCacheGuards(t *testing.T) {
 	if caches, err := other.Caches(ctx); err != nil || len(caches) != 0 {
 		t.Fatalf("another project lists caches %+v: %v", caches, err)
 	}
-	if _, err := other.Install(ctx, engine.InstallOptions{}, "base"); err != nil {
+	if _, err := other.Install(ctx, "base", engine.InstallOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	inst, err := other.Create(ctx, "base", engine.CreateOptions{Name: "a", Cache: &machine.CacheVolume{Key: "k"}})
+	inst, err := other.Create(ctx, engine.CreateOptions{From: "base", Name: "a", Cache: &machine.CacheVolume{Key: "k"}})
 	if err != nil || inst.Cache == nil || inst.Cache.Generation != "" {
 		t.Fatalf("another project's instance of k = %+v, %v; want no generation", inst.Cache, err)
 	}
-	if _, err := e.Create(ctx, "base", engine.CreateOptions{Name: "bad", Cache: &machine.CacheVolume{Key: "Bad_Key"}}); err == nil {
+	if _, err := e.Create(ctx, engine.CreateOptions{From: "base", Name: "bad", Cache: &machine.CacheVolume{Key: "Bad_Key"}}); err == nil {
 		t.Fatal("a cache key that is not one was taken")
 	}
 }
@@ -90,14 +90,14 @@ func TestVolumesRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Install(ctx, engine.InstallOptions{}, "base"); err != nil {
+	if _, err := e.Install(ctx, "base", engine.InstallOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	for name, opts := range map[string]engine.CreateOptions{
 		"data":  {Name: "data", Data: &machine.DataVolume{}},
 		"cache": {Name: "cache", Cache: &machine.CacheVolume{Key: "k"}},
 	} {
-		if _, err := e.Create(ctx, "base", opts); !errors.Is(err, machine.ErrUnsupported) {
+		if _, err := e.Create(ctx, withFrom(opts, "base")); !errors.Is(err, machine.ErrUnsupported) {
 			t.Errorf("a %s volume on a driver that attaches none: %v, want ErrUnsupported", name, err)
 		}
 	}
