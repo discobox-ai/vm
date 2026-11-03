@@ -1,7 +1,9 @@
 # 26-11-03-530 — libkrun runs Linux VMs through a launcher, in a runtime pulled by digest that brings its own libc
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-03
+
+Accepted by the owner by merging #40, 2026-11-03.
 
 ## Context
 
