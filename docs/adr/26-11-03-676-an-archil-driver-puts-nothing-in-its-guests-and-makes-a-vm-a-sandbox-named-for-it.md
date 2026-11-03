@@ -1,7 +1,9 @@
 # 26-11-03-676 — An archil driver puts nothing in its guests, and makes a VM a sandbox named for it
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-03
+
+Accepted by the owner by merging #51, 2026-11-03.
 
 ## Context
 
