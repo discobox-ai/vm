@@ -114,12 +114,17 @@ tasks:
       - DISCO_VM_FAKE_NO_COMMIT=1 go test -count=1 {{.RACE}} ./internal/e2e
 
   # CI's windows job: test with Go's own build cache. Depot's GOCACHEPROG
-  # races vet.exe on Windows (#41; see ci.yml). The job clears it, and an empty
-  # value falls back to a go.env file, so check what Go actually uses.
+  # races vet.exe on Windows (#41; see ci.yml). The job clears the variable,
+  # and an empty one falls back to Go's settings files (#49), so this clears
+  # it from the user's GOENV file and GOROOT's go.env, then checks what Go
+  # actually uses. It edits those files: run it only on a CI runner.
   test:local-cache:
-    desc: Run tests, failing first if Go uses a GOCACHEPROG
+    desc: Run tests on CI with Go's own build cache, clearing GOCACHEPROG from Go's settings files first
     cmds:
       - cmd: |
+          go env -u GOCACHEPROG
+          goenv="$(go env GOROOT)/go.env"
+          if grep -q '^GOCACHEPROG=' "$goenv" 2>/dev/null; then sed -i '/^GOCACHEPROG=/d' "$goenv"; fi
           prog="$(go env GOCACHEPROG)"
           if [ -n "$prog" ]; then
             echo "GOCACHEPROG is still set: $prog" >&2

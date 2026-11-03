@@ -85,7 +85,9 @@ jobs:
   # `depot gocache`, which renames each object over its final path even when
   # the object exists. Windows refuses that while vet.exe has the file open,
   # and `go test` then ends in a bare FAIL that names no package (#41). Turn it
-  # back on once Depot fixes the rename.
+  # back on once Depot fixes the rename. The runner may set it in the
+  # environment or in Go's settings files, and an empty variable falls back to
+  # the files (#49): the job clears the variable and test:local-cache the files.
   windows:
     runs-on: depot-windows-2025-4
     timeout-minutes: 30
