@@ -1,0 +1,22 @@
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -741,13 +741,13 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	/* Instead of trying to make the power_off code look like
+-	 * halt when pm_power_off is not set do it the easy way.
++	/* disco-vm: libkrun's x86 machine has no ACPI, so nothing can power
++	 * it off, and a halt spins forever. Its one way out is a reset, which
++	 * libkrun takes as the VM's exit, so a power-off or a halt is one.
+ 	 */
+-	if ((cmd == LINUX_REBOOT_CMD_POWER_OFF) && !kernel_can_power_off()) {
+-		poweroff_fallback_to_halt = true;
+-		cmd = LINUX_REBOOT_CMD_HALT;
+-	}
++	if ((cmd == LINUX_REBOOT_CMD_POWER_OFF || cmd == LINUX_REBOOT_CMD_HALT) &&
++	    !kernel_can_power_off())
++		cmd = LINUX_REBOOT_CMD_RESTART;
+ 
+ 	mutex_lock(&system_transition_mutex);
+ 	switch (cmd) {

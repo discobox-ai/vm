@@ -14,7 +14,13 @@ fail() {
 
 case "$arch" in
 arm64) [ "$(dd if="$out/vmlinux" bs=1 skip=56 count=4 2>/dev/null)" = "ARMd" ] || fail "vmlinux is not an arm64 Image" ;;
-amd64) [ "$(dd if="$out/vmlinux" bs=1 skip=1 count=3 2>/dev/null)" = "ELF" ] || fail "vmlinux is not an ELF kernel" ;;
+amd64)
+    [ "$(dd if="$out/vmlinux" bs=1 skip=1 count=3 2>/dev/null)" = "ELF" ] || fail "vmlinux is not an ELF kernel"
+    # libkrun's kernel (ADR 26-11-03-530 §5): an x86-64 ELF, which libkrun
+    # loads as an external kernel. Only booting it proves more.
+    [ "$(dd if="$out/krun/vmlinux" bs=1 skip=1 count=3 2>/dev/null)" = "ELF" ] || fail "krun/vmlinux is not an ELF kernel"
+    [ "$(od -An -tx1 -j18 -N2 "$out/krun/vmlinux" | tr -d ' ')" = "3e00" ] || fail "krun/vmlinux is not an x86-64 kernel"
+    ;;
 esac
 
 [ "$(e2label "$out/root.ext4")" = "disco-vm-root" ] || fail "root.ext4 is not labeled disco-vm-root"

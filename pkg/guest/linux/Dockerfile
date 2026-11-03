@@ -11,6 +11,58 @@
 # The final stage is the artifact set: vmlinux (uncompressed), initrd.img, and
 # root.ext4 (raw). Built for linux/arm64 (vz on Apple silicon) and linux/amd64
 # (hcs; an Intel Mac), with no per-architecture branch but the kernel's form.
+# The amd64 variant also carries krun/vmlinux, the kernel libkrun boots (ADR
+# 26-11-03-530 §5): libkrunfw's kernel source, patches, and configuration at a
+# pinned release, with what this guest needs added (krun-kernel.config) and
+# one patch of disco-vm's (krun-kernel-poweroff.patch: libkrun's machine has
+# no ACPI, so a power-off is a reset, its one way out), built on the build
+# platform. libkrun boots no kernel without libkrunfw's patches,
+# so it cannot boot Debian's.
+
+# The libkrun kernel, cross-compiled on the build platform. libkrun on arm64
+# is deferred (ADR 26-11-03-530 §10), so another target gets no krun/.
+FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/debian:13-slim AS krun-kernel
+ARG TARGETARCH
+ARG BUILDARCH
+# libkrunfw and the kernel it names, each pinned by its SHA-256.
+ARG LIBKRUNFW_VERSION=5.6.2
+ARG LIBKRUNFW_SHA256=df45d649fcbd07a4d0ca03fa836b2f640fdcf9b40187f3eb7023259c6e83d582
+ARG KERNEL_VERSION=6.12.109
+ARG KERNEL_SHA256=5484e552a334e15019f4aeba89e5b58f04651cf2f4e24e04de9f152f1c38e3fa
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bc bison ca-certificates curl flex gcc libc6-dev libelf-dev libssl-dev make patch python3 xz-utils \
+        $([ "$BUILDARCH" = amd64 ] || echo gcc-x86-64-linux-gnu) \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+COPY krun-kernel.config krun-kernel-poweroff.patch /src/
+RUN set -eux; \
+    mkdir -p /out; \
+    [ "$TARGETARCH" = amd64 ] || exit 0; \
+    cd /src; \
+    curl -fsSL -o libkrunfw.tar.gz "https://github.com/containers/libkrunfw/archive/refs/tags/v${LIBKRUNFW_VERSION}.tar.gz"; \
+    echo "$LIBKRUNFW_SHA256  libkrunfw.tar.gz" | sha256sum -c -; \
+    tar xzf libkrunfw.tar.gz; \
+    fw="/src/libkrunfw-${LIBKRUNFW_VERSION}"; \
+    kernel="linux-${KERNEL_VERSION}"; \
+    [ "$(sed -n 's/^KERNEL_VERSION = //p' "$fw/Makefile")" = "$kernel" ] || { echo "krun kernel: libkrunfw ${LIBKRUNFW_VERSION} names another kernel than ${kernel}" >&2; exit 1; }; \
+    curl -fsSL -o kernel.tar.xz "https://cdn.kernel.org/pub/linux/kernel/v6.x/${kernel}.tar.xz"; \
+    echo "$KERNEL_SHA256  kernel.tar.xz" | sha256sum -c -; \
+    tar xJf kernel.tar.xz; \
+    cd "$kernel"; \
+    for patch in $(find "$fw/patches" -name '0*.patch' | sort) /src/krun-kernel-poweroff.patch; do patch -s -p1 <"$patch"; done; \
+    cross=; [ "$BUILDARCH" = amd64 ] || cross=x86_64-linux-gnu-; \
+    cp "$fw/config-libkrunfw_x86_64" .config; \
+    ARCH=x86_64 scripts/kconfig/merge_config.sh -m .config /src/krun-kernel.config; \
+    make ARCH=x86_64 CROSS_COMPILE="$cross" olddefconfig; \
+    grep -E '^(CONFIG_|# CONFIG_.* is not set$)' /src/krun-kernel.config | while read -r want; do \
+        grep -qx "$want" .config || { echo "krun kernel: olddefconfig changed $want" >&2; exit 1; }; \
+    done; \
+    make ARCH=x86_64 CROSS_COMPILE="$cross" KBUILD_BUILD_TIMESTAMP="libkrunfw ${LIBKRUNFW_VERSION}" \
+        KBUILD_BUILD_USER=disco-vm KBUILD_BUILD_HOST=disco-vm -j"$(nproc)" vmlinux; \
+    mkdir -p /out/krun; cp vmlinux /out/krun/vmlinux; \
+    "${cross}strip" --strip-debug /out/krun/vmlinux; \
+    echo "${kernel#linux-} libkrunfw ${LIBKRUNFW_VERSION}" >/out/krun/version
 
 FROM public.ecr.aws/docker/library/debian:13-slim AS rootfs
 ARG TARGETARCH
@@ -106,7 +158,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=rootfs / /rootfs
 COPY --chmod=0755 assemble verify /usr/local/sbin/
-RUN TARGETARCH="$TARGETARCH" assemble /rootfs /out && TARGETARCH="$TARGETARCH" verify /out
+COPY --from=krun-kernel /out/ /krun-out/
+RUN TARGETARCH="$TARGETARCH" assemble /rootfs /out \
+    && cp -r /krun-out/. /out/ \
+    && TARGETARCH="$TARGETARCH" verify /out
 
 FROM scratch
 COPY --from=assemble /out/ /
