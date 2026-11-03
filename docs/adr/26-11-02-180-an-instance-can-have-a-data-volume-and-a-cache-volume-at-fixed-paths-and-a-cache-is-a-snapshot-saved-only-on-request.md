@@ -1,6 +1,6 @@
 # 26-11-02-180 — An instance can have a data volume and a cache volume at fixed paths, and a cache is a snapshot saved only on request
 
-- **Status**: Accepted
+- **Status**: Accepted (§5's docker row superseded by 26-11-03-782)
 - **Date**: 2026-11-02
 
 ## Context
