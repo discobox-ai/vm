@@ -41,7 +41,7 @@ Archil pauses it.
 | VM | the sandbox `dvm-<project>--<name>`. `Instances` lists the sandboxes under the project's prefix whose rest is a VM name, with each one's size, creation, fence (`GET .../network`), and data disk. Archil does not say which sandbox a fork came from: `From` is set only by the Create that made it. |
 | `Create`, fresh | a sandbox of the base at the size asked, with its fence; then 7302 exposed, a stop, and the data disk. `sandbox_name_conflict` is `ErrExists`. |
 | `Create`, `From` | a fork of the source's sandbox, which must be stopped and have no mounts (commit it first); the spec's fence set (an unfenced spec clears the source's); then 7302 exposed, a stop, and the data disk. A size other than the source's is refused. |
-| `Commit` | a stopped sandbox with mounts is started with none and stopped; then the data disk is deleted. Nothing in the guest is changed, and nothing records the commit. |
+| `Commit` | reported (`Capabilities.Commit`, ADR 26-11-03-868). A stopped sandbox with mounts is started with none and stopped; then the data disk is deleted. Nothing in the guest is changed, and nothing records the commit. |
 | `Destroy` | stop, delete the sandbox, then its data disk. Archil refuses a sandbox with forks (`sandbox_has_forks`): `machine.ErrInUse`. A sandbox already gone still has its data disk removed. |
 | `Boot`, `Start` | start the sandbox with its data disk mounted, or resume a paused one, then wait until a process runs. Archil runs it, so `Start` is `Boot`. A committed VM is not refused: Archil can't tell it. |
 | `Attach` | running or paused is a machine, a paused one resumed by its first exec or copy; anything else is `ErrNotRunning`. |

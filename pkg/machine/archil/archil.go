@@ -63,6 +63,8 @@ func (*Driver) Capabilities() machine.Capabilities {
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
 		Egress:  []machine.EgressFence{machine.EgressNone, machine.EgressAllow},
 		Volumes: []machine.Volume{machine.VolumeData},
+		// A committed VM is its stopped sandbox, and a copy a fork of it.
+		Commit: true,
 	}
 }
 
