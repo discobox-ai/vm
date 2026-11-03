@@ -907,12 +907,20 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// volume, and its cache clone: what it wrote to its root is gone, and
 	// what it wrote to its volumes is not. It is refused while the VM runs,
 	// for a committed VM the provider does not have, and from one of another
-	// guest OS, changing nothing.
-	// A driver that attaches no data volume refuses every upgrade.
+	// guest OS, changing nothing. A driver that does not commit upgrades
+	// only to a fresh root, and refuses every from with ErrUnsupported (ADR
+	// 26-11-03-868). A driver that attaches no data volume refuses every
+	// upgrade.
 	t.Run("an-upgrade", func(t *testing.T) {
+		// to is the committed VM the suite upgrades to, where the driver
+		// commits; else every upgrade is to a fresh root.
+		var to *machine.Instance
+		if caps.Commit {
+			to = &committed
+		}
 		if !caps.Attaches(machine.VolumeData) {
-			inst := create(t, of(committed))
-			if _, err := driver.Upgrade(ctx, inst, &committed); !errors.Is(err, machine.ErrUnsupported) {
+			inst := create(t, copied)
+			if _, err := driver.Upgrade(ctx, inst, to); !errors.Is(err, machine.ErrUnsupported) {
 				t.Fatalf("a driver that attaches no data volume upgraded a VM: %v, want ErrUnsupported", err)
 			}
 			if got, err := driver.Instance(ctx, inst.Name); err != nil || got.ID != inst.ID {
@@ -921,7 +929,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Skip("the driver attaches no data volume")
 		}
 		key := "conformance-" + run + "-upgrade"
-		spec := of(committed)
+		spec := copied
 		spec.Data = &machine.DataVolume{}
 		if caps.Attaches(machine.VolumeCache) {
 			spec.Cache = &machine.CacheVolume{Key: key}
@@ -951,80 +959,89 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("start %s: %v", before.Name, err)
 		}
 		t.Cleanup(func() { _ = m.Kill(context.Background()) })
-		if _, err := driver.Upgrade(ctx, before, &committed); err == nil {
+		if _, err := driver.Upgrade(ctx, before, to); err == nil {
 			t.Fatal("upgraded a running VM")
 		}
 		shutdown(t, m)
 		gone := machine.Instance{ID: "conformance-gone", Name: fmt.Sprintf("conformance-%s-gone", run), GuestOS: guestOS}
-		if _, err := driver.Upgrade(ctx, before, &gone); !errors.Is(err, machine.ErrNotFound) {
-			t.Fatalf("an upgrade from a committed VM the provider does not have: %v, want ErrNotFound", err)
-		}
-		alien := gone
-		alien.GuestOS = machine.Windows
-		if guestOS == machine.Windows {
-			alien.GuestOS = machine.Linux
-		}
-		if _, err := driver.Upgrade(ctx, before, &alien); err == nil {
-			t.Fatalf("upgraded a %s VM from a %s one", guestOS, alien.GuestOS)
+		if !caps.Commit {
+			// A copy of a committed VM is what a driver that does not commit
+			// never makes (ADR 26-11-03-868).
+			if _, err := driver.Upgrade(ctx, before, &gone); !errors.Is(err, machine.ErrUnsupported) {
+				t.Fatalf("an upgrade from a committed VM on a driver that does not commit: %v, want ErrUnsupported", err)
+			}
+		} else {
+			if _, err := driver.Upgrade(ctx, before, &gone); !errors.Is(err, machine.ErrNotFound) {
+				t.Fatalf("an upgrade from a committed VM the provider does not have: %v, want ErrNotFound", err)
+			}
+			alien := gone
+			alien.GuestOS = machine.Windows
+			if guestOS == machine.Windows {
+				alien.GuestOS = machine.Linux
+			}
+			if _, err := driver.Upgrade(ctx, before, &alien); err == nil {
+				t.Fatalf("upgraded a %s VM from a %s one", guestOS, alien.GuestOS)
+			}
 		}
 		if got, err := driver.Instance(ctx, before.Name); err != nil || got.ID != before.ID {
 			t.Fatalf("a refused upgrade changed the VM: %+v, %v; was %+v", got, err, before)
 		}
 
-		// check boots the upgraded VM and finds its volumes kept and its
-		// root new.
-		check := func(t *testing.T, inst machine.Instance, root string) {
+		// check finds the upgraded VM as it should be, then boots it, by
+		// what Upgrade returned and by the Instance from before, which
+		// still names it, and finds its volumes kept and its root new:
+		// root is the committed VM's marker, or empty for a fresh root.
+		check := func(t *testing.T, upgraded machine.Instance, from, root string) {
 			t.Helper()
-			m := boot(t, inst)
-			if got := readMarker(t, m, data+"/data.txt"); got != "kept" {
-				t.Fatalf("the data volume reads %q after an upgrade", got)
+			if upgraded.Name != before.Name || upgraded.GuestOS != before.GuestOS || upgraded.CPUs != before.CPUs || upgraded.Memory != before.Memory {
+				t.Fatalf("upgraded %+v from %+v", upgraded, before)
 			}
-			if spec.Cache != nil {
-				if got := readMarker(t, m, cache+"/cache.txt"); got != "kept" {
-					t.Fatalf("the cache volume reads %q after an upgrade", got)
+			if upgraded.From != "" && upgraded.From != from {
+				t.Fatalf("upgraded from %q, the VM reports it is from %q", from, upgraded.From)
+			}
+			if upgraded.Data == nil || (spec.Cache != nil && (upgraded.Cache == nil || *upgraded.Cache != *before.Cache)) {
+				t.Fatalf("upgraded volumes %+v and %+v, were %+v and %+v", upgraded.Data, upgraded.Cache, before.Data, before.Cache)
+			}
+			if found, err := driver.Instance(ctx, before.Name); err != nil || found.ID != upgraded.ID {
+				t.Fatalf("the upgraded VM is found as %+v, %v; upgraded %+v", found, err, upgraded)
+			}
+			if list, err := driver.Instances(ctx); err != nil || len(slices.DeleteFunc(list, func(i machine.Instance) bool { return i.Name != before.Name })) != 1 {
+				t.Fatalf("the upgraded VM is listed as %+v: %v", list, err)
+			}
+			for _, inst := range []machine.Instance{upgraded, before} {
+				m := boot(t, inst)
+				if got := readMarker(t, m, data+"/data.txt"); got != "kept" {
+					t.Fatalf("the data volume reads %q after an upgrade", got)
 				}
+				if spec.Cache != nil {
+					if got := readMarker(t, m, cache+"/cache.txt"); got != "kept" {
+						t.Fatalf("the cache volume reads %q after an upgrade", got)
+					}
+				}
+				absent(t, m, marker+"/root.txt", "an upgraded VM's new root")
+				if root == "" {
+					absent(t, m, marker+"/proof.txt", "a fresh root")
+				} else if got := readMarker(t, m, marker+"/proof.txt"); got != root {
+					t.Fatalf("the new root reads %q, want %q from the committed VM", got, root)
+				}
+				shutdown(t, m)
 			}
-			absent(t, m, marker+"/root.txt", "an upgraded VM's new root")
-			if root == "" {
-				absent(t, m, marker+"/proof.txt", "a fresh root")
-			} else if got := readMarker(t, m, marker+"/proof.txt"); got != root {
-				t.Fatalf("the new root reads %q, want %q from the committed VM", got, root)
+		}
+		upgraded := before
+		if caps.Commit {
+			upgraded, err = driver.Upgrade(ctx, before, &committed)
+			if err != nil {
+				t.Fatalf("upgrade %s from %s: %v", before.Name, committed.Name, err)
 			}
-			shutdown(t, m)
+			check(t, upgraded, committed.Name, "committed")
 		}
-		upgraded, err := driver.Upgrade(ctx, before, &committed)
-		if err != nil {
-			t.Fatalf("upgrade %s from %s: %v", before.Name, committed.Name, err)
-		}
-		if upgraded.Name != before.Name || upgraded.GuestOS != before.GuestOS || upgraded.CPUs != before.CPUs || upgraded.Memory != before.Memory {
-			t.Fatalf("upgraded %+v from %+v", upgraded, before)
-		}
-		if upgraded.From != "" && upgraded.From != committed.Name {
-			t.Fatalf("upgraded from %s, the VM reports it is from %q", committed.Name, upgraded.From)
-		}
-		if upgraded.Data == nil || (spec.Cache != nil && (upgraded.Cache == nil || *upgraded.Cache != *before.Cache)) {
-			t.Fatalf("upgraded volumes %+v and %+v, were %+v and %+v", upgraded.Data, upgraded.Cache, before.Data, before.Cache)
-		}
-		if found, err := driver.Instance(ctx, before.Name); err != nil || found.ID != upgraded.ID {
-			t.Fatalf("the upgraded VM is found as %+v, %v; upgraded %+v", found, err, upgraded)
-		}
-		if list, err := driver.Instances(ctx); err != nil || len(slices.DeleteFunc(list, func(i machine.Instance) bool { return i.Name != before.Name })) != 1 {
-			t.Fatalf("the upgraded VM is listed as %+v: %v", list, err)
-		}
-		check(t, upgraded, "committed")
-		// The Instance from before the upgrade still names the VM.
-		check(t, before, "committed")
-
 		switch fresh, err := driver.Upgrade(ctx, upgraded, nil); {
 		case errors.Is(err, machine.ErrUnsupported) && start.From != nil:
 			t.Logf("the driver has no base to upgrade to: %v", err)
 		case err != nil:
 			t.Fatalf("upgrade %s to a fresh root: %v", before.Name, err)
 		default:
-			if fresh.From != "" {
-				t.Fatalf("a VM upgraded to a fresh root reports it is from %q", fresh.From)
-			}
-			check(t, fresh, "")
+			check(t, fresh, "", "")
 		}
 	})
 
