@@ -57,7 +57,7 @@ func committedOf(id, name string, labels map[string]string, created time.Time) m
 }
 
 // Instance is the project's VM of the name: its committed Docker image, or
-// else its container.
+// else its container, or else an upgrade's new one.
 func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, error) {
 	if machine.ValidateName(name) != nil {
 		return machine.Instance{}, fmt.Errorf("instance %q: %w", name, machine.ErrNotFound)
@@ -65,14 +65,19 @@ func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, e
 	if inst, found, err := d.committed(ctx, name); err != nil || found {
 		return inst, err
 	}
-	c, err := d.api.inspectContainer(ctx, containerName(d.project, name))
-	if isNotFound(err) || (err == nil && !d.managed(c.Config.Labels)) {
-		return machine.Instance{}, fmt.Errorf("instance %q: %w", name, machine.ErrNotFound)
+	// While an upgrade is caught between its containers, the new one is
+	// the VM.
+	for _, ref := range []string{containerName(d.project, name), upgradeName(d.project, name)} {
+		c, err := d.api.inspectContainer(ctx, ref)
+		if isNotFound(err) || (err == nil && (!d.managed(c.Config.Labels) || c.Config.Labels[labelInstance] != name)) {
+			continue
+		}
+		if err != nil {
+			return machine.Instance{}, err
+		}
+		return d.instance(c), nil
 	}
-	if err != nil {
-		return machine.Instance{}, err
-	}
-	return d.instance(c), nil
+	return machine.Instance{}, fmt.Errorf("instance %q: %w", name, machine.ErrNotFound)
 }
 
 // managed reports whether a container is a VM of the project's, or a
@@ -101,13 +106,14 @@ func readyingName(name string) bool {
 
 // Instances lists the project's committed VMs and containers. A container
 // whose name a committed VM holds is what a failed commit left, and is the
-// committed VM's to remove.
+// committed VM's to remove; an upgrade's new container is listed as the VM
+// only once its old one is gone.
 func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 	images, err := d.api.images(ctx, vmRepo)
 	if err != nil {
 		return nil, fmt.Errorf("docker: list images: %w", err)
 	}
-	var out []machine.Instance
+	var out, pending []machine.Instance
 	taken := map[string]bool{}
 	for _, img := range images {
 		for _, tag := range img.RepoTags {
@@ -139,19 +145,31 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 		if taken[inst.Name] {
 			continue
 		}
+		if strings.HasSuffix(name, upgradeSuffix) {
+			pending = append(pending, inst)
+			continue
+		}
+		taken[inst.Name] = true
 		out = append(out, inst)
+	}
+	// An upgrade's new container is the VM only once its old one is gone.
+	for _, inst := range pending {
+		if !taken[inst.Name] {
+			taken[inst.Name] = true
+			out = append(out, inst)
+		}
 	}
 	slices.SortFunc(out, func(a, b machine.Instance) int { return a.Created.Compare(b.Created) })
 	return out, nil
 }
 
 // instance is a container as a VM: its name is the container's, less the
-// project's prefix, and its labels say the rest.
+// project's prefix and an upgrade's suffix, and its labels say the rest.
 func (d *Driver) instance(c containerInfo) machine.Instance {
 	labels := c.Config.Labels
 	inst := machine.Instance{
 		ID:      c.ID,
-		Name:    strings.TrimPrefix(strings.TrimPrefix(c.Name, "/"), machine.ResourcePrefix(namePrefix, d.project)),
+		Name:    strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(c.Name, "/"), machine.ResourcePrefix(namePrefix, d.project)), upgradeSuffix),
 		From:    labels[labelFrom],
 		GuestOS: machine.Linux,
 	}

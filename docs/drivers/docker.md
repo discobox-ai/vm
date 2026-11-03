@@ -1,15 +1,19 @@
 # docker driver (Linux guests as containers that look like machines)
 
 **Scope:** `pkg/machine/docker`, and the hidden `disco-vm docker-init`
-command that is a guest container's PID 1. That command is the one place
-above the `machine.Driver` seam that names the driver: `internal/cli` imports
-`pkg/machine/docker` for it, since the guest's init is the same binary (one
+command that is a guest container's PID 1, and `disco-vm docker-volumes`,
+which a helper container runs. Those commands are the one place above the
+`machine.Driver` seam that names the driver: `internal/cli` imports
+`pkg/machine/docker` for them, since the guest's init is the same binary (one
 binary, see [DESIGN.md](../../DESIGN.md#one-binary-three-roles)). It picks no behavior by OS or driver. Nothing else above
 the seam changed, and `internal/e2e` gained a `docker` target. Like
 boxd, the daemon owns a running guest, so there is no shim, and every
 command attaches to the container; and the daemon keeps everything the
-driver knows, on its images and containers (ADR 26-10-23-417), so nothing is
-kept on the host.
+driver knows, on its images and containers (ADR 26-10-23-417). Only
+volumes and caches are kept on the daemon's host, in directories under
+`/var/lib/discobox` (ADR 26-11-03-782), which the driver reaches through
+helper containers: it needs that directory, or the one `$DISCO_VM_DOCKER_ROOT`
+names, writable on the daemon's host.
 
 **Done means:**
 
@@ -145,10 +149,11 @@ guests share it.
 | `Machine.Done` | waiting starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to run a command leaves nothing running. The daemon's `wait` on the container: exit 0 is a power-off. A failed wait (the daemon restarted) inspects and waits again. |
 | `Machine.Kill` | SIGKILL to the container. |
 | `Machine` guest operations | the agent (`guest.Client`), each connection a docker exec of `disco-vm pipe unix:/run/disco-vm-relay/guest/run/disco-vm/agent.sock`, on the container's side. |
-| volumes | `Data`: a named volume `dvm-<project>--<name>--data-<random>` at `/.discobox/data`; `Cache`: `--cache-<random>` at `/.discobox/cache`, filled at Create from the key's current generation. Both are mounted with `NoCopy` and labeled `ai.discobox.vm.volume`, `.project`, and `.instance`; the container carries `.data` and `.cache`, `.cache-bytes`, and `.generation`. docker-init chowns a root-owned `/.discobox` and each mount point into the guest's uids at every start. The local volume driver has no quota, so a size is a hint. |
-| caches | a generation is a volume `dvm-<project>--cachegen--<key>--<id>`, and the key's pointer to it an empty volume `--cachekey--<key>--<id>`, both labeled `.volume`, `.project`, `.cache`, `.generation`, `.cache-bytes`, and `.saved`. `SaveCache` makes the generation, copies the stopped instance's `/.discobox/cache` into it (`GET /containers/<id>/archive`, then `PUT` into a container made, never started, from the instance's image with the generation mounted), checks the guard again, makes the pointer, and removes the key's pointers and generations saved before it but one a copy still mounts, so of two saves at once the one begun last wins. Create mounts the key's current generation in such a container before it reads it, which keeps a save from removing it meanwhile: the daemon makes a missing volume a mount names, so one found unlabeled once mounted was removed in between, and the next is tried. `Caches` reads each key's newest pointer whose generation is there; `DeleteCache` removes its pointers, then its generations. |
-| `Commit` | refuse a running container; empty its `/etc/machine-id`, so every VM created from it makes its own, `docker commit` it as `disco-vm-vm:<project>--<name>`, then remove the container as `Destroy` does. `docker commit` never holds a volume. |
-| `Destroy` | of a VM: `docker rm -f`, then its data and cache volumes, found by their labels (one a later VM of the name mounts is left), then the image the container ran if no tag names it any more, then the `disco-vm-base:<project>--<name>--*` tag of the image the container ran, and every other one of the name older than 30 minutes that no container runs: what a Destroy that failed partway or a create that lost a race left, and never a create of the name still readying (no name has `--`, so another name's are never matched). Of a committed VM: a container a failed commit left, then its tag, removed with `force`, which the daemon turns into an untag where a container runs the image: a VM created from it stands alone, and its own `Destroy` removes the untagged image. |
+| volumes | directories on the daemon's host under the root (`$DISCO_VM_DOCKER_ROOT`, default `/var/lib/discobox`): `Data` at `data/projects/<project>/vms/<name>`, `Cache` at `cache/projects/<project>/vms/<name>`, bind-mounted at `/.discobox/data` and `/.discobox/cache`. The container carries `ai.discobox.vm.data`, `.cache`, `.cache-bytes`, and `.generation`. Every step is a helper container of `disco-vm-helper:<sha256 prefix of the agent>`, an image imported (`POST /images/create?fromSrc=-`) of the agent alone, never removed by the driver (another disco-vm version on the daemon may use its own), with no network, bind-mounting the root at `/discobox` and running `disco-vm docker-volumes REQUEST` (JSON in its argument and on its stdout; exit 3 is `ErrCacheMoved`); copies keep owners, modes, times, symlinks, and hard links. Create makes the directories and stages the cache clone in `cache/projects/<project>/vms/.<name>--<random>` before its container (a bind source must exist), and empties the data directory and renames the clone into place only once the container holds the name. docker-init chowns a root-owned `/.discobox` and each mount point into the guest's uids at every start, so on the host files keep the guest's shifted uids. A directory has no quota, so a size is a hint. A VM made before ADR 26-11-03-782 mounts named volumes `dvm-<project>--<name>--data-<random>` and `--cache-<random>` instead: it boots with them, and `Upgrade` copies them into its directories and removes them. |
+| caches | a generation is `cache/projects/<project>/keys/<key>/<generation>`, and the key's pointer `current.json` beside it (generation, size, when saved), replaced by a rename once its generation is whole and renamed into place, so no VM clones a partial one. `keys/<key>/.lock` is a flock every helper on the host shares: a clone holds it shared while it copies, and `SaveCache`'s guard, publish, and prune of the key's other generations hold it exclusive, after the copy, which goes to a hidden `.save-<generation>`, held by a flock on `.save-<generation>.lock` while the save lives, and is checked against the guard first too; a prune removes a copy whose lock nobody holds. `Caches` reads each key's pointer; `DeleteCache` removes the pointer, then the generations, and keeps the key's directory and lock. `SaveCache` of a VM from before the ADR reads its named cache volume. Generations saved as named volumes then are not read, so their keys start empty; `docker volume rm` removes them. |
+| `Upgrade` | refuse a committed VM (`ErrCommitted`), a running container, a `from` that is not one of the project's committed VMs (`ErrNotFound`) or not linux, and a fresh root with no base (`ErrUnsupported`). Make the new container, of the committed VM's image or one readied from the base, with the VM's labels (`.from` the new one, `.replaces` the IDs it replaced, `.replaced-image` the image the old one ran) and its same directories, as `dvm-<project>--<name>--upgrade`; remove the old container; rename the new one into place; remove the named volumes of a VM from before ADR 26-11-03-782, and the old image where nothing else needs it. The old container is checked stopped again once the new one is made. Caught between: the VM is the old container until it is removed, then the new one, which `Instance` and `Instances` find under the name; from the moment the new container exists `Boot`, `Start`, and `Commit` refuse the VM, `Upgrade` from the same `from` finishes it without reading that committed VM again (it may be gone), and `Destroy` removes both. An `Instance` whose container was replaced still names the VM, by `.replaces`. |
+| `Commit` | refuse a running container; empty its `/etc/machine-id`, so every VM created from it makes its own, `docker commit` it as `disco-vm-vm:<project>--<name>`, then remove the container and its directories as `Destroy` does. `docker commit` never holds a bind mount. |
+| `Destroy` | of a VM: its directories, then `docker rm -f` of its container and an upgrade's new one, then the named volumes of a VM from before ADR 26-11-03-782, found by their labels (one a later VM of the name mounts is left), then the image the container ran if no tag names it any more, then the `disco-vm-base:<project>--<name>--*` tag of the image the container ran, and every other one of the name older than 30 minutes that no container runs: what a Destroy that failed partway or a create that lost a race left, and never a create of the name still readying (no name has `--`, so another name's are never matched). Of a committed VM: a container a failed commit left, then its tag, removed with `force`, which the daemon turns into an untag where a container runs the image: a VM created from it stands alone, and its own `Destroy` removes the untagged image. |
 
 The driver talks to the Docker Engine API over `DOCKER_HOST` itself, not
 through the docker CLI or SDK, as boxd's does.
@@ -247,9 +252,25 @@ by hand, a VM created from a committed one booted and read its writes after
 the committed VM was removed, and its own Destroy removed the untagged
 image. Nothing was left on the daemon. ⬜ `internal/e2e`.
 
+Since ADR 26-11-03-782 (2026-11-03, Docker 29.9.2, Linux 7.1), with
+`$DISCO_VM_DOCKER_ROOT` a scratch directory: `TestConformance` from
+`debian:trixie`, a-data-volume, a-cache-volume, and an-upgrade included
+(177 s), and `TestUpgradeInterrupted`, an upgrade stopped after each step,
+then finished and destroyed (40 s). By hand: a VM made with named volumes
+by the binary before the ADR saved its cache, was upgraded to a fresh root,
+and read its data (a file of guest uid 1000, kept) and cache with its old
+root's writes gone and its named volumes removed; and, under the default
+`/var/lib/discobox`, a file the guest's root wrote to its data volume was
+uid 16777216 on the host, and `rm` removed the VM's directory. Nothing was
+left on the daemon but empty project directories and keys' locks.
+
 ## Not verified yet
 
-- Docker Desktop on macOS and Windows, a remote `tcp://` daemon, and arm64.
+- Docker Desktop on macOS and Windows, a remote `tcp://` daemon, and arm64;
+  under Docker Desktop, whether its file sharing lets a container bind-mount
+  `/var/lib/discobox` in its VM.
+- Two helpers on one key at once (the flock), and an upgrade interrupted by
+  a crash rather than a failed step.
 - SELinux hosts (`label=disable` is passed, but not run against).
 - Load: each connection to the agent is a docker exec, and every engine call
   on an instance inspects its container first.

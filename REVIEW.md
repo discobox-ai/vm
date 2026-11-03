@@ -77,3 +77,11 @@
   none.** A provider whose keys could mint more is `ErrCannotIssue`; a
   driver never hands back the caller's own key in place of one it issued.
   (ADR 26-10-24-562.)
+- **Finishing an interrupted step reads only what that step still needs.**
+  An upgrade caught between its roots is finished by calling it again, so
+  it must not demand what the caller may have removed in between (the
+  committed VM it is from, once its new root is made), and before its new
+  root is made it may be retargeted, since nothing of the VM has changed: a
+  VM that can only be destroyed loses the data volume the upgrade exists to
+  keep. (ADR
+  26-11-03-782.)

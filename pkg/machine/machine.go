@@ -503,7 +503,8 @@ type Driver interface {
 	// Instances lists the project's VMs, committed or not.
 	Instances(ctx context.Context) ([]Instance, error)
 	// Destroy removes a VM and everything made for it, its volumes
-	// included, stopping it first if it runs. One already gone is not an
+	// included, stopping it first if it runs: nothing else removes a data
+	// volume but Commit (ADR 26-11-03-782). One already gone is not an
 	// error. A driver whose copies chain below the seam (hcs) refuses, with
 	// ErrInUse, a VM that a VM created from it still needs, and removes
 	// nothing; elsewhere a VM created from one outlives it.
@@ -539,6 +540,23 @@ type Driver interface {
 	// ErrUnsupported and leaves the VM as it was, running or stopped, with
 	// its volumes (ADR 26-11-03-868).
 	Commit(ctx context.Context, inst Instance) (Instance, error)
+	// Upgrade gives stopped VM inst a new root disk: a copy of the committed
+	// VM from, or, where from is nil, a fresh one from the driver's base
+	// (ADR 26-11-03-782). The VM keeps its name, its data volume and its
+	// cache clone as they are, and what its spec set (CPUs, Memory,
+	// Forwards, Isolated, Networks, Egress). Its old root is removed. It
+	// returns the VM as the provider now has it, whose ID, From, and
+	// Created may differ; an Instance from before still names it.
+	//
+	// It refuses, changing nothing, a running VM; a from whose guest OS is
+	// not the VM's, that the provider no longer has (ErrNotFound), or that
+	// is running; a fresh root on a driver with no base (ErrUnsupported);
+	// and any upgrade on a driver that does not list VolumeData
+	// (ErrUnsupported). An upgrade interrupted at any step leaves the VM
+	// listed under its name with its data volume: Upgrade again with the
+	// same from finishes it, Destroy removes it, and Boot and Start refuse
+	// it until one of them has.
+	Upgrade(ctx context.Context, inst Instance, from *Instance) (Instance, error)
 	// Service is the instance's service. A URL that exists only while the
 	// instance runs (a port the daemon publishes, a shim's) is asked for
 	// while it is stopped: then the driver returns ErrNotRunning. A URL

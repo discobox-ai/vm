@@ -94,6 +94,10 @@ type instanceRecord struct {
 	// which a chain is walked: the driver's own, since a name is reused
 	// once its VM is removed.
 	FromID string `json:"fromID,omitempty"`
+	// Upgrading is the root an unfinished upgrade gives the VM, written
+	// before the upgrade touches a disk and dropped once it is done. While
+	// it is set the VM does not boot or commit (Upgrade).
+	Upgrading *upgradeTarget `json:"upgrading,omitempty"`
 }
 
 // oldRecord is what an instance.json written before ADR 26-11-03-606 has
@@ -159,6 +163,9 @@ func (d *Driver) readInstance(id string) (machine.Instance, error) {
 // writes to it. Whether a VM was committed is the caller's to know.
 func (d *Driver) runnable(inst machine.Instance) (instanceRecord, error) {
 	rec, err := d.readProject(inst.ID)
+	if err == nil {
+		err = rec.whole()
+	}
 	if err == nil && d.hv.Chains() {
 		err = d.inUse(rec)
 	}
@@ -499,6 +506,14 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	if err := d.hv.Destroy(ctx, hs); err != nil {
 		return err
 	}
+	// The disks an interrupted upgrade left beside it.
+	for _, other := range []string{nextDir, oldDir} {
+		if _, err := os.Stat(filepath.Join(dir, other)); err == nil {
+			if err := d.hv.Destroy(ctx, d.upgradeSpec(rec, other, nil)); err != nil {
+				return err
+			}
+		}
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
@@ -550,6 +565,8 @@ func (d *Driver) inUse(committed instanceRecord) error {
 			return err
 		case rec.FromID == committed.ID:
 			return fmt.Errorf("instance %s: %s was created from it, and its disk differences over this one's; remove that one first: %w", committed.Name, rec.Name, machine.ErrInUse)
+		case rec.Upgrading != nil && rec.Upgrading.FromID == committed.ID:
+			return fmt.Errorf("instance %s: %s is being upgraded to a copy of it; finish or remove that one first: %w", committed.Name, rec.Name, machine.ErrInUse)
 		}
 	}
 	return nil
@@ -605,6 +622,9 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 		return machine.Instance{}, fmt.Errorf("%s cannot commit a VM: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
 	rec, err := d.readProject(inst.ID)
+	if err == nil {
+		err = rec.whole()
+	}
 	if err != nil {
 		return machine.Instance{}, err
 	}

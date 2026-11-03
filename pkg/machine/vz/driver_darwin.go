@@ -73,6 +73,12 @@ func (*Hypervisor) Commit(_ context.Context, inst local.InstanceSpec) error {
 	return freezeLayer(bundle(inst.Dir), inst.GuestOS)
 }
 
+// MoveVolumes is unsupported: vz attaches no volume yet, so it upgrades
+// no VM (ADR 26-11-03-782).
+func (*Hypervisor) MoveVolumes(context.Context, local.InstanceSpec, local.InstanceSpec) error {
+	return fmt.Errorf("vz: an upgrade: %w", machine.ErrUnsupported)
+}
+
 // SaveCache is unsupported: vz attaches no volume yet (ADR 26-11-02-180).
 func (*Hypervisor) SaveCache(context.Context, local.InstanceSpec, local.Layer) error {
 	return fmt.Errorf("vz: a cache volume: %w", machine.ErrUnsupported)

@@ -21,7 +21,9 @@
 // guest port is dialed through an attached machine, and a guest reaches a
 // peer's port through a forward, or the driver refuses both; a data volume
 // is kept across a boot and never in a committed VM; a cache volume is a
-// private clone of its key's generation, which only a save moves; and a key
+// private clone of its key's generation, which only a save moves; an
+// upgrade gives a stopped VM a new root and keeps its name, settings, and
+// volumes, or the driver refuses it; and a key
 // the driver issues runs the project's machines, cannot issue another, and
 // works no more once it is revoked. That a VM is committed is the caller's
 // to record, so the suite never boots one again.
@@ -898,6 +900,132 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		m = boot(t, bare)
 		absent(t, m, dir+"/cache.txt", "a committed VM that had a cache volume")
+	})
+
+	// An upgrade gives a stopped VM a new root, a copy of a committed VM or
+	// a fresh one from the base, and keeps its name, its settings, its data
+	// volume, and its cache clone: what it wrote to its root is gone, and
+	// what it wrote to its volumes is not. It is refused while the VM runs,
+	// for a committed VM the provider does not have, and from one of another
+	// guest OS, changing nothing.
+	// A driver that attaches no data volume refuses every upgrade.
+	t.Run("an-upgrade", func(t *testing.T) {
+		if !caps.Attaches(machine.VolumeData) {
+			inst := create(t, of(committed))
+			if _, err := driver.Upgrade(ctx, inst, &committed); !errors.Is(err, machine.ErrUnsupported) {
+				t.Fatalf("a driver that attaches no data volume upgraded a VM: %v, want ErrUnsupported", err)
+			}
+			if got, err := driver.Instance(ctx, inst.Name); err != nil || got.ID != inst.ID {
+				t.Fatalf("a refused upgrade changed the VM: %+v, %v; was %+v", got, err, inst)
+			}
+			t.Skip("the driver attaches no data volume")
+		}
+		key := "conformance-" + run + "-upgrade"
+		spec := of(committed)
+		spec.Data = &machine.DataVolume{}
+		if caps.Attaches(machine.VolumeCache) {
+			spec.Cache = &machine.CacheVolume{Key: key}
+			t.Cleanup(func() { _ = driver.DeleteCache(context.Background(), key) })
+		}
+		data := machine.VolumePath(guestOS, machine.VolumeData)
+		cache := machine.VolumePath(guestOS, machine.VolumeCache)
+		before := create(t, spec)
+		m := boot(t, before)
+		if err := m.CopyTo(ctx, data, tarOf(t, "data.txt", "kept")); err != nil {
+			t.Fatalf("write to the data volume: %v", err)
+		}
+		if spec.Cache != nil {
+			if err := m.CopyTo(ctx, cache, tarOf(t, "cache.txt", "kept")); err != nil {
+				t.Fatalf("write to the cache volume: %v", err)
+			}
+		}
+		if err := m.CopyTo(ctx, marker, tarOf(t, "root.txt", "old root")); err != nil {
+			t.Fatalf("write to the root: %v", err)
+		}
+		shutdown(t, m)
+		// Started, as a caller's VM runs, so another call sees it running.
+		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		m, err := driver.Start(startCtx, before, machine.BootOptions{})
+		cancel()
+		if err != nil {
+			t.Fatalf("start %s: %v", before.Name, err)
+		}
+		t.Cleanup(func() { _ = m.Kill(context.Background()) })
+		if _, err := driver.Upgrade(ctx, before, &committed); err == nil {
+			t.Fatal("upgraded a running VM")
+		}
+		shutdown(t, m)
+		gone := machine.Instance{ID: "conformance-gone", Name: fmt.Sprintf("conformance-%s-gone", run), GuestOS: guestOS}
+		if _, err := driver.Upgrade(ctx, before, &gone); !errors.Is(err, machine.ErrNotFound) {
+			t.Fatalf("an upgrade from a committed VM the provider does not have: %v, want ErrNotFound", err)
+		}
+		alien := gone
+		alien.GuestOS = machine.Windows
+		if guestOS == machine.Windows {
+			alien.GuestOS = machine.Linux
+		}
+		if _, err := driver.Upgrade(ctx, before, &alien); err == nil {
+			t.Fatalf("upgraded a %s VM from a %s one", guestOS, alien.GuestOS)
+		}
+		if got, err := driver.Instance(ctx, before.Name); err != nil || got.ID != before.ID {
+			t.Fatalf("a refused upgrade changed the VM: %+v, %v; was %+v", got, err, before)
+		}
+
+		// check boots the upgraded VM and finds its volumes kept and its
+		// root new.
+		check := func(t *testing.T, inst machine.Instance, root string) {
+			t.Helper()
+			m := boot(t, inst)
+			if got := readMarker(t, m, data+"/data.txt"); got != "kept" {
+				t.Fatalf("the data volume reads %q after an upgrade", got)
+			}
+			if spec.Cache != nil {
+				if got := readMarker(t, m, cache+"/cache.txt"); got != "kept" {
+					t.Fatalf("the cache volume reads %q after an upgrade", got)
+				}
+			}
+			absent(t, m, marker+"/root.txt", "an upgraded VM's new root")
+			if root == "" {
+				absent(t, m, marker+"/proof.txt", "a fresh root")
+			} else if got := readMarker(t, m, marker+"/proof.txt"); got != root {
+				t.Fatalf("the new root reads %q, want %q from the committed VM", got, root)
+			}
+			shutdown(t, m)
+		}
+		upgraded, err := driver.Upgrade(ctx, before, &committed)
+		if err != nil {
+			t.Fatalf("upgrade %s from %s: %v", before.Name, committed.Name, err)
+		}
+		if upgraded.Name != before.Name || upgraded.GuestOS != before.GuestOS || upgraded.CPUs != before.CPUs || upgraded.Memory != before.Memory {
+			t.Fatalf("upgraded %+v from %+v", upgraded, before)
+		}
+		if upgraded.From != "" && upgraded.From != committed.Name {
+			t.Fatalf("upgraded from %s, the VM reports it is from %q", committed.Name, upgraded.From)
+		}
+		if upgraded.Data == nil || (spec.Cache != nil && (upgraded.Cache == nil || *upgraded.Cache != *before.Cache)) {
+			t.Fatalf("upgraded volumes %+v and %+v, were %+v and %+v", upgraded.Data, upgraded.Cache, before.Data, before.Cache)
+		}
+		if found, err := driver.Instance(ctx, before.Name); err != nil || found.ID != upgraded.ID {
+			t.Fatalf("the upgraded VM is found as %+v, %v; upgraded %+v", found, err, upgraded)
+		}
+		if list, err := driver.Instances(ctx); err != nil || len(slices.DeleteFunc(list, func(i machine.Instance) bool { return i.Name != before.Name })) != 1 {
+			t.Fatalf("the upgraded VM is listed as %+v: %v", list, err)
+		}
+		check(t, upgraded, "committed")
+		// The Instance from before the upgrade still names the VM.
+		check(t, before, "committed")
+
+		switch fresh, err := driver.Upgrade(ctx, upgraded, nil); {
+		case errors.Is(err, machine.ErrUnsupported) && start.From != nil:
+			t.Logf("the driver has no base to upgrade to: %v", err)
+		case err != nil:
+			t.Fatalf("upgrade %s to a fresh root: %v", before.Name, err)
+		default:
+			if fresh.From != "" {
+				t.Fatalf("a VM upgraded to a fresh root reports it is from %q", fresh.From)
+			}
+			check(t, fresh, "")
+		}
 	})
 
 	// A committed copy of a committed VM keeps both writes, and outlives the

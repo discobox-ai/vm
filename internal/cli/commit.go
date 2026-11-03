@@ -93,6 +93,35 @@ create and run too.`,
 	}
 }
 
+func upgradeCommand(g *globals) *cobra.Command {
+	var from string
+	cmd := &cobra.Command{
+		Use:   "upgrade VM [--from COMMITTED]",
+		Short: "Give a stopped VM a new root, keeping its name, settings, and volumes",
+		Long: `Give the stopped VM a new root: a copy of the committed VM --from, or a
+fresh one from the driver's base. It keeps its name, its settings, its data
+volume, and its cache clone; what it wrote to its old root is removed for
+good, so commit it first to keep a way back. An upgrade that was interrupted
+is finished by running it again with the same --from. Only a driver that
+attaches a data volume upgrades a VM: ` + "`disco-vm info`" + ` lists its volumes.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := g.engine()
+			if err != nil {
+				return err
+			}
+			inst, err := e.Upgrade(cmd.Context(), args[0], engine.UpgradeOptions{From: from})
+			if err != nil {
+				return err
+			}
+			fmt.Println(inst.Name)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&from, "from", "", "the committed VM the new root is a copy of (default: a fresh root from the driver's base)")
+	return cmd
+}
+
 func ago(t time.Time) string {
 	if t.IsZero() {
 		return "-"

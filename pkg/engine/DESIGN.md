@@ -178,6 +178,18 @@ key is saved unguarded, and `SaveOptions.Force` (`--force`) drops the guard.
 driver's. A second guarded save from one instance is refused too, since the
 key has moved to its own first save: force it, or save from a new instance.
 
+`Engine.Upgrade` (`upgrade VM [--from COMMITTED]`) gives a stopped VM a new
+root, a copy of a committed VM or fresh from the base, and keeps its name,
+settings, data volume, and cache clone (ADR 26-11-03-782;
+[pkg/machine](../machine/DESIGN.md#a-data-volume-is-its-vms-and-upgrade-gives-it-a-new-root)).
+It refuses, before the driver, a driver that does not list `VolumeData`, a VM
+not found stopped, and a `--from` that is the VM itself, another guest OS,
+or running. A `--from` it does not find goes to the driver by name, which
+finishes an interrupted upgrade without it where it can and refuses it
+(`ErrNotFound`) where it cannot. The old root is gone for good: a caller that wants a
+way back commits the VM first. This is how a caller rebuilds a VM and keeps
+its data; `rm` is the only way the data goes, besides `commit`.
+
 ## disco-vm does not converge guests
 
 Deciding what a committed VM holds is a client's, above disco-vm ([ADR

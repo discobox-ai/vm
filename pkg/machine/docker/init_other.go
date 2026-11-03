@@ -9,3 +9,6 @@ func Init() error { return errors.New("docker-init runs inside a linux container
 
 // Shift runs inside a docker install container, which is always linux.
 func Shift() error { return errors.New("docker-init --shift runs inside a linux container") }
+
+// Dirs runs in a docker helper container, which is always linux.
+func Dirs(string) error { return errors.New("docker-volumes runs inside a linux container") }

@@ -577,3 +577,61 @@ func (e *Engine) Commit(ctx context.Context, inst Instance) (Instance, error) {
 	}
 	return committed, nil
 }
+
+// UpgradeOptions names the root an upgrade gives a VM.
+type UpgradeOptions struct {
+	// From names the committed VM the new root is a copy of; empty is a
+	// fresh root from the driver's base. That it is committed is the
+	// caller's to know.
+	From string
+}
+
+// Upgrade gives the stopped VM name a new root, and keeps its name, its
+// settings, its data volume, and its cache clone (ADR 26-11-03-782): its old
+// root is removed for good. A caller that wants to go back commits the VM
+// first and upgrades to that. An upgrade that was interrupted is finished by
+// upgrading again with the same From. The driver must list
+// machine.VolumeData.
+func (e *Engine) Upgrade(ctx context.Context, name string, opts UpgradeOptions) (Instance, error) {
+	if !e.Driver.Capabilities().Attaches(machine.VolumeData) {
+		return Instance{}, fmt.Errorf("driver %s attaches no data volume, which an upgrade keeps; rebuild the VM in place instead: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
+	inst, err := e.Get(ctx, name)
+	if err != nil {
+		return Instance{}, err
+	}
+	if state := e.State(ctx, inst); state != Stopped {
+		return Instance{}, fmt.Errorf("instance %s is %s; stop it to upgrade it", inst.Name, state)
+	}
+	var from *Instance
+	if opts.From != "" {
+		src, err := e.Get(ctx, opts.From)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			// An upgrade caught between its roots once its new root was
+			// made finishes without the committed VM it is from, which may
+			// be gone: the driver says whether it still needs it.
+			src = Instance{Name: opts.From, GuestOS: inst.GuestOS}
+		case err != nil:
+			return Instance{}, err
+		}
+		if src.Name == inst.Name {
+			return Instance{}, fmt.Errorf("instance %s cannot be upgraded from itself", inst.Name)
+		}
+		if src.GuestOS != inst.GuestOS {
+			return Instance{}, fmt.Errorf("instance %s is a %s guest, and %s a %s one: a data volume is read by its guest's OS", inst.Name, inst.GuestOS, src.Name, src.GuestOS)
+		}
+		// One not found has no state, and is the driver's to refuse.
+		if src.ID != "" {
+			if state := e.State(ctx, src); state != Stopped {
+				return Instance{}, fmt.Errorf("instance %s is %s; stop and commit it to upgrade from it", src.Name, state)
+			}
+		}
+		from = &src
+	}
+	upgraded, err := e.Driver.Upgrade(ctx, inst, from)
+	if err != nil {
+		return Instance{}, fmt.Errorf("upgrade %s: %w", inst.Name, err)
+	}
+	return upgraded, nil
+}
