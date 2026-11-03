@@ -1,9 +1,10 @@
 # 26-11-03-606 — disco-vm has only VMs, and a VM is made fresh or from a committed VM
 
-- **Status**: Proposed (on acceptance: supersedes 26-10-15-882; and in part
-  26-10-23-410, its images and tags, and 26-10-15-833, an instance run from
-  a base the caller names)
+- **Status**: Accepted (supersedes 26-10-15-882; and in part 26-10-23-410,
+  its images and tags, and 26-10-15-833, an instance run from a base the
+  caller names)
 - **Date**: 2026-11-03
+- **Supersedes**: [26-10-15-882](26-10-15-882-a-snapshot-consumes-its-instance.md)
 
 ## Context
 
@@ -53,11 +54,21 @@ There are no images, image IDs, tags, `tag`, `rmi`, or `images`.
 
 `commit VM` freezes a stopped VM. A committed VM:
 
-- keeps its name, and `ls` lists it, as committed;
+- keeps its name, and `ls -a` lists it;
 - can be created from, and removed;
-- can never start again, nor be committed again, nor exec'd into;
+- is never started again, committed again, or exec'd into;
 - holds only its disk. Its data volume and cache clone go at commit, as
   ADR 26-11-02-180 has them leave an image.
+
+**That a VM is committed is the caller's to record.** Archil keeps a
+committed sandbox as a stopped one, so a driver cannot always tell, and the
+seam reports no committed mark. The caller (discobox, or the person at the
+command line) knows which VMs it committed and never starts one again. A
+driver refuses a committed VM only where its provider cannot do what was
+asked: docker's committed image and boxd's snapshot have no machine to run
+(`machine.ErrCommitted`), and hcs boots no VM another VM's disk differences
+over, since the boot would write under it (`machine.ErrInUse`). Archil
+refuses nothing, and keeps no record that it should.
 
 To change a committed VM, create a VM from it, change that, and commit it
 under a new name. There are no tags, so versions are names (`app-v1`,
@@ -101,13 +112,15 @@ keys, and caches. It loses `Image`, `Images`, `DeleteImage`, `Tags`, `Tag`,
 - **`InstanceSpec`** loses `Image`, `ImageID`, and `Base`. It gains `From`,
   the committed VM a copy is made from; nil is fresh.
 - **`machine.Instance`** loses `Image`, `ImageID`, and `Base`. It gains
-  `Committed`, and `From` (the committed VM it came from, where the provider
-  says).
-- **`Commit(ctx, inst)`** freezes the stopped VM in place and returns it
-  committed.
+  `From` (the committed VM it came from, where the provider says), and no
+  committed mark (§2).
+- **`machine.Config`** gains `Base`, the driver's base in its own terms
+  (§3); the command line reads it from `$DISCO_VM_BASE`, never a flag of a
+  create.
+- **`Commit(ctx, inst)`** freezes the stopped VM in place and returns it.
 - **`Install(ctx, spec, name)`** returns the committed VM it made.
-- **`Boot` and `Start`** refuse a committed VM, as does every guest
-  operation.
+- **`Boot` and `Start`** refuse a committed VM only where §2 says,
+  with `ErrCommitted` or `ErrInUse`.
 - **`Destroy`** removes a committed VM too, or refuses it with `ErrInUse`
   (§2).
 
@@ -117,7 +130,7 @@ The engine and the command line follow:
   `ResolveBase`, and `Snapshot`, and gains `Commit`.
 - **The command line** drops `images`, `rmi`, `tag`, and `snapshot`, and
   gains `commit`. `create` and `run` take `--from`; `install` takes a name;
-  `ls -a` shows committed VMs.
+  `ls -a` lists committed VMs among the stopped ones.
 
 ### 5. Where each driver keeps a committed VM
 
@@ -125,10 +138,10 @@ Every driver keeps it in its provider, as before (ADR 26-10-23-417):
 
 | driver | a committed VM | a VM from it |
 |---|---|---|
-| local (hcs, vz, fake) | the VM's record, marked committed, and its disk, left where it is | hcs: a differencing disk over it; vz: an APFS clone; fake: a copy |
+| local (hcs, vz, fake) | the VM's record and its disk, left where they are, with its volumes gone | hcs: a differencing disk over it; vz: an APFS clone; fake: a copy |
 | docker | the container committed as a Docker image named and labeled for the VM, and the container removed | a container of that image |
 | boxd | a snapshot named for the VM, and the machine deleted | a machine restored from the snapshot |
-| archil | the stopped sandbox, `dvm-<project>--<name>`, with its mounts dropped, and an empty disk recording that it is committed (Archil keeps no labels) | a fork of the sandbox |
+| archil | the stopped sandbox, `dvm-<project>--<name>`, with its mounts dropped, and nothing recording that it is committed (§2) | a fork of the sandbox |
 
 ## Alternatives rejected
 
@@ -139,6 +152,11 @@ Every driver keeps it in its provider, as before (ADR 26-10-23-417):
   again would need its snapshot kept apart from it. An Archil fork's
   source can't move on, so the snapshot would be a hidden copy, which is
   the records problem again. Freezing is the same on every provider.
+- **A committed mark the driver keeps.** Where a provider has no kind of
+  its own for a committed VM (Archil), the mark would be a record kept
+  beside it: an empty disk named for it, whose names Archil does not keep
+  unique, which is the records problem again. The caller already knows
+  what it committed.
 - **Tags as aliases of committed VMs.** A tag is a record that moves, which
   every driver must keep somewhere it can change. Names are enough: a caller
   that wants a moving pointer keeps it.
@@ -153,16 +171,18 @@ Every driver keeps it in its provider, as before (ADR 26-10-23-417):
 
 - **Every driver and the engine change, with the conformance suite and
   `internal/e2e`.** The suite's images become committed VMs: commit, create
-  from one, a copy of a copy outliving the first's removal (or refused with
-  `ErrInUse`), and a committed VM refusing to start.
+  from one, and a copy of a copy outliving the first's removal (or refused
+  with `ErrInUse`). No suite starts a committed VM, since the caller never
+  does.
 - **The archil driver lands on this model.** A VM is a sandbox named for it,
   so Archil keeps its name unique. A commit changes no sandbox's name, and
-  the one record left is the committed mark. ADR 26-11-03-676 is amended
+  leaves no record at all. ADR 26-11-03-676 is amended
   before it ships.
 - **Nothing from before is read** (as ADR 26-10-23-417): images, tags, and
   readied bases a driver made under the old model are not listed. Remove
   them with `docker`, boxd's console, Archil's API, or the disco-vm that
   made them.
-- **discobox** keeps committed VMs where it kept images. A pool names the
+- **discobox** keeps committed VMs where it kept images, and records which
+  VMs it committed. A pool names the
   committed VM its sandboxes are created from, and its warm run is
   `create --from`, the warm script, `stop`, and `commit`.
