@@ -122,9 +122,9 @@ the way vz boots it:
 
 - `go tool task build:linux-guest` (amd64 here) and `go tool task
   build:linux-agent`; QEMU from `nix build --print-out-paths nixpkgs#qemu_kvm`.
-- The boot initrd and command line are `writeBootInitrd` and `linuxCmdline`
-  (`pkg/machine/vz/linuxguest.go`), which are unexported: call them from a
-  throwaway `_test.go` in the package that writes the files, and delete it.
+- The boot initrd and command line are `linuximage.WriteBootInitrd` and
+  `linuximage.Cmdline` (`pkg/machine/linuximage`): call them from a throwaway
+  `_test.go` that writes the files, and delete it.
 - Copy `root.ext4` to a scratch `disk.img` (`cp --sparse=always`, then
   `truncate -s 8G`), and boot: `qemu-system-x86_64 -enable-kvm -cpu host -m 2048
   -kernel vmlinux -initrd boot-initrd.img -append "<cmdline>" -drive
@@ -139,6 +139,32 @@ the way vz boots it:
   agent's unit's failures in `console.log`.
 - Nothing in the bare base wants `network-online.target`; `systemctl start
   network-online.target` before reading wait-online's result.
+
+## libkrun (a Linux amd64 host with KVM)
+
+A discobox has `/dev/kvm` and its user is in the `kvm` group, so libkrun runs
+here for real, booting a VM in about two seconds:
+
+- `go tool task build`, `go tool task build:krun-runtime`, and
+  `go tool task build:linux-guest` (amd64). Point the CLI at them with
+  `DISCO_VM_KRUN_RUNTIME=$PWD/build/krun-runtime` and
+  `DISCO_VM_BASE=$PWD/build/linux-guest/amd64`, and use a scratch `--root`
+  (`/dev/shm/...`). The driver is the Linux default.
+- `go tool task test:libkrun` runs `machinetest` and `internal/e2e` on them in
+  about a minute.
+- A VM keeps the kernel it was made with, so after rebuilding the guest
+  image, remove the old VMs and make new ones.
+- This host has no IPv4 default route, so passt offers no DHCP lease: eth0
+  comes up with only a link-local address. To see the lease and DNS, run the
+  CLI inside `unshare -Urnm` after setting up a dummy interface with an
+  address and a default route, and bind-mounting a `resolv.conf` over
+  `/etc/resolv.conf`.
+- A VM's console is `instances/<id>/machine/console.log`, which libkrun
+  truncates at each boot (the boot before's is `console.prev.log`). The
+  launcher's own errors are in the shim's log, `instances/<id>/shim.log`.
+- A host half-close through libkrun's vsock resets the stream, so test `dial`
+  with a request the guest answers and then closes (HTTP/1.0), not one that
+  waits for EOF.
 
 ## Flows worth driving
 

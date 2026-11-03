@@ -23,37 +23,37 @@ write to a disk another VM's differences over (`ErrInUse`: hcs). And a VM's
 machine: Boot, in this process; Start, outliving it;
 Attach, from any process; and Service
 ([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-one-http-url-and-a-private-one)).
-A machine also dials any guest port (`Machine.Dial`) where the driver lists
-`Capabilities.Ports` ([below](#ports-not-guids)).
+A machine also dials the agent's port and the service's (`Machine.Dial`)
+where the driver lists `Capabilities.Ports` ([below](#ports-not-guids)).
 Boot and Start return once the guest answers. A running `Machine` is the
 guest's operations (`machine.Guest`: Exec with stdio, a TTY and its resizes,
 a user, environment, and directory; CopyTo and CopyFrom, as tar; Info;
 Shutdown), and Kill and Done. And keys: IssueKey, IssuedKeys, and RevokeKey
 ([below](#a-driver-is-given-its-key-and-issues-keys-that-cannot-issue)).
-hcs, vz, and fake are `local.Hypervisor`s under
+hcs, vz, libkrun, and fake are `local.Hypervisor`s under
 one driver that keeps their state and runs their shims
 ([local/DESIGN.md](local/DESIGN.md)). Anything only one hypervisor can do is
 a `Capabilities` field, never a faked method:
 
-| capability | hcs | vz | boxd | docker | fake | archil |
-|---|---|---|---|---|---|---|
-| guest OS | windows | darwin, and linux (ADR 26-10-31-990) | linux | linux | host's | linux, amd64 |
-| max running | none | **2 macOS guests** (framework limit); Linux guests do not count | none (the org's quota) | none | none | none (the plan's quota) |
-| shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | no | no |
-| display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no | no | no |
-| ports (`Ports`: `Machine.Dial`, `Forwards` to a socket or a peer) | hvsocket, through the shim | vsock, through the shim | no | no | loopback, through the shim | no |
-| agent (`disco-vm guest` in the guest) | yes, from Install | yes: macOS from Install; Linux handed it in the initrd at every boot | **no**: boxd's Exec | yes, from Create of a base | yes | **no**: Archil's process API |
-| install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest` | **none** | **none** | the host's | **none** |
-| base (`Config.Base`: what a fresh VM starts from) | **none** | Linux: a guest image, `DefaultLinuxBase` by default | an image, boxd's default by default | an image; **none** unless configured | a name, `scratch` by default | an OCI image; Archil's default by default |
-| commit (`Commit`: `Driver.Commit` and `InstanceSpec.From`) | yes | yes | yes | yes | yes, unless made with `NoCommit` (a test option) | yes |
-| a committed VM (`Commit`) | its record and disk, left in place | its record and bundle, left in place | a snapshot `dvm-<project>--<name>`; the machine deleted | an image `disco-vm-vm:<project>--<name>`; the container removed | its record and tree, left in place | the stopped sandbox `dvm-<project>--<name>`, its mounts and data disk dropped; nothing marks it committed |
-| disks chain below the seam (`local.Hypervisor.Chains`) | yes: a copy is a differencing VHDX over the committed VM's | no | no | no | no | yes: a copy forks the committed VM's sandbox, which Archil keeps while it has forks (`ErrInUse`) |
-| keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | issue, scope `project` | none (`ErrCannotIssue`: an Archil token never expires) |
-| isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no | no |
-| egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | none | `none` and `allow`: `network.egress`, default `deny` |
-| private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | the URL (a shared loopback) | the URL |
-| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<project>--<name>--data` |
-| upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
+| capability | hcs | vz | boxd | docker | libkrun | fake | archil |
+|---|---|---|---|---|---|---|---|
+| guest OS | windows | darwin, and linux (ADR 26-10-31-990) | linux | linux | linux (ADR 26-11-03-530) | host's | linux, amd64 |
+| max running | none | **2 macOS guests** (framework limit); Linux guests do not count | none (the org's quota) | none | none | none | none (the plan's quota) |
+| shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | virtiofs | no | no |
+| display | video console in mstsc (guestfb over hvsocket, later) | framework view in a native window | no | no | no | no | no |
+| ports (`Ports`: `Machine.Dial`, `Forwards` to a socket or a peer) | hvsocket, through the shim | vsock, through the shim | no | no | vsock, through the shim: the agent's and service's ports, and the forwards, mapped at boot; the host's half-close is not passed on | loopback, through the shim | no |
+| agent (`disco-vm guest` in the guest) | yes, from Install | yes: macOS from Install; Linux handed it in the initrd at every boot | **no**: boxd's Exec | yes, from Create of a base | yes: the running disco-vm (or `$DISCO_VM_AGENT`), handed it in the initrd at every boot | yes | **no**: Archil's process API |
+| install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest` | **none** | **none** | **none** | the host's | **none** |
+| base (`Config.Base`: what a fresh VM starts from) | **none** | Linux: a guest image, `DefaultLinuxBase` by default | an image, boxd's default by default | an image; **none** unless configured | Linux: a guest image's libkrun kernel and root, `DefaultBase` by default | a name, `scratch` by default | an OCI image; Archil's default by default |
+| commit (`Commit`: `Driver.Commit` and `InstanceSpec.From`) | yes | yes | yes | yes | yes | yes, unless made with `NoCommit` (a test option) | yes |
+| a committed VM (`Commit`) | its record and disk, left in place | its record and bundle, left in place | a snapshot `dvm-<project>--<name>`; the machine deleted | an image `disco-vm-vm:<project>--<name>`; the container removed | its record and bundle, left in place | its record and tree, left in place | the stopped sandbox `dvm-<project>--<name>`, its mounts and data disk dropped; nothing marks it committed |
+| disks chain below the seam (`local.Hypervisor.Chains`) | yes: a copy is a differencing VHDX over the committed VM's | no | no | no | no: a reflink, else a sparse copy | no | yes: a copy forks the committed VM's sandbox, which Archil keeps while it has forks (`ErrInUse`) |
+| keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | none (`ErrNoKey`) | issue, scope `project` | none (`ErrCannotIssue`: an Archil token never expires) |
+| isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no | no | no |
+| egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | `none`: no network device (else a NIC on passt) | none | `none` and `allow`: `network.egress`, default `deny` |
+| private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | none | the URL (a shared loopback) | the URL |
+| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<project>--<name>--data` |
+| upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
 ([below](#every-copy-is-cold-and-a-vm-is-made-fast-by-what-is-in-it)).
@@ -186,22 +186,29 @@ into the guest and no agent: its guest operations are command lines over
 boxd's authenticated Exec stream ([boxd/DESIGN.md](boxd/DESIGN.md)). 7301 is reserved for the
 display stream.
 
-A driver that lists `Capabilities.Ports` (hcs, vz, fake) reaches every guest
-port, in three directions, all through the process that holds the machine
-(ADR 26-10-31-990, which brings back the raw guest port ADR 0001 §3 took off
-the seam):
+A driver that lists `Capabilities.Ports` (hcs, vz, libkrun, fake) reaches
+guest ports in three directions, all through the process that holds the
+machine (ADR 26-10-31-990, which brings back the raw guest port ADR 0001 §3
+took off the seam). Every port is known at boot, since libkrun maps a guest
+port only before its VM starts (ADR 26-11-03-247):
 
-- **Caller to guest:** `Machine.Dial(port)`, through the shim's `/dial` for an
-  attached machine; `Engine.Dial` and `disco-vm dial INSTANCE PORT`. The
-  service stays one port at one URL (ADR 0005). boxd and docker return
-  `ErrUnsupported`.
+- **Caller to guest:** `Machine.Dial(port)` of the agent's port (7300) or the
+  service's (7302) alone (`guest.DialablePort`), through the shim's `/dial`
+  for an attached machine, which dials the service where the hypervisor
+  serves it (fake's loopback port); `Engine.Dial` and
+  `disco-vm dial INSTANCE PORT`. Any other port is `ErrUnsupported` on every
+  driver. The service stays one port at one URL (ADR 0005). boxd and docker
+  return `ErrUnsupported`.
 - **Guest to host:** a guest process connects out with `guest.DialHost(port)`
   (vsock to CID 2 on vz, hvsocket to the parent partition on HCS), and an
   instance created with a `Forward` to a `Socket` has its shim accept those
   connections (`machine.HostListener`) and splice each into the Unix socket,
-  passing half-closes through, as libkrun maps a vsock port to a Unix socket.
+  passing half-closes through (libkrun passes the guest's, and keeps the
+  host's: it resets a stream the host half-closes). A hypervisor that maps
+  ports at boot (libkrun) is given the forwards in `local.InstanceSpec`.
   `disco-vm dial-host PORT` does the same from a shell in the guest.
-- **Guest to peer:** a `Forward` to an `Instance` and `InstancePort` has the
+- **Guest to peer:** a `Forward` to an `Instance` and `InstancePort`, the
+  peer's agent or service port (any other is refused at Create), has the
   shim splice each connection into that instance's guest port, through the
   peer's shim, found by name at every connection. It is the spec's, fixed at
   Create and reported in `Instance.Forwards`. While the peer is stopped each

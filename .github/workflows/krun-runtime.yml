@@ -1,0 +1,44 @@
+# The libkrun runtime's own release line (ADR 26-11-03-530 §3): a krun/vN tag
+# builds the runtime, boots the pinned guest image on it, and pushes that same
+# build as ghcr.io/discobox-ai/disco-vm-krun:vN, from the build cache the boot
+# filled, so what is published is what booted. The digest it prints is pinned
+# in libkrun.DefaultRuntime by hand. The pinned guest image must carry the
+# libkrun kernel (a linux/v* release since it was added) or the boot fails.
+# One job, since the build cache is the runner's; each step is one Taskfile
+# target.
+name: libkrun runtime
+
+on:
+  push:
+    tags:
+      - "krun/v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        with:
+          target: ci:kvm
+      - uses: ./.github/actions/task
+        env:
+          DISCO_VM_LIBKRUN_BASE: default
+          RUNTIME_VERSION: ${{ github.ref_name }}
+        with:
+          target: test:libkrun
+      - uses: ./.github/actions/task
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        with:
+          target: release:krun-runtime

@@ -10,6 +10,7 @@
 // Windows ISO ($DISCO_VM_E2E_ISO) and an elevated shell. The docker driver
 // installs nothing: e2e-base is a fresh VM of its base, debian:trixie or the
 // image $DISCO_VM_E2E_IMAGE names, committed, so its state root is optional.
+// Nor does libkrun: its base is $DISCO_VM_LIBKRUN_BASE, or its default.
 //
 // A driver that does not report Capabilities.Commit (ADR 26-11-03-868) has
 // no e2e-base: every VM is fresh, the cases that commit are skipped, and
@@ -102,6 +103,20 @@ func targetFromEnv() target {
 			driver: "docker",
 			base:   image,
 			dir:    "/srv",
+			root:   os.Getenv("DISCO_VM_E2E_ROOT"),
+		}
+	case "libkrun":
+		// A fresh VM of $DISCO_VM_LIBKRUN_BASE (a guest image's reference, a
+		// directory of its artifacts, or "default", the driver's default);
+		// the runtime is $DISCO_VM_KRUN_RUNTIME's, or the pinned one, pulled.
+		base := os.Getenv("DISCO_VM_LIBKRUN_BASE")
+		if base == "default" {
+			base = ""
+		}
+		return target{
+			driver: "libkrun",
+			base:   base,
+			dir:    "/var/tmp",
 			root:   os.Getenv("DISCO_VM_E2E_ROOT"),
 		}
 	case "hcs":
@@ -680,7 +695,7 @@ func TestEgress(t *testing.T) {
 	if out, code := e.run(append(slices.Clone(fenced), "--egress", "example.com")...); code == 0 || !strings.Contains(out, "cannot fence") {
 		t.Fatalf("create --egress example.com on %s: exit %d\n%s", tg.driver, code, out)
 	}
-	if tg.driver == "vz" {
+	if tg.driver == "vz" || tg.driver == "libkrun" {
 		e.ok(append(slices.Clone(fenced), "--egress", "none")...)
 		var fenced struct {
 			Egress *struct{} `json:"egress"`
@@ -711,7 +726,7 @@ func TestVolumes(t *testing.T) {
 		e.run("rm", "-f", "vol-s", "vol-b", "vol-a")
 		e.run("cache", "rm", "e2e-cache")
 	})
-	guestOS := map[string]machine.OS{"fake": machine.OS(runtime.GOOS), "docker": machine.Linux, "vz": machine.Darwin, "hcs": machine.Windows}[tg.driver]
+	guestOS := map[string]machine.OS{"fake": machine.OS(runtime.GOOS), "docker": machine.Linux, "libkrun": machine.Linux, "vz": machine.Darwin, "hcs": machine.Windows}[tg.driver]
 	data, cache := machine.VolumePath(guestOS, machine.VolumeData), machine.VolumePath(guestOS, machine.VolumeCache)
 	if tg.driver != "fake" && tg.driver != "docker" {
 		for _, flags := range [][]string{{"--data", "1GiB"}, {"--cache", "e2e-cache"}} {

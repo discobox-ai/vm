@@ -1,0 +1,120 @@
+//go:build linux
+
+package libkrun
+
+import (
+	"bytes"
+	"context"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
+	"github.com/discobox-ai/vm/pkg/machine/machinetest"
+)
+
+// BaseEnv is the base the suite's fresh VMs start from (machine.Config.Base):
+// a guest image's reference, a directory holding one's artifacts
+// (`go tool task build:linux-guest`), or "default" for
+// linuximage.DefaultBase. Without it the suite skips. The runtime is
+// $DISCO_VM_KRUN_RUNTIME's, or DefaultRuntime pulled.
+const BaseEnv = "DISCO_VM_LIBKRUN_BASE"
+
+// TestConformance is the libkrun driver's definition of done, on a Linux
+// amd64 host with KVM. Each started instance's shim, and every guest's
+// agent, is $DISCO_VM_TEST_BINARY, a static linux disco-vm: run it with
+// `go tool task test:libkrun`.
+func TestConformance(t *testing.T) {
+	driver := realDriver(t)
+	machinetest.Run(t, driver, machinetest.Config{
+		CPUs:       2,
+		Memory:     2 << 30,
+		Timeout:    5 * time.Minute,
+		ScratchDir: "/var/tmp",
+		GuestAgent: "/run/disco-vm/disco-vm",
+	})
+}
+
+// realDriver is the libkrun driver on this host, configured from the
+// environment, or skips.
+func realDriver(t *testing.T) *local.Driver {
+	t.Helper()
+	base := os.Getenv(BaseEnv)
+	if base == "" {
+		t.Skipf("$%s names no Linux base", BaseEnv)
+	}
+	if base == "default" {
+		base = ""
+	}
+	if _, err := parseBase(base); err != nil {
+		t.Fatal(err)
+	}
+	binary := os.Getenv("DISCO_VM_TEST_BINARY")
+	if binary == "" {
+		t.Fatal("$DISCO_VM_TEST_BINARY names no disco-vm to run each started instance's shim")
+	}
+	// A test boots in this process, whose binary is no agent.
+	t.Setenv(AgentEnv, binary)
+	dir := t.TempDir()
+	h := &Hypervisor{base: base, runtimeDir: os.Getenv(RuntimeEnv)}
+	driver, err := local.New(machine.Config{
+		Dir:         dir,
+		ShimCommand: []string{binary, "--root", dir, "--driver", "libkrun", "shim"},
+	}, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.cacheDir = driver.CacheDir()
+	if err := driver.Check(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return driver
+}
+
+// A guest reading to EOF through a forward, its own half still open, reads
+// it once the host's end has answered and closed: libkrun cannot pass the
+// host's half-close on, so the forward closes the stream instead
+// (forwardConn). A forward that kept its half open hung the guest until its
+// own input ended.
+func TestForwardEndsWhenTheHostCloses(t *testing.T) {
+	driver := realDriver(t)
+	ctx := t.Context()
+	sock := filepath.Join(t.TempDir(), "host.sock")
+	l, err := (&net.ListenConfig{}).Listen(ctx, "unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = c.Write([]byte("hello from the host\n"))
+			_ = c.Close()
+		}
+	}()
+	inst, err := driver.Create(ctx, machine.InstanceSpec{Name: "forward-eof", Forwards: []machine.Forward{{Port: 7500, Socket: sock}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+	m, err := driver.Start(ctx, inst, machine.BootOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Kill(context.Background()) })
+	var out bytes.Buffer
+	script := `s=$(date +%s); sleep 10 | { /run/disco-vm/disco-vm dial-host 7500; echo "returned after $(( $(date +%s) - s ))s"; }`
+	if code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"/bin/sh", "-c", script}}, nil, &out, &out); err != nil || code != 0 {
+		t.Fatalf("dial-host: exit %d, %v\n%s", code, err, out.String())
+	}
+	if got := out.String(); !strings.Contains(got, "hello from the host") || !strings.Contains(got, "returned after 0s") && !strings.Contains(got, "returned after 1s") {
+		t.Fatalf("the guest read %q, want the host's answer and EOF at once", got)
+	}
+}

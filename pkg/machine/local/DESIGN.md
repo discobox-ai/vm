@@ -1,7 +1,7 @@
 # pkg/machine/local
 
 The driver whose provider is this host's disk: the store and the shim that
-hcs, vz, and fake share (ADR 26-10-23-417). Each of them is a
+hcs, vz, libkrun, and fake share (ADR 26-10-23-417). Each of them is a
 `local.Hypervisor`, which installs, copies, boots, freezes, and destroys a
 disk in a directory it is given, says whether its disks chain, and has a
 base or none (`Base`, from `machine.Config.Base`); this package keeps
@@ -38,8 +38,10 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   is retried once with the new one. Every instance's cache volume is its own
   copy, so nothing but a key needs a generation;
 - `cache/<hypervisor>/`, what the hypervisor downloads: media it installs
-  from, and, for vz, Linux guest images pulled per digest
-  (`cache/vz/linux/<digest>`). `Prepare` is given it;
+  from, and, for vz and libkrun, Linux guest images pulled per digest
+  (`cache/<hypervisor>/linux/<digest>`, `pkg/machine/linuximage`), and
+  libkrun's runtime (`cache/libkrun/runtime/<digest>`). `Prepare` is given
+  it, and `Driver.CacheDir` names it;
 - `keys/<hash>.json`, a key the driver issued, named for the SHA-256 of its
   secret (ID, name, project, expiry, and that hash, never the secret), for a
   hypervisor whose capabilities issue keys. A call reads its own key's
@@ -58,7 +60,8 @@ Nothing takes a lock:
 
 ## A chain is the driver's, below the seam
 
-A VM created from a committed one is a copy: an APFS clone on vz and a tree
+A VM created from a committed one is a copy: an APFS clone on vz, a reflink
+or sparse copy on libkrun, and a tree
 on fake, made at Create and its own from then on, so the committed VM can be
 removed and the copy lives on. An hcs copy, though, is a differencing disk
 over the committed VM's, so for a hypervisor that `Chains` the record keeps
@@ -72,7 +75,7 @@ the chain, so a removal sees the copy being made, though a removal and a
 create in the same instant may both pass, since nothing takes a lock. An
 older `from` is what a crashed Create left, and holds nothing. Nothing marks a VM committed, so this is the one
 refusal `local` derives on its own. A VM whose chain was removed behind the driver's back is
-not found at boot, and is still removed. vz and fake get the committed VM
+not found at boot, and is still removed. vz, libkrun, and fake get the committed VM
 alone, at Prepare only.
 
 ## An upgrade swaps a VM's disk in its directory
@@ -114,7 +117,7 @@ is issued. A method that takes an instance refuses one whose record is
 another project's. Only the owner, the driver given no
 key, issues, lists, or revokes keys. A shim the driver starts runs as the
 owner, and neither a shim nor a fake guest is handed the variables a key is
-read from (`machine.WithoutKeys`). hcs and vz issue none (`machine.ErrNoKey`): whoever can read the
+read from (`machine.WithoutKeys`). hcs, vz, and libkrun issue none (`machine.ErrNoKey`): whoever can read the
 directory owns it, and a key source is not asked.
 
 ## A shim per running VM
@@ -138,7 +141,9 @@ instead, which `shim.json` names. The API is:
 - `/guest`, which upgrades to the agent protocol, answered from its
   machine's guest operations (`guest.Relay`);
 - `/dial?port=N`, which upgrades to a stream spliced into the machine's
-  `Dial(N)`: any guest port, which only the owner can reach.
+  `Dial(N)`: the agent's port or the service's (`guest.DialablePort`), the
+  service's dialed where `Hypervisor.Service` says, which only the owner can
+  reach; any other port is refused.
 
 It also serves the instance's URL on a loopback TCP port spliced into the
 machine's `Dial(service port)`, since ADR 0005 makes that an HTTP URL any
