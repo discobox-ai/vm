@@ -74,6 +74,9 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 	if !d.hv.Capabilities().Attaches(machine.VolumeData) {
 		return machine.Instance{}, fmt.Errorf("%s: an upgrade keeps a data volume, and %s attaches none: %w", d.hv.Name(), d.hv.Name(), machine.ErrUnsupported)
 	}
+	if from != nil && !d.hv.Capabilities().Commit {
+		return machine.Instance{}, fmt.Errorf("%s cannot give a VM the root of a committed one: %w", d.hv.Name(), machine.ErrUnsupported)
+	}
 	rec, err := d.readProject(inst.ID)
 	if err != nil {
 		return machine.Instance{}, err

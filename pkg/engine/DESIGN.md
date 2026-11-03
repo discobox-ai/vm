@@ -102,10 +102,10 @@ three ways:
 `Engine.Commit` (`commit VM`) freezes a stopped VM under its name: its data
 volume and cache clone go, and its disk is what VMs are created from. A
 running VM is refused. On a driver that does not report
-`Capabilities.Commit` (ADR 26-11-03-868), the engine refuses `Commit` and a
-`From` with an error wrapping `machine.ErrUnsupported` that names the
+`Capabilities.Commit` (ADR 26-11-03-868), the engine refuses `Commit`, a
+`From`, and an upgrade's `--from` with an error wrapping `machine.ErrUnsupported` that names the
 driver, before it asks the driver, as it refuses `Isolated` and `Egress`; so
-do `commit`, and `--from` on `create` and `run`. A caller there makes every
+do `commit`, and `--from` on `create`, `run`, and `upgrade`. A caller there makes every
 VM fresh, and `info` reports `"commit": false` up front. To change a committed VM, create a VM from it, change
 that, and commit it under a new name; versions are names (`app-v1`,
 `app-v2`), and a caller that wants a "current" one keeps its own pointer.
@@ -182,7 +182,8 @@ key has moved to its own first save: force it, or save from a new instance.
 root, a copy of a committed VM or fresh from the base, and keeps its name,
 settings, data volume, and cache clone (ADR 26-11-03-782;
 [pkg/machine](../machine/DESIGN.md#a-data-volume-is-its-vms-and-upgrade-gives-it-a-new-root)).
-It refuses, before the driver, a driver that does not list `VolumeData`, a VM
+It refuses, before the driver, a driver that does not list `VolumeData`, a
+`--from` on a driver that does not report `Commit`, a VM
 not found stopped, and a `--from` that is the VM itself, another guest OS,
 or running. A `--from` it does not find goes to the driver by name, which
 finishes an interrupted upgrade without it where it can and refuses it

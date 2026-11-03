@@ -66,8 +66,9 @@ is reported, never probed: a pool that would provision a VM to commit it
 reads it first, since finding out by trying costs a whole provisioning. A
 driver without it keeps `Commit` on its interface and returns
 `ErrUnsupported`, leaving the VM as it was, running or stopped, with its
-volumes; it refuses `Create` with a `From`, and makes nothing; and no VM it
-lists has a `From`. `Destroy` is the same on every driver, and returns only
+volumes; it refuses `Create` with a `From`, and makes nothing, and `Upgrade`
+with a `from`, upgrading only to a fresh root; and no VM it lists has a
+`From`. `Destroy` is the same on every driver, and returns only
 once the provider no longer has the VM. A driver that installs, or has no
 base, makes VMs only by copying, so reports `Commit`; `machinetest` asserts
 both. Every driver reports it today; fake's `NoCommit` is the one without,
@@ -155,9 +156,11 @@ volume and its cache clone as they are (the clone is not cloned again from
 its key), and what its spec set; its `ID`, `From`, and `Created` may change,
 and an `Instance` from before still names it. It refuses a running VM, a
 `from` of another guest OS, gone (`ErrNotFound`) or running, a fresh root
-with no base, and any upgrade where `Capabilities.Volumes` lacks
-`VolumeData` (`ErrUnsupported`): a data volume and its upgrade are one
-capability. A VM with no data volume on such a driver upgrades too.
+with no base, a `from` where `Capabilities.Commit` is false (ADR
+26-11-03-868: such a driver upgrades only to a fresh root), and any upgrade
+where `Capabilities.Volumes` lacks `VolumeData` (`ErrUnsupported`): a data
+volume and its upgrade are one capability. On a driver that lists
+`VolumeData`, a VM with no data volume upgrades too.
 
 An upgrade interrupted at any step leaves the VM listed under its name with
 its volumes, refused by Boot, Start, and Commit until `Upgrade` again with

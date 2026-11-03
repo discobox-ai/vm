@@ -106,11 +106,11 @@ type Capabilities struct {
 	Install []OS `json:"install,omitempty"`
 	// Commit reports that the driver commits a stopped VM (Driver.Commit)
 	// and creates VMs from a committed one (InstanceSpec.From), which go
-	// together (ADR 26-11-03-868). A driver without it refuses both with
-	// ErrUnsupported and changes nothing, so a caller plans without
-	// trying: a pool on such a driver makes every VM fresh. A driver that
-	// installs (Install) or has no base reports it, since it makes VMs no
-	// other way.
+	// together (ADR 26-11-03-868). A driver without it refuses both, and
+	// Upgrade with a from, with ErrUnsupported and changes nothing, so a
+	// caller plans without trying: a pool on such a driver makes every VM
+	// fresh. A driver that installs (Install) or has no base reports it,
+	// since it makes VMs no other way.
 	Commit bool `json:"commit"`
 	// Keys is whether the driver issues keys (IssueKey), and the narrowest
 	// scope one reaches.
@@ -550,12 +550,12 @@ type Driver interface {
 	//
 	// It refuses, changing nothing, a running VM; a from whose guest OS is
 	// not the VM's, that the provider no longer has (ErrNotFound), or that
-	// is running; a fresh root on a driver with no base (ErrUnsupported);
-	// and any upgrade on a driver that does not list VolumeData
-	// (ErrUnsupported). An upgrade interrupted at any step leaves the VM
-	// listed under its name with its data volume: Upgrade again with the
-	// same from finishes it, Destroy removes it, and Boot and Start refuse
-	// it until one of them has.
+	// is running; a fresh root on a driver with no base, a from on a driver
+	// that does not report Capabilities.Commit, and any upgrade on a driver
+	// that does not list VolumeData (ErrUnsupported). An upgrade
+	// interrupted at any step leaves the VM listed under its name with its
+	// data volume: Upgrade again with the same from finishes it, Destroy
+	// removes it, and Boot and Start refuse it until one of them has.
 	Upgrade(ctx context.Context, inst Instance, from *Instance) (Instance, error)
 	// Service is the instance's service. A URL that exists only while the
 	// instance runs (a port the daemon publishes, a shim's) is asked for

@@ -8,6 +8,8 @@ import (
 
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/fake"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // otherOS is a driver that reports the VM name as a guest of another OS
@@ -27,8 +29,9 @@ func (o otherOS) Instance(ctx context.Context, name string) (machine.Instance, e
 
 // An upgrade needs a driver that attaches a data volume, a VM of the
 // project, and a committed VM other than itself, of its guest OS; one from a committed VM
-// keeps the VM's name and settings and records where its root is from, and
-// a fresh one needs a base. (internal/e2e refuses a running one.)
+// keeps the VM's name and settings and records where its root is from; a
+// fresh one needs a base; and a driver that does not commit upgrades only
+// to a fresh root. (internal/e2e refuses a running one.)
 func TestUpgrade(t *testing.T) {
 	ctx := context.Background()
 	driver := fakeDriver(t, t.TempDir(), "")
@@ -68,6 +71,23 @@ func TestUpgrade(t *testing.T) {
 	}
 	if _, err := e.Upgrade(ctx, "dev", engine.UpgradeOptions{}); !errors.Is(err, machine.ErrUnsupported) {
 		t.Fatalf("a fresh root with no base: %v, want ErrUnsupported", err)
+	}
+	noCommit, err := local.New(machine.Config{Dir: t.TempDir()}, &fake.Hypervisor{BaseName: "stock", NoCommit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := engine.Open(noCommit, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh.Create(ctx, engine.CreateOptions{Name: "dev", Data: &machine.DataVolume{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh.Upgrade(ctx, "dev", engine.UpgradeOptions{From: "dev"}); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("an upgrade from a committed VM on a driver that does not commit: %v, want ErrUnsupported", err)
+	}
+	if got, err := fresh.Upgrade(ctx, "dev", engine.UpgradeOptions{}); err != nil || got.Data == nil {
+		t.Fatalf("a fresh root on a driver that does not commit: %+v, %v", got, err)
 	}
 	two, err := e.Create(ctx, engine.CreateOptions{From: "base", Name: "two"})
 	if err != nil {

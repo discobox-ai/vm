@@ -591,10 +591,13 @@ type UpgradeOptions struct {
 // root is removed for good. A caller that wants to go back commits the VM
 // first and upgrades to that. An upgrade that was interrupted is finished by
 // upgrading again with the same From. The driver must list
-// machine.VolumeData.
+// machine.VolumeData, and report Capabilities.Commit for a From.
 func (e *Engine) Upgrade(ctx context.Context, name string, opts UpgradeOptions) (Instance, error) {
 	if !e.Driver.Capabilities().Attaches(machine.VolumeData) {
 		return Instance{}, fmt.Errorf("driver %s attaches no data volume, which an upgrade keeps; rebuild the VM in place instead: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
+	if opts.From != "" && !e.Driver.Capabilities().Commit {
+		return Instance{}, fmt.Errorf("driver %s cannot give a VM the root of a committed one; upgrade it to a fresh root instead: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
 	inst, err := e.Get(ctx, name)
 	if err != nil {

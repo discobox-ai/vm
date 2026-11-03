@@ -793,10 +793,12 @@ func TestVolumes(t *testing.T) {
 	}
 }
 
-// TestUpgrade gives a stopped VM the root of another committed VM: it keeps
-// its name, its data volume, and its cache clone, and loses what it wrote to
-// its old root. It is refused while the VM runs, from a VM there is not, and
-// on a driver that attaches no data volume.
+// TestUpgrade gives a stopped VM a new root, the root of another committed
+// VM, or a fresh one on a driver that does not commit: it keeps its name,
+// its data volume, and its cache clone, and loses what it wrote to its old
+// root. It is refused while the VM runs; from a VM there is not, or from
+// any where the driver does not commit; and on a driver that attaches no
+// data volume.
 func TestUpgrade(t *testing.T) {
 	e := newEnv(t)
 	t.Cleanup(func() {
@@ -804,8 +806,8 @@ func TestUpgrade(t *testing.T) {
 		e.run("cache", "rm", "e2e-up")
 	})
 	if tg.driver != "fake" && tg.driver != "docker" {
-		e.ok("create", "up", "--from", "e2e-base")
-		if out, code := e.run("upgrade", "up", "--from", "e2e-base"); code == 0 || !strings.Contains(out, "attaches no data volume") {
+		e.ok(append([]string{"create", "up"}, e.base()...)...)
+		if out, code := e.run("upgrade", "up"); code == 0 || !strings.Contains(out, "attaches no data volume") {
 			t.Fatalf("upgrade on %s: exit %d\n%s", tg.driver, code, out)
 		}
 		return
@@ -835,23 +837,31 @@ func TestUpgrade(t *testing.T) {
 	}
 	root := strings.TrimSuffix(tg.file("x"), "/x")
 
-	e.ok("run", "up-next", "--from", "e2e-base")
-	put("up-next", root, "next.txt", "next")
-	e.ok("stop", "up-next")
-	e.ok("commit", "up-next")
+	// to is the upgrade's --from: a committed VM with a file of its own in
+	// its root, or none, a fresh root, on a driver that does not commit.
+	var to []string
+	from := ""
+	if e.commits {
+		e.ok(append([]string{"run", "up-next"}, e.base()...)...)
+		put("up-next", root, "next.txt", "next")
+		e.ok("stop", "up-next")
+		e.ok("commit", "up-next")
+		to, from = []string{"--from", "up-next"}, "up-next"
+	}
 
-	e.ok("run", "up", "--from", "e2e-base", "--data", "1GiB", "--cache", "e2e-up")
+	e.ok(append([]string{"run", "up", "--data", "1GiB", "--cache", "e2e-up"}, e.base()...)...)
 	put("up", data, "data.txt", "data")
 	put("up", cache, "cache.txt", "cache")
 	put("up", root, "old.txt", "old")
-	if out, code := e.run("upgrade", "up", "--from", "up-next"); code == 0 || !strings.Contains(out, "stop it") {
+	if out, code := e.run(append([]string{"upgrade", "up"}, to...)...); code == 0 || !strings.Contains(out, "stop it") {
 		t.Fatalf("upgrade of a running VM: exit %d\n%s", code, out)
 	}
 	e.ok("stop", "up")
-	if out, code := e.run("upgrade", "up", "--from", "nothing"); code == 0 || !strings.Contains(out, "not found") {
+	refused := map[bool]string{true: "not found", false: "cannot give a VM the root of a committed one"}[e.commits]
+	if out, code := e.run("upgrade", "up", "--from", "nothing"); code == 0 || !strings.Contains(out, refused) {
 		t.Fatalf("upgrade from no VM: exit %d\n%s", code, out)
 	}
-	if out := strings.TrimSpace(e.ok("upgrade", "up", "--from", "up-next")); out != "up" {
+	if out := strings.TrimSpace(e.ok(append([]string{"upgrade", "up"}, to...)...)); out != "up" {
 		t.Fatalf("upgrade printed %q", out)
 	}
 	var inspected struct {
@@ -859,11 +869,15 @@ func TestUpgrade(t *testing.T) {
 		Data  *machine.DataVolume  `json:"data"`
 		Cache *machine.CacheVolume `json:"cache"`
 	}
-	if err := json.Unmarshal([]byte(e.ok("inspect", "up")), &inspected); err != nil || inspected.From != "up-next" || inspected.Data == nil || inspected.Cache == nil || inspected.Cache.Key != "e2e-up" {
+	if err := json.Unmarshal([]byte(e.ok("inspect", "up")), &inspected); err != nil || inspected.From != from || inspected.Data == nil || inspected.Cache == nil || inspected.Cache.Key != "e2e-up" {
 		t.Fatalf("inspect up: %+v, %v", inspected, err)
 	}
 	e.ok("start", "up")
-	for path, want := range map[string]string{data + "/data.txt": "data", cache + "/cache.txt": "cache", root + "/next.txt": "next"} {
+	wants := map[string]string{data + "/data.txt": "data", cache + "/cache.txt": "cache"}
+	if e.commits {
+		wants[root+"/next.txt"] = "next"
+	}
+	for path, want := range wants {
 		if got, ok := read("up", path); got != want {
 			t.Errorf("the upgraded VM reads %q (found %v) from %s, want %q", got, ok, path, want)
 		}
