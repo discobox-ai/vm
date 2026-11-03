@@ -3,7 +3,9 @@
 package drivers
 
 import (
-	// boxd's hypervisor is in the cloud, so every host can drive it.
+	// archil's hypervisor is in the cloud, so every host can drive it.
+	_ "github.com/discobox-ai/vm/pkg/machine/archil"
+	// boxd's hypervisor is in the cloud too.
 	_ "github.com/discobox-ai/vm/pkg/machine/boxd"
 	// docker's daemon may be on another host, or in Docker Desktop's VM, so
 	// every host can drive it too.

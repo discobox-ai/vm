@@ -6,8 +6,8 @@ codebase and one command line:
 - **Windows guests on Windows**, through Host Compute Service. There is no
   Hyper-V manager, no Windows Sandbox, and no WSL, so it works on Home.
 - **macOS guests on macOS**, through Virtualization.framework.
-- **Linux guests in the cloud**, on [boxd](https://boxd.sh) microVMs, from
-  any host.
+- **Linux guests in the cloud**, on [boxd](https://boxd.sh) microVMs or
+  [Archil](https://archil.com) sandboxes, from any host.
 - **Linux guests as Docker containers that look like machines**: systemd is
   their init, and their root is root only over the guest, as an unprivileged
   uid on the host, without `--privileged`.
@@ -26,7 +26,9 @@ embeds `pkg/engine` as a library.
 > conformance suite against a fake of boxd's API; `internal/e2e` does not run
 > on it yet (see [docs/drivers/boxd.md](docs/drivers/boxd.md)). The `docker`
 > driver makes fresh VMs of a registry image it is configured with (see
-> [docs/drivers/docker.md](docs/drivers/docker.md)).
+> [docs/drivers/docker.md](docs/drivers/docker.md)). The `archil` driver
+> passes the conformance suite against Archil itself (see
+> [docs/drivers/archil.md](docs/drivers/archil.md)).
 
 List the drivers compiled into the current binary, then select one with the
 global `--driver` flag (or `DISCO_VM_DRIVER`):
@@ -39,8 +41,8 @@ disco-vm --driver docker info
 ## There are only VMs
 
 A VM is made fresh, from the driver's base (its configuration,
-`$DISCO_VM_BASE`: a Docker image, boxd's default image, vz's Linux guest
-image), installed from media (hcs, vz), or created from a committed VM.
+`$DISCO_VM_BASE`: a Docker image, boxd's default image, an OCI image Archil
+runs, vz's Linux guest image), installed from media (hcs, vz), or created from a committed VM.
 `commit` freezes a stopped VM under its name: create VMs from it, and never
 start it again. There are no images or tags; versions are names
 (ADR 26-11-03-606). Some providers cannot tell a committed VM from a stopped
@@ -88,7 +90,7 @@ go test ./...          # includes the full CLI lifecycle on the fake driver
 | path | what |
 |---|---|
 | `cmd/disco-vm` | the one binary: CLI, guest agent (`guest`), per-VM supervisor (`shim`) |
-| `pkg/machine` | the driver seam; `boxd`, `docker`, `fake`, `hcs` (windows), `vz` (darwin); `local`, the store and shim of the drivers on this host's disk; `machinetest` conformance suite |
+| `pkg/machine` | the driver seam; `archil`, `boxd`, `docker`, `fake`, `hcs` (windows), `vz` (darwin); `local`, the store and shim of the drivers on this host's disk; `machinetest` conformance suite |
 | `pkg/engine` | VMs, their lifecycle, install, and commit, kept by the driver |
 | `pkg/guest` | agent protocol, server, and host client |
 | `internal/e2e` | the CLI end to end |
