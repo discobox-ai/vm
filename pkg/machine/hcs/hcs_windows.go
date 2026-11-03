@@ -279,6 +279,12 @@ func (d *Hypervisor) boot(inst local.InstanceSpec, opts local.BootOptions) (*vm,
 	})
 }
 
+// MoveVolumes is unsupported: hcs attaches no volume yet, so it upgrades
+// no VM (ADR 26-11-03-782).
+func (*Hypervisor) MoveVolumes(context.Context, local.InstanceSpec, local.InstanceSpec) error {
+	return fmt.Errorf("hcs: an upgrade: %w", machine.ErrUnsupported)
+}
+
 // SaveCache is unsupported: hcs attaches no volume yet (ADR 26-11-02-180).
 func (*Hypervisor) SaveCache(context.Context, local.InstanceSpec, local.Layer) error {
 	return fmt.Errorf("hcs: a cache volume: %w", machine.ErrUnsupported)

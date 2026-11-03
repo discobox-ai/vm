@@ -13,7 +13,8 @@ boxd, docker, and local have their own design notes:
 or not (ADR 26-11-03-606): Create, fresh from the driver's base
 (`Config.Base`) or a copy of a committed VM (`InstanceSpec.From`); Install,
 a committed VM from media; Commit, which freezes a stopped VM under its
-name; Instance, Instances, and Destroy, as its provider keeps them ([the root DESIGN.md](../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider)).
+name; Upgrade, which gives a stopped VM a new root and keeps its volumes
+([below](#a-data-volume-is-its-vms-and-upgrade-gives-it-a-new-root)); Instance, Instances, and Destroy, as its provider keeps them ([the root DESIGN.md](../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider)).
 That a VM is committed is the caller's to record, since not every provider
 can tell (Archil keeps a committed sandbox as a stopped one): a driver
 refuses one only where its provider has no machine left to run
@@ -51,7 +52,8 @@ a `Capabilities` field, never a faked method:
 | isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no |
 | egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | none |
 | private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | the URL (a shared loopback) |
-| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: named volumes | `data` and `cache`: directories in the guest's root |
+| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | `data` and `cache`: directories in the guest's root |
+| upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | a new root beside the old, its volumes moved into it |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
 ([below](#every-copy-is-cold-and-a-vm-is-made-fast-by-what-is-in-it)).
@@ -121,8 +123,9 @@ the root disk. A size is a cap where the provider sizes storage and a hint
 where it grows on demand (docker, fake).
 
 - **A data volume is the instance's**: made empty at Create, kept across stop
-  and start, removed by Destroy, and never in a committed VM, since Commit keeps
-  the root disk alone.
+  and start and across Upgrade, removed by Destroy, and never in a committed
+  VM, since Commit keeps the root disk alone. It is never listed, named,
+  attached, or removed apart from its VM (ADR 26-11-03-782).
 - **A cache key points at a generation**, an immutable snapshot of a cache
   volume; each project has its own keys. Create
   clones the key's current generation into the instance's own volume (empty
@@ -133,12 +136,35 @@ where it grows on demand (docker, fake).
   with `ErrCacheMoved` once the key holds another generation than the one it
   expects, checked before it copies and again before it moves the key; two
   saves in the same moment may both pass, and one of them wins (local: the
-  last to move the key; docker: the one begun last). The engine
+  last to move the key); docker holds a lock on the key on the daemon's host
+  from the second check to the move, so a guarded save it passes is never
+  lost. The engine
   guards a save to the key the instance started from, by the generation it
   was cloned from, unless forced (`SaveOptions.Force`, `cache save --force`).
 - **A key moved off a generation removes it**, once nothing needs it;
   `DeleteCache` drops the key and its generation, and instances keep their
   clones.
+
+### A data volume is its VM's, and Upgrade gives it a new root
+
+A data volume's only purpose is to carry one VM's state onto a new root
+(ADR 26-11-03-782). `Upgrade(inst, from)` gives a stopped VM a new root
+disk, a copy of the committed VM `from` or a fresh one from the base (`from`
+nil), and removes the old root for good. The VM keeps its name, its data
+volume and its cache clone as they are (the clone is not cloned again from
+its key), and what its spec set; its `ID`, `From`, and `Created` may change,
+and an `Instance` from before still names it. It refuses a running VM, a
+`from` of another guest OS, gone (`ErrNotFound`) or running, a fresh root
+with no base, and any upgrade where `Capabilities.Volumes` lacks
+`VolumeData` (`ErrUnsupported`): a data volume and its upgrade are one
+capability. A VM with no data volume on such a driver upgrades too.
+
+An upgrade interrupted at any step leaves the VM listed under its name with
+its volumes, refused by Boot, Start, and Commit until `Upgrade` again with
+the same `from` finishes it or `Destroy` removes it; no volume is ever left
+that no listed VM owns. Finishing reads that committed VM only if the new
+root is not made yet, so one removed in between does not strand the VM
+(the engine passes a `from` it does not find to the driver, to say).
 
 A driver lists every guest OS it boots in `Capabilities.GuestOS`, and the
 ones it installs from media in `Capabilities.Install`; a caller asks for a

@@ -424,6 +424,12 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	}
 }
 
+// Upgrade is not offered: boxd attaches no disk but a machine's root, so
+// there is no data volume for a new root to keep (ADR 26-11-03-782).
+func (*Driver) Upgrade(context.Context, machine.Instance, *machine.Instance) (machine.Instance, error) {
+	return machine.Instance{}, fmt.Errorf("boxd: an upgrade keeps a data volume, and boxd attaches none: %w", machine.ErrUnsupported)
+}
+
 // Commit boots the stopped VM from its disk, snapshots it under its name,
 // and deletes the machine: a boxd snapshot can only be taken of a running
 // machine. The snapshot's disk is the one the guest flushed at its last

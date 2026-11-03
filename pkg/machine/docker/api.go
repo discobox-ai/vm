@@ -248,11 +248,16 @@ type hostConfig struct {
 	// PortBindings publishes container ports on the daemon's host, keyed as
 	// ExposedPorts is.
 	PortBindings map[string][]portBinding `json:"PortBindings,omitempty"`
-	// Mounts are the named volumes the container mounts.
+	// Mounts are the directories and named volumes the container mounts.
 	Mounts []mount `json:"Mounts,omitempty"`
+	// Binds are host directories mounted the legacy way, which the daemon
+	// makes where they are missing.
+	Binds []string `json:"Binds,omitempty"`
+	// NetworkMode "none" gives the container no network.
+	NetworkMode string `json:"NetworkMode,omitempty"`
 }
 
-// mount is a named volume mounted in a container.
+// mount is a host directory or a named volume mounted in a container.
 type mount struct {
 	Type     string `json:"Type"`
 	Source   string `json:"Source"`
@@ -273,6 +278,12 @@ func volumeMount(name, target string, readOnly bool) mount {
 		NoCopy bool `json:"NoCopy"`
 	}{NoCopy: true}
 	return m
+}
+
+// bindMount mounts the daemon host's directory dir at target. The
+// directory must exist.
+func bindMount(dir, target string) mount {
+	return mount{Type: "bind", Source: dir, Target: target}
 }
 
 // portBinding is one host address a container port is published on. An empty
@@ -311,10 +322,11 @@ type containerInfo struct {
 		Memory   int64 `json:"Memory"`
 	} `json:"HostConfig"`
 	// Mounts are what the container mounts; a named volume's Name is its
-	// name.
+	// name, and a host directory's Source its path.
 	Mounts []struct {
 		Type        string `json:"Type"`
 		Name        string `json:"Name"`
+		Source      string `json:"Source"`
 		Destination string `json:"Destination"`
 	} `json:"Mounts"`
 	NetworkSettings struct {
@@ -391,33 +403,11 @@ func (a *api) putArchive(ctx context.Context, id, dir string, tarball io.Reader)
 	return nil
 }
 
-// getArchive returns path in the container's filesystem, running or not, as
-// a tar stream rooted at its base name, with its owners.
-func (a *api) getArchive(ctx context.Context, id, path string) (io.ReadCloser, error) {
-	resp, err := a.do(ctx, http.MethodGet, "/containers/"+id+"/archive", url.Values{"path": {path}}, nil, "")
-	if err != nil {
-		return nil, err
-	}
-	return resp.Body, nil
-}
-
 // volumeInfo is a named volume, as the daemon lists it.
 type volumeInfo struct {
 	Name      string            `json:"Name"`
 	Labels    map[string]string `json:"Labels"`
 	CreatedAt string            `json:"CreatedAt"`
-}
-
-// createVolume makes a named volume with labels. A name the daemon already
-// has answers that volume, so every name the driver makes is new.
-func (a *api) createVolume(ctx context.Context, name string, labels map[string]string) error {
-	return a.call(ctx, http.MethodPost, "/volumes/create", nil, map[string]any{"Name": name, "Labels": labels}, nil)
-}
-
-// inspectVolume reads a named volume.
-func (a *api) inspectVolume(ctx context.Context, name string) (volumeInfo, error) {
-	var out volumeInfo
-	return out, a.call(ctx, http.MethodGet, "/volumes/"+name, nil, nil, &out)
 }
 
 // volumes lists the named volumes carrying every label of labels.
@@ -448,6 +438,47 @@ func (a *api) removeVolume(ctx context.Context, name string) error {
 		return nil
 	}
 	return err
+}
+
+// rename renames a container.
+func (a *api) rename(ctx context.Context, id, name string) error {
+	return a.call(ctx, http.MethodPost, "/containers/"+id+"/rename", url.Values{"name": {name}}, nil, nil)
+}
+
+// output returns all of a stopped container's stdout and stderr, apart.
+func (a *api) output(ctx context.Context, id string) (string, string, error) {
+	resp, err := a.do(ctx, http.MethodGet, "/containers/"+id+"/logs", url.Values{"stdout": {"1"}, "stderr": {"1"}}, nil, "")
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	var stdout, stderr bytes.Buffer
+	err = demux(bufio.NewReader(resp.Body), &stdout, &stderr)
+	return stdout.String(), stderr.String(), err
+}
+
+// importImage makes the image repo:tag of a tar stream of its files,
+// following the progress stream to the end, as pull does.
+func (a *api) importImage(ctx context.Context, repo, tag string, tarball io.Reader) error {
+	resp, err := a.do(ctx, http.MethodPost, "/images/create", url.Values{"fromSrc": {"-"}, "repo": {repo}, "tag": {tag}}, tarball, "application/x-tar")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var msg struct {
+			Error string `json:"error"`
+		}
+		if err := dec.Decode(&msg); errors.Is(err, io.EOF) {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("docker: import %s:%s: %w", repo, tag, err)
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("docker: import %s:%s: %s", repo, tag, msg.Error)
+		}
+	}
 }
 
 // logs returns the tail of a stopped container's output.

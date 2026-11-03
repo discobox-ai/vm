@@ -13,10 +13,13 @@ type Volume string
 
 const (
 	// VolumeData is the instance's own: made at Create, kept across stop and
-	// start, removed by Destroy, and never part of a committed VM.
+	// start and across Upgrade, which is its purpose, removed by Destroy,
+	// and never part of a committed VM. It is never listed, found, attached,
+	// or removed apart from its VM (ADR 26-11-03-782).
 	VolumeData Volume = "data"
 	// VolumeCache is a private clone of a cache key's current generation,
-	// made at Create, which only SaveCache publishes.
+	// made at Create, which only SaveCache publishes. Upgrade keeps it, and
+	// never clones it again from its key.
 	VolumeCache Volume = "cache"
 )
 

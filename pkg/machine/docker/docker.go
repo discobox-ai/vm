@@ -126,16 +126,21 @@ type Driver struct {
 	project string
 	// base is the image a fresh VM is readied from; empty is none.
 	base string
-	// Agent is the disco-vm binary Create puts in a base's image.
+	// Agent is the disco-vm binary Create puts in a base's image, and the
+	// helper image (helperRepo) runs.
 	Agent string
+	// Root is where the driver keeps volumes and caches on the daemon's host
+	// (ADR 26-11-03-782): RootEnv, or DefaultRoot.
+	Root string
 }
 
 var _ machine.Driver = (*Driver)(nil)
 
 // New returns a driver for the daemon $DOCKER_HOST names, for cfg's project
 // (machine.DefaultProject when empty), whose fresh VMs are readied from
-// cfg.Base, and whose agent is $DISCO_VM_AGENT or, on linux, this binary. It
-// dials nothing until it is used.
+// cfg.Base, whose agent is $DISCO_VM_AGENT or, on linux, this binary, and
+// whose directories are under $DISCO_VM_DOCKER_ROOT or DefaultRoot on the
+// daemon's host. It dials nothing until it is used.
 func New(cfg machine.Config) *Driver {
 	project := cfg.Project
 	if project == "" {
@@ -145,7 +150,11 @@ func New(cfg machine.Config) *Driver {
 	if agent == "" && runtime.GOOS == "linux" {
 		agent, _ = os.Executable()
 	}
-	return &Driver{api: newAPI(), project: project, base: cfg.Base, Agent: agent}
+	root := os.Getenv(RootEnv)
+	if root == "" {
+		root = DefaultRoot
+	}
+	return &Driver{api: newAPI(), project: project, base: cfg.Base, Agent: agent, Root: root}
 }
 
 func (*Driver) Name() string { return "docker" }
@@ -344,8 +353,8 @@ func (d *Driver) commitVM(ctx context.Context, container string, inst machine.In
 	labels := map[string]string{
 		labelInstance: inst.Name, labelProject: d.project, labelCommitted: "true", labelFrom: inst.From,
 		labelCPUs: strconv.Itoa(inst.CPUs), labelMemory: strconv.FormatUint(inst.Memory, 10), labelImage: "",
-		// A committed VM never holds a volume.
-		labelData: "", labelCache: "", labelCacheBytes: "", labelGeneration: "",
+		// A committed VM never holds a volume, and replaces no container.
+		labelData: "", labelCache: "", labelCacheBytes: "", labelGeneration: "", labelReplaces: "", labelReplacedImage: "",
 	}
 	var changes []string
 	for _, key := range sortedKeys(labels) {
@@ -412,12 +421,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		d.removeImage(base)
 		return machine.Instance{}, err
 	}
-	vols, err := d.makeVolumes(ctx, spec, image.ID)
-	if vols.copier != "" {
-		defer d.removeContainer(vols.copier)
-	}
+	vols, err := d.prepareVolumes(ctx, spec)
 	if err != nil {
-		d.removeVolumes(vols.names)
+		d.unstage(vols.staging)
 		d.removeImage(base)
 		return machine.Instance{}, err
 	}
@@ -425,14 +431,49 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		labelInstance: spec.Name, labelProject: d.project, labelFrom: fromName,
 		labelCPUs: strconv.Itoa(spec.CPUs), labelMemory: strconv.FormatUint(spec.Memory, 10),
 		// Set even when empty, over any its image carries.
-		labelCommitted: "", labelImage: "",
+		labelCommitted: "", labelImage: "", labelReplaces: "", labelReplacedImage: "",
 		labelData: "", labelCache: "", labelCacheBytes: "", labelGeneration: "",
 	}
 	maps.Copy(labels, vols.labels)
+	id, err := d.api.createContainer(ctx, name, d.vmConfig(image.ID, spec.Name, labels, vols.mounts))
+	if isConflict(err) {
+		d.unstage(vols.staging)
+		d.removeImage(base)
+		return machine.Instance{}, fmt.Errorf("docker: a VM named %q: %w", spec.Name, machine.ErrExists)
+	}
+	if err != nil {
+		d.unstage(vols.staging)
+		d.removeImage(base)
+		return machine.Instance{}, fmt.Errorf("docker: create %s: %w", name, err)
+	}
+	c, err := d.api.inspectContainer(ctx, id)
+	if err == nil {
+		if _, taken, cerr := d.committed(ctx, spec.Name); cerr != nil {
+			err = cerr
+		} else if taken {
+			err = fmt.Errorf("a VM named %q was committed meanwhile: %w", spec.Name, machine.ErrExists)
+		}
+	}
+	if err == nil {
+		// The container holds the name, so the directories are this VM's.
+		err = d.installVolumes(ctx, spec, vols)
+	}
+	if err != nil {
+		d.removeContainer(id)
+		d.unstage(vols.staging)
+		d.removeImage(base)
+		return machine.Instance{}, fmt.Errorf("docker: container %s: %w", name, err)
+	}
+	return d.instance(c), nil
+}
+
+// vmConfig is a VM's container: of image, named for the VM, with its labels
+// and mounts.
+func (d *Driver) vmConfig(image, name string, labels map[string]string, mounts []mount) containerConfig {
 	none := []string{}
-	id, err := d.api.createContainer(ctx, name, containerConfig{
-		Image:    image.ID,
-		Hostname: spec.Name,
+	return containerConfig{
+		Image:    image,
+		Hostname: name,
 		Cmd:      []string{},
 		Labels:   labels,
 		// The service is published on the host's loopback, on a port the
@@ -447,40 +488,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 			MaskedPaths:   &none,
 			ReadonlyPaths: &none,
 			Tmpfs:         map[string]string{relayDir: "mode=0700"},
-			Mounts:        vols.mounts,
+			Mounts:        mounts,
 		},
-	})
-	if isConflict(err) {
-		d.removeVolumes(vols.names)
-		d.removeImage(base)
-		return machine.Instance{}, fmt.Errorf("docker: a VM named %q: %w", spec.Name, machine.ErrExists)
 	}
-	if err != nil {
-		d.removeVolumes(vols.names)
-		d.removeImage(base)
-		return machine.Instance{}, fmt.Errorf("docker: create %s: %w", name, err)
-	}
-	c, err := d.api.inspectContainer(ctx, id)
-	if err == nil {
-		if _, taken, cerr := d.committed(ctx, spec.Name); cerr != nil {
-			err = cerr
-		} else if taken {
-			err = fmt.Errorf("a VM named %q was committed meanwhile: %w", spec.Name, machine.ErrExists)
-		}
-	}
-	if err == nil {
-		err = d.checkVolumes(ctx, vols.names)
-	}
-	if err == nil && vols.copier != "" {
-		err = d.copyCache(ctx, vols.copier, id)
-	}
-	if err != nil {
-		d.removeContainer(id)
-		d.removeVolumes(vols.names)
-		d.removeImage(base)
-		return machine.Instance{}, fmt.Errorf("docker: container %s: %w", name, err)
-	}
-	return d.instance(c), nil
 }
 
 // free refuses a name the project's committed VMs or containers hold.
@@ -490,10 +500,12 @@ func (d *Driver) free(ctx context.Context, name string) error {
 	} else if taken {
 		return fmt.Errorf("docker: a committed VM named %q: %w", name, machine.ErrExists)
 	}
-	if _, err := d.api.inspectContainer(ctx, containerName(d.project, name)); err == nil {
-		return fmt.Errorf("docker: a VM named %q: %w", name, machine.ErrExists)
-	} else if !isNotFound(err) {
-		return err
+	for _, ref := range []string{containerName(d.project, name), upgradeName(d.project, name)} {
+		if _, err := d.api.inspectContainer(ctx, ref); err == nil {
+			return fmt.Errorf("docker: a VM named %q: %w", name, machine.ErrExists)
+		} else if !isNotFound(err) {
+			return err
+		}
 	}
 	return nil
 }
@@ -525,11 +537,11 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 	if opts.GUI {
 		return nil, fmt.Errorf("docker: a window on the guest's display: %w", machine.ErrUnsupported)
 	}
-	ref := containerRef{ID: inst.ID, Name: containerName(d.project, inst.Name)}
-	c, err := d.api.inspectContainer(ctx, ref.ID)
+	c, err := d.whole(ctx, inst)
 	if err != nil {
-		return nil, fmt.Errorf("docker: container %s: %w", ref.Name, err)
+		return nil, fmt.Errorf("docker: container %s: %w", containerName(d.project, inst.Name), err)
 	}
+	ref := containerRef{ID: c.ID, Name: containerName(d.project, inst.Name)}
 	if !c.State.Running {
 		res := hostConfig{NanoCPUs: int64(inst.CPUs) * 1e9}
 		if inst.Memory != 0 {
@@ -586,8 +598,8 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	if image(inst) {
 		return nil, fmt.Errorf("docker: VM %s is committed, an image with no container: %w", inst.Name, machine.ErrNotRunning)
 	}
-	ref := containerRef{ID: inst.ID, Name: containerName(d.project, inst.Name)}
-	c, err := d.api.inspectContainer(ctx, ref.ID)
+	c, err := d.resolve(ctx, inst)
+	ref := containerRef{ID: c.ID, Name: containerName(d.project, inst.Name)}
 	switch {
 	case isNotFound(err):
 		return nil, fmt.Errorf("docker: container %s is gone: %w", ref.Name, machine.ErrNotRunning)
@@ -607,11 +619,11 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 	if err := refuseCommitted(inst); err != nil {
 		return machine.Instance{}, err
 	}
-	ref := containerRef{ID: inst.ID, Name: containerName(d.project, inst.Name)}
-	c, err := d.api.inspectContainer(ctx, ref.ID)
+	c, err := d.whole(ctx, inst)
 	if err != nil {
-		return machine.Instance{}, fmt.Errorf("docker: container %s: %w", ref.Name, err)
+		return machine.Instance{}, fmt.Errorf("docker: container %s: %w", containerName(d.project, inst.Name), err)
 	}
+	ref := containerRef{ID: c.ID, Name: containerName(d.project, inst.Name)}
 	if c.State.Running {
 		return machine.Instance{}, fmt.Errorf("docker: commit needs a stopped container; %s is %s", ref.Name, c.State.Status)
 	}
@@ -631,7 +643,7 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 	if err != nil {
 		return machine.Instance{}, err
 	}
-	if err := d.destroyContainer(ctx, inst.ID, inst.Name); err != nil {
+	if err := d.destroyVM(ctx, inst.Name, []containerInfo{c}, c.ID); err != nil {
 		return committed, err
 	}
 	return committed, nil
@@ -653,18 +665,25 @@ func emptyMachineID() io.Reader {
 // name still under way.
 const staleBase = 30 * time.Minute
 
-// Destroy removes a committed VM's image, or a VM's container. A VM created
-// from a committed VM runs its image by ID, so it stands alone: the daemon
-// only untags an image a container uses, and the Destroy of the last such
-// container removes it.
+// Destroy removes a committed VM's image, or a VM's containers and
+// directories. A VM created from a committed VM runs its image by ID, so it
+// stands alone: the daemon only untags an image a container uses, and the
+// Destroy of the last such container removes it.
 func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	if !image(inst) {
-		return d.destroyContainer(ctx, inst.ID, inst.Name)
-	}
-	// A container a failed commit left goes first, while the image names it.
-	if c, err := d.api.inspectContainer(ctx, containerName(d.project, inst.Name)); err == nil && d.managed(c.Config.Labels) {
-		if err := d.destroyContainer(ctx, c.ID, inst.Name); err != nil {
+		cs, err := d.vmContainers(ctx, inst)
+		if err != nil {
 			return err
+		}
+		return d.destroyVM(ctx, inst.Name, cs, inst.ID)
+	}
+	// A container a failed commit left goes first, while the image names it,
+	// and an upgrade's new one a commit racing it left.
+	for _, ref := range []string{containerName(d.project, inst.Name), upgradeName(d.project, inst.Name)} {
+		if c, err := d.api.inspectContainer(ctx, ref); err == nil && d.managed(c.Config.Labels) {
+			if err := d.destroyVM(ctx, inst.Name, []containerInfo{c}, c.ID); err != nil {
+				return err
+			}
 		}
 	}
 	tag := vmTag(d.project, inst.Name)
@@ -681,23 +700,46 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	return nil
 }
 
-// destroyContainer removes a VM's container and volumes, then the image
-// readied from the base for it, the one its container ran, and every other
-// one of its name no container runs that is older than staleBase, and the
-// image the container ran if no tag names it any more (a committed VM
-// removed while the container ran it). One a later VM of the name, or
-// another VM, runs is in use, and the daemon keeps it.
-func (d *Driver) destroyContainer(ctx context.Context, id, name string) error {
-	own := ""
-	if c, err := d.api.inspectContainer(ctx, id); err == nil {
-		own = c.Image
+// destroyVM removes a VM's directories, then its containers cs (or, with
+// none, the container id, which may be gone already), then the named
+// volumes of a VM from before ADR 26-11-03-782, then the images the
+// containers ran where nothing else needs them. Directories go first, so a
+// Destroy that fails leaves the VM listed, and a second one finds them; a
+// VM whose containers are gone has none left.
+func (d *Driver) destroyVM(ctx context.Context, name string, cs []containerInfo, id string) error {
+	if slices.ContainsFunc(cs, hasDirs) {
+		if _, err := d.runDirs(ctx, dirsRequest{Op: opRemove, Name: name}, ""); err != nil {
+			return err
+		}
 	}
-	if err := d.api.removeContainer(ctx, id); err != nil {
-		return fmt.Errorf("docker: remove %s: %w", containerName(d.project, name), err)
+	if len(cs) == 0 {
+		cs = []containerInfo{{ID: id}}
 	}
-	if err := d.removeOwnVolumes(ctx, name); err != nil {
+	for _, c := range cs {
+		if err := d.api.removeContainer(ctx, c.ID); err != nil {
+			return fmt.Errorf("docker: remove %s: %w", containerName(d.project, name), err)
+		}
+	}
+	if err := d.removeOldVolumes(ctx, name); err != nil {
 		return err
 	}
+	for _, c := range cs {
+		for _, own := range []string{c.Image, c.Config.Labels[labelReplacedImage]} {
+			if err := d.removeImages(ctx, own, name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// removeImages removes own, the image a removed container of the VM name
+// ran, if no tag names it any more (a committed VM removed while the
+// container ran it), then the image readied from the base for it, and
+// every other one of its name no container runs that is older than
+// staleBase. One a later VM of the name, or another VM, runs is in use, and
+// the daemon keeps it.
+func (d *Driver) removeImages(ctx context.Context, own, name string) error {
 	if own != "" {
 		if img, err := d.api.inspectImage(ctx, own); err == nil && len(img.RepoTags) == 0 {
 			if err := d.api.removeImage(ctx, own); err != nil && !isConflict(err) {
@@ -740,8 +782,8 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 	if image(inst) {
 		return service, fmt.Errorf("docker: VM %s is committed, an image with no container: %w", inst.Name, machine.ErrNotRunning)
 	}
-	ref := containerRef{ID: inst.ID, Name: containerName(d.project, inst.Name)}
-	c, err := d.api.inspectContainer(ctx, ref.ID)
+	c, err := d.resolve(ctx, inst)
+	ref := containerRef{ID: c.ID, Name: containerName(d.project, inst.Name)}
 	switch {
 	case isNotFound(err):
 		return service, fmt.Errorf("docker: container %s is gone: %w", ref.Name, machine.ErrNotRunning)

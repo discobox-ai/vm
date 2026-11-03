@@ -6,6 +6,8 @@
 // daemon keeps /var/lib/docker:
 //
 //	instances/<id>/machine/          the hypervisor's VM (InstanceSpec.Dir)
+//	instances/<id>/machine.next/     its new disk, while an upgrade makes it
+//	instances/<id>/machine.old/      its old disk, while an upgrade removes it
 //	instances/<id>/instance.json     the VM: project, name, from, size
 //	instances/<id>/shim.json         its shim, while one holds it
 //	instances/.names/<project>/<name> the name's claim, holding the ID
@@ -138,6 +140,13 @@ type Hypervisor interface {
 	// disk that Prepare copies from (Layer{ID: inst.ID, Dir: inst.Dir}).
 	// The caller never boots it again; a boot of it may fail.
 	Commit(ctx context.Context, inst InstanceSpec) error
+	// MoveVolumes moves a stopped instance's volumes from its old disk, in
+	// from.Dir, to its new one, in to.Dir, which Prepare made with no
+	// volumes, each at the guest's machine.VolumePath (machine.Driver's
+	// Upgrade). An upgrade interrupted at any step calls it again, so it
+	// moves what is left and keeps what has moved. A hypervisor that does
+	// not list machine.VolumeData returns machine.ErrUnsupported.
+	MoveVolumes(ctx context.Context, from, to InstanceSpec) error
 	// SaveCache writes a stopped instance's cache volume into dst.Dir, as a
 	// generation a later Prepare clones (InstanceSpec.CacheFrom). The
 	// instance keeps its volume. A hypervisor that does not list

@@ -29,7 +29,7 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   Commit `docker commit`s the stopped container as
   `disco-vm-vm:<project>--<name>`, labeled `ai.discobox.vm.committed` with
   its name, size, and the committed VM it came from, then removes the
-  container and its volumes. A VM created from it is a container of that
+  container and its directories. A VM created from it is a container of that
   image, by ID, so it stands alone: removing the committed VM removes its
   tag with `force`, which the daemon turns into an untag while a container
   runs it, and that container's Destroy removes the untagged image. A name
@@ -45,7 +45,8 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   keeps what the driver knows (ADR 26-10-23-417): a VM is a container
   `dvm-<project>--<name>` labeled with its name, size, volumes, and the
   committed VM it came from, and a committed VM the Docker image above.
-  Nothing is kept on the host.
+  Only volumes and caches are kept on the daemon's host, in directories
+  (below).
 - **The guest's operations are the agent's**, reached by a docker exec of
   `disco-vm pipe` for each connection, on the container's side of the
   namespace, which reaches the agent's root-only socket through the guest's
@@ -53,17 +54,46 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   the daemon publishes, and its private URL is the service port at the
   container's IPv4 address on its network, where another container dials it,
   and none for a container with no IPv4 address (ADR 26-10-29-129). There is no egress fence.
-- **A volume is a named Docker volume** (ADR 26-11-02-180), mounted with no
-  copy of what the image holds at its path. An instance's data and cache
-  volumes are `dvm-<project>--<name>--data-<random>` and `--cache-<random>`,
-  removed with its container; docker-init gives the guest's root their
-  mount points, which Docker makes as the host's root, as it gives it `/`.
-  A cache generation is `dvm-<project>--cachegen--<key>--<id>`, and a key's
-  pointer to it `--cachekey--<key>--<id>`, an empty volume made once the
-  generation is whole, since labels never change; a key's current generation
-  is its newest pointer's. A cache is copied between volumes as a tar stream
-  through the daemon's archive API, the guest's owners in its headers, with
-  a container made and never started to mount the other end: O(its size).
+- **A volume is a directory on the daemon's host** (ADR 26-11-03-782 §6),
+  under the driver's root (`Driver.Root`, `$DISCO_VM_DOCKER_ROOT`, default
+  `/var/lib/discobox`), laid out as discobox's own docker driver lays out
+  its tree: `data/projects/<project>/vms/<name>`,
+  `cache/projects/<project>/vms/<name>`, and a key's generations at
+  `cache/projects/<project>/keys/<key>/<generation>`, its pointer in
+  `current.json` beside them, replaced by a rename once a generation is
+  whole and renamed into place. A VM's directories are bind-mounted at their
+  paths; docker-init gives the guest's root their mount points at every
+  start, so files keep the guest's shifted uids. The daemon may be remote,
+  so the driver never touches them: a helper container of the agent alone
+  (`disco-vm-helper:<sha256 prefix>`, imported from `$DISCO_VM_AGENT`), with
+  no network, bind-mounts the root and runs `disco-vm docker-volumes
+  REQUEST` for each step, and copies on the host. Another version's helper
+  image is never removed: another disco-vm on the daemon may be using it. A
+  key's `.lock` is a flock: a clone holds it shared, and a save's guard,
+  publish and prune, and a delete, hold it exclusive. A save copies into
+  `.save-<generation>` holding `.save-<generation>.lock`, and a prune sweeps
+  a copy whose lock nobody holds, what a save that died left. Create stages the clone and makes the
+  directories before its container (a bind source must exist), and only
+  once its container holds the name empties the data directory and puts the
+  clone in place, so what a create that lost left is never a later VM's.
+  Commit and Destroy remove a VM's directories, Destroy before its
+  containers. A VM from before the ADR mounts named volumes
+  (`dvm-<project>--<name>--data-<random>`, `--cache-<random>`): it boots,
+  SaveCache reads its cache from one, Upgrade copies them into its
+  directories, and Destroy removes them; old generation volumes are not read.
+- **Upgrade makes a new container and renames it into place.** The new one,
+  of the committed VM's image or one readied from the base, carries the
+  VM's labels and mounts its same directories, under
+  `dvm-<project>--<name>--upgrade`; then the old one is removed, then the
+  new one renamed. The old one is checked stopped again once the new one is
+  made, since readying a base takes minutes. While caught between, the VM
+  is its old container until that is gone, then the new one; from the
+  moment the new one exists Boot, Start, and Commit refuse the VM until an
+  Upgrade from the same `from` finishes it, which needs the committed VM no
+  more, since a container is whole once made. Destroy removes both and the
+  directories. The new container's `ai.discobox.vm.replaces` lists the IDs
+  it replaced, so an `Instance` from before still names it, and
+  `.replaced-image` the image to remove once nothing needs it.
 - **It is not a VM.** The kernel is the host's, `/proc` shows the host's
   resources, and the network namespace is Docker's, which the guest cannot
   reconfigure. The driver lists cold clones only, because a cold boot takes

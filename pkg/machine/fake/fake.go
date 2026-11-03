@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -291,6 +292,36 @@ func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec) error {
 	}
 	for _, name := range []string{addrName, hostPortsName} {
 		if err := os.RemoveAll(filepath.Join(inst.Dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// MoveVolumes renames each of the instance's volumes from its old root into
+// its new one, over whatever the new root holds at its path (a committed
+// VM's empty mount point). A volume already moved is kept.
+func (d *Hypervisor) MoveVolumes(_ context.Context, from, to local.InstanceSpec) error {
+	for v, attached := range map[machine.Volume]bool{machine.VolumeData: from.Data != nil, machine.VolumeCache: from.Cache != nil} {
+		if !attached {
+			continue
+		}
+		src, dst := volume(from, v), volume(to, v)
+		if _, err := os.Lstat(src); errors.Is(err, fs.ErrNotExist) {
+			if _, err := os.Lstat(dst); err == nil {
+				continue
+			}
+			return fmt.Errorf("fake: the %s volume is in neither the old root nor the new one", v)
+		} else if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(dst); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.Rename(src, dst); err != nil {
 			return err
 		}
 	}

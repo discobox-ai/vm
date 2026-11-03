@@ -232,7 +232,7 @@ func newEnv(t *testing.T, extra ...string) env {
 	} else {
 		// Whatever a failed run left, newest first, since a VM created
 		// from another may need its disk.
-		e.run("rm", "-f", "dev", "dev2", "svc", "snap3", "snap2", "snap", "app-v1", "solo", "fenced", "vol-s", "vol-b", "vol-a")
+		e.run("rm", "-f", "dev", "dev2", "svc", "snap3", "snap2", "snap", "app-v1", "solo", "fenced", "vol-s", "vol-b", "vol-a", "up", "up-next")
 	}
 	e.commits = strings.Contains(e.ok("info"), `"commit": true`)
 	if !e.commits {
@@ -791,6 +791,90 @@ func TestVolumes(t *testing.T) {
 	if out := e.ok("cache", "ls"); strings.Contains(out, "e2e-cache") {
 		t.Fatalf("a removed key is listed:\n%s", out)
 	}
+}
+
+// TestUpgrade gives a stopped VM the root of another committed VM: it keeps
+// its name, its data volume, and its cache clone, and loses what it wrote to
+// its old root. It is refused while the VM runs, from a VM there is not, and
+// on a driver that attaches no data volume.
+func TestUpgrade(t *testing.T) {
+	e := newEnv(t)
+	t.Cleanup(func() {
+		e.run("rm", "-f", "up", "up-next")
+		e.run("cache", "rm", "e2e-up")
+	})
+	if tg.driver != "fake" && tg.driver != "docker" {
+		e.ok("create", "up", "--from", "e2e-base")
+		if out, code := e.run("upgrade", "up", "--from", "e2e-base"); code == 0 || !strings.Contains(out, "attaches no data volume") {
+			t.Fatalf("upgrade on %s: exit %d\n%s", tg.driver, code, out)
+		}
+		return
+	}
+	guestOS := map[string]machine.OS{"fake": machine.OS(runtime.GOOS), "docker": machine.Linux}[tg.driver]
+	data, cache := machine.VolumePath(guestOS, machine.VolumeData), machine.VolumePath(guestOS, machine.VolumeCache)
+	local := t.TempDir()
+	put := func(inst, dir, name, content string) {
+		t.Helper()
+		file := filepath.Join(local, name)
+		if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		e.ok("cp", file, inst+":"+dir)
+	}
+	read := func(inst, path string) (string, bool) {
+		t.Helper()
+		out := t.TempDir()
+		if _, code := e.run("cp", inst+":"+path, out); code != 0 {
+			return "", false
+		}
+		got, err := os.ReadFile(filepath.Join(out, filepath.Base(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(got), true
+	}
+	root := strings.TrimSuffix(tg.file("x"), "/x")
+
+	e.ok("run", "up-next", "--from", "e2e-base")
+	put("up-next", root, "next.txt", "next")
+	e.ok("stop", "up-next")
+	e.ok("commit", "up-next")
+
+	e.ok("run", "up", "--from", "e2e-base", "--data", "1GiB", "--cache", "e2e-up")
+	put("up", data, "data.txt", "data")
+	put("up", cache, "cache.txt", "cache")
+	put("up", root, "old.txt", "old")
+	if out, code := e.run("upgrade", "up", "--from", "up-next"); code == 0 || !strings.Contains(out, "stop it") {
+		t.Fatalf("upgrade of a running VM: exit %d\n%s", code, out)
+	}
+	e.ok("stop", "up")
+	if out, code := e.run("upgrade", "up", "--from", "nothing"); code == 0 || !strings.Contains(out, "not found") {
+		t.Fatalf("upgrade from no VM: exit %d\n%s", code, out)
+	}
+	if out := strings.TrimSpace(e.ok("upgrade", "up", "--from", "up-next")); out != "up" {
+		t.Fatalf("upgrade printed %q", out)
+	}
+	var inspected struct {
+		From  string               `json:"from"`
+		Data  *machine.DataVolume  `json:"data"`
+		Cache *machine.CacheVolume `json:"cache"`
+	}
+	if err := json.Unmarshal([]byte(e.ok("inspect", "up")), &inspected); err != nil || inspected.From != "up-next" || inspected.Data == nil || inspected.Cache == nil || inspected.Cache.Key != "e2e-up" {
+		t.Fatalf("inspect up: %+v, %v", inspected, err)
+	}
+	e.ok("start", "up")
+	for path, want := range map[string]string{data + "/data.txt": "data", cache + "/cache.txt": "cache", root + "/next.txt": "next"} {
+		if got, ok := read("up", path); got != want {
+			t.Errorf("the upgraded VM reads %q (found %v) from %s, want %q", got, ok, path, want)
+		}
+	}
+	if _, ok := read("up", root+"/old.txt"); ok {
+		t.Error("the upgraded VM kept what it wrote to its old root")
+	}
+	if n := strings.Count(e.ok("ls", "-a"), " up "); n != 1 {
+		t.Errorf("the upgraded VM is listed %d times:\n%s", n, e.ok("ls", "-a"))
+	}
+	e.ok("rm", "-f", "up")
 }
 
 // TestFresh makes a fresh VM from the driver's base, which is the driver's

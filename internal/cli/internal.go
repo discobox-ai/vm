@@ -106,6 +106,20 @@ func dockerInitCommand() *cobra.Command {
 	return cmd
 }
 
+// dockerVolumesCommand is one step of the docker driver's directory work,
+// in a helper container on the daemon's host that mounts the driver's root.
+func dockerVolumesCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "docker-volumes REQUEST",
+		Short:  "Make, copy, and remove the docker driver's directories (inside a helper container)",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return docker.Dirs(args[0])
+		},
+	}
+}
+
 // shimCommand is one instance's supervisor, which a driver on this host's
 // disk starts for `start` and `run`.
 func shimCommand(g *globals) *cobra.Command {

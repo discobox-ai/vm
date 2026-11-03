@@ -24,6 +24,9 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   difference over an image this driver no longer knows. While a VM is
   created from another, `from` in its directory names that one's ID, before
   its chain is read and its record written;
+- while an upgrade runs, `instances/<id>/machine.next` (the new disk),
+  `next.ready` (written once it is whole), and `machine.old` (the old disk,
+  once the new one is in place), [below](#an-upgrade-swaps-a-vms-disk-in-its-directory);
 - `instances/.names/<project>/<name>`, the name's claim, holding the ID;
 - `caches/<project>/<key>.json`, a cache key, naming its current
   generation, and `caches/generations/<id>/payload` (the hypervisor's copy
@@ -71,6 +74,34 @@ older `from` is what a crashed Create left, and holds nothing. Nothing marks a V
 refusal `local` derives on its own. A VM whose chain was removed behind the driver's back is
 not found at boot, and is still removed. vz and fake get the committed VM
 alone, at Prepare only.
+
+## An upgrade swaps a VM's disk in its directory
+
+`Upgrade` (ADR 26-11-03-782), for a hypervisor that lists `VolumeData`
+(fake), keeps the VM's ID, directory, record, and name's claim, so nothing
+else is ever listed. Its record names the new root (`upgrading`: the
+committed VM's name and ID, or none for a fresh one) before any disk is
+touched, and while it does Boot, Start (through `runnable`), and Commit
+refuse the VM, and a removal of that committed VM is `ErrInUse` on a
+hypervisor that chains. Then each step not yet taken:
+
+1. `Prepare` makes the new disk in `machine.next` with no volumes, after a
+   `Destroy` of whatever an interrupted upgrade left there, and `next.ready`
+   is written;
+2. `Hypervisor.MoveVolumes` moves the volumes from the old disk to the new,
+   keeping what an interrupted call moved;
+3. `machine` is renamed to `machine.old`, then `machine.next` to `machine`;
+4. the old disk is destroyed, `next.ready` removed, and the record written
+   with its new `from` and no `upgrading`.
+
+`next.ready` with no `machine.next` is a swap already done. Upgrading again
+from the recorded root reads its committed VM only to make a new disk that
+is not whole yet, so one removed since does not keep it from finishing. An
+upgrade to another root replaces the recorded one while the new disk is not
+whole (the old disk is untouched until then), and is refused after, until
+this one is finished;
+`Destroy` removes `machine.next` and `machine.old` with the rest. hcs and vz
+attach no volume yet, so they refuse it.
 
 ## Keys are the fake's, and checked on every call
 
