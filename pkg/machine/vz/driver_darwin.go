@@ -47,6 +47,7 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		Ports:             true,
 		Agent:             true,
 		Install:           []machine.OS{machine.Darwin},
+		Commit:            true,
 		Keys:              machine.KeyCapabilities{Mode: machine.KeysNone},
 		Egress:            []machine.EgressFence{machine.EgressNone},
 	}

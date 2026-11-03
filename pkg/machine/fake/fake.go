@@ -47,6 +47,11 @@ const KeyEnv = "DISCO_VM_FAKE_KEY" //nolint:gosec // G101: an environment variab
 // AgentEnv overrides the agent binary; by default it is the running disco-vm.
 const AgentEnv = "DISCO_VM_AGENT"
 
+// NoCommitEnv, set to anything, makes the fake driver from New one without
+// Capabilities.Commit, as Hypervisor.NoCommit does. It exists to test the
+// refusals of such a driver from the command line.
+const NoCommitEnv = "DISCO_VM_FAKE_NO_COMMIT"
+
 // DefaultBase is the base of a driver from New given none.
 const DefaultBase = "scratch"
 
@@ -58,13 +63,18 @@ type Hypervisor struct {
 	// root whose marker names it, as an install's names its media. Empty
 	// is none, and a fresh VM is refused.
 	BaseName string
+	// NoCommit makes a hypervisor that does not report Capabilities.Commit,
+	// and so installs nothing either (ADR 26-11-03-868): a test option, so
+	// that a driver's refusals of a commit and of a copy, and the paths
+	// that skip them, run on every OS.
+	NoCommit bool
 }
 
 var _ local.Hypervisor = (*Hypervisor)(nil)
 
 // New returns a fake hypervisor whose guests run this binary, or
 // $DISCO_VM_AGENT, and whose base is base (machine.Config.Base), or
-// DefaultBase.
+// DefaultBase. It commits unless $DISCO_VM_FAKE_NO_COMMIT is set.
 func New(base string) (*Hypervisor, error) {
 	agent := os.Getenv(AgentEnv)
 	if agent == "" {
@@ -77,20 +87,25 @@ func New(base string) (*Hypervisor, error) {
 	if base == "" {
 		base = DefaultBase
 	}
-	return &Hypervisor{Agent: agent, BaseName: base}, nil
+	return &Hypervisor{Agent: agent, BaseName: base, NoCommit: os.Getenv(NoCommitEnv) != ""}, nil
 }
 
 func (*Hypervisor) Name() string { return "fake" }
 
-func (*Hypervisor) Capabilities() machine.Capabilities {
-	return machine.Capabilities{
+func (d *Hypervisor) Capabilities() machine.Capabilities {
+	caps := machine.Capabilities{
 		GuestOS: []machine.OS{machine.OS(runtime.GOOS)},
 		Ports:   true,
 		Agent:   true,
 		Install: []machine.OS{machine.OS(runtime.GOOS)},
+		Commit:  true,
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopeProject},
 		Volumes: []machine.Volume{machine.VolumeData, machine.VolumeCache},
 	}
+	if d.NoCommit {
+		caps.Install, caps.Commit = nil, false
+	}
+	return caps
 }
 
 // Chains is false: a copy of a committed VM is a tree of its own.

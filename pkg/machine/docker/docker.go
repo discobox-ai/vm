@@ -154,6 +154,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.Linux},
 		Agent:   true,
+		Commit:  true,
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
 		Volumes: []machine.Volume{machine.VolumeData, machine.VolumeCache},
 	}

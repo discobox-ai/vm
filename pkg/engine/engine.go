@@ -70,7 +70,7 @@ type CreateOptions struct {
 	Name string
 	// From names the committed VM the new one is a copy of; empty is a
 	// fresh VM from the driver's base. That it is committed is the caller's
-	// to know.
+	// to know. The driver must report Capabilities.Commit.
 	From   string
 	CPUs   int
 	Memory uint64
@@ -123,6 +123,9 @@ func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, erro
 		spec.Cache = &machine.CacheVolume{Key: opts.Cache.Key, Bytes: opts.Cache.Bytes}
 	}
 	if opts.From != "" {
+		if !e.Driver.Capabilities().Commit {
+			return Instance{}, fmt.Errorf("driver %s cannot create a VM from a committed one: %w", e.Driver.Name(), machine.ErrUnsupported)
+		}
 		from, err := e.Get(ctx, opts.From)
 		if err != nil {
 			return Instance{}, err
@@ -558,8 +561,13 @@ func (e *Engine) Install(ctx context.Context, name string, opts InstallOptions) 
 // (ADR 26-11-03-606): its data volume and cache clone are removed. The
 // caller records that it is committed, and never starts it again; to
 // change it, create a VM from it, change that, and commit it under a new
-// name.
+// name. A driver that does not report Capabilities.Commit is refused with
+// ErrUnsupported before it is asked, and the VM is left as it was (ADR
+// 26-11-03-868).
 func (e *Engine) Commit(ctx context.Context, inst Instance) (Instance, error) {
+	if !e.Driver.Capabilities().Commit {
+		return Instance{}, fmt.Errorf("driver %s cannot commit a VM: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
 	if state := e.State(ctx, inst); state != Stopped {
 		return Instance{}, fmt.Errorf("instance %s is %s; stop it first", inst.Name, state)
 	}
