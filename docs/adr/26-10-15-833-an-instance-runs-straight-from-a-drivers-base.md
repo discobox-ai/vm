@@ -1,6 +1,7 @@
 # 26-10-15-833 — An instance runs straight from a driver's base, and boxd's power state is boxd's
 
-- **Status**: Accepted (supersedes in part 0001, its boxd shutdown)
+- **Status**: Accepted (supersedes in part 0001, its boxd shutdown; an
+  instance run from a base the caller names superseded by 26-11-03-606)
 - **Date**: 2026-10-15
 
 ## Context

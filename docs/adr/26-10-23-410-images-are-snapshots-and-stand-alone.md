@@ -2,7 +2,8 @@
 
 - **Status**: Accepted (supersedes in part 26-10-15-851, its images made by
   `build`; 0002, its docker base layer installed and shifted once; and
-  26-10-23-417, its layers as a build's cache)
+  26-10-23-417, its layers as a build's cache; its images and tags
+  superseded by 26-11-03-606)
 - **Date**: 2026-10-23
 
 ## Context

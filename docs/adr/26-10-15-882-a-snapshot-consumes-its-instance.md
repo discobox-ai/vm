@@ -1,6 +1,6 @@
 # 26-10-15-882 — A snapshot commits a stopped instance as an image, and consumes the instance
 
-- **Status**: Accepted
+- **Status**: Superseded by [26-11-03-606](26-11-03-606-disco-vm-has-only-vms-and-a-vm-is-made-fresh-or-from-a-committed-vm.md)
 - **Date**: 2026-10-15
 
 ## Context
