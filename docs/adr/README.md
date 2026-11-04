@@ -36,4 +36,5 @@ Follow `template.md` and the `repostd` skill.
 | [26-11-03-676](26-11-03-676-an-archil-driver-puts-nothing-in-its-guests-and-makes-a-vm-a-sandbox-named-for-it.md) | An archil driver puts nothing in its guests, and makes a VM a sandbox named for it | Accepted |
 | [26-11-03-782](26-11-03-782-a-data-volume-is-its-vms-and-upgrade-gives-a-vm-a-new-root-and-keeps-its-volumes.md) | A data volume is its VM's, and Upgrade gives a VM a new root and keeps its volumes | Accepted (supersedes in part 26-11-02-180, its §5 docker row) |
 | [26-11-03-868](26-11-03-868-commit-is-a-capability-a-driver-reports.md) | Commit is a capability a driver reports, and a driver without it refuses commit and copies | Accepted (supersedes in part 26-11-03-606, its §4 requiring `Commit` and `InstanceSpec.From` of every driver) |
+| [26-11-04-412](26-11-04-412-docker-runs-in-a-vm-owned-by-its-pool.md) | Docker runs in a VM owned by its pool | Proposed |
 <!-- /repostd:adr-index -->
