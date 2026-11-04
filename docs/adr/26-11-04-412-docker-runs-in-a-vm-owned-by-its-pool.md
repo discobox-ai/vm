@@ -99,8 +99,8 @@ and is an explicit destructive administrative action.
 Give Docker an explicit daemon connection constructor, used for both ordinary
 HTTP requests and hijacked streams; keep native Docker's environment-based
 constructor. The composite opens each connection through the host VM's guest
-Exec of `disco-vm pipe` to `/run/docker.sock`. Add this narrowly scoped pipe
-mode to the existing binary and carry bytes over the host agent's existing
+Exec of `disco-vm pipe unix:/run/docker.sock` (already supported by
+`internal/cli/internal.go`) and carry bytes over the host agent's existing
 7300 connection. Preserve cancellation, EOF and half-close semantics; no
 connection or helper process survives the request.
 
