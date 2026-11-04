@@ -9,6 +9,7 @@
 //	instances/<id>/machine.next/     its new disk, while an upgrade makes it
 //	instances/<id>/machine.old/      its old disk, while an upgrade removes it
 //	instances/<id>/instance.json     the VM: project, name, from, size
+//	instances/<id>/installing.json   its record, while an install makes it
 //	instances/<id>/shim.json         its shim, while one holds it
 //	instances/.names/<project>/<name> the name's claim, holding the ID
 //	caches/<project>/<key>.json      a cache key: its current generation
@@ -108,6 +109,19 @@ type BootOptions struct {
 	Title string
 	// Console receives the hypervisor's own log of the boot.
 	Console io.Writer
+}
+
+// MachineViewer is a hypervisor that opens a window on a running machine's
+// desktop from any process, given the machine as an attached one reaches it
+// (Driver.View), and on an install in progress (Driver.ViewInstall).
+type MachineViewer interface {
+	View(ctx context.Context, m machine.Machine, title string) error
+	// ViewInstall opens a window on the install Install is making into dst,
+	// in another process, and returns once someone closes it, ctx is done,
+	// or the install's machine stops. One with no machine running is
+	// machine.ErrNotRunning. Progress, such as waiting for a desktop to
+	// show, goes to log.
+	ViewInstall(ctx context.Context, dst Layer, title string, log io.Writer) error
 }
 
 // Hypervisor is what runs on this host's disk: hcs, vz, libkrun, and fake.

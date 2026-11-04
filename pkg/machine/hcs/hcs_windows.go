@@ -39,7 +39,8 @@ var _ local.Hypervisor = (*Hypervisor)(nil)
 func (*Hypervisor) Name() string { return "hcs" }
 
 // Capabilities is what the driver offers on this host: Windows guests, and a
-// display: the VM's video console, shown by mstsc.
+// display: the guest's Remote Desktop or the agent's stream of its desktop
+// (View).
 func (*Hypervisor) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.Windows},
@@ -204,41 +205,25 @@ func terminateStale(id string) {
 }
 
 // Boot starts the instance and waits for its agent. With opts.GUI it opens a
-// window on the VM's video console that closes when the VM stops. Closing the
-// window leaves the VM running.
+// window on the guest's desktop once there is one to show (View), which
+// closes when the VM stops. Closing the window leaves the VM running.
 func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
 	m, err := d.boot(inst, opts)
 	if err != nil {
 		return nil, err
 	}
-	if opts.GUI {
-		d.view(m, inst, opts)
-	}
 	if err := m.WaitReady(ctx, m.done); err != nil {
 		m.shutdown()
 		return nil, err
 	}
-	return m, nil
-}
-
-// view opens a window on the VM's video console.
-func (d *Hypervisor) view(m *vm, inst local.InstanceSpec, opts local.BootOptions) {
-	title := opts.Title
-	if title == "" {
-		title = inst.ID
-	}
-	v, err := openViewer(m.sys.id, title)
-	if err != nil {
-		// A VM nobody can watch still runs; say so rather than fail it.
-		if opts.Console != nil {
-			fmt.Fprintf(opts.Console, "hcs: %v\n", err)
+	if opts.GUI {
+		title := opts.Title
+		if title == "" {
+			title = inst.ID
 		}
-		return
+		go d.watch(m, title, opts.Console) //nolint:gosec // G118: the window lives as long as the VM, not as long as Boot's ctx
 	}
-	go func() {
-		<-m.Done()
-		v.Close()
-	}()
+	return m, nil
 }
 
 func (d *Hypervisor) boot(inst local.InstanceSpec, opts local.BootOptions) (*vm, error) {
@@ -275,7 +260,6 @@ func (d *Hypervisor) boot(inst local.InstanceSpec, opts local.BootOptions) (*vm,
 		CPUs:      opts.CPUs,
 		Memory:    opts.Memory,
 		NIC:       nic,
-		Console:   consolePipe(id), ConsoleSID: currentUserSID(),
 	})
 }
 

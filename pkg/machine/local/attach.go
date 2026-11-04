@@ -3,10 +3,15 @@ package local
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/internal/proc"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -29,6 +34,67 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	m := &shimMachine{shim: shim, done: make(chan struct{})}
 	m.Client = guest.NewClient(func(ctx context.Context) (net.Conn, error) { return shim.dialGuest(ctx) })
 	return m, nil
+}
+
+// View opens a window on the instance's desktop in this process, through its
+// shim, on a hypervisor that can (MachineViewer). One that shows a window
+// only from the process that booted it refuses it as not implemented yet.
+func (d *Driver) View(ctx context.Context, inst machine.Instance, title string) error {
+	viewer, ok := d.hv.(MachineViewer)
+	if !ok {
+		return fmt.Errorf("%s opens a window only when it boots an instance (start --gui): %w", d.hv.Name(), machine.ErrNotImplemented)
+	}
+	m, err := d.Attach(ctx, inst)
+	if err != nil {
+		return err
+	}
+	return viewer.View(ctx, m, title)
+}
+
+// ViewInstall opens a window in this process on the project's install in
+// progress of the VM name, or on its only one when name is empty, on a
+// hypervisor that can (MachineViewer).
+func (d *Driver) ViewInstall(ctx context.Context, name, title string, log io.Writer) error {
+	if err := d.authorize(ctx); err != nil {
+		return err
+	}
+	viewer, ok := d.hv.(MachineViewer)
+	if !ok {
+		return fmt.Errorf("%s opens a window on an install only from the install (install --gui): %w", d.hv.Name(), machine.ErrNotImplemented)
+	}
+	paths, _ := filepath.Glob(filepath.Join(d.instancesDir(), "*", installingFile))
+	var found []instanceRecord
+	for _, path := range paths {
+		var rec instanceRecord
+		if fsutil.ReadJSON(path, &rec) != nil || rec.Project != d.project || name != "" && rec.Name != name {
+			continue
+		}
+		found = append(found, rec)
+	}
+	switch len(found) {
+	case 0:
+		if name == "" {
+			return fmt.Errorf("no install is in progress: %w", machine.ErrNotFound)
+		}
+		return fmt.Errorf("no install of %s is in progress: %w", name, machine.ErrNotFound)
+	case 1:
+	default:
+		names := make([]string, len(found))
+		for i, rec := range found {
+			names[i] = rec.Name
+		}
+		slices.Sort(names)
+		return fmt.Errorf("installs of %s are in progress; name one", strings.Join(names, ", "))
+	}
+	rec := found[0]
+	hs, err := d.spec(rec)
+	if err != nil {
+		return err
+	}
+	if err := viewer.ViewInstall(ctx, Layer{ID: rec.ID, Dir: hs.Dir}, title, log); err != nil {
+		return fmt.Errorf("install of %s: %w", rec.Name, err)
+	}
+	return nil
 }
 
 // shimMachine is a running machine its shim holds. Its guest operations are

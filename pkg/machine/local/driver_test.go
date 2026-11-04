@@ -3,9 +3,11 @@ package local_test
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,5 +200,81 @@ func TestRecordsFromBeforeAreNotRead(t *testing.T) {
 	}
 	if list, err := d.Instances(ctx); err != nil || len(list) != 1 || list[0].ID != fresh.ID {
 		t.Fatalf("instances = %+v, %v; want the new VM alone", list, err)
+	}
+}
+
+// viewing is the fake hypervisor as one that opens windows, as hcs does: its
+// installs hold until released, and ViewInstall records the install it was
+// given.
+type viewing struct {
+	*fake.Hypervisor
+	started chan string
+	release chan struct{}
+	viewed  chan local.Layer
+}
+
+func (v *viewing) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) error {
+	v.started <- dst.ID
+	<-v.release
+	return v.Hypervisor.Install(ctx, spec, dst)
+}
+
+func (*viewing) View(context.Context, machine.Machine, string) error { return nil }
+
+func (v *viewing) ViewInstall(_ context.Context, dst local.Layer, _ string, _ io.Writer) error {
+	v.viewed <- dst
+	return nil
+}
+
+// A window on an install finds it while it runs, by its VM's name or as the
+// only one, and finds nothing once the install has made its VM.
+func TestViewInstallFindsAnInstallInProgress(t *testing.T) {
+	ctx := context.Background()
+	guestOS := machine.OS(runtime.GOOS)
+	hv := &viewing{Hypervisor: &fake.Hypervisor{}, started: make(chan string, 2), release: make(chan struct{}), viewed: make(chan local.Layer, 1)}
+	d, err := local.New(machine.Config{Dir: t.TempDir()}, hv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"one", "two"}
+	installed := make(chan machine.Instance, len(names))
+	failed := make(chan error, len(names))
+	for _, name := range names {
+		go func() {
+			inst, err := d.Install(ctx, machine.InstallSpec{GuestOS: guestOS, Media: "none"}, name)
+			if err != nil {
+				failed <- err
+				return
+			}
+			installed <- inst
+		}()
+	}
+	<-hv.started
+	<-hv.started
+
+	if err := d.ViewInstall(ctx, "", "t", io.Discard); err == nil || !strings.Contains(err.Error(), "name one") {
+		t.Fatalf("view the only install of two: %v", err)
+	}
+	if err := d.ViewInstall(ctx, "three", "t", io.Discard); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("view an install of no VM: %v", err)
+	}
+	if err := d.ViewInstall(ctx, "one", "t", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	viewed := <-hv.viewed
+
+	close(hv.release)
+	for range names {
+		select {
+		case inst := <-installed:
+			if inst.Name == "one" && (viewed.ID != inst.ID || filepath.Base(viewed.Dir) != "machine") {
+				t.Fatalf("viewed %+v, want VM %s's machine", viewed, inst.ID)
+			}
+		case err := <-failed:
+			t.Fatal(err)
+		}
+	}
+	if err := d.ViewInstall(ctx, "", "t", io.Discard); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("view an install that has finished: %v", err)
 	}
 }

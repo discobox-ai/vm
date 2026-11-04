@@ -47,7 +47,8 @@ const (
 // after an orderly shutdown through the agent.
 //
 // Options: user and password name the local administrator Setup creates and
-// logs on automatically (default "disco", blank).
+// logs on automatically (default "disco", and the user's own name for a
+// password, which the agent and `disco-vm gui` sign in with).
 func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) error {
 	log := spec.Log
 	if log == nil {
@@ -161,10 +162,14 @@ func writeDisk(ctx context.Context, fixed string, spec machine.InstallSpec, log 
 	if user == "" {
 		user = defaultUser
 	}
+	password := spec.Options["password"]
+	if password == "" {
+		password = user
+	}
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
 		"-File", script,
 		"-Iso", spec.Media, "-Vhdx", fixed, "-DiskNumber", strconv.Itoa(disk.diskNumber),
-		"-Agent", spec.Agent, "-Edition", spec.Edition, "-User", user, "-Password", spec.Options["password"])
+		"-Agent", spec.Agent, "-Edition", spec.Edition, "-User", user, "-Password", password)
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("hcs: writing Windows to the disk: %w", err)
@@ -201,24 +206,26 @@ func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, disk string, 
 	m, err := startVM(id, vmConfig{
 		Disk: disk, GuestFile: filepath.Join(work, guestFileName), StateFile: filepath.Join(work, stateFileName),
 		CPUs: spec.CPUs, Memory: spec.Memory, NIC: nic,
-		Console: consolePipe(id), ConsoleSID: currentUserSID(),
 	})
 	if err != nil {
 		return err
 	}
 	defer m.shutdown()
-	if spec.GUI {
-		// Setup from its first screen: the console needs nothing in the guest.
-		if v, err := openViewer(id, "disco-vm install: Windows Setup"); err != nil {
-			fmt.Fprintf(log, "hcs: %v\n", err)
-		} else {
-			defer v.Close()
-		}
+	forget, err := recordInstall(dir, m)
+	if err != nil {
+		return err
 	}
+	defer forget()
 	client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
 
 	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
 	defer cancel()
+	if spec.GUI {
+		// The agent's stream shows a logged-on desktop, and Setup has none
+		// until its automatic logon.
+		fmt.Fprintln(log, "hcs: the window opens at the first logon; Windows Setup before it has no desktop to show")
+		go showInstall(ctx, m, log)
+	}
 	started := time.Now()
 	if err := waitSetup(ctx, client, m, started, log); err != nil {
 		return err

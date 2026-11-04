@@ -27,7 +27,10 @@ type Driver struct {
 	keys    machine.KeySource
 }
 
-var _ machine.Driver = (*Driver)(nil)
+var (
+	_ machine.Driver = (*Driver)(nil)
+	_ machine.Viewer = (*Driver)(nil)
+)
 
 // New is a driver for hv, keeping its state in cfg.Dir (machine.DefaultDir
 // when empty), for cfg's project.
@@ -75,6 +78,9 @@ func (d *Driver) cacheDir() string { return filepath.Join(d.dir, "cache", d.hv.N
 
 const (
 	instanceFile = "instance.json"
+	// installingFile is the record of a VM an install is making, in its
+	// directory while the install runs, before instance.json is written.
+	installingFile = "installing.json"
 	// fromName holds the ID of the VM an instance is created from, written
 	// before its disk is, for the moment before its record is.
 	fromName   = "from"
@@ -372,8 +378,17 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, name str
 	if err == nil {
 		err = os.MkdirAll(hs.Dir, 0o755)
 	}
+	// The install's record says, while it runs, which project's VM it
+	// makes, so another process can find it (ViewInstall).
+	marker := filepath.Join(d.instanceDir(rec.ID), installingFile)
+	if err == nil {
+		err = fsutil.WriteJSON(marker, rec)
+	}
 	if err == nil {
 		err = d.hv.Install(ctx, InstallSpec{InstallSpec: spec, CacheDir: d.cacheDir()}, Layer{ID: rec.ID, Dir: hs.Dir})
+	}
+	if err == nil {
+		err = os.Remove(marker)
 	}
 	if err == nil {
 		rec.Created = time.Now().UTC()

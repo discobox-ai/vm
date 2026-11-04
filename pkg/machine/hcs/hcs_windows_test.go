@@ -73,15 +73,16 @@ func TestConformance(t *testing.T) {
 	})
 }
 
-// An instance's service port is in its ServiceTable beside the agent's, or the
-// guest's bind to it is refused.
+// An instance's service port and the agent's display port are in its
+// ServiceTable beside the agent's, or the guest's bind to them is refused.
 func TestDocumentService(t *testing.T) {
 	raw, err := json.Marshal(newDocument(vmConfig{Disk: "d", GuestFile: "g", StateFile: "s"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The agent's port, 7300, and the service's, 7302.
-	for _, want := range []string{`"00001C84-FACB-11E6-BD58-64006A7986D3"`, `"00001C86-FACB-11E6-BD58-64006A7986D3"`} {
+	// The agent's port, 7300, its display stream's, 7301, and the
+	// service's, 7302.
+	for _, want := range []string{`"00001C84-FACB-11E6-BD58-64006A7986D3"`, `"00001C85-FACB-11E6-BD58-64006A7986D3"`, `"00001C86-FACB-11E6-BD58-64006A7986D3"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("document lacks %s:\n%s", want, raw)
 		}
@@ -105,6 +106,7 @@ func TestDocument(t *testing.T) {
 		`"00001C84-FACB-11E6-BD58-64006A7986D3"`,
 		`"ShouldTerminateOnLastHandleClosed":true`,
 		`"Count":6`,
+		`"ExposeVirtualizationExtensions":true`,
 		`"SizeInMB":4096`,
 		`"EndpointId":"ep"`,
 	} {

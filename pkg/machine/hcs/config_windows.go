@@ -60,8 +60,14 @@ type memory struct {
 	Backing  string `json:"Backing"`
 }
 
+// processor exposes the host's virtualization extensions to every guest, so
+// a guest can run its own hypervisor: WSL 2, Hyper-V, Windows Sandbox, and
+// Docker Desktop all need one. It rules out dynamic memory, which these VMs
+// do not use: their memory is Virtual-backed, committed as the guest touches
+// it, not taken at boot.
 type processor struct {
-	Count int `json:"Count"`
+	Count                          int  `json:"Count"`
+	ExposeVirtualizationExtensions bool `json:"ExposeVirtualizationExtensions"`
 }
 
 type devices struct {
@@ -73,20 +79,13 @@ type devices struct {
 	Mouse           *struct{}                 `json:"Mouse,omitempty"`
 }
 
-// videoMonitor is the VM's emulated video card, served by the VM worker as
-// RDP (standard RDP security only) on a named pipe that only AccessSids may
-// open. It shows the guest from power-on, Setup and blue screens included,
-// with nothing running in the guest. Keyboard and Mouse are where it delivers
-// input; without them the console shows the screen and drops every key.
+// videoMonitor is the VM's emulated video card: the guest's display adapter,
+// whose desktop the agent captures for a viewer (guest.ServeDisplay). The VM
+// worker could serve it as RDP on a named pipe, but only on some host
+// editions, so disco-vm does not ask it to.
 type videoMonitor struct {
-	HorizontalResolution int                `json:"HorizontalResolution"`
-	VerticalResolution   int                `json:"VerticalResolution"`
-	ConnectionOptions    *consoleConnection `json:"ConnectionOptions,omitempty"`
-}
-
-type consoleConnection struct {
-	AccessSids []string `json:"AccessSids"`
-	NamedPipe  string   `json:"NamedPipe"`
+	HorizontalResolution int `json:"HorizontalResolution"`
+	VerticalResolution   int `json:"VerticalResolution"`
 }
 
 type networkAdapter struct {
@@ -136,6 +135,9 @@ const (
 
 	defaultCPUs     = 6 // 1 vCPU was unusably slow in sandboxi
 	defaultMemoryMB = 4096
+	// The video adapter's resolution at boot; a viewer asks the guest for
+	// its own size once it is open.
+	displayWidth, displayHeight = 1920, 1080
 )
 
 // vmConfig is what varies between the documents this driver creates.
@@ -147,15 +149,11 @@ type vmConfig struct {
 	Memory    uint64 // bytes
 	// NIC is attached at create.
 	NIC *endpoint
-	// Console serves the video console on this pipe to ConsoleSID.
-	Console    string
-	ConsoleSID string
 }
 
 // hvsockPorts are the guest ports every VM's ServiceTable lists; the guest's
-// bind is refused for any port not listed. 7301 (display) joins when the
-// display lands.
-var hvsockPorts = []uint32{guest.AgentPort, guest.ServicePort}
+// bind is refused for any port not listed.
+var hvsockPorts = []uint32{guest.AgentPort, guest.DisplayPort, guest.ServicePort}
 
 func slashes(path string) string { return strings.ReplaceAll(path, `\`, "/") }
 
@@ -183,7 +181,7 @@ func newDocument(c vmConfig) document {
 			Chipset:     chipset{Uefi: uefi{ApplySecureBootTemplate: "Apply", SecureBootTemplateID: microsoftWindowsTemplate}},
 			ComputeTopology: topology{
 				Memory:    memory{SizeInMB: mb, Backing: "Virtual"},
-				Processor: processor{Count: cpus},
+				Processor: processor{Count: cpus, ExposeVirtualizationExtensions: true},
 			},
 			Devices: devices{
 				Scsi: map[string]scsi{"0": {Attachments: map[string]attachment{"0": {Type: "VirtualDisk", Path: slashes(c.Disk)}}}},
@@ -196,10 +194,7 @@ func newDocument(c vmConfig) document {
 			GuestState: guestState{GuestStateFilePath: slashes(c.GuestFile), RuntimeStateFilePath: slashes(c.StateFile)},
 		},
 	}
-	video := &videoMonitor{HorizontalResolution: consoleWidth, VerticalResolution: consoleHeight}
-	if c.Console != "" && c.ConsoleSID != "" {
-		video.ConnectionOptions = &consoleConnection{AccessSids: []string{c.ConsoleSID}, NamedPipe: c.Console}
-	}
+	video := &videoMonitor{HorizontalResolution: displayWidth, VerticalResolution: displayHeight}
 	d.VirtualMachine.Devices.VideoMonitor, d.VirtualMachine.Devices.Keyboard, d.VirtualMachine.Devices.Mouse = video, &struct{}{}, &struct{}{}
 	if c.NIC != nil {
 		d.VirtualMachine.Devices.NetworkAdapters = map[string]networkAdapter{c.NIC.ID: {EndpointID: c.NIC.ID, MacAddress: c.NIC.MAC}}

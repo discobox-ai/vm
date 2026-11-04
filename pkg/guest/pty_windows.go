@@ -2,6 +2,7 @@ package guest
 
 import (
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -15,8 +16,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// ptyHandle is a started process's pseudo console: reading it is the screen,
+// ptyHandle is a started process's terminal: reading it is the screen,
 // writing it is the keyboard.
+type ptyHandle interface {
+	io.ReadWriteCloser
+	Resize(rows, cols uint16) error
+}
+
+// conPTY is a pseudo console this process made.
 //
 // A pseudo console's output pipe reaches EOF only once the console is closed,
 // not when its process exits, so a watcher closes it when the process is done.
@@ -24,10 +31,6 @@ import (
 // asynchronously, and closing it drops whatever it had not written yet, which
 // for a short command is all of it. guestexec's OP_CONSOLE in sandboxi is the
 // proven Rust version of this.
-type ptyHandle struct {
-	*conPTY
-}
-
 type conPTY struct {
 	console   windows.Handle
 	in        *os.File
@@ -82,21 +85,31 @@ func (p *conPTY) drainThenClose() {
 // startPTY starts cmd attached to a new pseudo console. exec.Cmd cannot hand a
 // process a pseudo console, so the process is created here and adopted as
 // cmd.Process, which is all cmd.Wait needs.
+//
+// A cmd with a token runs as another account, and its console is made by a
+// console host running as that account (startHostedPTY), not by the agent.
 func startPTY(cmd *exec.Cmd, rows, cols uint16) (ptyHandle, error) {
 	if cmd.Err != nil {
-		return ptyHandle{}, cmd.Err
+		return nil, cmd.Err
 	}
 	if rows == 0 || cols == 0 {
 		rows, cols = 24, 80
 	}
+	if cmd.SysProcAttr != nil && cmd.SysProcAttr.Token != 0 {
+		return startHostedPTY(cmd, rows, cols)
+	}
+	return startConPTY(cmd, rows, cols)
+}
+
+func startConPTY(cmd *exec.Cmd, rows, cols uint16) (*conPTY, error) {
 	var inRead, inWrite, outRead, outWrite windows.Handle
 	if err := windows.CreatePipe(&inRead, &inWrite, nil, 0); err != nil {
-		return ptyHandle{}, err
+		return nil, err
 	}
 	if err := windows.CreatePipe(&outRead, &outWrite, nil, 0); err != nil {
 		_ = windows.CloseHandle(inRead)
 		_ = windows.CloseHandle(inWrite)
-		return ptyHandle{}, err
+		return nil, err
 	}
 	var console windows.Handle
 	err := windows.CreatePseudoConsole(windows.Coord{X: int16(cols), Y: int16(rows)}, inRead, outWrite, 0, &console)
@@ -107,7 +120,7 @@ func startPTY(cmd *exec.Cmd, rows, cols uint16) (ptyHandle, error) {
 	if err != nil {
 		_ = windows.CloseHandle(inWrite)
 		_ = windows.CloseHandle(outRead)
-		return ptyHandle{}, err
+		return nil, err
 	}
 	p := &conPTY{console: console, in: os.NewFile(uintptr(inWrite), "conpty-in"), out: os.NewFile(uintptr(outRead), "conpty-out")}
 	p.lastRead.Store(time.Now().UnixNano())
@@ -115,14 +128,14 @@ func startPTY(cmd *exec.Cmd, rows, cols uint16) (ptyHandle, error) {
 	process, err := createConsoleProcess(cmd, console)
 	if err != nil {
 		_ = p.Close()
-		return ptyHandle{}, err
+		return nil, err
 	}
 	go func() {
 		_, _ = windows.WaitForSingleObject(process, windows.INFINITE)
 		_ = windows.CloseHandle(process)
 		p.drainThenClose()
 	}()
-	return ptyHandle{p}, nil
+	return p, nil
 }
 
 // createConsoleProcess creates cmd's process on console, as cmd's token when

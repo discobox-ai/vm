@@ -67,25 +67,46 @@ What building it found, beyond the recipes below:
   instance reboot itself a minute or ten after starting, which killed a
   build's step midway. Windows Update policy does not stop it; waiting for it
   does.
-- **Run as user is LogonUser**, with the blank password Install's unattend
-  gives the account (`LimitBlankPasswordUse` is turned off in the offline
-  hive), the linked elevated token, the profile loaded, and the account
-  granted the agent's window station and desktop (without which anything that
-  loads user32 fails with 0xC0000142).
-- **Display is the VM's basic video console**, as sandboxi proved: every
-  document has `VideoMonitor` (with `ConnectionOptions` naming a pipe per VM
-  and the current user's SID), `Keyboard` and `Mouse`. With
-  `BootOptions.GUI` the driver relays a loopback port to the pipe and opens
-  `mstsc` on it, titled `BootOptions.Title` (standard RDP security
-  only, so CredSSP is off in the `.rdp` file); the window closes when the VM
-  stops, and closing it leaves the VM running. `InstallSpec.GUI` shows the
-  install's first boot, Windows Setup included. Checked through the CLI:
-  `run --gui` and `start --gui` (window in the shim; a plain `start` opens
-  none) and the since-removed `build --gui` with a reboot step (one window
-  per boot, never two at once, none left after), which `install --gui`'s
-  boots follow. `TestConsole` checks the console answers RDP.
-  Not checked by a machine: the pixels after clicking through
-  mstsc's warning about the unsigned `.rdp` file, which sandboxi did by hand.
+- **Run as user is LogonUser**, with the password Install's unattend gives
+  the account, its own name (an image from before has a blank one, which is
+  tried second; `LimitBlankPasswordUse` is turned off in the offline hive),
+  the linked elevated token, the profile loaded, and the account granted the
+  agent's window station and desktop (without which anything that loads
+  user32 fails with 0xC0000142). A TTY session as the account gets a console
+  of the account's own (`disco-vm console-host`): one the SYSTEM agent made
+  could be written to but not read back, which broke every PowerShell
+  progress bar.
+- **Nested virtualization is on** for every VM (`Processor.ExposeVirtualizationExtensions`),
+  so a guest runs WSL 2, Hyper-V, Windows Sandbox, or Docker Desktop. Memory
+  stays `Virtual`-backed, committed as the guest touches it: nesting rules out
+  only dynamic memory, which these VMs do not use. Proven by hand on Win 11
+  (2026-11-02): VBS running in the guest, and a WSL 2 Debian booting.
+- **A window is the guest's own Remote Desktop, or the agent's stream of its
+  desktop** (ADR 26-11-02-274), never the VM worker's video console, which
+  serves RDP only on some host editions (a Windows 11 Home host closes its
+  pipe without a byte). `View` asks the guest through the agent whether
+  `127.0.0.1:3389` answers an RDP request. If so, `mstsc` opens full screen
+  at the host's resolution on a loopback port relayed to it through the
+  agent's `pipe`, signed in as the image's user by a Domain Password
+  credential for `TERMSRV/127.0.0.1` named `COMPUTER\user` (mstsc ignores a
+  password in the `.rdp` file and a generic credential). Otherwise a window
+  of disco-vm's own shows the stream on `guest.DisplayPort`, which the agent
+  serves from `disco-vm display-host` in the console session (sandboxi's
+  guestfb: GDI capture, changed rows as raw BGRA, the cursor's shape,
+  `SendInput`). `DISCO_VM_HCS_VIEW=display` skips Remote Desktop. Documents
+  keep `VideoMonitor`, `Keyboard` and `Mouse`, as the guest's adapter and
+  input. `disco-vm gui` opens a window on a running instance; `run --gui`
+  and `start --gui` open it from the shim once the guest is up, and again
+  after it restarts. An install's window is the stream alone, from the
+  first logon to the shutdown that commits it (Setup before it has no
+  desktop): `install --gui` shows it, and `disco-vm gui --install [NAME]`
+  opens it from another process by the install's `.install-vm` record (the
+  installing process and the VM's runtime ID), dialing hvsocket directly
+  and never opening the compute system. Install turns Remote Desktop on except on the `Core*` (Home)
+  editions, its firewall left closed. Checked by hand on a Win 11 Pro guest
+  on a Home host (2026-11-02): the Remote Desktop window signs in with no
+  prompt at the host's size, and the stream's window shows the desktop and
+  takes the mouse and keyboard.
 - **A TTY session ignores end of input.** The client closes stdin when it has
   none, and for a terminal that closed the whole pseudo console before the
   process started (0xC0000142 again). This was a neutral server bug; on Unix it
@@ -166,7 +187,8 @@ List `00001C84-FACB-11E6-BD58-64006A7986D3` (port 7300, via
 `winio.VsockServiceID`) in the HvSocket `ServiceTable`, or the agent's bind is
 refused. List 7302 (`guest.ServicePort`, `00001C86-…`) too: it is every
 instance's service, which the shim serves on the host's loopback by dialing
-it over hvsocket. Add 7301 when display lands.
+it over hvsocket. List 7301 (`guest.DisplayPort`, `00001C85-…`), the
+agent's display stream.
 
 `Machine.Dial(port)` is `winio.Dial` of an `HvsockAddr{VMID: <RuntimeId>,
 ServiceID: VsockServiceID(port)}`. `Done` fires from an HCS system-exit
@@ -207,8 +229,9 @@ restore) did **not** work on image VMs: HCS cold-booted instead.
   host-initiated connections.
 - **Service wrapper:** `disco-vm guest` must run under the SCM. Add a
   `golang.org/x/sys/windows/svc` handler when running as a service.
-- **Display (later):** the guestfb protocol on port 7301 (Desktop Duplication
-  capture plus SendInput, in the interactive session), and the host viewer.
+- **Display:** done, as guestfb's protocol on port 7301 with GDI capture
+  rather than Desktop Duplication, and the guest's own Remote Desktop where it
+  has one (ADR 26-11-02-274).
 
 ## Known numbers (this hardware)
 

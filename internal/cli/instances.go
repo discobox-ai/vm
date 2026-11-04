@@ -289,6 +289,49 @@ func lsCommand(g *globals) *cobra.Command {
 	return cmd
 }
 
+func guiCommand(g *globals) *cobra.Command {
+	var install bool
+	cmd := &cobra.Command{
+		Use:   "gui INSTANCE | gui --install [NAME]",
+		Short: "Open a window on a running instance's desktop, or on an install's",
+		Long: "Open a window on a running instance's desktop, and return once it is closed.\n" +
+			"It can be opened as often as wanted, while the instance runs; closing it\n" +
+			"leaves the instance running. On hcs it is the guest's own Remote Desktop,\n" +
+			"signed in as the VM's user, where the guest serves one, and otherwise the\n" +
+			"agent's stream of the desktop. Drivers with no display (boxd, docker) refuse it.\n\n" +
+			"With --install, open one on an install running in another process: the\n" +
+			"install of NAME, or the only one. On hcs it is the agent's stream, from the\n" +
+			"guest's first logon until the install shuts it down; Windows Setup before\n" +
+			"that has no desktop to show.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if install {
+				return cobra.MaximumNArgs(1)(cmd, args)
+			}
+			return cobra.ExactArgs(1)(cmd, args)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := g.engine()
+			if err != nil {
+				return err
+			}
+			if install {
+				name := ""
+				if len(args) == 1 {
+					name = args[0]
+				}
+				return e.GUIInstall(cmd.Context(), name, os.Stderr)
+			}
+			inst, err := e.Get(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return e.GUI(cmd.Context(), inst)
+		},
+	}
+	cmd.Flags().BoolVar(&install, "install", false, "open the window on an install in progress, from its first logon")
+	return cmd
+}
+
 func dialCommand(g *globals) *cobra.Command {
 	return &cobra.Command{
 		Use:   "dial INSTANCE PORT",

@@ -43,6 +43,16 @@ func guestCommand() *cobra.Command {
 				}
 			}
 			server := &guest.Server{Version: version.String(), Root: root, Fake: fake}
+			if !fake {
+				// The desktop, for a viewer on the host: a Windows guest's
+				// only; elsewhere it returns at once. Failing to serve it
+				// leaves the agent's own port serving.
+				go func() {
+					if err := guest.ServeDisplay(); err != nil {
+						fmt.Fprintln(os.Stderr, "disco-vm guest: display:", err)
+					}
+				}()
+			}
 			// The root command turns SIGTERM into a canceled context. The
 			// agent must still exit on it: the guest's init sends it at
 			// shutdown, and waits out its stop timeout for an agent that
@@ -81,6 +91,51 @@ func pipeCommand() *cobra.Command {
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return guest.Pipe(cmd.Context(), args[0], os.Stdin, os.Stdout)
+		},
+	}
+}
+
+// consoleHostCommand makes a Windows pseudo console as the account it runs as
+// and runs a command on it. The agent starts it for a TTY session as another
+// account, whose console must be that account's own (guest.ConsoleHost).
+func consoleHostCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "console-host ROWS COLS APP CMDLINE",
+		Short:  "Run a command on a pseudo console of this account's own (started by the guest agent)",
+		Hidden: true,
+		Args:   cobra.ExactArgs(4),
+		RunE: func(_ *cobra.Command, args []string) error {
+			rows, err := strconv.ParseUint(args[0], 10, 16)
+			if err != nil {
+				return fmt.Errorf("rows %q: %w", args[0], err)
+			}
+			cols, err := strconv.ParseUint(args[1], 10, 16)
+			if err != nil {
+				return fmt.Errorf("cols %q: %w", args[1], err)
+			}
+			code, err := guest.ConsoleHost(uint16(rows), uint16(cols), args[2], args[3], os.Stdin, os.Stdout)
+			if err != nil {
+				return err
+			}
+			if code != 0 {
+				return exitError{code}
+			}
+			return nil
+		},
+	}
+}
+
+// displayHostCommand shows the desktop it runs on to a viewer on its stdin
+// and stdout. The agent starts it in the session of whoever is logged on to
+// a Windows guest's console (guest.ServeDisplay).
+func displayHostCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "display-host",
+		Short:  "Stream this desktop over stdin and stdout (started by the guest agent)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return guest.DisplayHost(os.Stdin, os.Stdout)
 		},
 	}
 }
