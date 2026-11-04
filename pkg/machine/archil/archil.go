@@ -2,7 +2,7 @@
 // microVM sandboxes in the cloud, behind Archil's REST API. It runs on every
 // host OS, because the hypervisor is not on the host (ADR 26-11-03-676).
 //
-// A VM is the sandbox named for it, dvm-<project>--<name> (names.go), which
+// A VM is the sandbox named for it, dvm-<pool>--<name> (names.go), which
 // Archil keeps unique (ADR 26-11-03-606). A fresh VM is a sandbox of the
 // driver's base, an OCI image (machine.Config.Base), or of Archil's default
 // image; a VM created from another is a fork of that one's sandbox. A fork
@@ -38,23 +38,23 @@ const waitLimit = 10 * time.Minute
 
 // Driver is the archil driver.
 type Driver struct {
-	api     *api
-	project string
+	api  *api
+	pool string
 	// base is the OCI image a fresh VM runs; empty is Archil's default.
 	base string
 }
 
 var _ machine.Driver = (*Driver)(nil)
 
-// New returns a driver for cfg's project (machine.DefaultProject when empty)
+// New returns a driver for cfg's pool (machine.DefaultPool when empty)
 // whose fresh VMs run cfg.Base, and that calls Archil with the key cfg.Keys
 // answers on each call. It calls nothing until it is used.
 func New(cfg machine.Config) *Driver {
-	project := cfg.Project
-	if project == "" {
-		project = machine.DefaultProject
+	pool := cfg.Pool
+	if pool == "" {
+		pool = machine.DefaultPool
 	}
-	return &Driver{api: newAPI(cfg.Keys), project: project, base: cfg.Base}
+	return &Driver{api: newAPI(cfg.Keys), pool: pool, base: cfg.Base}
 }
 
 func (*Driver) Name() string { return "archil" }
@@ -462,7 +462,7 @@ func (d *Driver) instance(name string, sb sandbox, data bool) machine.Instance {
 	return inst
 }
 
-// instances reads the project's VMs, a name's alone when name is not empty,
+// instances reads the pool's VMs, a name's alone when name is not empty,
 // with their fences and data volumes. A data disk with no sandbox is a VM
 // caught mid-upgrade (or one a Destroy stopped before its last step): listed
 // by the disk's ID, with no size, and the strictest fence, since Archil keeps

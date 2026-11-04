@@ -26,8 +26,8 @@ const (
 	lockFile    = ".lock"
 )
 
-// keys is the directory of the project's cache keys.
-func (l layout) keys() string { return path.Join(l.root, "cache", "projects", l.project, "keys") }
+// keys is the directory of the pool's cache keys.
+func (l layout) keys() string { return path.Join(l.root, "cache", "pools", l.pool, "keys") }
 
 func (l layout) key(key string) string { return path.Join(l.keys(), key) }
 
@@ -53,7 +53,7 @@ func Dirs(request string) error {
 }
 
 func (r dirsRequest) run(root string) (dirsResult, error) {
-	if err := machine.ValidateProject(r.Project); err != nil {
+	if err := machine.ValidatePool(r.Pool); err != nil {
 		return dirsResult{}, err
 	}
 	if r.Name != "" {
@@ -69,7 +69,7 @@ func (r dirsRequest) run(root string) (dirsResult, error) {
 	if r.Staging != "" && (filepath.Base(r.Staging) != r.Staging || !strings.HasPrefix(r.Staging, ".") || !strings.Contains(r.Staging, "--")) {
 		return dirsResult{}, fmt.Errorf("docker-volumes: %q is not a staging directory", r.Staging)
 	}
-	l := layout{root: root, project: r.Project}
+	l := layout{root: root, pool: r.Pool}
 	needName := map[string]bool{opPrepare: true, opInstall: true, opRemove: true, opSave: true, opMigrate: true}
 	if needName[r.Op] && r.Name == "" {
 		return dirsResult{}, fmt.Errorf("docker-volumes: %s needs a VM's name", r.Op)
@@ -393,7 +393,7 @@ func (l layout) sweepSaves(key string) error {
 	return nil
 }
 
-// caches lists the project's keys that point at a generation.
+// caches lists the pool's keys that point at a generation.
 func (l layout) caches() ([]machine.Cache, error) {
 	entries, err := os.ReadDir(l.keys())
 	if errors.Is(err, fs.ErrNotExist) {

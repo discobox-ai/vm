@@ -1,6 +1,6 @@
 # 0004 — A project scopes every resource, and is in the name of what a driver makes
 
-- **Status**: Accepted (orphan listing superseded by 26-10-23-417)
+- **Status**: Accepted (orphan listing superseded by 26-10-23-417; project naming superseded by [26-11-04-412](26-11-04-412-docker-runs-in-a-vm-owned-by-its-pool.md))
 - **Date**: 2026-10-15
 
 ## Context

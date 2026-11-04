@@ -28,7 +28,7 @@ func (o otherOS) Instance(ctx context.Context, name string) (machine.Instance, e
 }
 
 // An upgrade needs a driver that attaches a data volume, a VM of the
-// project, and a committed VM other than itself, of its guest OS; one from a committed VM
+// pool, and a committed VM other than itself, of its guest OS; one from a committed VM
 // keeps the VM's name and settings and records where its root is from; a
 // fresh one needs a base; and a driver that does not commit upgrades only
 // to a fresh root. (internal/e2e refuses a running one.)

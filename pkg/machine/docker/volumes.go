@@ -22,7 +22,7 @@ import (
 // bind-mounted at their machine.VolumePath (dirs.go), which helper
 // containers make, copy, and remove. Bytes are a hint: a directory has no
 // quota. A VM made before ADR 26-11-03-782 mounts named Docker volumes
-// instead, `dvm-<project>--<name>--data-<random>` and `--cache-<random>`: it
+// instead, `dvm-<pool>--<name>--data-<random>` and `--cache-<random>`: it
 // boots with them, SaveCache reads its cache from one, Upgrade copies them
 // into its directories, and Destroy removes them, found by their labels.
 // Cache generations saved as named volumes then are not read.
@@ -54,8 +54,8 @@ const (
 	helperAgent = "/disco-vm"
 )
 
-// layout is the driver's directories under its root, for its project.
-func (d *Driver) layout() layout { return layout{root: d.Root, project: d.project} }
+// layout is the driver's directories under its root, for its pool.
+func (d *Driver) layout() layout { return layout{root: d.Root, pool: d.pool} }
 
 // dirMounts bind-mounts a VM's directories at their paths.
 func (d *Driver) dirMounts(name string, data, cache bool) []mount {
@@ -205,7 +205,7 @@ func (d *Driver) runDirs(ctx context.Context, req dirsRequest, old string) (dirs
 	if !path.IsAbs(d.Root) {
 		return dirsResult{}, fmt.Errorf("docker: the driver's root %q (%s) is not an absolute path", d.Root, RootEnv)
 	}
-	req.Project = d.project
+	req.Pool = d.pool
 	image, err := d.helper(ctx)
 	if err != nil {
 		return dirsResult{}, err
@@ -218,13 +218,13 @@ func (d *Driver) runDirs(ctx context.Context, req dirsRequest, old string) (dirs
 	if old != "" {
 		hc.Mounts = []mount{volumeMount(old, helperOld, true)}
 	}
-	name := machine.ResourcePrefix(namePrefix, d.project) + "helper--" + fsutil.RandomHex(4)
+	name := machine.ResourcePrefix(namePrefix, d.pool) + "helper--" + fsutil.RandomHex(4)
 	id, err := d.api.createContainer(ctx, name, containerConfig{
 		Image:      image,
 		Entrypoint: []string{helperAgent, "docker-volumes", string(arg)},
 		Cmd:        []string{},
 		User:       "0",
-		Labels:     map[string]string{labelProject: d.project, labelVolume: volumeHelper},
+		Labels:     map[string]string{labelPool: d.pool, labelVolume: volumeHelper},
 		HostConfig: hc,
 	})
 	if err != nil {
@@ -273,7 +273,7 @@ func volumesOf(inst *machine.Instance, labels map[string]string) {
 // Destroy that failed once its container was gone finds them again. One a
 // container still mounts is in use, and is left.
 func (d *Driver) removeOldVolumes(ctx context.Context, name string) error {
-	vols, err := d.api.volumes(ctx, map[string]string{labelProject: d.project, labelInstance: name})
+	vols, err := d.api.volumes(ctx, map[string]string{labelPool: d.pool, labelInstance: name})
 	if err != nil {
 		return fmt.Errorf("docker: list volumes: %w", err)
 	}
@@ -288,7 +288,7 @@ func (d *Driver) removeOldVolumes(ctx context.Context, name string) error {
 	return nil
 }
 
-// Caches lists each of the project's keys with its current generation.
+// Caches lists each of the pool's keys with its current generation.
 func (d *Driver) Caches(ctx context.Context) ([]machine.Cache, error) {
 	res, err := d.runDirs(ctx, dirsRequest{Op: opCaches}, "")
 	return res.Caches, err
@@ -307,7 +307,7 @@ func (d *Driver) SaveCache(ctx context.Context, inst machine.Instance, save mach
 	}
 	c, err := d.resolve(ctx, inst)
 	if err != nil {
-		return machine.Cache{}, fmt.Errorf("docker: container %s: %w", containerName(d.project, inst.Name), err)
+		return machine.Cache{}, fmt.Errorf("docker: container %s: %w", containerName(d.pool, inst.Name), err)
 	}
 	if c.State.Running {
 		return machine.Cache{}, fmt.Errorf("instance %s is running; stop it first", inst.Name)

@@ -18,7 +18,7 @@ import (
 func keyCommand(g *globals) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "key",
-		Short: "Issue, list, and revoke keys another host runs this project's machines with",
+		Short: "Issue, list, and revoke keys another host runs this pool's machines with",
 	}
 	cmd.AddCommand(keyIssueCommand(g), keyLsCommand(g), keyRevokeCommand(g))
 	return cmd
@@ -33,7 +33,7 @@ func keyIssueCommand(g *globals) *cobra.Command {
 		Use:   "issue --ttl DURATION",
 		Short: "Issue a key that expires, and print it as JSON, its secret included",
 		Long: `Issue the narrowest key the driver can for another host to run this
-project's machines with, and print it as JSON on stdout. The key expires
+pool's machines with, and print it as JSON on stdout. The key expires
 after --ttl and cannot itself issue keys. Its secret is shown only here.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -63,7 +63,7 @@ func keyLsCommand(g *globals) *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "ls [NAME]",
-		Short: "List the keys the driver issued for this project, without their secrets",
+		Short: "List the keys the driver issued for this pool, without their secrets",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
@@ -103,7 +103,7 @@ func keyLsCommand(g *globals) *cobra.Command {
 func keyRevokeCommand(g *globals) *cobra.Command {
 	return &cobra.Command{
 		Use:   "revoke ID...",
-		Short: "Revoke keys the driver issued for this project; an ID it did not issue is an error",
+		Short: "Revoke keys the driver issued for this pool; an ID it did not issue is an error",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
@@ -119,7 +119,7 @@ func keyRevokeCommand(g *globals) *cobra.Command {
 				i := slices.IndexFunc(issued, func(k machine.Key) bool { return k.ID == id })
 				if i < 0 {
 					// A typo would otherwise read as revoked.
-					errs = append(errs, fmt.Errorf("no key %s issued for project %s: %w", id, e.Project, machine.ErrNotFound))
+					errs = append(errs, fmt.Errorf("no key %s issued for pool %s: %w", id, e.Pool, machine.ErrNotFound))
 					continue
 				}
 				if err := e.Driver.RevokeKey(cmd.Context(), issued[i]); err != nil {

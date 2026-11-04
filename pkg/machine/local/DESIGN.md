@@ -14,7 +14,7 @@ report `Commit` (fake's `NoCommit`; ADR 26-11-03-868).
 `machine.Config.Dir` (`--root`, `$DISCO_VM_ROOT`, or the per-OS data
 directory) is the driver's, as `/var/lib/docker` is Docker's:
 
-- `instances/<id>/machine` (the hypervisor's) and `instance.json` (project,
+- `instances/<id>/machine` (the hypervisor's) and `instance.json` (pool,
   name, the name and ID of the VM it was created from, guest OS, size,
   forwards, fence, volumes), and while a shim holds it, `shim.json`,
   `shim.sock`, and `shim.log`. A committed VM (ADR 26-11-03-606) is the
@@ -27,11 +27,11 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
 - while an upgrade runs, `instances/<id>/machine.next` (the new disk),
   `next.ready` (written once it is whole), and `machine.old` (the old disk,
   once the new one is in place), [below](#an-upgrade-swaps-a-vms-disk-in-its-directory);
-- `instances/.names/<project>/<name>`, the name's claim, holding the ID;
-- `caches/<project>/<key>.json`, a cache key, naming its current
+- `instances/.names/<pool>/<name>`, the name's claim, holding the ID;
+- `caches/<pool>/<key>.json`, a cache key, naming its current
   generation, and `caches/generations/<id>/payload` (the hypervisor's copy
   of a cache volume, which `Hypervisor.SaveCache` writes and `Prepare` clones
-  from `InstanceSpec.CacheFrom`) and `generation.json` (project, key, size,
+  from `InstanceSpec.CacheFrom`) and `generation.json` (pool, key, size,
   when it was saved). A generation is published by renaming it into place,
   and a key moves by replacing its file; the generation it moved off is
   renamed out of reach and removed, and a Create cloning it in that moment
@@ -43,7 +43,7 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   libkrun's runtime (`cache/libkrun/runtime/<digest>`). `Prepare` is given
   it, and `Driver.CacheDir` names it;
 - `keys/<hash>.json`, a key the driver issued, named for the SHA-256 of its
-  secret (ID, name, project, expiry, and that hash, never the secret), for a
+  secret (ID, name, pool, expiry, and that hash, never the secret), for a
   hypervisor whose capabilities issue keys. A call reads its own key's
   record and no other; one that cannot be read authorizes nothing and is
   not listed.
@@ -67,7 +67,7 @@ removed and the copy lives on. An hcs copy, though, is a differencing disk
 over the committed VM's, so for a hypervisor that `Chains` the record keeps
 the ID of the VM it was created from (`fromID`); Prepare, Boot, Commit, and
 Destroy get the whole chain (`InstanceSpec.Chain`, base first); and a VM
-another VM's record names, in any project, is refused removal and boot with
+another VM's record names, in any pool, is refused removal and boot with
 `machine.ErrInUse`, since a boot would write to a disk another differences
 over. A directory with no record yet whose `from` names the VM holds it too, for
 ten minutes, as a name's claim does: a Create writes `from` before it reads
@@ -109,12 +109,12 @@ attach no volume yet, so they refuse it.
 ## Keys are the fake's, and checked on every call
 
 A hypervisor that lists `Capabilities.Keys` as `issue` (fake) has its
-driver issue keys bound to the project, and check `Config.Keys` at every
-call: the key must be one it issued for the project that has not expired or
-been revoked (its record removed). A name is issued once per project while
+driver issue keys bound to the pool, and check `Config.Keys` at every
+call: the key must be one it issued for the pool that has not expired or
+been revoked (its record removed). A name is issued once per pool while
 a key of it lives (`machine.ErrExists`); expired records go when the next key
 is issued. A method that takes an instance refuses one whose record is
-another project's. Only the owner, the driver given no
+another pool's. Only the owner, the driver given no
 key, issues, lists, or revokes keys. A shim the driver starts runs as the
 owner, and neither a shim nor a fake guest is handed the variables a key is
 read from (`machine.WithoutKeys`). hcs, vz, and libkrun issue none (`machine.ErrNoKey`): whoever can read the
@@ -125,7 +125,7 @@ directory owns it, and a key source is not asked.
 A Virtualization.framework VM dies with the process that created it, and an
 HCS VM belongs to vmcompute, so `Start` spawns the shim command detached
 (setsid, or DETACHED_PROCESS): this executable's `shim` subcommand for the
-same root, driver, and project, or `machine.Config.ShimCommand`, a
+same root, driver, and pool, or `machine.Config.ShimCommand`, a
 subcommand of an embedder's own binary that makes the same driver and calls
 `ShimMain`. The shim boots the VM, holds it for its whole life, and exits when
 it stops. A shim is detached on purpose, and outlives whoever started it, an

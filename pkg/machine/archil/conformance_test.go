@@ -15,13 +15,13 @@ const ImageEnv = "DISCO_VM_ARCHIL_IMAGE"
 
 // TestConformance runs the conformance suite against Archil itself. It needs
 // ARCHIL_API_KEY and ImageEnv, so it runs only where both are set; it makes
-// sandboxes and disks in a project of its own and removes them.
+// sandboxes and disks in a pool of its own and removes them.
 func TestConformance(t *testing.T) {
 	image := os.Getenv(ImageEnv)
 	if image == "" || os.Getenv(APIKeyEnv) == "" {
 		t.Skipf("set %s and %s (an image, such as debian:trixie) to run the conformance suite against Archil", APIKeyEnv, ImageEnv)
 	}
-	d := New(machine.Config{Project: "conformance", Base: image, Keys: machine.KeyFromEnv("archil")})
+	d := New(machine.Config{Pool: "conformance", Base: image, Keys: machine.KeyFromEnv("archil")})
 	machinetest.Run(t, d, machinetest.Config{
 		CPUs:       2,
 		Memory:     2 << 30,

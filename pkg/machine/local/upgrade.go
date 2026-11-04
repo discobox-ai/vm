@@ -77,7 +77,7 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 	if from != nil && !d.hv.Capabilities().Commit {
 		return machine.Instance{}, fmt.Errorf("%s cannot give a VM the root of a committed one: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
-	rec, err := d.readProject(inst.ID)
+	rec, err := d.readPool(inst.ID)
 	if err != nil {
 		return machine.Instance{}, err
 	}
@@ -104,7 +104,7 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 			return machine.Instance{}, fmt.Errorf("instance %s is a %s guest, and %s's base is %s: its data volume is %s's", rec.Name, rec.GuestOS, d.hv.Name(), guestOS, rec.GuestOS)
 		}
 	default:
-		src, err := d.readProject(from.ID)
+		src, err := d.readPool(from.ID)
 		if errors.Is(err, machine.ErrNotFound) || (err == nil && src.Name != from.Name) {
 			err = fmt.Errorf("instance %s: %w", from.Name, machine.ErrNotFound)
 		}

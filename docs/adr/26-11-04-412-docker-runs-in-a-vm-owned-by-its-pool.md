@@ -60,12 +60,14 @@ commits, keys and caches. Move local `MaxRunning` enforcement below the seam,
 under a host-wide lock at start/boot, across every pool in that driver's
 root. Preserve OS-neutral capability reporting above the seam.
 
-This is a breaking API/CLI rename, with no old flag alias. Persisted data is
-durable: implementation must provide a versioned, restartable migration of
-local records, paths, Docker labels and cache metadata, preserving existing
-scope values as pool values. Ambiguous or conflicting state must be refused
-without deletion; no silent empty listing or automatic fresh replacement.
-The exact migration mechanics and tests are an implementation prerequisite.
+This is a breaking API/CLI and state-format rename, with no old flag alias
+or state migration. The owner confirmed on 2026-11-04 that there are no
+production deployments and requested the rename without migration. Local
+records and keys use `pool`; Docker labels use `ai.discobox.vm.pool`, and
+its volume/cache paths use `pools`. State written with the old project
+format is not adopted as new pool state. Development users remove their old
+resources with the old binary before switching. The discobox integration
+must update its callers and dependency together.
 
 The underlying VM is named `host` in the same pool of the underlying driver.
 Its namespace is separate from inner Docker VM names; `host` remains usable
@@ -208,7 +210,7 @@ follow-up issues, not existing assignments:
 
 | Step | Repository and deliverable | Size | Prerequisites |
 |---|---|---|---|
-| A | vm: pool rename, durable scope migration, host-wide local capacity | medium | accepted ADR |
+| A | vm: pool rename and state-format cutover; host-wide local capacity separately | medium | accepted ADR |
 | B | vm: explicit Docker connection and host-socket pipe transport | small | accepted ADR |
 | C | vm: vz Linux data disk and recoverable Upgrade | medium | accepted ADR |
 | D | vm: pinned Docker host image with fail-closed data mounts | medium | C |

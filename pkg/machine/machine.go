@@ -47,7 +47,7 @@ var ErrNotImplemented = errors.New("machine: not implemented yet")
 // ErrNotFound reports a VM the provider does not have.
 var ErrNotFound = errors.New("not found")
 
-// ErrExists reports a VM name the provider already has in the project,
+// ErrExists reports a VM name the provider already has in the pool,
 // committed or not.
 var ErrExists = errors.New("already exists")
 
@@ -92,7 +92,7 @@ type Capabilities struct {
 	// service, in three directions, all through the process that holds the
 	// machine: a caller dials the agent's port or the service's
 	// (Machine.Dial; guest.DialablePort), guest processes connect out to the
-	// host (Forwards to a Socket), and to another instance of the project's
+	// host (Forwards to a Socket), and to another instance of the pool's
 	// agent or service port (Forwards to an Instance). Every port is known
 	// at boot (ADR 26-11-03-247).
 	Ports bool `json:"ports"`
@@ -170,9 +170,9 @@ func (c Capabilities) Fences(e *Egress) bool {
 
 // Config is what a driver is made with.
 type Config struct {
-	// Project scopes every VM the driver lists and makes: it is in the name
-	// of each, or on its label. Empty is DefaultProject.
-	Project string
+	// Pool scopes every VM the driver lists and makes: it is in the name
+	// of each, or on its label. Empty is DefaultPool.
+	Pool string
 	// Base is what a fresh VM starts from (InstanceSpec.From nil), in the
 	// driver's own terms: docker's image reference, vz's Linux guest image
 	// (a reference or a directory), boxd's image, fake's name. Empty is the
@@ -233,26 +233,26 @@ func DefaultDir() string {
 	return filepath.Join(os.TempDir(), "disco-vm")
 }
 
-// DefaultProject is the project of everything made without one named.
-const DefaultProject = "default"
+// DefaultPool is the pool of everything made without one named.
+const DefaultPool = "default"
 
-// ValidateProject checks a project name: 1 to 32 lowercase letters, digits,
+// ValidatePool checks a pool name: 1 to 32 lowercase letters, digits,
 // and single hyphens, starting and ending with a letter or digit. That fits
 // in a DNS label beside the rest of a resource's name, as a boxd machine's
 // name must, and a driver can end it with "--" and split it back off.
-func ValidateProject(project string) error {
-	if !label(project, 32) || strings.Contains(project, "--") {
-		return fmt.Errorf("machine: project %q is not 1 to 32 lowercase letters, digits, and single hyphens, starting and ending with a letter or digit", project)
+func ValidatePool(pool string) error {
+	if !label(pool, 32) || strings.Contains(pool, "--") {
+		return fmt.Errorf("machine: pool %q is not 1 to 32 lowercase letters, digits, and single hyphens, starting and ending with a letter or digit", pool)
 	}
 	return nil
 }
 
 // ValidateName checks a VM's name: 1 to 63 lowercase letters, digits, and
 // single hyphens, starting and ending with a letter or digit. It is unique in
-// the project across every VM, committed or not, and in the name of what the
+// the pool across every VM, committed or not, and in the name of what the
 // driver makes for the VM (a boxd machine or snapshot, a container or a
 // Docker image), which must be a DNS label in a proxy's domain, so a driver
-// may refuse a name that is valid here but too long beside its project.
+// may refuse a name that is valid here but too long beside its pool.
 func ValidateName(name string) error {
 	if !label(name, 63) || strings.Contains(name, "--") {
 		return fmt.Errorf("machine: VM name %q is not 1 to 63 lowercase letters, digits, and single hyphens, starting and ending with a letter or digit", name)
@@ -275,42 +275,42 @@ func label(s string, n int) bool {
 }
 
 // ResourcePrefix is how a driver starts the name of everything it makes for
-// a project, after its own prefix (boxd's "dvm-"): the project and "--". The
-// default project's names before projects had no project in them, so
-// ResourceProject reads such a name as the default project's.
-// An empty project is the default.
-func ResourcePrefix(prefix, project string) string {
-	if project == "" {
-		project = DefaultProject
+// a pool, after its own prefix (boxd's "dvm-"): the pool and "--". The
+// default pool's names before pools had no pool in them, so
+// ResourcePool reads such a name as the default pool's.
+// An empty pool is the default.
+func ResourcePrefix(prefix, pool string) string {
+	if pool == "" {
+		pool = DefaultPool
 	}
-	return prefix + project + "--"
+	return prefix + pool + "--"
 }
 
-// ResourceProject is the project a name made with ResourcePrefix belongs to:
-// the default project for a name under prefix with no "--" in it, and "" for
+// ResourcePool is the pool a name made with ResourcePrefix belongs to:
+// the default pool for a name under prefix with no "--" in it, and "" for
 // a name that is not under prefix at all.
-func ResourceProject(prefix, name string) string {
+func ResourcePool(prefix, name string) string {
 	rest, ok := strings.CutPrefix(name, prefix)
 	if !ok {
 		return ""
 	}
-	project, _, ok := strings.Cut(rest, "--")
+	pool, _, ok := strings.Cut(rest, "--")
 	if !ok {
-		return DefaultProject
+		return DefaultPool
 	}
-	return project
+	return pool
 }
 
 // Forward sends the connections a guest process opens to the host on a port
 // (guest.DialHost: vsock to the host on vz, hvsocket on HCS) to a Unix socket
 // on the host, which something there serves, or to a guest port of another
-// instance of the project. It is how a guest reaches a host service, or a
+// instance of the pool. It is how a guest reaches a host service, or a
 // peer, without a TCP listener or a network device, as libkrun maps a vsock
 // port to a Unix socket. Exactly one of Socket and Instance is set.
 type Forward struct {
 	Port   uint32 `json:"port"`
 	Socket string `json:"socket,omitempty"`
-	// Instance names another instance of the project, whose guest port
+	// Instance names another instance of the pool, whose guest port
 	// InstancePort each connection is spliced into while both run. While
 	// the target is not running each connection is closed at once, so the
 	// guest connects and reads EOF. The target sees the connection come
@@ -325,7 +325,7 @@ func (f Forward) Peer() bool { return f.Instance != "" }
 
 // InstanceSpec is a new VM (ADR 26-11-03-606).
 type InstanceSpec struct {
-	// Name is unique in the project, across every VM, committed or not
+	// Name is unique in the pool, across every VM, committed or not
 	// (ValidateName).
 	Name string
 	// From is the committed VM the new one is a copy of, as the driver
@@ -472,7 +472,7 @@ type BootOptions struct {
 }
 
 // Driver is one hypervisor, and the provider that keeps everything disco-vm
-// knows: the VMs of the project it was made for (Config.Project), committed
+// knows: the VMs of the pool it was made for (Config.Pool), committed
 // or not (ADR 26-11-03-606). Every listing and lookup reads the provider;
 // nothing is cached between calls.
 type Driver interface {
@@ -484,14 +484,14 @@ type Driver interface {
 	Check(ctx context.Context) error
 
 	// Install makes the VM name from installation media, committed (the
-	// caller records it), and returns it as the provider keeps it. A name the project already has is
+	// caller records it), and returns it as the provider keeps it. A name the pool already has is
 	// ErrExists. A driver that does not list Capabilities.Install returns
 	// ErrUnsupported.
 	Install(ctx context.Context, spec InstallSpec, name string) (Instance, error)
 
 	// Create makes a stopped VM: a copy-on-write copy of the committed VM
 	// spec.From, or a fresh one from the driver's base, that boots from
-	// power-off with a machine identity of its own. A name the project
+	// power-off with a machine identity of its own. A name the pool
 	// already has, committed or not, is ErrExists; a From the provider no
 	// longer has is ErrNotFound, and a running one is refused; a From on a
 	// driver that does not report Capabilities.Commit, and a fresh VM on a
@@ -499,10 +499,10 @@ type Driver interface {
 	// volume is made empty, and its cache volume a clone of the key's
 	// current generation.
 	Create(ctx context.Context, spec InstanceSpec) (Instance, error)
-	// Instance is the project's VM of a name, committed or not, or
+	// Instance is the pool's VM of a name, committed or not, or
 	// ErrNotFound.
 	Instance(ctx context.Context, name string) (Instance, error)
-	// Instances lists the project's VMs, committed or not.
+	// Instances lists the pool's VMs, committed or not.
 	Instances(ctx context.Context) ([]Instance, error)
 	// Destroy removes a VM and everything made for it, its volumes
 	// included, stopping it first if it runs: nothing else removes a data
@@ -565,7 +565,7 @@ type Driver interface {
 	// that outlives a stop (boxd's) is the same across stop and start.
 	Service(ctx context.Context, inst Instance) (Service, error)
 
-	// Caches lists the project's cache keys, each with its current
+	// Caches lists the pool's cache keys, each with its current
 	// generation. A driver that does not list VolumeCache lists none.
 	Caches(ctx context.Context) ([]Cache, error)
 	// SaveCache snapshots stopped inst's cache volume as a new generation
@@ -581,19 +581,19 @@ type Driver interface {
 	DeleteCache(ctx context.Context, key string) error
 
 	// IssueKey makes the narrowest key the driver can for another host to
-	// run this project's machines with. An issued key expires, and cannot
+	// run this pool's machines with. An issued key expires, and cannot
 	// itself issue keys: a key that could would let its holder make one
 	// that outlives every revocation. A driver with no key to hand on
 	// returns ErrNoKey; one whose provider cannot make such a key returns
 	// ErrCannotIssue (Capabilities.Keys says which up front). It never
 	// returns the caller's own key: handing that on is the caller's choice.
 	IssueKey(ctx context.Context, req IssueRequest) (Key, error)
-	// IssuedKeys lists the keys the driver issued for this project under a
+	// IssuedKeys lists the keys the driver issued for this pool under a
 	// name, or under every name when name is empty, without their secrets.
 	IssuedKeys(ctx context.Context, name string) ([]Key, error)
-	// RevokeKey revokes a key the driver issued for this project (by its
+	// RevokeKey revokes a key the driver issued for this pool (by its
 	// ID), so it works no more. One already gone is not an error; one the
-	// driver did not issue for this project is refused. A driver with no
+	// driver did not issue for this pool is refused. A driver with no
 	// keys returns ErrNoKey.
 	RevokeKey(ctx context.Context, key Key) error
 }

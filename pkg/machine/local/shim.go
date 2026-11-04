@@ -94,7 +94,7 @@ func listenControl(ctx context.Context, dir string) (net.Listener, string, func(
 // its URL, and its forwards, and return when the machine stops. Canceling ctx
 // (a signal) shuts the guest down in order first.
 func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
-	rec, err := d.readProject(id)
+	rec, err := d.readPool(id)
 	if err != nil {
 		return err
 	}
@@ -446,7 +446,7 @@ func ShimMain(ctx context.Context, driver machine.Driver, args []string) error {
 }
 
 // shimCommand is how a shim is started: the configured command, or this
-// executable's `shim` subcommand for the same driver, project, and directory.
+// executable's `shim` subcommand for the same driver, pool, and directory.
 func (d *Driver) shimCommand() ([]string, error) {
 	if len(d.shim) > 0 {
 		return d.shim, nil
@@ -455,7 +455,7 @@ func (d *Driver) shimCommand() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{exe, "--root", d.dir, "--driver", d.hv.Name(), "--project", d.project, "shim"}, nil
+	return []string{exe, "--root", d.dir, "--driver", d.hv.Name(), "--pool", d.pool, "shim"}, nil
 }
 
 // spawnShim starts a shim with args, detached from this process, so the VM

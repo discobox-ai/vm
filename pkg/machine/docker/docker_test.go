@@ -134,20 +134,21 @@ func linuxAgent(t *testing.T) string {
 }
 
 // TestManagedLeavesTheOldOut lists a VM's container and a readying one of
-// the project's, and not a container from before ADR 26-11-03-606, an
+// the pool's, and not a container from before ADR 26-11-03-606, an
 // instance of an image, which labelImage names.
 func TestManagedLeavesTheOldOut(t *testing.T) {
-	d := New(machine.Config{Project: "p"})
+	d := New(machine.Config{Pool: "p"})
 	for _, c := range []struct {
 		labels map[string]string
 		want   bool
 	}{
-		{map[string]string{labelInstance: "dev", labelProject: "p", labelImage: ""}, true},
-		{map[string]string{labelInstance: "dev", labelProject: "p"}, true},
-		{map[string]string{labelInstance: "base-0a1b2c", labelProject: "p", labelImage: "debian:trixie"}, true},
-		{map[string]string{labelInstance: "dev", labelProject: "p", labelImage: "e2e/base"}, false},
-		{map[string]string{labelInstance: "base-app", labelProject: "p", labelImage: "e2e/base"}, false},
-		{map[string]string{labelInstance: "dev", labelProject: "q"}, false},
+		{map[string]string{labelInstance: "dev", labelPool: "p", labelImage: ""}, true},
+		{map[string]string{labelInstance: "dev", labelPool: "p"}, true},
+		{map[string]string{labelInstance: "base-0a1b2c", labelPool: "p", labelImage: "debian:trixie"}, true},
+		{map[string]string{labelInstance: "dev", labelPool: "p", labelImage: "e2e/base"}, false},
+		{map[string]string{labelInstance: "base-app", labelPool: "p", labelImage: "e2e/base"}, false},
+		{map[string]string{labelInstance: "dev", labelPool: "q"}, false},
+		{map[string]string{labelInstance: "dev", "ai.discobox.vm.project": "p"}, false},
 	} {
 		if got := d.managed(c.labels); got != c.want {
 			t.Errorf("managed(%v) = %v, want %v", c.labels, got, c.want)
@@ -167,7 +168,7 @@ func TestUpgradeInterrupted(t *testing.T) {
 	if image == "" {
 		t.Skipf("set %s (an image, such as debian:trixie) to run against docker", ImageEnv)
 	}
-	d := New(machine.Config{Base: image, Project: "upgradetest"})
+	d := New(machine.Config{Base: image, Pool: "upgradetest"})
 	d.Agent = linuxAgent(t)
 	ctx := t.Context()
 	cleanup := func(inst machine.Instance) { t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) }) }
@@ -297,7 +298,7 @@ func TestUpgradeInterrupted(t *testing.T) {
 	if got, err := d.Instance(ctx, "vm"); !errors.Is(err, machine.ErrNotFound) {
 		t.Fatalf("a destroyed VM caught between its containers is %+v, %v", got, err)
 	}
-	for _, ref := range []string{containerName(d.project, "vm"), upgradeName(d.project, "vm")} {
+	for _, ref := range []string{containerName(d.pool, "vm"), upgradeName(d.pool, "vm")} {
 		if _, err := d.api.inspectContainer(ctx, ref); !isNotFound(err) {
 			t.Fatalf("container %s outlives its VM: %v", ref, err)
 		}
@@ -308,7 +309,7 @@ func TestUpgradeInterrupted(t *testing.T) {
 	}
 	for _, img := range images {
 		for _, tag := range img.RepoTags {
-			if strings.HasPrefix(tag, baseRepo+":"+baseTag(d.project, "vm")) {
+			if strings.HasPrefix(tag, baseRepo+":"+baseTag(d.pool, "vm")) {
 				t.Errorf("image %s outlives its VM", tag)
 			}
 		}

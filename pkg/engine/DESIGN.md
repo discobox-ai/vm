@@ -83,7 +83,7 @@ port through a `Forward` to that instance instead
 
 ## There are only VMs, and a VM is made fresh or from a committed VM
 
-disco-vm has one kind of thing, a VM, named in its project, unique across
+disco-vm has one kind of thing, a VM, named in its pool, unique across
 every VM, committed or not ([ADR
 26-11-03-606](../../docs/adr/26-11-03-606-disco-vm-has-only-vms-and-a-vm-is-made-fresh-or-from-a-committed-vm.md)).
 There are no images, image IDs, tags, or bases a caller names. A VM is made
@@ -122,8 +122,8 @@ boots no VM another VM's disk differences over: `machine.ErrInUse`).
 What a driver keeps for a committed VM:
 
 - hcs, vz, fake: its record and disk, left where they are
-- boxd: a snapshot `dvm-<project>--<name>`, and the machine deleted
-- docker: a Docker image `disco-vm-vm:<project>--<name>`, and the container
+- boxd: a snapshot `dvm-<pool>--<name>`, and the machine deleted
+- docker: a Docker image `disco-vm-vm:<pool>--<name>`, and the container
   removed
 
 `rm` removes a committed VM like any. On docker, boxd, vz, and fake a VM
@@ -133,29 +133,39 @@ a VM created from it exists. Installation media a driver downloads itself
 (`--media latest`) is not a VM; a local driver keeps it in `cache/<driver>/`
 under its directory, so it is fetched once per host.
 
-## A project scopes everything, and is in every name
+## A pool scopes everything, and is in every name
 
-`--project` (`$DISCO_VM_PROJECT`, `machine.Config.Project`; `default` when not
-given; ADR 0004) names the project a command works in. A project is 1 to 32
+`--pool` (`$DISCO_VM_POOL`, `machine.Config.Pool`; `default` when not
+given; ADR 26-11-04-412) names the pool a command works in. A pool is 1 to 32
 lowercase letters, digits, and single hyphens. A driver is made for one
-project, and lists and makes only its VMs: a project's `ls` and names are its own.
+pool, and lists and makes only its VMs: a pool's `ls` and names are its own.
 
-The driver puts the project in the name of everything it makes
+The driver puts the pool in the name of everything it makes
 (`machine.ResourcePrefix`): boxd's machines and snapshots and docker's
-containers are `dvm-<project>--...`, docker's committed images
-`disco-vm-vm:<project>--...` and readied bases `disco-vm-base:<project>--...`;
+containers are `dvm-<pool>--...`, docker's committed images
+`disco-vm-vm:<pool>--...` and readied bases `disco-vm-base:<pool>--...`;
 a local driver records it in each `instance.json`. `--` cannot occur
-in a project, so a name belongs to exactly one project.
+in a pool, so a name belongs to exactly one pool.
 
 There are no orphans in disco-vm (ADR 26-10-23-417): everything under a
-project's names is that project's, and is listed. A program that embeds the
+pool's names is that pool's, and is listed. A program that embeds the
 engine and owns a set of its own (discobox's control plane) reaps against it,
-as its pool agent reaps Docker: list the project's VMs,
+as its pool agent reaps Docker: list the pool's VMs,
 remove what it does not hold, treat a failed listing as no answer, and spare
 what is younger than a grace period. A driver's own short-lived resources are listed as
 VMs while they run (docker's `base-<random>` readying container), and a
 readying takes minutes, so the grace period
 is longer than that.
+
+The project-to-pool cutover (ADR 26-11-04-412) removes `--project` and
+`DISCO_VM_PROJECT`, along with the old Go names. No state migration is
+provided: development resources from before the cutover must be removed
+with the old binary. Provider names keep their `dvm-<pool>--<name>` shape;
+local records/keys use `pool`, Docker labels use `ai.discobox.vm.pool`, and
+Docker volume/cache directories use `pools`. Scope values and driver
+lifecycle behavior otherwise stay the same. Host-wide local capacity
+enforcement is a separate follow-up.
+
 
 ## An instance's volumes, and a cache saved only on request
 

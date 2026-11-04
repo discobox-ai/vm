@@ -24,7 +24,7 @@ func TestAnAPIKeyCannotIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyed := fakeKeyed(t, fake, machine.DefaultProject, machine.StaticKey(key))
+	keyed := fakeKeyed(t, fake, machine.DefaultPool, machine.StaticKey(key))
 	if _, err := keyed.IssueKey(ctx, machine.IssueRequest{Name: "again", TTL: time.Hour}); !errors.Is(err, machine.ErrCannotIssue) {
 		t.Fatalf("an issued key issuing: %v, want ErrCannotIssue", err)
 	}
@@ -39,10 +39,10 @@ func TestAnAPIKeyCannotIssue(t *testing.T) {
 	}
 }
 
-// TestIssuedKeysAreTheProjects: a key is named for its project, listed and
-// revoked only by its project's driver, and a key disco-vm did not issue is
+// TestIssuedKeysAreThePools: a key is named for its pool, listed and
+// revoked only by its pool's driver, and a key disco-vm did not issue is
 // never revoked.
-func TestIssuedKeysAreTheProjects(t *testing.T) {
+func TestIssuedKeysAreThePools(t *testing.T) {
 	d, fake := fakeDriver(t, t.TempDir())
 	ctx := t.Context()
 	key, err := d.IssueKey(ctx, machine.IssueRequest{Name: "pool", TTL: time.Hour})
@@ -58,16 +58,16 @@ func TestIssuedKeysAreTheProjects(t *testing.T) {
 	}
 	other := fakeKeyed(t, fake, "other", machine.StaticKey(machine.Key{Secret: fakeSession}))
 	if keys, err := other.IssuedKeys(ctx, ""); err != nil || len(keys) != 0 {
-		t.Fatalf("another project's keys: %v, %v", keys, err)
+		t.Fatalf("another pool's keys: %v, %v", keys, err)
 	}
 	if err := other.RevokeKey(ctx, key); err == nil {
-		t.Fatal("another project revoked the key")
+		t.Fatal("another pool revoked the key")
 	}
 	if err := d.RevokeKey(ctx, machine.Key{ID: "key_mine"}); err == nil {
 		t.Fatal("a key disco-vm did not issue was revoked")
 	}
 	if keys, err := d.IssuedKeys(ctx, "pool"); err != nil || len(keys) != 1 || keys[0].ID != key.ID || keys[0].Expires.IsZero() {
-		t.Fatalf("the project's keys named pool: %v, %v", keys, err)
+		t.Fatalf("the pool's keys named pool: %v, %v", keys, err)
 	}
 	if err := d.RevokeKey(ctx, key); err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestTheKeyIsAskedOnEveryCall(t *testing.T) {
 	}
 	var current atomic.Pointer[machine.Key]
 	current.Store(&first)
-	keyed := fakeKeyed(t, fake, machine.DefaultProject, func(context.Context) (machine.Key, error) { return *current.Load(), nil })
+	keyed := fakeKeyed(t, fake, machine.DefaultPool, func(context.Context) (machine.Key, error) { return *current.Load(), nil })
 	if _, err := keyed.Instances(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestTheKeyIsAskedOnEveryCall(t *testing.T) {
 	if _, err := keyed.Instances(ctx); err != nil {
 		t.Fatalf("after the key was replaced: %v", err)
 	}
-	none := fakeKeyed(t, fake, machine.DefaultProject, nil)
+	none := fakeKeyed(t, fake, machine.DefaultPool, nil)
 	if _, err := none.Instances(ctx); !errors.Is(err, errNoCredentials) {
 		t.Fatalf("a driver with no key: %v, want errNoCredentials", err)
 	}

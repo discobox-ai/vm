@@ -19,7 +19,7 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// FromEnv names a committed VM of the default project for the real-boxd
+// FromEnv names a committed VM of the default pool for the real-boxd
 // test to start from. Unset, it starts from a fresh VM of boxd's default
 // image.
 const FromEnv = "DISCO_VM_BOXD_FROM"
@@ -74,7 +74,7 @@ func TestConformanceFakeAPI(t *testing.T) {
 		Timeout:    30 * time.Second,
 		ScratchDir: "/scratch",
 		Keyed: func(keys machine.KeySource) machine.Driver {
-			return fakeKeyed(t, fake, machine.DefaultProject, keys)
+			return fakeKeyed(t, fake, machine.DefaultPool, keys)
 		},
 	})
 }
@@ -171,8 +171,8 @@ func TestCommittedVMsAreSnapshots(t *testing.T) {
 		t.Fatalf("the service of a committed VM: %v, want ErrCommitted", err)
 	}
 
-	// What is not a VM's name in the project is not listed: an image's
-	// snapshot and a tag's from before, another project's, and one the
+	// What is not a VM's name in the pool is not listed: an image's
+	// snapshot and a tag's from before, another pool's, and one the
 	// account made by hand.
 	fake.mu.Lock()
 	for _, name := range []string{
@@ -426,11 +426,11 @@ func fakeDriver(t *testing.T, dir string) (*Driver, *fakeAPI) {
 	tokens := fake.tokenServer()
 	t.Cleanup(tokens.Close)
 	fake.addr, fake.tokenURL = listener.Addr().String(), tokens.URL
-	return fakeKeyed(t, fake, machine.DefaultProject, machine.StaticKey(machine.Key{Driver: "boxd", Secret: fakeSession})), fake
+	return fakeKeyed(t, fake, machine.DefaultPool, machine.StaticKey(machine.Key{Driver: "boxd", Secret: fakeSession})), fake
 }
 
-// fakeKeyed is a driver of the fake API for a project, with a key.
-func fakeKeyed(t *testing.T, fake *fakeAPI, project string, keys machine.KeySource) *Driver {
+// fakeKeyed is a driver of the fake API for a pool, with a key.
+func fakeKeyed(t *testing.T, fake *fakeAPI, pool string, keys machine.KeySource) *Driver {
 	t.Helper()
 	c := &client{tokenURL: fake.tokenURL, keys: keys}
 	opts := append(debugOptions(), c.authOptions()...)
@@ -440,5 +440,5 @@ func fakeKeyed(t *testing.T, fake *fakeAPI, project string, keys machine.KeySour
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	c.once.Do(func() { c.api = boxdapi.NewBoxdApiClient(conn) })
-	return &Driver{api: c, project: project}
+	return &Driver{api: c, pool: pool}
 }

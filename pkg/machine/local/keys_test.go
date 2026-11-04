@@ -61,13 +61,13 @@ func TestEveryCallChecksTheKey(t *testing.T) {
 	}
 }
 
-// A key issued for one project reaches no other's instance by its ID, and
+// A key issued for one pool reaches no other's instance by its ID, and
 // an expired key's name is free again.
-func TestAKeyIsItsProjects(t *testing.T) {
+func TestAKeyIsItsPools(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
 	hv := &fake.Hypervisor{BaseName: "b"}
-	other, err := local.New(machine.Config{Dir: root, Project: "other"}, hv)
+	other, err := local.New(machine.Config{Dir: root, Pool: "other"}, hv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,10 +88,10 @@ func TestAKeyIsItsProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := keyed.Destroy(ctx, theirs); !errors.Is(err, machine.ErrNotFound) {
-		t.Fatalf("destroying another project's instance by its ID: %v, want ErrNotFound", err)
+		t.Fatalf("destroying another pool's instance by its ID: %v, want ErrNotFound", err)
 	}
 	if _, err := keyed.Service(ctx, theirs); !errors.Is(err, machine.ErrNotFound) {
-		t.Fatalf("another project's instance's service: %v, want ErrNotFound", err)
+		t.Fatalf("another pool's instance's service: %v, want ErrNotFound", err)
 	}
 	if _, err := other.Instance(ctx, "theirs"); err != nil {
 		t.Fatalf("their instance: %v", err)
@@ -101,7 +101,7 @@ func TestAKeyIsItsProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := keyed.Create(ctx, machine.InstanceSpec{Name: "stolen", From: &installed}); !errors.Is(err, machine.ErrNotFound) {
-		t.Fatalf("a VM created from another project's committed VM: %v, want ErrNotFound", err)
+		t.Fatalf("a VM created from another pool's committed VM: %v, want ErrNotFound", err)
 	}
 
 	// An unreadable record authorizes nothing and breaks nothing.

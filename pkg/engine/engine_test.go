@@ -13,10 +13,10 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
-// fakeDriver is the fake driver for a project, keeping its state in root.
-func fakeDriver(t *testing.T, root, project string) machine.Driver {
+// fakeDriver is the fake driver for a pool, keeping its state in root.
+func fakeDriver(t *testing.T, root, pool string) machine.Driver {
 	t.Helper()
-	d, err := local.New(machine.Config{Dir: root, Project: project}, &fake.Hypervisor{})
+	d, err := local.New(machine.Config{Dir: root, Pool: pool}, &fake.Hypervisor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,10 +65,10 @@ func TestInstallCommitAndCreateFrom(t *testing.T) {
 	}
 }
 
-func TestOpenRefusesABadProject(t *testing.T) {
-	for _, project := range []string{"Foo", "a--b", "-a", "a-", "a_b", strings.Repeat("a", 33)} {
-		if _, err := engine.Open(fakeDriver(t, t.TempDir(), ""), project); err == nil {
-			t.Errorf("project %q was accepted", project)
+func TestOpenRefusesABadPool(t *testing.T) {
+	for _, pool := range []string{"Foo", "a--b", "-a", "a-", "a_b", strings.Repeat("a", 33)} {
+		if _, err := engine.Open(fakeDriver(t, t.TempDir(), ""), pool); err == nil {
+			t.Errorf("pool %q was accepted", pool)
 		}
 	}
 }

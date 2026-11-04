@@ -22,14 +22,14 @@ import (
 // 2026-10-24), which is what keeps an issued key from issuing another.
 var keyCapabilities = machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopeOrg}
 
-// keyName is an issued key's name on boxd, dvm-<project>--<name>, so the
-// keys of a project are found by name, as its machines are.
+// keyName is an issued key's name on boxd, dvm-<pool>--<name>, so the
+// keys of a pool are found by name, as its machines are.
 func (d *Driver) keyName(name string) string { return d.prefix() + name }
 
 // IssueKey creates a member API key, fenced to the org the engine's key is
 // fenced to (boxd resolves an empty org to it), that expires after the TTL.
 // A member key acts as the caller within that one org: it reaches every
-// machine of the caller's there, not only this project's, which is the
+// machine of the caller's there, not only this pool's, which is the
 // narrowest boxd makes. An org-kind key reaches only the org's shared fleet,
 // which disco-vm's private machines are not in, and needs an org admin.
 // Called with an API key, which boxd refuses, it is ErrCannotIssue.
@@ -86,8 +86,8 @@ func (d *Driver) IssueKey(ctx context.Context, req machine.IssueRequest) (machin
 	}, nil
 }
 
-// IssuedKeys lists the caller's keys named for the project and name, or for
-// the project under any name.
+// IssuedKeys lists the caller's keys named for the pool and name, or for
+// the pool under any name.
 func (d *Driver) IssuedKeys(ctx context.Context, name string) ([]machine.Key, error) {
 	listed, err := d.listKeys(ctx)
 	if err != nil {
@@ -107,7 +107,7 @@ func (d *Driver) IssuedKeys(ctx context.Context, name string) ([]machine.Key, er
 }
 
 // issuedName is the name a key was issued as, if it is a member key of the
-// caller's named for the project. The listing also holds the org-kind keys
+// caller's named for the pool. The listing also holds the org-kind keys
 // of an org the caller administers, whoever made them, which IssueKey never
 // makes.
 func (d *Driver) issuedName(info *boxdapi.ApiKeyInfo) (string, bool) {
@@ -131,7 +131,7 @@ func (d *Driver) listKeys(ctx context.Context) ([]*boxdapi.ApiKeyInfo, error) {
 }
 
 // RevokeKey deletes an issued key, once the listing shows it is one this
-// driver issued for the project: DeleteApiKey would take any key of the
+// driver issued for the pool: DeleteApiKey would take any key of the
 // caller's.
 func (d *Driver) RevokeKey(ctx context.Context, key machine.Key) error {
 	if key.ID == "" {
@@ -151,7 +151,7 @@ func (d *Driver) RevokeKey(ctx context.Context, key machine.Key) error {
 		return nil
 	}
 	if _, ok := d.issuedName(found); !ok {
-		return fmt.Errorf("boxd: API key %s (%s) is not one disco-vm issued for project %s", key.ID, found.GetName(), d.project)
+		return fmt.Errorf("boxd: API key %s (%s) is not one disco-vm issued for pool %s", key.ID, found.GetName(), d.pool)
 	}
 	api, err := d.api.API()
 	if err != nil {

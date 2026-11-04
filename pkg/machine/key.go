@@ -34,8 +34,8 @@ const (
 	// ScopeOrg reaches the account's machines in one organization of the
 	// provider's (a boxd key fenced to an org).
 	ScopeOrg Scope = "org"
-	// ScopeProject reaches one project's images, tags, and instances.
-	ScopeProject Scope = "project"
+	// ScopePool reaches one pool's images, tags, and instances.
+	ScopePool Scope = "pool"
 )
 
 // KeyMode is whether a driver issues keys.
@@ -119,7 +119,7 @@ func StaticKey(key Key) KeySource {
 	return func(context.Context) (Key, error) { return key, nil }
 }
 
-// IssueRequest is a key a driver issues for another host to run its project's
+// IssueRequest is a key a driver issues for another host to run its pool's
 // machines with.
 type IssueRequest struct {
 	// Name is what the key is issued as, unique to the caller: IssuedKeys

@@ -9,17 +9,17 @@ the provider mounts in them. A sandbox has no labels and its name never
 changes, which is all a VM needs. The driver has nothing of disco-vm's in
 the guest and nothing on the host:
 
-- **A VM is the sandbox `dvm-<project>--<name>`** (`names.go`). Archil
+- **A VM is the sandbox `dvm-<pool>--<name>`** (`names.go`). Archil
   refuses a sandbox name it has, so a Create takes the name before it makes
   anything else, and the refusal is `machine.ErrExists`. A listing reads the
-  sandboxes under the project's prefix, and Archil holds each one's fence and
+  sandboxes under the pool's prefix, and Archil holds each one's fence and
   data disk. A sandbox whose name is no VM's, such as an earlier driver's
-  `dvm-<project>-<key>`, is not listed.
-- **The data volume is the disk `dvm-<project>--<name>--data`**, made once
+  `dvm-<pool>-<key>`, is not listed.
+- **The data volume is the disk `dvm-<pool>--<name>--data`**, made once
   the name is taken and mounted at each start. Archil answers a disk of a
   name it has rather than making one, so a data disk with no sandbox is a
   VM: listed, and Create of its name is `ErrExists`. A sandbox's name is at
-  most 63 characters, so a project and a name are at most 57 together.
+  most 63 characters, so a pool and a name are at most 57 together.
 - **Upgrade** (ADR 26-11-03-782) deletes the stopped VM's sandbox and makes
   it again under its name, fresh or a fork, at its size and fence, after
   checking all that could refuse it. One stopped in between is its data disk

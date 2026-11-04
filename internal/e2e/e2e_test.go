@@ -178,21 +178,21 @@ type env struct {
 	stdin string
 }
 
-// projectEnv names the project every command runs in, "e2e" by default. A
+// poolEnv names the pool every command runs in, "e2e" by default. A
 // driver whose provider is a service (docker) keeps everything there, not
-// in the root, and the suite removes all of a project's VMs,
-// so it never runs in the project of someone's own.
-const projectEnv = "DISCO_VM_E2E_PROJECT"
+// in the root, and the suite removes all of a pool's VMs,
+// so it never runs in the pool of someone's own.
+const poolEnv = "DISCO_VM_E2E_POOL"
 
 func (e env) run(args ...string) (string, int) {
 	e.t.Helper()
 	// Not t.Context(): cleanups call run too, after that is canceled.
 	cmd := exec.CommandContext(context.Background(), binary, args...)
-	project := os.Getenv(projectEnv)
-	if project == "" {
-		project = "e2e"
+	pool := os.Getenv(poolEnv)
+	if pool == "" {
+		pool = "e2e"
 	}
-	cmd.Env = append(os.Environ(), "DISCO_VM_ROOT="+e.root, "DISCO_VM_DRIVER="+tg.driver, "DISCO_VM_PROJECT="+project)
+	cmd.Env = append(os.Environ(), "DISCO_VM_ROOT="+e.root, "DISCO_VM_DRIVER="+tg.driver, "DISCO_VM_POOL="+pool)
 	if tg.base != "" {
 		cmd.Env = append(cmd.Env, "DISCO_VM_BASE="+tg.base)
 	}
@@ -480,7 +480,7 @@ func TestInfo(t *testing.T) {
 	}
 }
 
-// A key the driver issues runs the project's machines from the command line,
+// A key the driver issues runs the pool's machines from the command line,
 // cannot issue another, and is refused once it is revoked. The fake driver is
 // the one that issues keys and reads them from the environment.
 func TestKeys(t *testing.T) {
@@ -499,11 +499,11 @@ func TestKeys(t *testing.T) {
 	if err := json.Unmarshal([]byte(e.ok("key", "issue", "--name", "pool", "--ttl", "1h")), &key); err != nil {
 		t.Fatal(err)
 	}
-	if !key.Issued || key.Secret == "" || key.Name != "pool" || key.Scope != "project" || time.Until(key.Expires) > time.Hour {
+	if !key.Issued || key.Secret == "" || key.Name != "pool" || key.Scope != "pool" || time.Until(key.Expires) > time.Hour {
 		t.Fatalf("issued %+v", key)
 	}
 	listed := e.ok("key", "ls", "pool")
-	mustContain(t, listed, key.ID, "pool", "project")
+	mustContain(t, listed, key.ID, "pool", "pool")
 	if strings.Contains(listed, key.Secret) {
 		t.Fatal("key ls shows the secret")
 	}
@@ -963,4 +963,28 @@ func TestNoCommit(t *testing.T) {
 	}
 	e.ok("start", "vm")
 	e.ok("rm", "-f", "vm")
+}
+
+// TestPoolScope exercises the breaking CLI scope rename, including flag
+// precedence over the environment and the removal of the old flag.
+func TestPoolScope(t *testing.T) {
+	if tg.driver != "fake" {
+		t.Skip("uses a scratch local store with the fake driver")
+	}
+	e := env{t: t, root: t.TempDir(), extra: []string{"DISCO_VM_POOL=env-pool"}}
+	e.ok("create", "env-vm")
+	e.ok("--pool", "flag-pool", "create", "flag-vm")
+	mustContain(t, e.ok("ls", "-a"), "env-vm")
+	if out := e.ok("ls", "-a"); strings.Contains(out, "flag-vm") {
+		t.Fatalf("environment pool saw flag pool VM: %s", out)
+	}
+	mustContain(t, e.ok("--pool", "flag-pool", "ls", "-a"), "flag-vm")
+	if out, code := e.run("--project", "old", "ls"); code == 0 || !strings.Contains(out, "unknown flag: --project") {
+		t.Fatalf("old flag: exit %d, %s", code, out)
+	}
+	if out, code := e.run("--pool", "bad--pool", "ls"); code == 0 || !strings.Contains(out, "pool") {
+		t.Fatalf("invalid pool: exit %d, %s", code, out)
+	}
+	e.ok("rm", "env-vm")
+	e.ok("--pool", "flag-pool", "rm", "flag-vm")
 }

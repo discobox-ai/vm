@@ -20,7 +20,7 @@ func (n noVolumes) Capabilities() machine.Capabilities {
 
 // A save to the key an instance started from is guarded by the generation it
 // was cloned from, unless forced; a save to another key is not; and another
-// project sees none of the caches. (internal/e2e refuses a running one.)
+// pool sees none of the caches. (internal/e2e refuses a running one.)
 func TestSaveCacheGuards(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -68,14 +68,14 @@ func TestSaveCacheGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	if caches, err := other.Caches(ctx); err != nil || len(caches) != 0 {
-		t.Fatalf("another project lists caches %+v: %v", caches, err)
+		t.Fatalf("another pool lists caches %+v: %v", caches, err)
 	}
 	if _, err := other.Install(ctx, "base", engine.InstallOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	inst, err := other.Create(ctx, engine.CreateOptions{From: "base", Name: "a", Cache: &machine.CacheVolume{Key: "k"}})
 	if err != nil || inst.Cache == nil || inst.Cache.Generation != "" {
-		t.Fatalf("another project's instance of k = %+v, %v; want no generation", inst.Cache, err)
+		t.Fatalf("another pool's instance of k = %+v, %v; want no generation", inst.Cache, err)
 	}
 	if _, err := e.Create(ctx, engine.CreateOptions{From: "base", Name: "bad", Cache: &machine.CacheVolume{Key: "Bad_Key"}}); err == nil {
 		t.Fatal("a cache key that is not one was taken")

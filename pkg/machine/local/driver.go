@@ -20,17 +20,17 @@ import (
 
 // Driver keeps a Hypervisor's VMs, committed or not, in a directory.
 type Driver struct {
-	hv      Hypervisor
-	dir     string
-	project string
-	shim    []string
-	keys    machine.KeySource
+	hv   Hypervisor
+	dir  string
+	pool string
+	shim []string
+	keys machine.KeySource
 }
 
 var _ machine.Driver = (*Driver)(nil)
 
 // New is a driver for hv, keeping its state in cfg.Dir (machine.DefaultDir
-// when empty), for cfg's project.
+// when empty), for cfg's pool.
 func New(cfg machine.Config, hv Hypervisor) (*Driver, error) {
 	dir := cfg.Dir
 	if dir == "" {
@@ -40,11 +40,11 @@ func New(cfg machine.Config, hv Hypervisor) (*Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	project := cfg.Project
-	if project == "" {
-		project = machine.DefaultProject
+	pool := cfg.Pool
+	if pool == "" {
+		pool = machine.DefaultPool
 	}
-	return &Driver{hv: hv, dir: dir, project: project, shim: cfg.ShimCommand, keys: cfg.Keys}, nil
+	return &Driver{hv: hv, dir: dir, pool: pool, shim: cfg.ShimCommand, keys: cfg.Keys}, nil
 }
 
 // Hypervisor is the hypervisor the driver keeps state for.
@@ -85,7 +85,7 @@ const (
 func (d *Driver) instancesDir() string         { return filepath.Join(d.dir, "instances") }
 func (d *Driver) instanceDir(id string) string { return filepath.Join(d.instancesDir(), id) }
 func (d *Driver) machineDir(id string) string  { return filepath.Join(d.instanceDir(id), machineDir) }
-func (d *Driver) namesDir() string             { return filepath.Join(d.instancesDir(), ".names", d.project) }
+func (d *Driver) namesDir() string             { return filepath.Join(d.instancesDir(), ".names", d.pool) }
 func (d *Driver) fromFile(id string) string    { return filepath.Join(d.instanceDir(id), fromName) }
 func (d *Driver) recordFile(id string) string  { return filepath.Join(d.instanceDir(id), instanceFile) }
 func (d *Driver) writeRecord(rec instanceRecord) error {
@@ -95,7 +95,7 @@ func (d *Driver) writeRecord(rec instanceRecord) error {
 // instanceRecord is a VM's instance.json.
 type instanceRecord struct {
 	machine.Instance
-	Project string `json:"project"`
+	Pool string `json:"pool"`
 	// FromID is the ID of the committed VM this one was created from, by
 	// which a chain is walked: the driver's own, since a name is reused
 	// once its VM is removed.
@@ -124,7 +124,7 @@ func validID(id string) bool {
 	return id != "" && !strings.ContainsAny(id, `/\.:`) && filepath.Base(id) == id
 }
 
-// readRecord reads a VM's record by its ID, of any project.
+// readRecord reads a VM's record by its ID, of any pool.
 func (d *Driver) readRecord(id string) (instanceRecord, error) {
 	var rec instanceRecord
 	if !validID(id) {
@@ -143,32 +143,32 @@ func (d *Driver) readRecord(id string) (instanceRecord, error) {
 	if old.old() {
 		return instanceRecord{}, fmt.Errorf("instance %s is from before ADR 26-11-03-606, and not read: %w", id, machine.ErrNotFound)
 	}
-	if rec.ID != id {
+	if rec.ID != id || machine.ValidatePool(rec.Pool) != nil {
 		return instanceRecord{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
 	}
 	return rec, nil
 }
 
-// readProject reads a VM of the driver's project by its ID.
-func (d *Driver) readProject(id string) (instanceRecord, error) {
+// readPool reads a VM of the driver's pool by its ID.
+func (d *Driver) readPool(id string) (instanceRecord, error) {
 	rec, err := d.readRecord(id)
-	if err == nil && rec.Project != d.project {
+	if err == nil && rec.Pool != d.pool {
 		err = fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
 	}
 	return rec, err
 }
 
-// readInstance reads a VM of the driver's project by its ID.
+// readInstance reads a VM of the driver's pool by its ID.
 func (d *Driver) readInstance(id string) (machine.Instance, error) {
-	rec, err := d.readProject(id)
+	rec, err := d.readPool(id)
 	return rec.Instance, err
 }
 
-// runnable reads a VM that can boot: the project's, and, for a hypervisor
+// runnable reads a VM that can boot: the pool's, and, for a hypervisor
 // that Chains, one whose disk no other VM's differences over, since a boot
 // writes to it. Whether a VM was committed is the caller's to know.
 func (d *Driver) runnable(inst machine.Instance) (instanceRecord, error) {
-	rec, err := d.readProject(inst.ID)
+	rec, err := d.readPool(inst.ID)
 	if err == nil {
 		err = rec.whole()
 	}
@@ -224,7 +224,7 @@ func (d *Driver) spec(rec instanceRecord) (InstanceSpec, error) {
 // the moment it takes to clone a disk.
 const staleClaim = 10 * time.Minute
 
-// claim takes a name in the project for id, or fails with ErrExists.
+// claim takes a name in the pool for id, or fails with ErrExists.
 func (d *Driver) claim(name, id string) error {
 	if err := os.MkdirAll(d.namesDir(), 0o755); err != nil {
 		return err
@@ -286,7 +286,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, err
 	}
 	rec := instanceRecord{
-		Project: d.project, ID: fsutil.RandomHex(6), Name: spec.Name, CPUs: spec.CPUs, Memory: spec.Memory,
+		Pool: d.pool, ID: fsutil.RandomHex(6), Name: spec.Name, CPUs: spec.CPUs, Memory: spec.Memory,
 		Created: time.Now().UTC(), Forwards: spec.Forwards, Egress: spec.Egress,
 	}
 	if spec.From == nil {
@@ -296,7 +296,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		}
 		rec.GuestOS = guestOS
 	} else {
-		from, err := d.readProject(spec.From.ID)
+		from, err := d.readPool(spec.From.ID)
 		if err == nil && from.Name != spec.From.Name {
 			err = fmt.Errorf("instance %s: %w", spec.From.Name, machine.ErrNotFound)
 		}
@@ -362,7 +362,7 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, name str
 		return machine.Instance{}, err
 	}
 	rec := instanceRecord{
-		Project: d.project, ID: fsutil.RandomHex(6), Name: name, GuestOS: spec.GuestOS,
+		Pool: d.pool, ID: fsutil.RandomHex(6), Name: name, GuestOS: spec.GuestOS,
 		CPUs: spec.CPUs, Memory: spec.Memory,
 	}
 	if err := d.claim(rec.Name, rec.ID); err != nil {
@@ -543,7 +543,7 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 }
 
 // inUse refuses a VM whose disk another VM's differences over, in any
-// project, since every project's disks share the directory. A record that
+// pool, since every pool's disks share the directory. A record that
 // cannot be read is no answer, and refuses.
 func (d *Driver) inUse(committed instanceRecord) error {
 	entries, err := os.ReadDir(d.instancesDir())
@@ -631,7 +631,7 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 	if !d.hv.Capabilities().Commit {
 		return machine.Instance{}, fmt.Errorf("%s cannot commit a VM: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
-	rec, err := d.readProject(inst.ID)
+	rec, err := d.readPool(inst.ID)
 	if err == nil {
 		err = rec.whole()
 	}

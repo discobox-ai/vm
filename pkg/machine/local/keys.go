@@ -27,7 +27,7 @@ const keyPrefix = "dvmk_"
 type keyRecord struct {
 	ID      string    `json:"id"`
 	Name    string    `json:"name"`
-	Project string    `json:"project"`
+	Pool    string    `json:"pool"`
 	Hash    string    `json:"hash"`
 	Created time.Time `json:"created"`
 	Expires time.Time `json:"expires"`
@@ -42,7 +42,7 @@ func (d *Driver) issues() bool { return d.hv.Capabilities().Keys.Mode == machine
 
 // authorize checks the driver's key before a call. With no key source the
 // caller is the directory's owner. With one, on a hypervisor that issues
-// keys, the key must be one the driver issued for this project that has not
+// keys, the key must be one the driver issued for this pool that has not
 // expired or been revoked.
 func (d *Driver) authorize(ctx context.Context) error {
 	_, err := d.caller(ctx)
@@ -50,7 +50,7 @@ func (d *Driver) authorize(ctx context.Context) error {
 }
 
 // authorizeInstance is authorize, and refuses an instance whose record is
-// another project's: the methods that take an instance reach it by its ID.
+// another pool's: the methods that take an instance reach it by its ID.
 func (d *Driver) authorizeInstance(ctx context.Context, inst machine.Instance) error {
 	issued, err := d.caller(ctx)
 	if err != nil {
@@ -63,14 +63,14 @@ func (d *Driver) authorizeInstance(ctx context.Context, inst machine.Instance) e
 	err = fsutil.ReadJSON(filepath.Join(d.instanceDir(inst.ID), instanceFile), &rec)
 	switch {
 	case errors.Is(err, fs.ErrNotExist) && issued != nil:
-		// An instance with no record yet may be any project's, half made.
+		// An instance with no record yet may be any pool's, half made.
 		return fmt.Errorf("instance %s: %w", inst.ID, machine.ErrNotFound)
 	case errors.Is(err, fs.ErrNotExist):
 		// The owner removes what a crash left, or what is gone already.
 		return nil
 	case err != nil:
 		return err
-	case rec.Project != d.project:
+	case rec.Pool != d.pool:
 		return fmt.Errorf("instance %s: %w", inst.ID, machine.ErrNotFound)
 	}
 	return nil
@@ -89,7 +89,7 @@ func (d *Driver) caller(ctx context.Context) (*keyRecord, error) {
 	var rec keyRecord
 	err = fsutil.ReadJSON(filepath.Join(d.keysDir(), hash+".json"), &rec)
 	if err == nil && subtle.ConstantTimeCompare([]byte(rec.Hash), []byte(hash)) == 1 &&
-		rec.Project == d.project && time.Now().Before(rec.Expires) {
+		rec.Pool == d.pool && time.Now().Before(rec.Expires) {
 		return &rec, nil
 	}
 	return nil, fmt.Errorf("%s: %s: %w", d.hv.Name(), key, machine.ErrUnauthorized)
@@ -100,9 +100,9 @@ func hashSecret(secret string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// keyRecords reads every issued key's record, of every project. One it
+// keyRecords reads every issued key's record, of every pool. One it
 // cannot read is left out: it authorizes nothing, since a call reads its own
-// record, and is not this project's to list.
+// record, and is not this pool's to list.
 func (d *Driver) keyRecords() ([]keyRecord, error) {
 	entries, err := os.ReadDir(d.keysDir())
 	if errors.Is(err, fs.ErrNotExist) {
@@ -126,7 +126,7 @@ func (d *Driver) keyRecords() ([]keyRecord, error) {
 }
 
 func (d *Driver) key(rec keyRecord) machine.Key {
-	return machine.Key{Driver: d.hv.Name(), ID: rec.ID, Name: rec.Name, Issued: true, Scope: machine.ScopeProject, Expires: rec.Expires}
+	return machine.Key{Driver: d.hv.Name(), ID: rec.ID, Name: rec.Name, Issued: true, Scope: machine.ScopePool, Expires: rec.Expires}
 }
 
 // owner refuses a key operation made with an issued key: an issued key
@@ -142,7 +142,7 @@ func (d *Driver) owner(ctx context.Context) error {
 	return nil
 }
 
-// IssueKey writes a key bound to the project, which expires after the TTL.
+// IssueKey writes a key bound to the pool, which expires after the TTL.
 func (d *Driver) IssueKey(ctx context.Context, req machine.IssueRequest) (machine.Key, error) {
 	if !d.issues() {
 		return machine.Key{}, machine.ErrNoKey
@@ -160,7 +160,7 @@ func (d *Driver) IssueKey(ctx context.Context, req machine.IssueRequest) (machin
 	now := time.Now().UTC()
 	for _, rec := range records {
 		switch {
-		case rec.Project != d.project:
+		case rec.Pool != d.pool:
 		case !now.Before(rec.Expires):
 			// An expired key works no more: its record goes, and its name
 			// is free.
@@ -171,7 +171,7 @@ func (d *Driver) IssueKey(ctx context.Context, req machine.IssueRequest) (machin
 	}
 	secret := keyPrefix + fsutil.RandomHex(32)
 	rec := keyRecord{
-		ID: fsutil.RandomHex(8), Name: req.Name, Project: d.project, Hash: hashSecret(secret),
+		ID: fsutil.RandomHex(8), Name: req.Name, Pool: d.pool, Hash: hashSecret(secret),
 		Created: now, Expires: now.Add(req.TTL),
 	}
 	if err := os.MkdirAll(d.keysDir(), 0o700); err != nil {
@@ -185,7 +185,7 @@ func (d *Driver) IssueKey(ctx context.Context, req machine.IssueRequest) (machin
 	return key, nil
 }
 
-// IssuedKeys lists the project's issued keys under a name, or all of them.
+// IssuedKeys lists the pool's issued keys under a name, or all of them.
 func (d *Driver) IssuedKeys(ctx context.Context, name string) ([]machine.Key, error) {
 	if !d.issues() {
 		return nil, nil
@@ -199,7 +199,7 @@ func (d *Driver) IssuedKeys(ctx context.Context, name string) ([]machine.Key, er
 	}
 	var out []machine.Key
 	for _, rec := range records {
-		if rec.Project == d.project && (name == "" || rec.Name == name) {
+		if rec.Pool == d.pool && (name == "" || rec.Name == name) {
 			out = append(out, d.key(rec))
 		}
 	}
@@ -222,8 +222,8 @@ func (d *Driver) RevokeKey(ctx context.Context, key machine.Key) error {
 		if rec.ID != key.ID {
 			continue
 		}
-		if rec.Project != d.project {
-			return fmt.Errorf("%s: key %s is project %s's, not %s's", d.hv.Name(), key.ID, rec.Project, d.project)
+		if rec.Pool != d.pool {
+			return fmt.Errorf("%s: key %s is pool %s's, not %s's", d.hv.Name(), key.ID, rec.Pool, d.pool)
 		}
 		if err := os.Remove(filepath.Join(d.keysDir(), rec.Hash+".json")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err

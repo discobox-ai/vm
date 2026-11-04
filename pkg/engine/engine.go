@@ -28,24 +28,24 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// Engine is one project, over a driver made for it.
+// Engine is one pool, over a driver made for it.
 type Engine struct {
 	Driver machine.Driver
-	// Project is the driver's project, which every VM the engine reads and
+	// Pool is the driver's pool, which every VM the engine reads and
 	// makes is in.
-	Project string
+	Pool string
 }
 
-// Open is an engine over driver, which was made for project (an empty
-// project is machine.DefaultProject).
-func Open(driver machine.Driver, project string) (*Engine, error) {
-	if project == "" {
-		project = machine.DefaultProject
+// Open is an engine over driver, which was made for pool (an empty
+// pool is machine.DefaultPool).
+func Open(driver machine.Driver, pool string) (*Engine, error) {
+	if pool == "" {
+		pool = machine.DefaultPool
 	}
-	if err := machine.ValidateProject(project); err != nil {
+	if err := machine.ValidatePool(pool); err != nil {
 		return nil, err
 	}
-	return &Engine{Driver: driver, Project: project}, nil
+	return &Engine{Driver: driver, Pool: pool}, nil
 }
 
 // ErrNotFound reports an unknown instance.
@@ -66,7 +66,7 @@ type Instance = machine.Instance
 
 // CreateOptions describes a new VM.
 type CreateOptions struct {
-	// Name is the VM's name, unique in the project; empty is a random one.
+	// Name is the VM's name, unique in the pool; empty is a random one.
 	Name string
 	// From names the committed VM the new one is a copy of; empty is a
 	// fresh VM from the driver's base. That it is committed is the caller's
@@ -179,7 +179,7 @@ func (e *Engine) Get(ctx context.Context, ref string) (Instance, error) {
 	}
 }
 
-// List returns the project's instances.
+// List returns the pool's instances.
 func (e *Engine) List(ctx context.Context) ([]Instance, error) {
 	return e.Driver.Instances(ctx)
 }
@@ -210,7 +210,7 @@ type StartOptions struct {
 
 // checkForwards refuses forwards the driver cannot serve or that make no
 // sense: each goes to exactly one of an absolute host socket, or an instance
-// of the project and a port.
+// of the pool and a port.
 func (e *Engine) checkForwards(forwards []machine.Forward) error {
 	if len(forwards) == 0 {
 		return nil

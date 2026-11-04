@@ -20,7 +20,7 @@
   first and fails after has nothing left to inspect, so its retry would leak
   the rest: the directories, at paths named for the VM, go first, and a VM
   from before ADR 26-11-03-782 has its named volumes found by
-  `ai.discobox.vm.project` and `.instance`. A name is every instance of it,
+  `ai.discobox.vm.pool` and `.instance`. A name is every instance of it,
   so a Create empties its directories only once its container holds the
   name, and a removal of old volumes by label leaves one a container mounts
   (the daemon refuses it).

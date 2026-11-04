@@ -130,7 +130,7 @@ func shimCommand(g *globals) *cobra.Command {
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			driver, err := g.newDriver(g.driver, g.project)
+			driver, err := g.newDriver(g.driver, g.pool)
 			if err != nil {
 				return err
 			}

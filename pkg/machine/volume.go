@@ -44,7 +44,7 @@ type DataVolume struct {
 // the generation its key held when the instance was created, or an empty
 // volume where the key held none.
 type CacheVolume struct {
-	// Key names the project's cache the instance starts from
+	// Key names the pool's cache the instance starts from
 	// (ValidateCacheKey).
 	Key string `json:"key"`
 	// Bytes is its size, as DataVolume's: a clone smaller than it grows to
@@ -55,7 +55,7 @@ type CacheVolume struct {
 	Generation string `json:"generation,omitempty"`
 }
 
-// Cache is one of a project's cache keys and the generation it points at.
+// Cache is one of a pool's cache keys and the generation it points at.
 type Cache struct {
 	Key string `json:"key"`
 	// Generation is the driver's ID of the key's current generation, an
