@@ -239,6 +239,15 @@ local driver gives it through the shim to a hypervisor that is a
 operations and `Dial`. vz's window needs the VM object the shim holds, so it
 refuses `gui` as `ErrNotImplemented`.
 
+`Viewer.ViewInstall` (`disco-vm gui --install [NAME]`, `Engine.GUIInstall`)
+opens a window on an install another process is running, named by the VM
+it makes, or the only one. The local driver marks an install's VM directory
+with `installing.json` (its record) while it runs, and hands its machine
+directory to the hypervisor's `MachineViewer.ViewInstall`,
+which finds the install's machine itself: hcs by a record its install
+writes beside the disk. The window is never the install's owner: it closes
+when the install's machine stops, and stopping is the install's.
+
 A native window on macOS must run on the process's main thread, which only
 `main` can give away. So `main` locks its goroutine to the main thread and runs
 the program through `machine.Main`. A driver that shows windows installs a

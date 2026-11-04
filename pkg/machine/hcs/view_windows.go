@@ -72,19 +72,32 @@ const ViewEnv = "DISCO_VM_HCS_VIEW"
 // once the desktop can be shown, and again after the guest restarts, until
 // someone closes it or the machine stops.
 func (d *Hypervisor) watch(m machine.Machine, title string, log io.Writer) {
-	ctx, cancel := context.WithCancel(context.Background())
+	keepOpen(context.Background(), m, log, func(ctx context.Context) error { return d.View(ctx, m, title) })
+}
+
+// keepOpen keeps a window that open shows on m: open again when it fails (no
+// desktop yet, or the guest restarting under it), until someone closes it by
+// hand, ctx is done, or the machine stops. A failure is logged once until a
+// different one follows it.
+func keepOpen(ctx context.Context, m machine.Machine, log io.Writer, open func(context.Context) error) {
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
-		<-m.Done()
-		cancel()
+		select {
+		case <-m.Done():
+			cancel()
+		case <-ctx.Done():
+		}
 	}()
+	last := ""
 	for ctx.Err() == nil {
-		err := d.View(ctx, m, title)
+		err := open(ctx)
 		if err == nil || ctx.Err() != nil {
 			return
 		}
-		if log != nil {
+		if msg := err.Error(); log != nil && msg != last {
 			fmt.Fprintf(log, "hcs: window: %v (trying again)\n", err)
+			last = msg
 		}
 		select {
 		case <-time.After(5 * time.Second):

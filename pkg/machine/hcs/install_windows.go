@@ -211,15 +211,21 @@ func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, disk string, 
 		return err
 	}
 	defer m.shutdown()
-	if spec.GUI {
-		// A window shows a logged-on desktop, through the guest's Remote
-		// Desktop or the agent, and Setup has none until it is done.
-		fmt.Fprintln(log, "hcs: no window during an install: Windows Setup has no desktop to show until it finishes")
+	forget, err := recordInstall(dir, m)
+	if err != nil {
+		return err
 	}
+	defer forget()
 	client := guest.NewClient(func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.AgentPort) })
 
 	ctx, cancel := context.WithTimeout(ctx, setupTimeout)
 	defer cancel()
+	if spec.GUI {
+		// The agent's stream shows a logged-on desktop, and Setup has none
+		// until its automatic logon.
+		fmt.Fprintln(log, "hcs: the window opens at the first logon; Windows Setup before it has no desktop to show")
+		go showInstall(ctx, m, log)
+	}
 	started := time.Now()
 	if err := waitSetup(ctx, client, m, started, log); err != nil {
 		return err

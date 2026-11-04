@@ -24,6 +24,9 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   difference over an image this driver no longer knows. While a VM is
   created from another, `from` in its directory names that one's ID, before
   its chain is read and its record written;
+- while an install runs, `instances/<id>/installing.json`, the VM's record,
+  which `ViewInstall` finds it by; `instance.json` is written once it is
+  done;
 - while an upgrade runs, `instances/<id>/machine.next` (the new disk),
   `next.ready` (written once it is whole), and `machine.old` (the old disk,
   once the new one is in place), [below](#an-upgrade-swaps-a-vms-disk-in-its-directory);

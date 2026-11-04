@@ -97,8 +97,12 @@ What building it found, beyond the recipes below:
   keep `VideoMonitor`, `Keyboard` and `Mouse`, as the guest's adapter and
   input. `disco-vm gui` opens a window on a running instance; `run --gui`
   and `start --gui` open it from the shim once the guest is up, and again
-  after it restarts. `install --gui` shows nothing: Setup has no logged-on
-  desktop. Install turns Remote Desktop on except on the `Core*` (Home)
+  after it restarts. An install's window is the stream alone, from the
+  first logon to the shutdown that commits it (Setup before it has no
+  desktop): `install --gui` shows it, and `disco-vm gui --install [NAME]`
+  opens it from another process by the install's `.install-vm` record (the
+  installing process and the VM's runtime ID), dialing hvsocket directly
+  and never opening the compute system. Install turns Remote Desktop on except on the `Core*` (Home)
   editions, its firewall left closed. Checked by hand on a Win 11 Pro guest
   on a Home host (2026-11-02): the Remote Desktop window signs in with no
   prompt at the host's size, and the stream's window shows the desktop and

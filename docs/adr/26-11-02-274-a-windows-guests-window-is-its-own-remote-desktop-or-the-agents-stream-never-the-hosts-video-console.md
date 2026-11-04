@@ -64,14 +64,13 @@ the agent already rides:
    `ConnectionOptions`.
 5. **An install's window is the agent's stream, from the first logon.**
    `install --gui` keeps one open from OOBE's automatic logon, through the
-   Zero Day Patch reboot, to the shutdown that commits the image; Setup
+   Zero Day Patch reboot, to the shutdown that commits the VM; Setup
    before it has no desktop to show. Never the guest's Remote Desktop: its
    sign-in would take the console session from the logon Setup is
-   finishing. **`disco-vm gui --install [IMAGE]`** opens the same window from
-   another process, on an install started without `--gui`: the install
-   prints its image's ID first, the local driver marks its image's
-   directory as an install in progress while it runs (`installing.json`),
-   and hcs records the install's VM beside its disk (`.install-vm`: the
+   finishing. **`disco-vm gui --install [NAME]`** opens the same window from
+   another process, on an install started without `--gui`, by the name of
+   the VM it makes: the local driver marks the VM's directory as an install
+   in progress while it runs (`installing.json`, its record), and hcs records the install's VM beside its disk (`.install-vm`: the
    installing process and the VM's runtime ID). The window dials the guest
    over hvsocket by that ID, through no shim and without opening the compute
    system, whose last handle closing ends the VM: the install stays the VM's
