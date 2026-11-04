@@ -1,7 +1,9 @@
 # 26-11-04-412 — Docker runs in a VM owned by its pool
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-04
+
+Accepted by the owner by merging #54, 2026-11-04.
 
 ## Context
 
