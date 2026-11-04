@@ -34,7 +34,7 @@ func (e *Engine) checkVolumes(data *machine.DataVolume, cache *machine.CacheVolu
 	return nil
 }
 
-// Caches lists the project's cache keys.
+// Caches lists the pool's cache keys.
 func (e *Engine) Caches(ctx context.Context) ([]machine.Cache, error) {
 	return e.Driver.Caches(ctx)
 }

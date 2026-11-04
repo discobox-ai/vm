@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// Factory constructs a driver for a project. Construction must be cheap and
+// Factory constructs a driver for a pool. Construction must be cheap and
 // must not touch the hypervisor or its service: `disco-vm info` constructs
 // every driver to list it.
 type Factory func(Config) (Driver, error)
@@ -47,15 +47,15 @@ func Names() []string {
 func DefaultName() string { return defaultDriver }
 
 // New constructs the named driver, or the default one for an empty name, for
-// cfg's project, which it checks.
+// cfg's pool, which it checks.
 func New(name string, cfg Config) (Driver, error) {
 	if name == "" {
 		name = defaultDriver
 	}
-	if cfg.Project == "" {
-		cfg.Project = DefaultProject
+	if cfg.Pool == "" {
+		cfg.Pool = DefaultPool
 	}
-	if err := ValidateProject(cfg.Project); err != nil {
+	if err := ValidatePool(cfg.Pool); err != nil {
 		return nil, err
 	}
 	registryMu.Lock()

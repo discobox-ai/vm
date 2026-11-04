@@ -37,7 +37,7 @@ const (
 var upgradeStep = func(string) error { return nil }
 
 // upgradeName is the name of an upgrade's new container.
-func upgradeName(project, name string) string { return containerName(project, name) + upgradeSuffix }
+func upgradeName(pool, name string) string { return containerName(pool, name) + upgradeSuffix }
 
 // upgrading reports whether c is an upgrade's new container, not yet
 // renamed into place.
@@ -53,7 +53,7 @@ func replaces(c containerInfo, id string) bool {
 // one an upgrade replaced.
 func (d *Driver) vmContainers(ctx context.Context, inst machine.Instance) ([]containerInfo, error) {
 	var out []containerInfo
-	for _, ref := range []string{containerName(d.project, inst.Name), upgradeName(d.project, inst.Name)} {
+	for _, ref := range []string{containerName(d.pool, inst.Name), upgradeName(d.pool, inst.Name)} {
 		c, err := d.api.inspectContainer(ctx, ref)
 		if isNotFound(err) {
 			continue
@@ -178,7 +178,7 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 	}
 	base := ""
 	if img == "" {
-		base = baseTag(d.project, inst.Name) + fsutil.RandomHex(3)
+		base = baseTag(d.pool, inst.Name) + fsutil.RandomHex(3)
 		if err := d.ready(ctx, d.base, inst.Name, base); err != nil {
 			return machine.Instance{}, err
 		}
@@ -205,10 +205,10 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 			}
 		}
 	}
-	id, err := d.api.createContainer(ctx, upgradeName(d.project, inst.Name), d.vmConfig(img, inst.Name, labels, d.dirMounts(inst.Name, data, cache)))
+	id, err := d.api.createContainer(ctx, upgradeName(d.pool, inst.Name), d.vmConfig(img, inst.Name, labels, d.dirMounts(inst.Name, data, cache)))
 	if err != nil {
 		d.removeImage(base)
-		return machine.Instance{}, fmt.Errorf("docker: create %s: %w", upgradeName(d.project, inst.Name), err)
+		return machine.Instance{}, fmt.Errorf("docker: create %s: %w", upgradeName(d.pool, inst.Name), err)
 	}
 	if err := upgradeStep("created"); err != nil {
 		return machine.Instance{}, err
@@ -234,14 +234,14 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 func (d *Driver) finishUpgrade(ctx context.Context, name, next, old, oldImage string) (machine.Instance, error) {
 	if old != "" {
 		if err := d.api.removeContainer(ctx, old); err != nil {
-			return machine.Instance{}, fmt.Errorf("docker: remove %s: %w", containerName(d.project, name), err)
+			return machine.Instance{}, fmt.Errorf("docker: remove %s: %w", containerName(d.pool, name), err)
 		}
 	}
 	if err := upgradeStep("removed"); err != nil {
 		return machine.Instance{}, err
 	}
-	if err := d.api.rename(ctx, next, containerName(d.project, name)); err != nil {
-		return machine.Instance{}, fmt.Errorf("docker: rename %s: %w", upgradeName(d.project, name), err)
+	if err := d.api.rename(ctx, next, containerName(d.pool, name)); err != nil {
+		return machine.Instance{}, fmt.Errorf("docker: rename %s: %w", upgradeName(d.pool, name), err)
 	}
 	if err := d.removeOldVolumes(ctx, name); err != nil {
 		return machine.Instance{}, err
@@ -251,7 +251,7 @@ func (d *Driver) finishUpgrade(ctx context.Context, name, next, old, oldImage st
 	}
 	c, err := d.api.inspectContainer(ctx, next)
 	if err != nil {
-		return machine.Instance{}, fmt.Errorf("docker: container %s: %w", containerName(d.project, name), err)
+		return machine.Instance{}, fmt.Errorf("docker: container %s: %w", containerName(d.pool, name), err)
 	}
 	return d.instance(c), nil
 }

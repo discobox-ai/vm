@@ -91,13 +91,13 @@ func TestChainsKeepADiskAnotherNeeds(t *testing.T) {
 			t.Fatalf("boot %s, which another VM's disk needs: %v, want ErrInUse", inst.Name, err)
 		}
 	}
-	// Another project shares the directory and sees none of it.
-	other, err := local.New(machine.Config{Dir: root, Project: "other"}, hv)
+	// Another pool shares the directory and sees none of it.
+	other, err := local.New(machine.Config{Dir: root, Pool: "other"}, hv)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if list, err := other.Instances(ctx); err != nil || len(list) != 0 {
-		t.Fatalf("another project's VMs = %+v, %v", list, err)
+		t.Fatalf("another pool's VMs = %+v, %v", list, err)
 	}
 
 	// A VM of the chain removed behind the driver's back leaves the VMs
@@ -166,8 +166,8 @@ func TestChainsKeepADiskAnotherNeeds(t *testing.T) {
 	}
 }
 
-// An instance recorded before ADR 26-11-03-606, of an image or a base, is
-// not read: not listed, not found, and so never created from or rewritten.
+// An instance recorded before ADR 26-11-03-606, of an image or a base,
+// or before the pool cutover with the old project field, is not read: not listed, not found, and so never created from or rewritten.
 func TestRecordsFromBeforeAreNotRead(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -177,9 +177,10 @@ func TestRecordsFromBeforeAreNotRead(t *testing.T) {
 	}
 	guestOS := string(machine.OS(runtime.GOOS))
 	for id, record := range map[string]string{
-		"0000000000a1": `{"id":"0000000000a1","name":"of-image","image":"app","imageID":"aaaa","guestOS":"` + guestOS + `","project":"default"}`,
-		"0000000000b2": `{"id":"0000000000b2","name":"of-base","image":"stock","base":{"name":"stock"},"guestOS":"` + guestOS + `","project":"default"}`,
-		"0000000000c3": `{"id":"0000000000c3","name":"of-layer","layer":"aaaa","guestOS":"` + guestOS + `","project":"default"}`,
+		"0000000000d4": `{"id":"0000000000d4","name":"old-scope","guestOS":"` + guestOS + `","project":"default"}`,
+		"0000000000a1": `{"id":"0000000000a1","name":"of-image","image":"app","imageID":"aaaa","guestOS":"` + guestOS + `","pool":"default"}`,
+		"0000000000b2": `{"id":"0000000000b2","name":"of-base","image":"stock","base":{"name":"stock"},"guestOS":"` + guestOS + `","pool":"default"}`,
+		"0000000000c3": `{"id":"0000000000c3","name":"of-layer","layer":"aaaa","guestOS":"` + guestOS + `","pool":"default"}`,
 	} {
 		dir := filepath.Join(root, "instances", id)
 		if err := os.MkdirAll(dir, 0o755); err != nil {

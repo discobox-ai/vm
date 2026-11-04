@@ -17,10 +17,10 @@ import (
 // moved, a listing, a delete, and a removal.
 func TestDirs(t *testing.T) {
 	root := t.TempDir()
-	l := layout{root: root, project: "p"}
+	l := layout{root: root, pool: "p"}
 	step := func(req dirsRequest) (dirsResult, error) {
 		t.Helper()
-		req.Project = "p"
+		req.Pool = "p"
 		return req.run(root)
 	}
 	must := func(res dirsResult, err error) dirsResult {

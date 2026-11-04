@@ -9,7 +9,7 @@ archil, boxd, docker, and local have their own design notes:
 
 ## The driver contract is the intersection, and differences are reported
 
-`machine.Driver` is one project's (`machine.Config.Project`) VMs, committed
+`machine.Driver` is one pool's (`machine.Config.Pool`) VMs, committed
 or not (ADR 26-11-03-606): Create, fresh from the driver's base
 (`Config.Base`) or a copy of a committed VM (`InstanceSpec.From`); Install,
 a committed VM from media; Commit, which freezes a stopped VM under its
@@ -46,13 +46,13 @@ a `Capabilities` field, never a faked method:
 | install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest` | **none** | **none** | **none** | the host's | **none** |
 | base (`Config.Base`: what a fresh VM starts from) | **none** | Linux: a guest image, `DefaultLinuxBase` by default | an image, boxd's default by default | an image; **none** unless configured | Linux: a guest image's libkrun kernel and root, `DefaultBase` by default | a name, `scratch` by default | an OCI image; Archil's default by default |
 | commit (`Commit`: `Driver.Commit` and `InstanceSpec.From`) | yes | yes | yes | yes | yes | yes, unless made with `NoCommit` (a test option) | yes |
-| a committed VM (`Commit`) | its record and disk, left in place | its record and bundle, left in place | a snapshot `dvm-<project>--<name>`; the machine deleted | an image `disco-vm-vm:<project>--<name>`; the container removed | its record and bundle, left in place | its record and tree, left in place | the stopped sandbox `dvm-<project>--<name>`, its mounts and data disk dropped; nothing marks it committed |
+| a committed VM (`Commit`) | its record and disk, left in place | its record and bundle, left in place | a snapshot `dvm-<pool>--<name>`; the machine deleted | an image `disco-vm-vm:<pool>--<name>`; the container removed | its record and bundle, left in place | its record and tree, left in place | the stopped sandbox `dvm-<pool>--<name>`, its mounts and data disk dropped; nothing marks it committed |
 | disks chain below the seam (`local.Hypervisor.Chains`) | yes: a copy is a differencing VHDX over the committed VM's | no | no | no | no: a reflink, else a sparse copy | no | yes: a copy forks the committed VM's sandbox, which Archil keeps while it has forks (`ErrInUse`) |
-| keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | none (`ErrNoKey`) | issue, scope `project` | none (`ErrCannotIssue`: an Archil token never expires) |
+| keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | none (`ErrNoKey`) | issue, scope `pool` | none (`ErrCannotIssue`: an Archil token never expires) |
 | isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no | no | no |
 | egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | `none`: no network device (else a NIC on passt) | none | `none` and `allow`: `network.egress`, default `deny` |
 | private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | none | the URL (a shared loopback) | the URL |
-| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<project>--<name>--data` |
+| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<pool>--<name>--data` |
 | upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
 
 The engine enforces `MaxRunning`. Every driver clones the same way: cold
@@ -86,12 +86,12 @@ reads the variables a driver names at `Register` (archil's `ARCHIL_API_KEY`, box
 prints, formats, and logs without it.
 
 `IssueKey` makes the narrowest key the driver can for another host to run the
-project's machines. An issued key expires (a TTL is required) and cannot
+pool's machines. An issued key expires (a TTL is required) and cannot
 itself issue keys; a driver that cannot promise both returns `ErrNoKey` (it
 has no credential to hand on) or `ErrCannotIssue` (its provider cannot make
-one), never the caller's own key. Issued keys are named for the project, so
+one), never the caller's own key. Issued keys are named for the pool, so
 `IssuedKeys` finds them by name, and `RevokeKey` refuses one the driver did
-not issue for the project; `disco-vm key revoke` refuses an ID it does not
+not issue for the pool; `disco-vm key revoke` refuses an ID it does not
 list, so a typo never reads as revoked. A provider's refusal of a key is
 `ErrUnauthorized`.
 
@@ -128,7 +128,7 @@ where it grows on demand (docker, fake).
   VM, since Commit keeps the root disk alone. It is never listed, named,
   attached, or removed apart from its VM (ADR 26-11-03-782).
 - **A cache key points at a generation**, an immutable snapshot of a cache
-  volume; each project has its own keys. Create
+  volume; each pool has its own keys. Create
   clones the key's current generation into the instance's own volume (empty
   where the key has none), which no other machine mounts and nothing
   refreshes; `Instance.Cache.Generation` names it.

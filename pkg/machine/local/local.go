@@ -8,10 +8,10 @@
 //	instances/<id>/machine/          the hypervisor's VM (InstanceSpec.Dir)
 //	instances/<id>/machine.next/     its new disk, while an upgrade makes it
 //	instances/<id>/machine.old/      its old disk, while an upgrade removes it
-//	instances/<id>/instance.json     the VM: project, name, from, size
+//	instances/<id>/instance.json     the VM: pool, name, from, size
 //	instances/<id>/shim.json         its shim, while one holds it
-//	instances/.names/<project>/<name> the name's claim, holding the ID
-//	caches/<project>/<key>.json      a cache key: its current generation
+//	instances/.names/<pool>/<name> the name's claim, holding the ID
+//	caches/<pool>/<key>.json      a cache key: its current generation
 //	caches/generations/<id>/payload/ a cache generation's volume (Layer.Dir)
 //	cache/<hypervisor>/              media the hypervisor downloads
 //

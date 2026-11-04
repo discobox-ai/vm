@@ -15,7 +15,7 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// A cache key is a file, caches/<project>/<key>.json, naming its current
+// A cache key is a file, caches/<pool>/<key>.json, naming its current
 // generation, which is a directory, caches/generations/<id>, written under a
 // temporary name and renamed into place as an image is. A key moves by
 // replacing its file. Every instance's cache volume is a copy of its own, so
@@ -23,7 +23,7 @@ import (
 
 const generationFile = "generation.json"
 
-func (d *Driver) cachesDir() string              { return filepath.Join(d.dir, "caches", d.project) }
+func (d *Driver) cachesDir() string              { return filepath.Join(d.dir, "caches", d.pool) }
 func (d *Driver) cacheFile(key string) string    { return filepath.Join(d.cachesDir(), key+".json") }
 func (d *Driver) generationsDir() string         { return filepath.Join(d.dir, "caches", "generations") }
 func (d *Driver) generationDir(id string) string { return filepath.Join(d.generationsDir(), id) }
@@ -36,11 +36,11 @@ func (d *Driver) generationRecord(id string) string {
 
 // generation is a generation's generation.json.
 type generation struct {
-	ID      string    `json:"id"`
-	Project string    `json:"project"`
-	Key     string    `json:"key"`
-	Bytes   int64     `json:"bytes,omitempty"`
-	Saved   time.Time `json:"saved"`
+	ID    string    `json:"id"`
+	Pool  string    `json:"pool"`
+	Key   string    `json:"key"`
+	Bytes int64     `json:"bytes,omitempty"`
+	Saved time.Time `json:"saved"`
 }
 
 // readCache reads a key's record, found false where the key has none, or its
@@ -63,10 +63,13 @@ func (d *Driver) readCache(key string) (machine.Cache, bool, error) {
 	} else if err != nil {
 		return machine.Cache{}, false, err
 	}
+	if g.Pool != d.pool {
+		return machine.Cache{}, false, nil
+	}
 	return c, true, nil
 }
 
-// Caches reads every key of the project. A record that cannot be read is an
+// Caches reads every key of the pool. A record that cannot be read is an
 // error, not a key left out.
 func (d *Driver) Caches(ctx context.Context) ([]machine.Cache, error) {
 	if err := d.authorize(ctx); err != nil {
@@ -115,7 +118,7 @@ func (d *Driver) SaveCache(ctx context.Context, inst machine.Instance, save mach
 	if err := machine.ValidateCacheKey(save.Key); err != nil {
 		return machine.Cache{}, err
 	}
-	rec, err := d.readProject(inst.ID)
+	rec, err := d.readPool(inst.ID)
 	if err != nil {
 		return machine.Cache{}, err
 	}
@@ -132,7 +135,7 @@ func (d *Driver) SaveCache(ctx context.Context, inst machine.Instance, save mach
 	if err != nil {
 		return machine.Cache{}, err
 	}
-	g := generation{ID: fsutil.RandomHex(16), Project: d.project, Key: save.Key, Bytes: rec.Cache.Bytes, Saved: time.Now().UTC()}
+	g := generation{ID: fsutil.RandomHex(16), Pool: d.pool, Key: save.Key, Bytes: rec.Cache.Bytes, Saved: time.Now().UTC()}
 	tmp := filepath.Join(d.generationsDir(), ".tmp-"+g.ID)
 	if err := os.MkdirAll(filepath.Join(tmp, payloadDir), 0o755); err != nil {
 		return machine.Cache{}, err

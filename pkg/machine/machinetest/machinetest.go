@@ -26,7 +26,7 @@
 // private clone of its key's generation, which only a save moves; an
 // upgrade gives a stopped VM a new root and keeps its name, settings, and
 // volumes, or the driver refuses it; and a key
-// the driver issues runs the project's machines, cannot issue another, and
+// the driver issues runs the pool's machines, cannot issue another, and
 // works no more once it is revoked. That a VM is committed is the caller's
 // to record, so the suite never boots one again.
 package machinetest
@@ -69,13 +69,13 @@ type Config struct {
 	// suite runs as `dial-host` to reach a peer through a forward. Empty
 	// skips that subtest.
 	GuestAgent string
-	// Keyed is the driver again, for the same project, calling its
+	// Keyed is the driver again, for the same pool, calling its
 	// provider with the key keys answers. A driver whose Capabilities.Keys
 	// issues needs it.
 	Keyed func(keys machine.KeySource) machine.Driver
 }
 
-// Run runs the suite. The driver is one project's, and the suite makes and
+// Run runs the suite. The driver is one pool's, and the suite makes and
 // removes VMs in it, every name its own.
 func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	t.Helper()
@@ -642,7 +642,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 	})
 
-	// A key the driver issues runs the project's machines from another
+	// A key the driver issues runs the pool's machines from another
 	// driver, cannot issue a key, and works no more once revoked. A driver
 	// that issues none says so with ErrNoKey or ErrCannotIssue.
 	t.Run("an-issued-key", func(t *testing.T) {

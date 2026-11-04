@@ -19,7 +19,7 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// BaseEnv names a committed macOS VM, in the default project of the driver's
+// BaseEnv names a committed macOS VM, in the default pool of the driver's
 // directory ($DISCO_VM_ROOT, or the per-OS data directory): one `disco-vm
 // install NAME` made, which `disco-vm ls -a` lists. The conformance suite
 // creates from it rather than installing macOS on every run, and skips

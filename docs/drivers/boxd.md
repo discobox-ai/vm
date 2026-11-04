@@ -50,8 +50,8 @@ use. The parts that matter here:
 | seam | boxd |
 |---|---|
 | `Install` | not offered (`Capabilities.Install` is off): a fresh VM starts from boxd's image. No agent either: `Capabilities.Agent` is off. |
-| `Create` | the machine `dvm-<project>--<name>`, at most 63 characters: fresh, with `CreateVm` (restart policy `never`) of the driver's base (`machine.Config.Base`), or of `GetConfig`'s `default_image` when it has none; or, from a committed VM, restored from its snapshot by name (`CreateVmFromSnapshot`, at the VM's size when it asks for one); a `From` that is no ready snapshot of its name and ID, a machine or a snapshot gone, is `ErrNotFound`, since boxd restores only a snapshot. An `Egress` set at once and read back ([Egress](#egress)), idle timers off, then the proxy pinned (`SetBotProtection` off, `SetProxyPort` pins the default proxy, the one `ListProxies` marks `is_default`, to 7302), then `sync` in the guest, `StopVm`, and wait for `stopped`: the first boot is a cold boot of the disk. A step that fails destroys the machine. A name the project has, as a machine or a committed VM's snapshot, is `ErrExists`. |
-| VM | `Instances` is `ListVms` and `ListSnapshots`, keeping the project's names whose rest is a VM name (`machine.ValidateName`). That a VM is committed is the caller's to record (ADR 26-11-03-606); the driver tells a committed VM by its kind, the ready snapshot of its name whose ID is the VM's, when a call on it as a machine fails. A VM is its machine: its ID, its name less the project's prefix, its size, when it was made, and its isolation, networks, and egress allowlist. boxd does not say which snapshot a machine was restored from, so `From` is empty. A committed VM is a `ready` snapshot of the same name: its ID is the snapshot's, its size and creation the snapshot's. A snapshot and a machine of one name are a `Commit` that has not deleted the machine yet: the committed VM is listed, and the machine is not. `Instance` finds a name among them. |
+| `Create` | the machine `dvm-<pool>--<name>`, at most 63 characters: fresh, with `CreateVm` (restart policy `never`) of the driver's base (`machine.Config.Base`), or of `GetConfig`'s `default_image` when it has none; or, from a committed VM, restored from its snapshot by name (`CreateVmFromSnapshot`, at the VM's size when it asks for one); a `From` that is no ready snapshot of its name and ID, a machine or a snapshot gone, is `ErrNotFound`, since boxd restores only a snapshot. An `Egress` set at once and read back ([Egress](#egress)), idle timers off, then the proxy pinned (`SetBotProtection` off, `SetProxyPort` pins the default proxy, the one `ListProxies` marks `is_default`, to 7302), then `sync` in the guest, `StopVm`, and wait for `stopped`: the first boot is a cold boot of the disk. A step that fails destroys the machine. A name the pool has, as a machine or a committed VM's snapshot, is `ErrExists`. |
+| VM | `Instances` is `ListVms` and `ListSnapshots`, keeping the pool's names whose rest is a VM name (`machine.ValidateName`). That a VM is committed is the caller's to record (ADR 26-11-03-606); the driver tells a committed VM by its kind, the ready snapshot of its name whose ID is the VM's, when a call on it as a machine fails. A VM is its machine: its ID, its name less the pool's prefix, its size, when it was made, and its isolation, networks, and egress allowlist. boxd does not say which snapshot a machine was restored from, so `From` is empty. A committed VM is a `ready` snapshot of the same name: its ID is the snapshot's, its size and creation the snapshot's. A snapshot and a machine of one name are a `Commit` that has not deleted the machine yet: the committed VM is listed, and the machine is not. `Instance` finds a name among them. |
 | `Boot`, `Start` | a committed VM, a snapshot with no machine, is `ErrCommitted`. `StartVm` (after `ResizeVm` when the instance asks for another size), `ResumeVm`, or `WakeVm`, by state. A machine still `stopping` is waited out first. Returns once the guest answers: an Exec of `sudo -n systemctl is-system-running --wait` returns, once a second, for up to 5 minutes. A machine that stops meanwhile (`GetVm` every 2s) ends the wait. boxd owns the machine, so `Start` is `Boot`. |
 | `Attach` | a committed VM is `ErrNotRunning`. `GetVm`: `running` or `starting` is the machine; not found, `stopped`, or any other state is `ErrNotRunning`. |
 | `Machine.Done` | watching starts on the first `Done`, `Err`, or `Kill`, so a machine attached only to run a command polls nothing. `GetVm` every 2s: `stopped` is a power-off, and `failed`, `destroying`, or not-found is an error. |
@@ -61,7 +61,7 @@ use. The parts that matter here:
 | `Machine.CopyFrom` | Exec of a script that fails on a missing path, else writes one ready byte, then `tar -c` of the path rooted at its base name. |
 | `Machine.Info` | Exec of `uname -m; hostname`: linux, the GOARCH of the machine, its hostname. No version: there is no agent. |
 | `Machine.Shutdown` | a power-off is an Exec of `sync` as root, then `StopVm`; the watcher sees `stopped`. A reboot is `RebootVm`. Nothing in the guest is asked to power off. |
-| `Commit` | a committed VM is `ErrCommitted`, and the machine must be `stopped`, after an orderly shutdown. Start it, wait for the guest, snapshot it as `dvm-<project>--<name>`, the machine's own name, wait for the snapshot `ready`, and destroy the machine: boxd snapshots only a running machine. The snapshot's disk is the one the guest flushed. The committed VM keeps nothing else. |
+| `Commit` | a committed VM is `ErrCommitted`, and the machine must be `stopped`, after an orderly shutdown. Start it, wait for the guest, snapshot it as `dvm-<pool>--<name>`, the machine's own name, wait for the snapshot `ready`, and destroy the machine: boxd snapshots only a running machine. The snapshot's disk is the one the guest flushed. The committed VM keeps nothing else. |
 | `Destroy` | `DestroyVm`; one already gone is not an error. A committed VM, the ready snapshot of its name and ID: `DeleteSnapshot`, and `DestroyVm` of any machine of its name a `Commit` left. A machine restored from the snapshot has a disk of its own, and outlives it. |
 | `Service` | a committed VM is `ErrCommitted`. Listen on `tcp:0.0.0.0:7302`; the URL is `https://` and the default proxy's domain, `ListProxies`, the same across stop and start. The private URL is `http://<machine>.boxd:7302` for a machine on networks, and the URL for one on none. |
 
@@ -76,10 +76,10 @@ image has neither.
 Nothing is kept on the host: every name carries what disco-vm knows, and the
 API reports the rest, so any host with the account's key sees the same VMs.
 What disco-vm made before ADR 26-11-03-606 is not read (as ADR
-26-10-23-417): an image's snapshot, `dvm-<project>--<64-digit ID>`, a tag's,
-with `--t-` in its name, and a snapshot named before projects
+26-10-23-417): an image's snapshot, `dvm-<pool>--<64-digit ID>`, a tag's,
+with `--t-` in its name, and a snapshot named before pools
 (`dvm-<id>-<random>`) are not listed; delete them with `boxd snap rm`. A
-machine named as before is listed under the name after its project's
+machine named as before is listed under the name after its pool's
 prefix where that is a VM name, and `rm` removes it.
 
 ## Try it
@@ -108,8 +108,8 @@ export DISCO_VM_DRIVER=boxd
 ```
 
 Each VM is a machine named `dvm-default--<name>` in `boxd ls`, and each
-committed VM a snapshot of the same name in `boxd snap ls` (`--project`
-names the project). `rm` destroys the machine, or deletes a committed VM's
+committed VM a snapshot of the same name in `boxd snap ls` (`--pool`
+names the pool). `rm` destroys the machine, or deletes a committed VM's
 snapshot; a VM created from it keeps running. disco-vm keeps nothing on the
 host, so every host with the account's key sees the same VMs. A fresh VM is
 made from the driver's base, `machine.Config.Base`, or boxd's default image
@@ -143,13 +143,13 @@ machine is left as it is.
 ## Keys
 
 `disco-vm key issue --ttl D` (`Driver.IssueKey`) creates a `member` API key
-named `dvm-<project>--<name>`, fenced to the engine's key's org, expiring
+named `dvm-<pool>--<name>`, fenced to the engine's key's org, expiring
 after the TTL. `key ls` and `key revoke ID` read `ListApiKeys` and delete
 only such a key of the caller's. What boxd's kinds reach, from its API's
 documentation:
 
 - **`member`** acts as its maker within one org: every machine of theirs
-  there, not only this project's. disco-vm reports it as scope `org`. It is
+  there, not only this pool's. disco-vm reports it as scope `org`. It is
   the narrowest key that reaches disco-vm's machines.
 - **`org`** is a userless key for the org's shared fleet only, and needs an
   org admin. disco-vm's machines are private to their maker, so it reaches
@@ -168,7 +168,7 @@ cannot manage the account". So:
   from it.
 
 Not run yet: issuing from a `boxd login` session, and an engine on another
-host running the project's machines with the key it issued. Nor whether
+host running the pool's machines with the key it issued. Nor whether
 boxd stops honoring the JWT an issued key was exchanged for (an hour's)
 once the key is revoked or expires: until that is shown, a holder who
 exchanged it may keep working for up to that hour, whatever the TTL.

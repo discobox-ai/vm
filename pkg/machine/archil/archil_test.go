@@ -19,12 +19,12 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-func testDriver(project string) *Driver {
-	return &Driver{api: &api{}, project: project}
+func testDriver(pool string) *Driver {
+	return &Driver{api: &api{}, pool: pool}
 }
 
 // A VM's sandbox and data volume are named for it, and a sandbox of another
-// project, of an earlier driver, or not a VM's, is none.
+// pool, of an earlier driver, or not a VM's, is none.
 func TestNames(t *testing.T) {
 	d := testDriver("p1")
 	for _, name := range []string{"dev", "a-b-c"} {
@@ -32,7 +32,7 @@ func TestNames(t *testing.T) {
 			t.Errorf("nameOf(%s) = %q", d.sandboxName(name), got)
 		}
 		if got := testDriver("p").nameOf(d.sandboxName(name)); got != "" {
-			t.Errorf("project p reads p1's %s as %q", d.sandboxName(name), got)
+			t.Errorf("pool p reads p1's %s as %q", d.sandboxName(name), got)
 		}
 		if got := d.nameOf(d.dataDiskName(name)); got != "" {
 			t.Errorf("the data volume %s read as VM %q", d.dataDiskName(name), got)
@@ -41,7 +41,7 @@ func TestNames(t *testing.T) {
 			t.Errorf("nameOfDisk(%s) = %q", d.dataDiskName(name), got)
 		}
 		if got := testDriver("p").nameOfDisk(d.dataDiskName(name)); got != "" {
-			t.Errorf("project p reads p1's disk %s as %q", d.dataDiskName(name), got)
+			t.Errorf("pool p reads p1's disk %s as %q", d.dataDiskName(name), got)
 		}
 	}
 	for _, dk := range []string{"dvm-p1--dev", "dvm-p1--dev--data--data", "dvm-p1-0a1b2c3d-data", "other--data"} {
@@ -56,7 +56,7 @@ func TestNames(t *testing.T) {
 	}
 }
 
-// A project and a name are at most 57 characters together, so the sandbox's
+// A pool and a name are at most 57 characters together, so the sandbox's
 // name fits Archil's 63.
 func TestNameLimits(t *testing.T) {
 	p32 := strings.Repeat("p", 32)

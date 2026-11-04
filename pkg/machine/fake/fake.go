@@ -100,7 +100,7 @@ func (d *Hypervisor) Capabilities() machine.Capabilities {
 		Agent:   true,
 		Install: []machine.OS{machine.OS(runtime.GOOS)},
 		Commit:  true,
-		Keys:    machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopeProject},
+		Keys:    machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopePool},
 		Volumes: []machine.Volume{machine.VolumeData, machine.VolumeCache},
 	}
 	if d.NoCommit {

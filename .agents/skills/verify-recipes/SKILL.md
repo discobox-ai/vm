@@ -41,11 +41,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   reads it before `BOXD_TOKEN`, so every call is a 401. A use that says it
   makes only `dvm-*` machines gets a name refused unless the VM's name
   starts with `dvm-` too (`run dvm-dev`), although the machine is named
-  `dvm-<project>--...` either way.
-- Isolate state: `export DISCO_VM_PROJECT=<a scratch project, e.g. vtest>
+  `dvm-<pool>--...` either way.
+- Isolate state: `export DISCO_VM_POOL=<a scratch pool, e.g. vtest>
   DISCO_VM_DRIVER=boxd`. boxd keeps
   everything (ADR 26-10-23-417): a committed VM is a snapshot and a VM a
-  machine, both named `dvm-<project>--<name>`, so the project is what keeps
+  machine, both named `dvm-<pool>--<name>`, so the pool is what keeps
   a run apart.
 - Start fresh: `run dvm-dev` makes a machine of boxd's default image
   (`$DISCO_VM_BASE` names another), about 6s. `stop dvm-dev` then `commit
@@ -61,11 +61,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   `go build` links glibc dynamically (the devShell's from `/nix/store`), and
   it fails at create or boot on an image without that libc. Off linux,
   `DISCO_VM_AGENT` names the linux build.
-- Isolate state: `export DISCO_VM_PROJECT=<a scratch project>
+- Isolate state: `export DISCO_VM_POOL=<a scratch pool>
   DISCO_VM_DRIVER=docker DISCO_VM_BASE=debian:trixie`. The daemon keeps
-  everything: a committed VM is a Docker image `disco-vm-vm:<project>--<name>`
-  (and a fresh VM's readied base `disco-vm-base:<project>--<name>--<random>`),
-  and a VM a container named `dvm-<project>--<name>`, labeled
+  everything: a committed VM is a Docker image `disco-vm-vm:<pool>--<name>`
+  (and a fresh VM's readied base `disco-vm-base:<pool>--<name>--<random>`),
+  and a VM a container named `dvm-<pool>--<name>`, labeled
   `ai.discobox.vm.*`. With no `DISCO_VM_BASE`, a fresh VM is refused.
 - Start fresh from the base: `run dev`. Create takes 30s to 2 minutes (apt
   installs systemd); a commit costs a shutdown and a `docker commit`, and
@@ -99,9 +99,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   for it on `*.archil.com` (the control plane and the process API) and
   `*.archil.app` (exposed ports), then `eval "$(discobox-access env)"`. Any
   build drives it: nothing of disco-vm's goes in the guest.
-- Isolate state: `export DISCO_VM_DRIVER=archil DISCO_VM_PROJECT=<scratch>
-  DISCO_VM_BASE=debian:trixie`. A VM is the sandbox `dvm-<project>--<name>`,
-  its data volume the disk `dvm-<project>--<name>--data`. With no
+- Isolate state: `export DISCO_VM_DRIVER=archil DISCO_VM_POOL=<scratch>
+  DISCO_VM_BASE=debian:trixie`. A VM is the sandbox `dvm-<pool>--<name>`,
+  its data volume the disk `dvm-<pool>--<name>--data`. With no
   `DISCO_VM_BASE`, a fresh VM runs Archil's default image (Debian 12).
 - The flow: `run dev --data 1GiB` (about 7 s), `exec dev sh -c '...'` (no
   `--` after the name: it reaches the guest as the command), `stop`,
@@ -109,9 +109,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   while `dev2`, its fork, exists.
 - Conformance: `DISCO_VM_ARCHIL_IMAGE=debian:trixie go test
   ./pkg/machine/archil -run TestConformance -v` (about 2.5 minutes, in
-  project `conformance`).
+  pool `conformance`).
 - Clean up: `ls -a` is empty, and the control plane lists no sandbox or disk
-  of the project (`GET /api/sandboxes`, `GET /api/disks` at
+  of the pool (`GET /api/sandboxes`, `GET /api/disks` at
   `https://control.green.us-east-1.aws.prod.archil.com`).
 
 ## The Linux guest image, without a Mac
@@ -178,7 +178,7 @@ here for real, booting a VM in about two seconds:
 - An instance started by the old binary: read its `instances/<id>/shim.json`,
   `ps -p <pid>`, then act on it with the new binary.
 - Statelessness: everything one root or host made is seen from another (a
-  second `DISCO_VM_ROOT`, the same project).
+  second `DISCO_VM_ROOT`, the same pool).
 
 ## Gotchas
 

@@ -38,7 +38,7 @@ Archil pauses it.
 |---|---|
 | `Install` | not offered: a fresh VM runs the base. |
 | base | `Config.Base` (`$DISCO_VM_BASE`), an OCI image Archil pulls, or Archil's default image when empty. |
-| VM | the sandbox `dvm-<project>--<name>`. `Instances` lists the sandboxes under the project's prefix whose rest is a VM name, with each one's size, creation, fence (`GET .../network`), and data disk. Archil does not say which sandbox a fork came from: `From` is set only by the Create that made it. |
+| VM | the sandbox `dvm-<pool>--<name>`. `Instances` lists the sandboxes under the pool's prefix whose rest is a VM name, with each one's size, creation, fence (`GET .../network`), and data disk. Archil does not say which sandbox a fork came from: `From` is set only by the Create that made it. |
 | `Create`, fresh | a sandbox of the base at the size asked, with its fence; then 7302 exposed, a stop, and the data disk. `sandbox_name_conflict` is `ErrExists`. |
 | `Create`, `From` | a fork of the source's sandbox, which must be stopped and have no mounts (commit it first); the spec's fence set (an unfenced spec clears the source's); then 7302 exposed, a stop, and the data disk. A size other than the source's is refused. |
 | `Commit` | reported (`Capabilities.Commit`, ADR 26-11-03-868). A stopped sandbox with mounts is started with none and stopped; then the data disk is deleted. Nothing in the guest is changed, and nothing records the commit. |
@@ -50,14 +50,14 @@ Archil pauses it.
 | `Machine.Kill`, `Shutdown` | Archil's stop. A reboot is refused. |
 | guest operations | a process each: exec with the request's directory, variables, and terminal, `runuser -u` for another account (an image without util-linux, such as Alpine, fails `exec -u`); `cp` as tar, GNU's or BusyBox's, a copy out tarring to `/var/tmp` (so it needs that much free space in the guest, and streams nothing until tar is done) and writing `R` once that worked, then the tar in 512 KiB chunks the host asks for, read with `dd`, since Archil drops output that outruns its connection (an exec that loses output fails); `info` as `uname -m; hostname`. |
 | `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `https://<hostname Archil gives port 7302>`, the same across stop and start, and the private URL is the URL. |
-| volumes | `data`: the disk `dvm-<project>--<name>--data` at `/.discobox/data`, made at Create (a data disk of the name with no sandbox is a VM mid-upgrade, so Create of that name is `ErrExists`) and deleted at Commit and Destroy. No `cache` (ADR 26-11-02-180). |
+| volumes | `data`: the disk `dvm-<pool>--<name>--data` at `/.discobox/data`, made at Create (a data disk of the name with no sandbox is a VM mid-upgrade, so Create of that name is `ErrExists`) and deleted at Commit and Destroy. No `cache` (ADR 26-11-02-180). |
 | egress | `network.egress` `{default: deny, allow: [...]}`, set at create (fresh) or right after the fork (`From`), and read back. |
 | keys | none: an Archil token never expires and reaches the whole account (`ErrCannotIssue`). |
 
 ## Try it
 
 ```bash
-export ARCHIL_API_KEY=key-... DISCO_VM_DRIVER=archil DISCO_VM_PROJECT=scratch DISCO_VM_BASE=debian:trixie
+export ARCHIL_API_KEY=key-... DISCO_VM_DRIVER=archil DISCO_VM_POOL=scratch DISCO_VM_BASE=debian:trixie
 disco-vm run dev --data 1GiB
 disco-vm exec dev sh -c 'apt-get update && apt-get install -y curl'
 disco-vm stop dev

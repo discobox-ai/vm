@@ -18,30 +18,30 @@ import (
 )
 
 // A committed VM (ADR 26-11-03-606) is a Docker image in vmRepo tagged
-// `<project>--<name>`, committed from the VM's stopped container and labeled
-// with its name, project, size, the committed VM it came from, and
+// `<pool>--<name>`, committed from the VM's stopped container and labeled
+// with its name, pool, size, the committed VM it came from, and
 // labelCommitted. Its container is removed once it is committed. A VM is
-// the project's container dvm-<project>--<name>, or that image; a name
+// the pool's container dvm-<pool>--<name>, or that image; a name
 // whose image is there is the committed VM's, whatever container a failed
 // commit left.
 
-// vmTag is a committed VM's Docker image: vmRepo:<project>--<name>.
-func vmTag(project, name string) string {
-	return vmRepo + ":" + machine.ResourcePrefix("", project) + name
+// vmTag is a committed VM's Docker image: vmRepo:<pool>--<name>.
+func vmTag(pool, name string) string {
+	return vmRepo + ":" + machine.ResourcePrefix("", pool) + name
 }
 
-// committed is the project's committed VM of a name, found false where its
+// committed is the pool's committed VM of a name, found false where its
 // Docker image is not there or is not one.
 func (d *Driver) committed(ctx context.Context, name string) (machine.Instance, bool, error) {
-	img, err := d.api.inspectImage(ctx, vmTag(d.project, name))
+	img, err := d.api.inspectImage(ctx, vmTag(d.pool, name))
 	if isNotFound(err) {
 		return machine.Instance{}, false, nil
 	}
 	if err != nil {
-		return machine.Instance{}, false, fmt.Errorf("docker: image %s: %w", vmTag(d.project, name), err)
+		return machine.Instance{}, false, fmt.Errorf("docker: image %s: %w", vmTag(d.pool, name), err)
 	}
 	labels := img.Config.Labels
-	if labels[labelCommitted] == "" || labels[labelProject] != d.project || labels[labelInstance] != name {
+	if labels[labelCommitted] == "" || labels[labelPool] != d.pool || labels[labelInstance] != name {
 		return machine.Instance{}, false, nil
 	}
 	created, _ := time.Parse(time.RFC3339Nano, img.Created)
@@ -56,7 +56,7 @@ func committedOf(id, name string, labels map[string]string, created time.Time) m
 	return inst
 }
 
-// Instance is the project's VM of the name: its committed Docker image, or
+// Instance is the pool's VM of the name: its committed Docker image, or
 // else its container, or else an upgrade's new one.
 func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, error) {
 	if machine.ValidateName(name) != nil {
@@ -67,7 +67,7 @@ func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, e
 	}
 	// While an upgrade is caught between its containers, the new one is
 	// the VM.
-	for _, ref := range []string{containerName(d.project, name), upgradeName(d.project, name)} {
+	for _, ref := range []string{containerName(d.pool, name), upgradeName(d.pool, name)} {
 		c, err := d.api.inspectContainer(ctx, ref)
 		if isNotFound(err) || (err == nil && (!d.managed(c.Config.Labels) || c.Config.Labels[labelInstance] != name)) {
 			continue
@@ -80,17 +80,17 @@ func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, e
 	return machine.Instance{}, fmt.Errorf("instance %q: %w", name, machine.ErrNotFound)
 }
 
-// managed reports whether a container is a VM of the project's, or a
+// managed reports whether a container is a VM of the pool's, or a
 // readying base's, which is listed so one a crash leaves is removed; not
 // something else of the daemon's, one from before ADR 26-10-23-417, whose
-// labels name no project, or one from before ADR 26-11-03-606, an instance
+// labels name no pool, or one from before ADR 26-11-03-606, an instance
 // of an image, which labelImage names: since then only a readying
 // container carries it.
 func (d *Driver) managed(labels map[string]string) bool {
 	if labels[labelImage] != "" && !readyingName(labels[labelInstance]) {
 		return false
 	}
-	return labels[labelInstance] != "" && labels[labelProject] == d.project
+	return labels[labelInstance] != "" && labels[labelPool] == d.pool
 }
 
 // readyingName reports whether name is a readying container's,
@@ -104,7 +104,7 @@ func readyingName(name string) bool {
 	return err == nil
 }
 
-// Instances lists the project's committed VMs and containers. A container
+// Instances lists the pool's committed VMs and containers. A container
 // whose name a committed VM holds is what a failed commit left, and is the
 // committed VM's to remove; an upgrade's new container is listed as the VM
 // only once its old one is gone.
@@ -117,9 +117,9 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 	taken := map[string]bool{}
 	for _, img := range images {
 		for _, tag := range img.RepoTags {
-			name, ok := strings.CutPrefix(tag, vmTag(d.project, ""))
+			name, ok := strings.CutPrefix(tag, vmTag(d.pool, ""))
 			if !ok || machine.ValidateName(name) != nil || img.Labels[labelCommitted] == "" ||
-				img.Labels[labelProject] != d.project || img.Labels[labelInstance] != name {
+				img.Labels[labelPool] != d.pool || img.Labels[labelInstance] != name {
 				continue
 			}
 			taken[name] = true
@@ -135,7 +135,7 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 		if len(c.Names) > 0 {
 			name = strings.TrimPrefix(c.Names[0], "/")
 		}
-		if !d.managed(c.Labels) || machine.ResourceProject(namePrefix, name) != d.project || !strings.HasPrefix(name, machine.ResourcePrefix(namePrefix, d.project)) {
+		if !d.managed(c.Labels) || machine.ResourcePool(namePrefix, name) != d.pool || !strings.HasPrefix(name, machine.ResourcePrefix(namePrefix, d.pool)) {
 			continue
 		}
 		info := containerInfo{ID: c.ID, Name: "/" + name, Image: c.ImageID}
@@ -164,12 +164,12 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 }
 
 // instance is a container as a VM: its name is the container's, less the
-// project's prefix and an upgrade's suffix, and its labels say the rest.
+// pool's prefix and an upgrade's suffix, and its labels say the rest.
 func (d *Driver) instance(c containerInfo) machine.Instance {
 	labels := c.Config.Labels
 	inst := machine.Instance{
 		ID:      c.ID,
-		Name:    strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(c.Name, "/"), machine.ResourcePrefix(namePrefix, d.project)), upgradeSuffix),
+		Name:    strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(c.Name, "/"), machine.ResourcePrefix(namePrefix, d.pool)), upgradeSuffix),
 		From:    labels[labelFrom],
 		GuestOS: machine.Linux,
 	}

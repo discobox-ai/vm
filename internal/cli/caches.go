@@ -18,8 +18,8 @@ import (
 func cacheCommand(g *globals) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cache",
-		Short: "List, save, and remove the project's cache keys",
-		Long: `A cache key names a project's cache: an immutable generation that an
+		Short: "List, save, and remove the pool's cache keys",
+		Long: `A cache key names a pool's cache: an immutable generation that an
 instance created with --cache KEY starts from, as a private clone at
 /.discobox/cache. Only "cache save" publishes one, from a stopped instance.`,
 	}
@@ -31,7 +31,7 @@ func cacheLsCommand(g *globals) *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "ls",
-		Short: "List the project's cache keys and their current generations",
+		Short: "List the pool's cache keys and their current generations",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			e, err := g.engine()

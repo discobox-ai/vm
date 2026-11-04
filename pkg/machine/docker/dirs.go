@@ -6,16 +6,16 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// A VM's volumes and a project's cache generations are directories on the
+// A VM's volumes and a pool's cache generations are directories on the
 // daemon's host (ADR 26-11-03-782 §6), under the driver's root (Driver.Root,
 // DefaultRoot), laid out as discobox's own docker driver lays out its tree:
 //
-//	data/projects/<project>/vms/<name>              a VM's data volume
-//	cache/projects/<project>/vms/<name>             a VM's cache clone
-//	cache/projects/<project>/vms/.<name>--<random>  a clone being staged
-//	cache/projects/<project>/keys/<key>/<generation> a key's generation
-//	cache/projects/<project>/keys/<key>/current.json the key's pointer
-//	cache/projects/<project>/keys/<key>/.lock        the key's flock
+//	data/pools/<pool>/vms/<name>              a VM's data volume
+//	cache/pools/<pool>/vms/<name>             a VM's cache clone
+//	cache/pools/<pool>/vms/.<name>--<random>  a clone being staged
+//	cache/pools/<pool>/keys/<key>/<generation> a key's generation
+//	cache/pools/<pool>/keys/<key>/current.json the key's pointer
+//	cache/pools/<pool>/keys/<key>/.lock        the key's flock
 //
 // The daemon may be remote, so the driver never touches them itself: a
 // helper container of the agent alone (helperRepo), bind-mounting the root,
@@ -48,8 +48,8 @@ const (
 
 // dirsRequest is one step a helper takes, as JSON on its command line.
 type dirsRequest struct {
-	Op      string `json:"op"`
-	Project string `json:"project"`
+	Op   string `json:"op"`
+	Pool string `json:"pool"`
 	// Name is the VM's.
 	Name string `json:"name,omitempty"`
 	// Data is that the VM has a data volume; Key, a cache key, that it has a
@@ -81,12 +81,12 @@ type dirsResult struct {
 // layout is where the driver's directories are under its root. Its paths
 // are the daemon's host's, which is linux.
 type layout struct {
-	root, project string
+	root, pool string
 }
 
-// vms is the directory of the project's VMs' directories for volume v.
+// vms is the directory of the pool's VMs' directories for volume v.
 func (l layout) vms(v machine.Volume) string {
-	return path.Join(l.root, string(v), "projects", l.project, "vms")
+	return path.Join(l.root, string(v), "pools", l.pool, "vms")
 }
 
 func (l layout) vm(v machine.Volume, name string) string { return path.Join(l.vms(v), name) }

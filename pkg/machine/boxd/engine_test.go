@@ -46,7 +46,7 @@ func TestEngineRunsInstances(t *testing.T) {
 	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
 
 	// Another engine, made from nothing but the API, as another host's is.
-	elsewhere, err := engine.Open(&Driver{api: d.api, project: machine.DefaultProject}, "")
+	elsewhere, err := engine.Open(&Driver{api: d.api, pool: machine.DefaultPool}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,9 +117,9 @@ func TestEngineRunsInstances(t *testing.T) {
 	}
 }
 
-// TestEngineKeepsProjectsApart checks that a project lists only what it made,
-// and that what boxd holds under no project's name is not listed.
-func TestEngineKeepsProjectsApart(t *testing.T) {
+// TestEngineKeepsPoolsApart checks that a pool lists only what it made,
+// and that what boxd holds under no pool's name is not listed.
+func TestEngineKeepsPoolsApart(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
@@ -144,16 +144,16 @@ func TestEngineKeepsProjectsApart(t *testing.T) {
 	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "web", From: &base}); err != nil {
 		t.Fatal(err)
 	}
-	other := &Driver{api: d.api, project: "other"}
+	other := &Driver{api: d.api, pool: "other"}
 	if list, err := other.Instances(ctx); err != nil || len(list) != 0 {
-		t.Fatalf("another project's VMs = %+v, %v", list, err)
+		t.Fatalf("another pool's VMs = %+v, %v", list, err)
 	}
 	if _, err := other.Instance(ctx, "base"); !errors.Is(err, machine.ErrNotFound) {
-		t.Fatalf("another project found the default's committed VM: %v", err)
+		t.Fatalf("another pool found the default's committed VM: %v", err)
 	}
 	list, err := d.Instances(ctx)
 	if err != nil || len(list) != 2 {
-		t.Fatalf("the default project's VMs = %+v, %v", list, err)
+		t.Fatalf("the default pool's VMs = %+v, %v", list, err)
 	}
 	var names []string
 	for _, inst := range list {
@@ -161,7 +161,7 @@ func TestEngineKeepsProjectsApart(t *testing.T) {
 	}
 	slices.Sort(names)
 	if want := []string{"base:true", "web:false"}; !slices.Equal(names, want) {
-		t.Fatalf("the default project's VMs = %v, want %v", names, want)
+		t.Fatalf("the default pool's VMs = %v, want %v", names, want)
 	}
 }
 

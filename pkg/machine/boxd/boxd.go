@@ -7,7 +7,7 @@
 // 26-11-03-606) onto their names and keeps nothing on the host (ADR
 // 26-10-23-417):
 //
-//   - A VM is a boxd machine named dvm-<project>--<name>: fresh, made from
+//   - A VM is a boxd machine named dvm-<pool>--<name>: fresh, made from
 //     the driver's base (machine.Config.Base, or boxd's default image), or
 //     restored from a committed VM's snapshot, and powered off in order once
 //     made, so its first boot is a cold boot of its disk.
@@ -57,8 +57,8 @@ const (
 
 // Driver is the boxd driver.
 type Driver struct {
-	api     *client
-	project string
+	api  *client
+	pool string
 	// base is the image a fresh VM is made from; empty is boxd's default
 	// image (GetConfig).
 	base string
@@ -66,15 +66,15 @@ type Driver struct {
 
 var _ machine.Driver = (*Driver)(nil)
 
-// New returns a driver for cfg's project (machine.DefaultProject when empty)
+// New returns a driver for cfg's pool (machine.DefaultPool when empty)
 // that authenticates with the key cfg.Keys answers on each call. It dials
 // nothing until it is used.
 func New(cfg machine.Config) *Driver {
-	project := cfg.Project
-	if project == "" {
-		project = machine.DefaultProject
+	pool := cfg.Pool
+	if pool == "" {
+		pool = machine.DefaultPool
 	}
-	return &Driver{api: newClient(cfg.Keys), project: project, base: cfg.Base}
+	return &Driver{api: newClient(cfg.Keys), pool: pool, base: cfg.Base}
 }
 
 func (*Driver) Name() string { return "boxd" }
@@ -108,8 +108,8 @@ type vmRef struct {
 	Name string `json:"name"`
 }
 
-// prefix starts the name of everything the driver makes for its project.
-func (d *Driver) prefix() string { return machine.ResourcePrefix(namePrefix, d.project) }
+// prefix starts the name of everything the driver makes for its pool.
+func (d *Driver) prefix() string { return machine.ResourcePrefix(namePrefix, d.pool) }
 
 // machineName is a VM's machine, and a committed VM's snapshot.
 func (d *Driver) machineName(name string) string { return d.prefix() + name }
@@ -181,7 +181,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 			return machine.Instance{}, fmt.Errorf("boxd: no committed VM %s, a snapshot of that name and ID; commit it first: %w", spec.From.Name, machine.ErrNotFound)
 		}
 		// By name, as boxd's own restores are: a committed VM's name is
-		// its snapshot's, and no second VM of the project takes it.
+		// its snapshot's, and no second VM of the pool takes it.
 		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: d.machineName(spec.From.Name), Name: name, Isolated: spec.Isolated}
 		if spec.CPUs != 0 || spec.Memory != 0 {
 			// With none asked for, the snapshot's own size.

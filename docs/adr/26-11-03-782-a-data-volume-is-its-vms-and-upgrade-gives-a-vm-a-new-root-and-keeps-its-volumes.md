@@ -1,6 +1,6 @@
 # 26-11-03-782 — A data volume is its VM's, and Upgrade gives a VM a new root and keeps its volumes
 
-- **Status**: Accepted (supersedes in part 26-11-02-180, its §5 docker row)
+- **Status**: Accepted (supersedes in part 26-11-02-180, its §5 docker row; §6 project paths superseded by [26-11-04-412](26-11-04-412-docker-runs-in-a-vm-owned-by-its-pool.md))
 - **Date**: 2026-11-03
 
 Accepted by the owner by merging #39, 2026-11-03.

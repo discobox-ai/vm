@@ -31,10 +31,10 @@ func (e exitError) Error() string { return fmt.Sprintf("exit status %d", e.code)
 const BaseEnv = "DISCO_VM_BASE"
 
 type globals struct {
-	root    string
-	driver  string
-	project string
-	debug   bool
+	root   string
+	driver string
+	pool   string
+	debug  bool
 	// opened is the engine a command opened.
 	opened *engine.Engine
 }
@@ -47,25 +47,25 @@ func (g *globals) dir() string {
 	return machine.DefaultDir()
 }
 
-// newDriver makes a driver of the name for a project, keeping its state, if
+// newDriver makes a driver of the name for a pool, keeping its state, if
 // it keeps any on this host, under dir, with the key the environment holds
 // for it.
-func (g *globals) newDriver(name, project string) (machine.Driver, error) {
+func (g *globals) newDriver(name, pool string) (machine.Driver, error) {
 	if name == "" {
 		name = machine.DefaultName()
 	}
-	return machine.New(name, machine.Config{Dir: g.dir(), Project: project, Base: os.Getenv(BaseEnv), Keys: machine.KeyFromEnv(name)})
+	return machine.New(name, machine.Config{Dir: g.dir(), Pool: pool, Base: os.Getenv(BaseEnv), Keys: machine.KeyFromEnv(name)})
 }
 
 func (g *globals) engine() (*engine.Engine, error) {
 	if g.opened != nil {
 		return g.opened, nil
 	}
-	driver, err := g.newDriver(g.driver, g.project)
+	driver, err := g.newDriver(g.driver, g.pool)
 	if err != nil {
 		return nil, err
 	}
-	g.opened, err = engine.Open(driver, g.project)
+	g.opened, err = engine.Open(driver, g.pool)
 	return g.opened, err
 }
 
@@ -89,7 +89,7 @@ func Main(args []string) int {
 		}
 	}
 	root.PersistentFlags().StringVar(&g.root, "root", "", "where a driver on this host's disk (hcs, vz, fake) keeps its VMs (default $"+machine.DirEnv+" or the per-OS data directory)")
-	root.PersistentFlags().StringVar(&g.project, "project", envOr("DISCO_VM_PROJECT", machine.DefaultProject), "project that scopes every VM and driver resource (also $DISCO_VM_PROJECT)")
+	root.PersistentFlags().StringVar(&g.pool, "pool", envOr("DISCO_VM_POOL", machine.DefaultPool), "pool that scopes every VM and driver resource (also $DISCO_VM_POOL)")
 	root.PersistentFlags().StringVar(&g.driver, "driver", os.Getenv("DISCO_VM_DRIVER"), "hypervisor driver (default "+machine.DefaultName()+"; also $DISCO_VM_DRIVER)")
 	root.AddCommand(
 		driversCommand(g),

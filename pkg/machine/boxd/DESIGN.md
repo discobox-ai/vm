@@ -11,7 +11,7 @@ machines and snapshots (the root
 [docs/drivers/boxd.md](../../../docs/drivers/boxd.md).
 
 - **A VM is a machine, and a committed VM a snapshot, of one name**,
-  `dvm-<project>--<name>`. A name is the project's across both: Create
+  `dvm-<pool>--<name>`. A name is the pool's across both: Create
   refuses one a machine or a ready snapshot holds. Commit starts the stopped
   machine, because boxd only snapshots a running one, snapshots it under its
   own name, and deletes it. The snapshot is still cut from an orderly
@@ -61,13 +61,13 @@ machines and snapshots (the root
   `machine.Config.Keys` answers, asked on every call; an API key (`bxd_`) is
   exchanged for a JWT, again whenever the key changes, and anything else is
   sent as a JWT.
-- **An issued key is a `member` API key** named `dvm-<project>--<name>`,
+- **An issued key is a `member` API key** named `dvm-<pool>--<name>`,
   fenced to the engine's key's org (boxd resolves an empty org to it), with
   boxd's expiry. It reaches all its maker's machines in that org: scope
   `org`. boxd refuses key management to every API key, so an issued key
   cannot issue, and the driver issues only from a `boxd login` session; from
   an API key it is `ErrCannotIssue`. `IssuedKeys` and `RevokeKey` read
-  `ListApiKeys`, keep only the caller's `member` keys named for the project,
+  `ListApiKeys`, keep only the caller's `member` keys named for the pool,
   and `RevokeKey` deletes nothing else (ADR 26-10-24-562).
 - **Isolation is boxd's.** `Isolated` is `CreateVm`'s and
   `CreateVmFromSnapshot`'s `isolated`, which a restore inherits from its

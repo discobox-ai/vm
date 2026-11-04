@@ -513,8 +513,8 @@ func infoCommand(g *globals) *cobra.Command {
 				check = err.Error()
 			}
 			caps, _ := json.MarshalIndent(e.Driver.Capabilities(), "  ", "  ")
-			fmt.Printf("version:  %s\nroot:     %s\nproject:  %s\ndriver:   %s (available: %s)\ncheck:    %s\ncapabilities:\n  %s\n",
-				version.String(), g.dir(), e.Project, e.Driver.Name(), strings.Join(machine.Names(), ", "), check, caps)
+			fmt.Printf("version:  %s\nroot:     %s\npool:  %s\ndriver:   %s (available: %s)\ncheck:    %s\ncapabilities:\n  %s\n",
+				version.String(), g.dir(), e.Pool, e.Driver.Name(), strings.Join(machine.Names(), ", "), check, caps)
 			return nil
 		},
 	}

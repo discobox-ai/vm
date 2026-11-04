@@ -13,7 +13,7 @@ import (
 
 // namePrefix starts the name of every machine and snapshot the driver makes,
 // so that the caller's other machines and snapshots are never taken for the
-// driver's. The project follows it.
+// driver's. The pool follows it.
 const namePrefix = "dvm-"
 
 // unixTime reads one of boxd's times, counted in unit since the epoch: a
@@ -35,7 +35,7 @@ func (d *Driver) snapshots(ctx context.Context, api boxdapi.BoxdApiClient) ([]*b
 }
 
 // instanceName is the VM a machine or snapshot name is of, in the driver's
-// project: `dvm-<project>--<name>`, where name is a VM name
+// pool: `dvm-<pool>--<name>`, where name is a VM name
 // (machine.ValidateName). What disco-vm made before ADR 26-11-03-606 (an
 // image's snapshot, named for its 64-digit ID, and a tag's, with "--" in its
 // name) is not one, and is not read.
@@ -107,7 +107,7 @@ func (d *Driver) refuseCommitted(ctx context.Context, api boxdapi.BoxdApiClient,
 	return err
 }
 
-// Instances lists the project's VMs: its machines, then its ready snapshots
+// Instances lists the pool's VMs: its machines, then its ready snapshots
 // as committed VMs. A snapshot that shares its name with a machine is a
 // Commit that has not deleted the machine yet: it is listed, committed, and
 // the machine is not, and Destroy removes both.
@@ -141,7 +141,7 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 	return out, nil
 }
 
-// Instance is the project's VM of the name, committed or not.
+// Instance is the pool's VM of the name, committed or not.
 func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, error) {
 	all, err := d.Instances(ctx)
 	if err != nil {

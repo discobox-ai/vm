@@ -42,7 +42,7 @@
 - **No VM names another above the seam but by `From`.** A hypervisor whose
   disks chain (hcs, `local.Hypervisor.Chains`) has `local` record the ID of
   the VM a copy was made from, and refuse to remove or boot that VM with
-  `machine.ErrInUse` while another VM's record, in any project, names it;
+  `machine.ErrInUse` while another VM's record, in any pool, names it;
   nothing above the seam records or walks a chain. (ADR 26-11-03-606.)
 - **`local` reads every VM record before it removes or boots a VM whose
   disk may be chained.** A record it cannot read (a parse error, a
