@@ -47,6 +47,17 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   committed VM it came from, and a committed VM the Docker image above.
   Only volumes and caches are kept on the daemon's host, in directories
   (below).
+- **The daemon is a connection the driver is given** (`Daemon`; ADR
+  26-11-04-412 §3). `New` reaches the one `$DOCKER_HOST` names
+  (`EnvDaemon`: a Unix socket or plain TCP, its connections kept idle
+  between requests); `NewWithDaemon` takes any other. Ordinary requests and
+  hijacked exec streams both dial through it, and a connection must
+  half-close. `GuestDaemon` reaches a daemon inside a running guest through
+  its agent: each connection is an Exec of the guest's own `disco-vm pipe`
+  to the daemon's address (`HostDaemonAddress` in a Docker host VM), ready
+  once the relay writes `guest.PipeReady`, a relay that fails first a dial
+  error with its exit status and stderr. Its requests keep no connection
+  idle, and closing one kills and reaps its relay. It opens no port.
 - **The guest's operations are the agent's**, reached by a docker exec of
   `disco-vm pipe` for each connection, on the container's side of the
   namespace, which reaches the agent's root-only socket through the guest's

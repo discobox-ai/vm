@@ -136,12 +136,18 @@ type Driver struct {
 
 var _ machine.Driver = (*Driver)(nil)
 
-// New returns a driver for the daemon $DOCKER_HOST names, for cfg's pool
+// New returns a driver for the daemon $DOCKER_HOST names (EnvDaemon), as
+// NewWithDaemon does.
+func New(cfg machine.Config) *Driver {
+	return NewWithDaemon(cfg, EnvDaemon())
+}
+
+// NewWithDaemon returns a driver for the daemon d, for cfg's pool
 // (machine.DefaultPool when empty), whose fresh VMs are readied from
 // cfg.Base, whose agent is $DISCO_VM_AGENT or, on linux, this binary, and
 // whose directories are under $DISCO_VM_DOCKER_ROOT or DefaultRoot on the
 // daemon's host. It dials nothing until it is used.
-func New(cfg machine.Config) *Driver {
+func NewWithDaemon(cfg machine.Config, d Daemon) *Driver {
 	pool := cfg.Pool
 	if pool == "" {
 		pool = machine.DefaultPool
@@ -154,7 +160,7 @@ func New(cfg machine.Config) *Driver {
 	if root == "" {
 		root = DefaultRoot
 	}
-	return &Driver{api: newAPI(), pool: pool, base: cfg.Base, Agent: agent, Root: root}
+	return &Driver{api: newAPI(d), pool: pool, base: cfg.Base, Agent: agent, Root: root}
 }
 
 func (*Driver) Name() string { return "docker" }
@@ -174,7 +180,7 @@ func (d *Driver) Check(ctx context.Context) error {
 	defer cancel()
 	in, err := d.api.info(ctx)
 	if err != nil {
-		return fmt.Errorf("docker: %s: %w", d.api.host, err)
+		return fmt.Errorf("docker: %s: %w", d.api.name, err)
 	}
 	if in.OSType != "linux" {
 		return fmt.Errorf("docker: the daemon runs %s containers; switch it to linux containers", in.OSType)

@@ -44,6 +44,36 @@ func TestConformance(t *testing.T) {
 	})
 }
 
+// TestConformanceThroughAnAgent runs the conformance suite against the same
+// daemon reached as GuestDaemon reaches a host VM's: every request and exec
+// stream is an Exec, through a disco-vm agent, of the linux agent's
+// `disco-vm pipe` to the daemon's socket. The agent runs on this host, so it
+// proves the transport, not Docker in a VM. It runs only where ImageEnv is
+// set, against a unix:// $DOCKER_HOST (or the default).
+func TestConformanceThroughAnAgent(t *testing.T) {
+	image := os.Getenv(ImageEnv)
+	if image == "" {
+		t.Skipf("set %s (an image, such as debian:trixie) to run the conformance suite against docker through an agent", ImageEnv)
+	}
+	host := os.Getenv(HostEnv)
+	if host == "" {
+		host = defaultHost
+	}
+	socket, ok := strings.CutPrefix(host, "unix://")
+	if !ok {
+		t.Skipf("%s=%s: the relay is run against a unix socket", HostEnv, host)
+	}
+	agent := linuxAgent(t)
+	d := NewWithDaemon(machine.Config{Base: image, Pool: "relay"}, GuestDaemon(startTestAgent(t), agent, "unix:"+socket))
+	d.Agent = agent
+	machinetest.Run(t, d, machinetest.Config{
+		CPUs:       2,
+		Memory:     2 << 30,
+		Timeout:    2 * time.Minute,
+		ScratchDir: "/var/lib",
+	})
+}
+
 // TestNoBase refuses a fresh VM where no base is configured, before it asks
 // the daemon anything.
 func TestNoBase(t *testing.T) {

@@ -38,7 +38,9 @@ func dialExec(ctx context.Context, a *api, container string, cmd []string, addr 
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		code, _, _ := a.execExitCode(context.Background(), execID)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		code, _, _ := a.execExitCode(ctx, execID)
 		return nil, fmt.Errorf("docker: relay to %s exited %d: %s", addr, code, bytes.TrimSpace(c.stderrBytes()))
 	}
 	if first[0] != guest.PipeReady {

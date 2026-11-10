@@ -24,14 +24,61 @@ const HostEnv = "DOCKER_HOST"
 
 const defaultHost = "unix:///var/run/docker.sock"
 
+// Daemon is a connection to a Docker daemon's Engine API: how a driver
+// reaches it, made explicit so that a daemon with no socket on this host (one
+// in a guest, reached through its agent) is driven like a local one.
+type Daemon struct {
+	// Name says which daemon this is, in errors: DOCKER_HOST's value, or the
+	// guest address GuestDaemon relays to.
+	Name string
+	// Dial opens one connection to the daemon; ctx bounds opening it, not
+	// the connection. Each HTTP request and each hijacked exec stream is a
+	// connection of its own, and every connection must half-close
+	// (CloseWrite): an exec's stdin ends that way, and a guest relay passes
+	// its caller's half-close on through it.
+	Dial func(ctx context.Context) (net.Conn, error)
+	// KeepIdle keeps a connection open between requests for the next. A
+	// connection that costs a process to open (GuestDaemon's) is closed once
+	// its request is answered instead, so none outlives its request.
+	KeepIdle bool
+}
+
+// EnvDaemon is the daemon $DOCKER_HOST names, as the docker CLI reads it:
+// unix:///var/run/docker.sock (the default) or tcp://HOST:PORT without TLS.
+// It reads the environment now and dials nothing until a request; another
+// scheme fails each dial.
+func EnvDaemon() Daemon {
+	host := os.Getenv(HostEnv)
+	if host == "" {
+		host = defaultHost
+	}
+	var network, addr string
+	switch {
+	case strings.HasPrefix(host, "unix://"):
+		network, addr = "unix", strings.TrimPrefix(host, "unix://")
+	case strings.HasPrefix(host, "tcp://"):
+		network, addr = "tcp", strings.TrimPrefix(host, "tcp://")
+	}
+	return Daemon{
+		Name: host,
+		Dial: func(ctx context.Context) (net.Conn, error) {
+			if network == "" {
+				return nil, fmt.Errorf("docker: %s=%q: only unix:// and tcp:// (without TLS) are supported", HostEnv, host)
+			}
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+		KeepIdle: true,
+	}
+}
+
 // api is a client of the Docker Engine API, the few calls the driver makes.
 // It talks HTTP to the daemon's socket itself rather than through the docker
 // CLI or SDK, so it works from a server that embeds the engine.
 type api struct {
-	host    string
-	network string
-	addr    string
-	http    *http.Client
+	name string
+	dial func(ctx context.Context) (net.Conn, error)
+	http *http.Client
 }
 
 // apiError is a non-2xx answer from the daemon.
@@ -47,30 +94,13 @@ func isNotFound(err error) bool {
 	return errors.As(err, &ae) && ae.Status == http.StatusNotFound
 }
 
-func newAPI() *api {
-	host := os.Getenv(HostEnv)
-	if host == "" {
-		host = defaultHost
-	}
-	a := &api{host: host}
-	switch {
-	case strings.HasPrefix(host, "unix://"):
-		a.network, a.addr = "unix", strings.TrimPrefix(host, "unix://")
-	case strings.HasPrefix(host, "tcp://"):
-		a.network, a.addr = "tcp", strings.TrimPrefix(host, "tcp://")
-	}
-	a.http = &http.Client{Transport: &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return a.dial(ctx) },
-	}}
-	return a
-}
-
-func (a *api) dial(ctx context.Context) (net.Conn, error) {
-	if a.network == "" {
-		return nil, fmt.Errorf("docker: %s=%q: only unix:// and tcp:// (without TLS) are supported", HostEnv, a.host)
-	}
-	var d net.Dialer
-	return d.DialContext(ctx, a.network, a.addr)
+// newAPI is a client of d, whose ordinary requests and hijacked exec
+// streams both dial through d.Dial.
+func newAPI(d Daemon) *api {
+	return &api{name: d.Name, dial: d.Dial, http: &http.Client{Transport: &http.Transport{
+		DialContext:       func(ctx context.Context, _, _ string) (net.Conn, error) { return d.Dial(ctx) },
+		DisableKeepAlives: !d.KeepIdle,
+	}}}
 }
 
 func endpoint(path string, query url.Values) string {

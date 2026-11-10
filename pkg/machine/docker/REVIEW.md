@@ -34,3 +34,15 @@
   both names (`vmContainers`, `whole`, and Destroy of a committed VM), never
   one inspect by name or ID: Commit once left the sibling behind, where it
   blocked every Create of the name once the committed VM was removed. (ADR 26-11-03-782.)
+- **A daemon connection that costs a process is never kept idle, and its
+  dial has a deadline of its own.** `GuestDaemon`'s connections are relays
+  the guest runs; `KeepIdle` is false so `net/http` closes each once its
+  answer is read, and `processConn.Close` ends the Exec session, which the
+  agent answers by killing and reaping the relay. A transport that pools
+  them leaves a `disco-vm pipe` running in the host VM per request. And
+  `net/http` dials on a context detached from the request (Go 1.27,
+  `context.WithoutCancel`), so a request canceled while its relay starts
+  does not stop the dial: `relayReady` does, and a dial that waits on ctx
+  alone leaks a relay per canceled request (a review found it; ADR
+  26-11-04-412 §3). Every daemon connection must also half-close: an exec's
+  stdin ends that way.
