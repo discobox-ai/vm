@@ -55,7 +55,10 @@ a `Capabilities` field, never a faked method:
 | volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<pool>--<name>--data` |
 | upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
 
-The engine enforces `MaxRunning`. Every driver clones the same way: cold
+A driver enforces `MaxRunning` across every pool it keeps, and refuses a
+boot past it with `ErrCapacity`; `local` does for hcs, vz, libkrun, and fake
+([pkg/machine/local](local/DESIGN.md#a-boot-is-admitted-across-every-pool)).
+The engine counts nothing. Every driver clones the same way: cold
 ([below](#every-copy-is-cold-and-a-vm-is-made-fast-by-what-is-in-it)).
 
 ## Commit is a capability, and a driver without it makes every VM fresh

@@ -28,6 +28,10 @@ import (
 const (
 	shimStateName  = "shim.json"
 	shimSocketName = "shim.sock"
+	// shimRefusedName holds why a shim's boot was refused for capacity,
+	// written before the shim exits and removed by the Start that spawns
+	// the next one.
+	shimRefusedName = "shim.refused"
 	// maxSocketPath is the longest path a Unix socket may have on every host
 	// a shim runs on: macOS's sun_path holds 104 bytes, Linux's 108.
 	maxSocketPath = 103
@@ -108,6 +112,12 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 		return err
 	}
 	m, err := d.boot(ctx, inst, machine.BootOptions{Console: os.Stderr, GUI: gui})
+	if errors.Is(err, machine.ErrCapacity) {
+		// Start reads this once the shim has exited, and refuses with
+		// ErrCapacity as it would have before spawning the shim.
+		why := strings.TrimSuffix(err.Error(), ": "+machine.ErrCapacity.Error())
+		_ = os.WriteFile(filepath.Join(d.instanceDir(id), shimRefusedName), []byte(why), 0o600)
+	}
 	if err != nil {
 		return err
 	}
@@ -489,14 +499,27 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 	if opts.GUI && !d.hv.Capabilities().Display {
 		return nil, fmt.Errorf("%s has no display to show: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
-	if _, err := d.runnable(inst); err != nil {
+	rec, err := d.runnable(inst)
+	if err != nil {
 		return nil, err
 	}
 	if shim, err := d.openShim(inst.ID); err == nil && shim.status(ctx) == nil {
 		return nil, fmt.Errorf("instance %s is already running", inst.Name)
 	}
+	// The shim's boot is what admits the instance and holds its slot, since
+	// the shim outlives this process. Asking here first refuses a full host
+	// before a shim is spawned, with machine.ErrCapacity; a boot admitted
+	// between this and the shim's is refused by the shim instead, which
+	// leaves shim.refused for this to return as ErrCapacity too.
+	release, err := d.admit(rec)
+	if err != nil {
+		return nil, err
+	}
+	release()
 	dir := d.instanceDir(inst.ID)
 	_ = os.Remove(filepath.Join(dir, shimStateName))
+	refused := filepath.Join(dir, shimRefusedName)
+	_ = os.Remove(refused)
 	logFile, err := os.OpenFile(filepath.Join(dir, "shim.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
@@ -516,6 +539,10 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 		}
 		select {
 		case err := <-exited:
+			if why, readErr := os.ReadFile(refused); readErr == nil {
+				_ = os.Remove(refused)
+				return nil, fmt.Errorf("instance %s failed to start: %s: %w", inst.Name, strings.TrimSpace(string(why)), machine.ErrCapacity)
+			}
 			return nil, fmt.Errorf("instance %s failed to start: %w\n%s", inst.Name, err, tail(filepath.Join(dir, "shim.log")))
 		case <-ctx.Done():
 			return nil, fmt.Errorf("instance %s: shim did not come up: %w", inst.Name, ctx.Err())

@@ -373,7 +373,13 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, name str
 		err = os.MkdirAll(hs.Dir, 0o755)
 	}
 	if err == nil {
-		err = d.hv.Install(ctx, InstallSpec{InstallSpec: spec, CacheDir: d.cacheDir()}, Layer{ID: rec.ID, Dir: hs.Dir})
+		// An install runs the guest (vz boots its installer, then the
+		// installed system), so it holds an admission as a boot does.
+		var release func()
+		if release, err = d.admit(rec); err == nil {
+			err = d.hv.Install(ctx, InstallSpec{InstallSpec: spec, CacheDir: d.cacheDir()}, Layer{ID: rec.ID, Dir: hs.Dir})
+			release()
+		}
 	}
 	if err == nil {
 		rec.Created = time.Now().UTC()
@@ -600,6 +606,7 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 	return d.boot(ctx, inst, opts)
 }
 
+// boot boots the instance in this process, once admit has admitted it.
 func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
 	if opts.GUI && !d.hv.Capabilities().Display {
 		return nil, fmt.Errorf("%s has no display to show: %w", d.hv.Name(), machine.ErrUnsupported)
@@ -616,7 +623,16 @@ func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.B
 	if title == "" {
 		title = "disco-vm: " + inst.Name
 	}
-	return d.hv.Boot(ctx, hs, BootOptions{CPUs: inst.CPUs, Memory: inst.Memory, GUI: opts.GUI, Title: title, Console: opts.Console})
+	release, err := d.admit(rec)
+	if err != nil {
+		return nil, err
+	}
+	m, err := d.hv.Boot(ctx, hs, BootOptions{CPUs: inst.CPUs, Memory: inst.Memory, GUI: opts.GUI, Title: title, Console: opts.Console})
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return admitted(m, release), nil
 }
 
 // Commit freezes the stopped VM in place: the hypervisor removes its volumes

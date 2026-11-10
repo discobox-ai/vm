@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -31,19 +32,25 @@ func TestConformance(t *testing.T) {
 	}
 	// no-commit is a driver that does not report Capabilities.Commit, so
 	// the suite checks its refusals and runs everything else fresh (ADR
-	// 26-11-03-868).
+	// 26-11-03-868). install caps running guests at two, as vz does macOS
+	// guests, in this process and in the shims it spawns.
 	for _, from := range []struct {
-		name     string
-		install  machine.InstallSpec
-		noCommit bool
+		name       string
+		install    machine.InstallSpec
+		noCommit   bool
+		maxRunning int
 	}{
-		{"install", machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"}, false},
-		{"fresh", machine.InstallSpec{}, false},
-		{"no-commit", machine.InstallSpec{}, true},
+		{"install", machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"}, false, 2},
+		{"fresh", machine.InstallSpec{}, false, 0},
+		{"no-commit", machine.InstallSpec{}, true, 0},
 	} {
 		t.Run(from.name, func(t *testing.T) {
 			dir := t.TempDir()
 			hv := &fake.Hypervisor{Agent: agent, BaseName: "stock", NoCommit: from.noCommit}
+			if from.maxRunning > 0 {
+				t.Setenv(fake.MaxRunningEnv, strconv.Itoa(from.maxRunning))
+				hv.MaxRunning = map[machine.OS]int{machine.OS(runtime.GOOS): from.maxRunning}
+			}
 			newDriver := func(keys machine.KeySource) machine.Driver {
 				driver, err := local.New(machine.Config{
 					Dir:         dir,

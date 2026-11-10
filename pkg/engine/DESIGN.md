@@ -163,8 +163,9 @@ provided: development resources from before the cutover must be removed
 with the old binary. Provider names keep their `dvm-<pool>--<name>` shape;
 local records/keys use `pool`, Docker labels use `ai.discobox.vm.pool`, and
 Docker volume/cache directories use `pools`. Scope values and driver
-lifecycle behavior otherwise stay the same. Host-wide local capacity
-enforcement is a separate follow-up.
+lifecycle behavior otherwise stay the same. The engine counts no running
+guests: a driver enforces `Capabilities.MaxRunning` across every pool
+(`machine.ErrCapacity`).
 
 
 ## An instance's volumes, and a cache saved only on request

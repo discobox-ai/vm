@@ -17,7 +17,8 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
 - `instances/<id>/machine` (the hypervisor's) and `instance.json` (pool,
   name, the name and ID of the VM it was created from, guest OS, size,
   forwards, fence, volumes), and while a shim holds it, `shim.json`,
-  `shim.sock`, and `shim.log`. A committed VM (ADR 26-11-03-606) is the
+  `shim.sock`, and `shim.log`, and `shim.refused` once a shim was refused
+  for capacity. A committed VM (ADR 26-11-03-606) is the
   same, left where it is with its volumes gone: nothing marks it committed,
   which is the caller's to record. A record from before that ADR, of an
   image or a base (`imageID`, `layer`, `base`), is not read: its disk may
@@ -27,6 +28,9 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
 - while an upgrade runs, `instances/<id>/machine.next` (the new disk),
   `next.ready` (written once it is whole), and `machine.old` (the old disk,
   once the new one is in place), [below](#an-upgrade-swaps-a-vms-disk-in-its-directory);
+- `instances/<id>/boot.lock`, locked by the process holding the VM's
+  machine, and `running/<hypervisor>/<os>/<n>`, a slot of a capped guest
+  OS, [below](#a-boot-is-admitted-across-every-pool);
 - `instances/.names/<pool>/<name>`, the name's claim, holding the ID;
 - `caches/<pool>/<key>.json`, a cache key, naming its current
   generation, and `caches/generations/<id>/payload` (the hypervisor's copy
@@ -48,7 +52,8 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   record and no other; one that cannot be read authorizes nothing and is
   not listed.
 
-Nothing takes a lock:
+Nothing but a boot takes a lock
+([below](#a-boot-is-admitted-across-every-pool)):
 
 - **A record is replaced by a rename**, as Commit drops its volumes.
 - **A name is claimed by creating its file exclusively.** A claim with no
@@ -57,6 +62,35 @@ Nothing takes a lock:
   is removed**, after its disk, so a removal that fails partway leaves the
   instance listed to remove again, and a crash while making one leaves a
   directory nothing lists.
+
+## A boot is admitted across every pool
+
+`Capabilities.MaxRunning` is the hypervisor's limit on the host (two macOS
+guests under Virtualization.framework), so `local` enforces it below the
+seam, for every pool in the directory at once (ADR 26-11-04-412), and the
+engine counts nothing. Every boot, by `Boot` or by a shim, and every
+`Install`, which runs the guest on vz, is admitted first (`admit`), with operating-system locks (flock, `LockFileEx`;
+`fsutil.TryLock`) taken without waiting, before the hypervisor is asked:
+
+- **The instance's `boot.lock`**, so a VM boots once at a time and holds one
+  slot; a second boot of it is refused as running.
+- **A free one of its OS's `limit` slot files**, where the hypervisor caps
+  the OS; with every slot held the boot is refused with
+  `machine.ErrCapacity`. An uncapped OS takes no slot.
+
+Each is held by the process that holds the machine, from before its boot
+until it stops: a boot in flight counts, a boot that fails or is canceled
+releases at once, a machine booted in this process releases before its
+`Done` closes and before its `Kill` returns, so a caller that saw one guest
+stop finds its slot free, and a
+process that dies releases what it held, however it dies. A lock that
+cannot be opened refuses the boot. `Start` asks for the same admission and
+releases it before it spawns the shim, so a full host is refused with
+`ErrCapacity` and no shim; the shim's own boot is what holds the slot, and
+one admitted in between is refused by the shim, which writes why to
+`shim.refused` in the instance's directory before it exits, and `Start`
+returns that with `ErrCapacity` too. Admission counts guests by their record's OS, so a
+Linux guest on vz takes no macOS slot.
 
 ## A chain is the driver's, below the seam
 

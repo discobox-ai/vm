@@ -988,3 +988,24 @@ func TestPoolScope(t *testing.T) {
 	e.ok("rm", "env-vm")
 	e.ok("--pool", "flag-pool", "rm", "flag-vm")
 }
+
+// TestCapacityAcrossPools caps the fake driver at one running guest
+// ($DISCO_VM_FAKE_MAX_RUNNING): a VM running in one pool keeps another pool's
+// from starting, until it stops.
+func TestCapacityAcrossPools(t *testing.T) {
+	if tg.driver != "fake" {
+		t.Skip("uses a scratch local store with the fake driver")
+	}
+	e := env{t: t, root: t.TempDir(), extra: []string{"DISCO_VM_FAKE_MAX_RUNNING=1"}}
+	t.Cleanup(func() {
+		e.run("--pool", "a", "rm", "-f", "vm")
+		e.run("--pool", "b", "rm", "-f", "vm")
+	})
+	e.ok("--pool", "a", "run", "vm")
+	e.ok("--pool", "b", "create", "vm")
+	if out, code := e.run("--pool", "b", "start", "vm"); code == 0 || !strings.Contains(out, "runs at most 1") {
+		t.Fatalf("a start in another pool past the cap (exit %d):\n%s", code, out)
+	}
+	e.ok("--pool", "a", "stop", "vm")
+	e.ok("--pool", "b", "start", "vm")
+}
