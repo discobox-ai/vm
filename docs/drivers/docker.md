@@ -156,7 +156,11 @@ guests share it.
 | `Destroy` | of a VM: its directories, then `docker rm -f` of its container and an upgrade's new one, then the named volumes of a VM from before ADR 26-11-03-782, found by their labels (one a later VM of the name mounts is left), then the image the container ran if no tag names it any more, then the `disco-vm-base:<pool>--<name>--*` tag of the image the container ran, and every other one of the name older than 30 minutes that no container runs: what a Destroy that failed partway or a create that lost a race left, and never a create of the name still readying (no name has `--`, so another name's are never matched). Of a committed VM: a container a failed commit left, then its tag, removed with `force`, which the daemon turns into an untag where a container runs the image: a VM created from it stands alone, and its own `Destroy` removes the untagged image. |
 
 The driver talks to the Docker Engine API over `DOCKER_HOST` itself, not
-through the docker CLI or SDK, as boxd's does.
+through the docker CLI or SDK, as boxd's does. A caller that embeds it can
+give it another daemon connection (`docker.NewWithDaemon`); `docker.GuestDaemon`
+reaches a daemon inside a running guest through that guest's agent, each
+connection an Exec of its `disco-vm pipe` to the daemon's socket, with no
+port opened.
 
 ## Try it
 
