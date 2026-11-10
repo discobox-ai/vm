@@ -53,6 +53,12 @@ const AgentEnv = "DISCO_VM_AGENT"
 // refusals of such a driver from the command line.
 const NoCommitEnv = "DISCO_VM_FAKE_NO_COMMIT"
 
+// MaxRunningEnv, set to a number, makes the fake driver from New cap
+// running guests of the host's OS at it (Capabilities.MaxRunning), as
+// Hypervisor.MaxRunning does, so a shim the driver spawns enforces the same
+// cap as the process that spawned it.
+const MaxRunningEnv = "DISCO_VM_FAKE_MAX_RUNNING"
+
 // DefaultBase is the base of a driver from New given none.
 const DefaultBase = "scratch"
 
@@ -69,13 +75,17 @@ type Hypervisor struct {
 	// that a driver's refusals of a commit and of a copy, and the paths
 	// that skip them, run on every OS.
 	NoCommit bool
+	// MaxRunning is the Capabilities.MaxRunning it reports: none by default,
+	// a test option so that the local driver's admission runs on every OS.
+	MaxRunning map[machine.OS]int
 }
 
 var _ local.Hypervisor = (*Hypervisor)(nil)
 
 // New returns a fake hypervisor whose guests run this binary, or
 // $DISCO_VM_AGENT, and whose base is base (machine.Config.Base), or
-// DefaultBase. It commits unless $DISCO_VM_FAKE_NO_COMMIT is set.
+// DefaultBase. It commits unless $DISCO_VM_FAKE_NO_COMMIT is set, and caps
+// running guests where $DISCO_VM_FAKE_MAX_RUNNING says.
 func New(base string) (*Hypervisor, error) {
 	agent := os.Getenv(AgentEnv)
 	if agent == "" {
@@ -88,20 +98,29 @@ func New(base string) (*Hypervisor, error) {
 	if base == "" {
 		base = DefaultBase
 	}
-	return &Hypervisor{Agent: agent, BaseName: base, NoCommit: os.Getenv(NoCommitEnv) != ""}, nil
+	hv := &Hypervisor{Agent: agent, BaseName: base, NoCommit: os.Getenv(NoCommitEnv) != ""}
+	if v := os.Getenv(MaxRunningEnv); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("fake: $%s is %q, not a count", MaxRunningEnv, v)
+		}
+		hv.MaxRunning = map[machine.OS]int{machine.OS(runtime.GOOS): n}
+	}
+	return hv, nil
 }
 
 func (*Hypervisor) Name() string { return "fake" }
 
 func (d *Hypervisor) Capabilities() machine.Capabilities {
 	caps := machine.Capabilities{
-		GuestOS: []machine.OS{machine.OS(runtime.GOOS)},
-		Ports:   true,
-		Agent:   true,
-		Install: []machine.OS{machine.OS(runtime.GOOS)},
-		Commit:  true,
-		Keys:    machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopePool},
-		Volumes: []machine.Volume{machine.VolumeData, machine.VolumeCache},
+		GuestOS:    []machine.OS{machine.OS(runtime.GOOS)},
+		Ports:      true,
+		Agent:      true,
+		Install:    []machine.OS{machine.OS(runtime.GOOS)},
+		Commit:     true,
+		Keys:       machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopePool},
+		Volumes:    []machine.Volume{machine.VolumeData, machine.VolumeCache},
+		MaxRunning: d.MaxRunning,
 	}
 	if d.NoCommit {
 		caps.Install, caps.Commit = nil, false

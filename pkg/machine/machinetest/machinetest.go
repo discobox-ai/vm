@@ -8,7 +8,8 @@
 // is found and listed by its name, which no second VM can take, committed or
 // not; a booted machine's guest operations answer, and exec carries stdin,
 // stdout, stderr, the environment, the working directory, and the exit code;
-// an orderly shutdown stops the machine; on a driver that reports
+// an orderly shutdown stops the machine; a driver that caps running guests
+// of an OS boots that many and refuses one more until one stops; on a driver that reports
 // Capabilities.Commit, a committed VM carries its writes to VMs created from
 // it and to no one else, and a copy of a copy outlives the first's removal,
 // or the driver refuses the removal with ErrInUse, while a driver that does
@@ -394,6 +395,33 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		if _, err := siblingM.CopyFrom(ctx, marker+"/proof.txt"); err == nil {
 			t.Fatal("a VM of the start saw a write committed to another")
+		}
+	})
+
+	// A driver that caps running guests of the OS (Capabilities.MaxRunning)
+	// boots that many and refuses one more, by Boot and by Start, with
+	// ErrCapacity, until one stops. The cap is the host's, so the suite
+	// needs every other guest of the OS stopped.
+	t.Run("max-running", func(t *testing.T) {
+		limit := caps.MaxRunning[guestOS]
+		if limit == 0 {
+			t.Skipf("no cap on %s guests", guestOS)
+		}
+		var running []machine.Machine
+		for range limit {
+			running = append(running, boot(t, create(t, start)))
+		}
+		extra := create(t, start)
+		if _, err := driver.Boot(ctx, extra, machine.BootOptions{}); !errors.Is(err, machine.ErrCapacity) {
+			t.Fatalf("boot past a cap of %d %s guests: %v, want ErrCapacity", limit, guestOS, err)
+		}
+		if _, err := driver.Start(ctx, extra, machine.BootOptions{}); !errors.Is(err, machine.ErrCapacity) {
+			t.Fatalf("start past a cap of %d %s guests: %v, want ErrCapacity", limit, guestOS, err)
+		}
+		shutdown(t, running[0])
+		shutdown(t, boot(t, extra))
+		for _, m := range running[1:] {
+			shutdown(t, m)
 		}
 	})
 

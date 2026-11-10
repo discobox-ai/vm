@@ -62,6 +62,12 @@ var ErrInUse = errors.New("a VM created from it still needs its disk")
 // its provider cannot do what was asked.
 var ErrCommitted = errors.New("the VM is committed, and its provider has nothing to run")
 
+// ErrCapacity reports a boot refused because the host already runs as many
+// guests of the instance's OS as Capabilities.MaxRunning allows, counting
+// every pool and every process (Driver.Boot and Start). It is the
+// hypervisor's limit, not a policy: one stopping makes room.
+var ErrCapacity = errors.New("machine: the host runs as many guests of this OS as the hypervisor allows")
+
 // ErrNotRunning reports that an instance has no running machine to attach to.
 var ErrNotRunning = errors.New("machine: the instance is not running")
 
@@ -82,7 +88,9 @@ type Capabilities struct {
 	// GuestOS is every guest OS this driver can boot.
 	GuestOS []OS `json:"guestOS"`
 	// MaxRunning caps concurrently running guests per guest OS. Zero means no
-	// cap. Virtualization.framework allows two macOS guests per host.
+	// cap. Virtualization.framework allows two macOS guests per host. The
+	// driver enforces it, across every pool it keeps, and refuses a boot past
+	// it with ErrCapacity.
 	MaxRunning map[OS]int `json:"maxRunning,omitempty"`
 	// SharedDirectories reports host directory sharing (virtiofs, Plan9).
 	SharedDirectories bool `json:"sharedDirectories"`

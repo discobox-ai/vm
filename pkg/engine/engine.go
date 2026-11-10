@@ -257,9 +257,6 @@ func (e *Engine) Start(ctx context.Context, inst Instance, opts StartOptions) er
 	if e.State(ctx, inst) == Running {
 		return fmt.Errorf("instance %s is already running", inst.Name)
 	}
-	if err := e.checkCapacity(ctx, inst); err != nil {
-		return err
-	}
 	if err := e.CheckGUI(opts.GUI); err != nil {
 		return err
 	}
@@ -275,30 +272,6 @@ func (e *Engine) Start(ctx context.Context, inst Instance, opts StartOptions) er
 	if err := e.announceService(ctx, inst, m); err != nil {
 		_ = m.Kill(context.Background())
 		return err
-	}
-	return nil
-}
-
-// checkCapacity enforces the driver's per-OS cap on running guests, which is
-// a limit of the hypervisor (two macOS guests under Virtualization.framework),
-// not a policy.
-func (e *Engine) checkCapacity(ctx context.Context, inst Instance) error {
-	limit := e.Driver.Capabilities().MaxRunning[inst.GuestOS]
-	if limit == 0 {
-		return nil
-	}
-	all, err := e.Driver.Instances(ctx)
-	if err != nil {
-		return err
-	}
-	running := 0
-	for _, other := range all {
-		if other.GuestOS == inst.GuestOS && other.ID != inst.ID && e.State(ctx, other) == Running {
-			running++
-		}
-	}
-	if running >= limit {
-		return fmt.Errorf("driver %s runs at most %d %s guests at once, and %d are running", e.Driver.Name(), limit, inst.GuestOS, running)
 	}
 	return nil
 }

@@ -239,7 +239,9 @@ The base is [pkg/guest/linux](../../pkg/guest/DESIGN.md#the-linux-guest-image).
 ## Measured on real hardware
 
 - **Two macOS guests at once** is the framework's limit, advertised as
-  `MaxRunning{darwin: 2}`. Every suite here keeps to it.
+  `MaxRunning{darwin: 2}`, which `local` enforces across every pool in the
+  root and every process (`machinetest` max-running). Every suite here keeps
+  to it.
 - **The framework's stop request makes macOS sleep**, so shutdown always goes
   through the agent (`/sbin/shutdown -h now`, as root).
 
