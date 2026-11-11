@@ -1492,6 +1492,197 @@ func (x *GetConfigResponse) GetDefaultImage() string {
 	return ""
 }
 
+type ListRegionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OrgId         string                 `protobuf:"bytes,1,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"` // name or id; "" = your default org (an API key's own org)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRegionsRequest) Reset() {
+	*x = ListRegionsRequest{}
+	mi := &file_discobox_vm_boxd_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRegionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRegionsRequest) ProtoMessage() {}
+
+func (x *ListRegionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_discobox_vm_boxd_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRegionsRequest.ProtoReflect.Descriptor instead.
+func (*ListRegionsRequest) Descriptor() ([]byte, []int) {
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ListRegionsRequest) GetOrgId() string {
+	if x != nil {
+		return x.OrgId
+	}
+	return ""
+}
+
+type Region struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                      // a short code, e.g. "fra"
+	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`                                  // e.g. "Frankfurt"
+	Zone        string                 `protobuf:"bytes,3,opt,name=zone,proto3" json:"zone,omitempty"`                                  // machines are reached at <name>.<zone>
+	ApiEndpoint string                 `protobuf:"bytes,4,opt,name=api_endpoint,json=apiEndpoint,proto3" json:"api_endpoint,omitempty"` // the region's API
+	Home        bool                   `protobuf:"varint,8,opt,name=home,proto3" json:"home,omitempty"`                                 // accounts, billing and settings live in the home region
+	// For the org asked about: "enabled" (it can create here: always the
+	// home region), "requested" (an admin asked), or "available".
+	OrgState      string `protobuf:"bytes,9,opt,name=org_state,json=orgState,proto3" json:"org_state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Region) Reset() {
+	*x = Region{}
+	mi := &file_discobox_vm_boxd_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Region) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Region) ProtoMessage() {}
+
+func (x *Region) ProtoReflect() protoreflect.Message {
+	mi := &file_discobox_vm_boxd_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Region.ProtoReflect.Descriptor instead.
+func (*Region) Descriptor() ([]byte, []int) {
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *Region) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Region) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Region) GetZone() string {
+	if x != nil {
+		return x.Zone
+	}
+	return ""
+}
+
+func (x *Region) GetApiEndpoint() string {
+	if x != nil {
+		return x.ApiEndpoint
+	}
+	return ""
+}
+
+func (x *Region) GetHome() bool {
+	if x != nil {
+		return x.Home
+	}
+	return false
+}
+
+func (x *Region) GetOrgState() string {
+	if x != nil {
+		return x.OrgState
+	}
+	return ""
+}
+
+type ListRegionsResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Regions []*Region              `protobuf:"bytes,1,rep,name=regions,proto3" json:"regions,omitempty"`
+	OrgId   string                 `protobuf:"bytes,2,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
+	// The region this endpoint serves; "" when boxd runs in one place.
+	ThisRegion    string `protobuf:"bytes,3,opt,name=this_region,json=thisRegion,proto3" json:"this_region,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRegionsResponse) Reset() {
+	*x = ListRegionsResponse{}
+	mi := &file_discobox_vm_boxd_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRegionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRegionsResponse) ProtoMessage() {}
+
+func (x *ListRegionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_discobox_vm_boxd_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRegionsResponse.ProtoReflect.Descriptor instead.
+func (*ListRegionsResponse) Descriptor() ([]byte, []int) {
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ListRegionsResponse) GetRegions() []*Region {
+	if x != nil {
+		return x.Regions
+	}
+	return nil
+}
+
+func (x *ListRegionsResponse) GetOrgId() string {
+	if x != nil {
+		return x.OrgId
+	}
+	return ""
+}
+
+func (x *ListRegionsResponse) GetThisRegion() string {
+	if x != nil {
+		return x.ThisRegion
+	}
+	return ""
+}
+
 type WhoamiRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1500,7 +1691,7 @@ type WhoamiRequest struct {
 
 func (x *WhoamiRequest) Reset() {
 	*x = WhoamiRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[28]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1512,7 +1703,7 @@ func (x *WhoamiRequest) String() string {
 func (*WhoamiRequest) ProtoMessage() {}
 
 func (x *WhoamiRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[28]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1525,7 +1716,7 @@ func (x *WhoamiRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WhoamiRequest.ProtoReflect.Descriptor instead.
 func (*WhoamiRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{28}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{31}
 }
 
 type WhoamiResponse struct {
@@ -1538,7 +1729,7 @@ type WhoamiResponse struct {
 
 func (x *WhoamiResponse) Reset() {
 	*x = WhoamiResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[29]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1550,7 +1741,7 @@ func (x *WhoamiResponse) String() string {
 func (*WhoamiResponse) ProtoMessage() {}
 
 func (x *WhoamiResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[29]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1563,7 +1754,7 @@ func (x *WhoamiResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WhoamiResponse.ProtoReflect.Descriptor instead.
 func (*WhoamiResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{29}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *WhoamiResponse) GetUserId() string {
@@ -1590,7 +1781,7 @@ type CreateSnapshotRequest struct {
 
 func (x *CreateSnapshotRequest) Reset() {
 	*x = CreateSnapshotRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[30]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1602,7 +1793,7 @@ func (x *CreateSnapshotRequest) String() string {
 func (*CreateSnapshotRequest) ProtoMessage() {}
 
 func (x *CreateSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[30]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1615,7 +1806,7 @@ func (x *CreateSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*CreateSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{30}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *CreateSnapshotRequest) GetVm() string {
@@ -1644,7 +1835,7 @@ type CreateSnapshotResponse struct {
 
 func (x *CreateSnapshotResponse) Reset() {
 	*x = CreateSnapshotResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[31]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1656,7 +1847,7 @@ func (x *CreateSnapshotResponse) String() string {
 func (*CreateSnapshotResponse) ProtoMessage() {}
 
 func (x *CreateSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[31]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1669,7 +1860,7 @@ func (x *CreateSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*CreateSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{31}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *CreateSnapshotResponse) GetSnapshotId() string {
@@ -1716,7 +1907,7 @@ type SnapshotInfo struct {
 
 func (x *SnapshotInfo) Reset() {
 	*x = SnapshotInfo{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[32]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1728,7 +1919,7 @@ func (x *SnapshotInfo) String() string {
 func (*SnapshotInfo) ProtoMessage() {}
 
 func (x *SnapshotInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[32]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1741,7 +1932,7 @@ func (x *SnapshotInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotInfo.ProtoReflect.Descriptor instead.
 func (*SnapshotInfo) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{32}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *SnapshotInfo) GetSnapshotId() string {
@@ -1809,7 +2000,7 @@ type ListSnapshotsRequest struct {
 
 func (x *ListSnapshotsRequest) Reset() {
 	*x = ListSnapshotsRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[33]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1821,7 +2012,7 @@ func (x *ListSnapshotsRequest) String() string {
 func (*ListSnapshotsRequest) ProtoMessage() {}
 
 func (x *ListSnapshotsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[33]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1834,7 +2025,7 @@ func (x *ListSnapshotsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSnapshotsRequest.ProtoReflect.Descriptor instead.
 func (*ListSnapshotsRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{33}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ListSnapshotsRequest) GetOrg() string {
@@ -1853,7 +2044,7 @@ type ListSnapshotsResponse struct {
 
 func (x *ListSnapshotsResponse) Reset() {
 	*x = ListSnapshotsResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[34]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1865,7 +2056,7 @@ func (x *ListSnapshotsResponse) String() string {
 func (*ListSnapshotsResponse) ProtoMessage() {}
 
 func (x *ListSnapshotsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[34]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1878,7 +2069,7 @@ func (x *ListSnapshotsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSnapshotsResponse.ProtoReflect.Descriptor instead.
 func (*ListSnapshotsResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{34}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ListSnapshotsResponse) GetSnapshots() []*SnapshotInfo {
@@ -1898,7 +2089,7 @@ type GetSnapshotRequest struct {
 
 func (x *GetSnapshotRequest) Reset() {
 	*x = GetSnapshotRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[35]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1910,7 +2101,7 @@ func (x *GetSnapshotRequest) String() string {
 func (*GetSnapshotRequest) ProtoMessage() {}
 
 func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[35]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1923,7 +2114,7 @@ func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*GetSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{35}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *GetSnapshotRequest) GetName() string {
@@ -1949,7 +2140,7 @@ type GetSnapshotResponse struct {
 
 func (x *GetSnapshotResponse) Reset() {
 	*x = GetSnapshotResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[36]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1961,7 +2152,7 @@ func (x *GetSnapshotResponse) String() string {
 func (*GetSnapshotResponse) ProtoMessage() {}
 
 func (x *GetSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[36]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1974,7 +2165,7 @@ func (x *GetSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*GetSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{36}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *GetSnapshotResponse) GetSnapshot() *SnapshotInfo {
@@ -1994,7 +2185,7 @@ type DeleteSnapshotRequest struct {
 
 func (x *DeleteSnapshotRequest) Reset() {
 	*x = DeleteSnapshotRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[37]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2006,7 +2197,7 @@ func (x *DeleteSnapshotRequest) String() string {
 func (*DeleteSnapshotRequest) ProtoMessage() {}
 
 func (x *DeleteSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[37]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2019,7 +2210,7 @@ func (x *DeleteSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{37}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *DeleteSnapshotRequest) GetName() string {
@@ -2044,7 +2235,7 @@ type DeleteSnapshotResponse struct {
 
 func (x *DeleteSnapshotResponse) Reset() {
 	*x = DeleteSnapshotResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[38]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2056,7 +2247,7 @@ func (x *DeleteSnapshotResponse) String() string {
 func (*DeleteSnapshotResponse) ProtoMessage() {}
 
 func (x *DeleteSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[38]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2069,7 +2260,7 @@ func (x *DeleteSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*DeleteSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{38}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{41}
 }
 
 type CreateVmFromSnapshotRequest struct {
@@ -2086,7 +2277,7 @@ type CreateVmFromSnapshotRequest struct {
 
 func (x *CreateVmFromSnapshotRequest) Reset() {
 	*x = CreateVmFromSnapshotRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[39]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2098,7 +2289,7 @@ func (x *CreateVmFromSnapshotRequest) String() string {
 func (*CreateVmFromSnapshotRequest) ProtoMessage() {}
 
 func (x *CreateVmFromSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[39]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2111,7 +2302,7 @@ func (x *CreateVmFromSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateVmFromSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*CreateVmFromSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{39}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *CreateVmFromSnapshotRequest) GetSnapshot() string {
@@ -2160,7 +2351,7 @@ type ResizeVmRequest struct {
 
 func (x *ResizeVmRequest) Reset() {
 	*x = ResizeVmRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[40]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2172,7 +2363,7 @@ func (x *ResizeVmRequest) String() string {
 func (*ResizeVmRequest) ProtoMessage() {}
 
 func (x *ResizeVmRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[40]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2185,7 +2376,7 @@ func (x *ResizeVmRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResizeVmRequest.ProtoReflect.Descriptor instead.
 func (*ResizeVmRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{40}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ResizeVmRequest) GetVmId() string {
@@ -2220,7 +2411,7 @@ type ResizeVmResponse struct {
 
 func (x *ResizeVmResponse) Reset() {
 	*x = ResizeVmResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[41]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2232,7 +2423,7 @@ func (x *ResizeVmResponse) String() string {
 func (*ResizeVmResponse) ProtoMessage() {}
 
 func (x *ResizeVmResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[41]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2245,7 +2436,7 @@ func (x *ResizeVmResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResizeVmResponse.ProtoReflect.Descriptor instead.
 func (*ResizeVmResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{41}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ResizeVmResponse) GetVcpu() uint32 {
@@ -2278,7 +2469,7 @@ type ListProxiesRequest struct {
 
 func (x *ListProxiesRequest) Reset() {
 	*x = ListProxiesRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[42]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2290,7 +2481,7 @@ func (x *ListProxiesRequest) String() string {
 func (*ListProxiesRequest) ProtoMessage() {}
 
 func (x *ListProxiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[42]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2303,7 +2494,7 @@ func (x *ListProxiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProxiesRequest.ProtoReflect.Descriptor instead.
 func (*ListProxiesRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{42}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ListProxiesRequest) GetVm() string {
@@ -2322,7 +2513,7 @@ type ListProxiesResponse struct {
 
 func (x *ListProxiesResponse) Reset() {
 	*x = ListProxiesResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[43]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2334,7 +2525,7 @@ func (x *ListProxiesResponse) String() string {
 func (*ListProxiesResponse) ProtoMessage() {}
 
 func (x *ListProxiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[43]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2347,7 +2538,7 @@ func (x *ListProxiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProxiesResponse.ProtoReflect.Descriptor instead.
 func (*ListProxiesResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{43}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ListProxiesResponse) GetProxies() []*ProxyInfo {
@@ -2372,7 +2563,7 @@ type ProxyInfo struct {
 
 func (x *ProxyInfo) Reset() {
 	*x = ProxyInfo{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[44]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2384,7 +2575,7 @@ func (x *ProxyInfo) String() string {
 func (*ProxyInfo) ProtoMessage() {}
 
 func (x *ProxyInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[44]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2397,7 +2588,7 @@ func (x *ProxyInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProxyInfo.ProtoReflect.Descriptor instead.
 func (*ProxyInfo) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{44}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ProxyInfo) GetName() string {
@@ -2460,7 +2651,7 @@ type SetProxyPortRequest struct {
 
 func (x *SetProxyPortRequest) Reset() {
 	*x = SetProxyPortRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[45]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2472,7 +2663,7 @@ func (x *SetProxyPortRequest) String() string {
 func (*SetProxyPortRequest) ProtoMessage() {}
 
 func (x *SetProxyPortRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[45]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2485,7 +2676,7 @@ func (x *SetProxyPortRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetProxyPortRequest.ProtoReflect.Descriptor instead.
 func (*SetProxyPortRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{45}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *SetProxyPortRequest) GetName() string {
@@ -2517,7 +2708,7 @@ type SetProxyPortResponse struct {
 
 func (x *SetProxyPortResponse) Reset() {
 	*x = SetProxyPortResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[46]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2529,7 +2720,7 @@ func (x *SetProxyPortResponse) String() string {
 func (*SetProxyPortResponse) ProtoMessage() {}
 
 func (x *SetProxyPortResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[46]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2542,7 +2733,7 @@ func (x *SetProxyPortResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetProxyPortResponse.ProtoReflect.Descriptor instead.
 func (*SetProxyPortResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{46}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{49}
 }
 
 type SetBotProtectionRequest struct {
@@ -2555,7 +2746,7 @@ type SetBotProtectionRequest struct {
 
 func (x *SetBotProtectionRequest) Reset() {
 	*x = SetBotProtectionRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[47]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2567,7 +2758,7 @@ func (x *SetBotProtectionRequest) String() string {
 func (*SetBotProtectionRequest) ProtoMessage() {}
 
 func (x *SetBotProtectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[47]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2580,7 +2771,7 @@ func (x *SetBotProtectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetBotProtectionRequest.ProtoReflect.Descriptor instead.
 func (*SetBotProtectionRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{47}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *SetBotProtectionRequest) GetVmId() string {
@@ -2605,7 +2796,7 @@ type SetBotProtectionResponse struct {
 
 func (x *SetBotProtectionResponse) Reset() {
 	*x = SetBotProtectionResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[48]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2617,7 +2808,7 @@ func (x *SetBotProtectionResponse) String() string {
 func (*SetBotProtectionResponse) ProtoMessage() {}
 
 func (x *SetBotProtectionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[48]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2630,7 +2821,7 @@ func (x *SetBotProtectionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetBotProtectionResponse.ProtoReflect.Descriptor instead.
 func (*SetBotProtectionResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{48}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{51}
 }
 
 type SetVmNetworksRequest struct {
@@ -2643,7 +2834,7 @@ type SetVmNetworksRequest struct {
 
 func (x *SetVmNetworksRequest) Reset() {
 	*x = SetVmNetworksRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[49]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2655,7 +2846,7 @@ func (x *SetVmNetworksRequest) String() string {
 func (*SetVmNetworksRequest) ProtoMessage() {}
 
 func (x *SetVmNetworksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[49]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2668,7 +2859,7 @@ func (x *SetVmNetworksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetVmNetworksRequest.ProtoReflect.Descriptor instead.
 func (*SetVmNetworksRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{49}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *SetVmNetworksRequest) GetVmId() string {
@@ -2694,7 +2885,7 @@ type SetVmNetworksResponse struct {
 
 func (x *SetVmNetworksResponse) Reset() {
 	*x = SetVmNetworksResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[50]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2706,7 +2897,7 @@ func (x *SetVmNetworksResponse) String() string {
 func (*SetVmNetworksResponse) ProtoMessage() {}
 
 func (x *SetVmNetworksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[50]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2719,7 +2910,7 @@ func (x *SetVmNetworksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetVmNetworksResponse.ProtoReflect.Descriptor instead.
 func (*SetVmNetworksResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{50}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *SetVmNetworksResponse) GetNetworks() []string {
@@ -2739,7 +2930,7 @@ type SetVmEgressAllowRequest struct {
 
 func (x *SetVmEgressAllowRequest) Reset() {
 	*x = SetVmEgressAllowRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[51]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2751,7 +2942,7 @@ func (x *SetVmEgressAllowRequest) String() string {
 func (*SetVmEgressAllowRequest) ProtoMessage() {}
 
 func (x *SetVmEgressAllowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[51]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2764,7 +2955,7 @@ func (x *SetVmEgressAllowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetVmEgressAllowRequest.ProtoReflect.Descriptor instead.
 func (*SetVmEgressAllowRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{51}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *SetVmEgressAllowRequest) GetVm() string {
@@ -2790,7 +2981,7 @@ type SetVmEgressAllowResponse struct {
 
 func (x *SetVmEgressAllowResponse) Reset() {
 	*x = SetVmEgressAllowResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[52]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2802,7 +2993,7 @@ func (x *SetVmEgressAllowResponse) String() string {
 func (*SetVmEgressAllowResponse) ProtoMessage() {}
 
 func (x *SetVmEgressAllowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[52]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2815,7 +3006,7 @@ func (x *SetVmEgressAllowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetVmEgressAllowResponse.ProtoReflect.Descriptor instead.
 func (*SetVmEgressAllowResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{52}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *SetVmEgressAllowResponse) GetEntries() []string {
@@ -2840,7 +3031,7 @@ type CreateApiKeyRequest struct {
 
 func (x *CreateApiKeyRequest) Reset() {
 	*x = CreateApiKeyRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[53]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2852,7 +3043,7 @@ func (x *CreateApiKeyRequest) String() string {
 func (*CreateApiKeyRequest) ProtoMessage() {}
 
 func (x *CreateApiKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[53]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2865,7 +3056,7 @@ func (x *CreateApiKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateApiKeyRequest.ProtoReflect.Descriptor instead.
 func (*CreateApiKeyRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{53}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *CreateApiKeyRequest) GetName() string {
@@ -2907,7 +3098,7 @@ type CreateApiKeyResponse struct {
 
 func (x *CreateApiKeyResponse) Reset() {
 	*x = CreateApiKeyResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[54]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2919,7 +3110,7 @@ func (x *CreateApiKeyResponse) String() string {
 func (*CreateApiKeyResponse) ProtoMessage() {}
 
 func (x *CreateApiKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[54]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2932,7 +3123,7 @@ func (x *CreateApiKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateApiKeyResponse.ProtoReflect.Descriptor instead.
 func (*CreateApiKeyResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{54}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *CreateApiKeyResponse) GetId() string {
@@ -2964,7 +3155,7 @@ type ListApiKeysRequest struct {
 
 func (x *ListApiKeysRequest) Reset() {
 	*x = ListApiKeysRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[55]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2976,7 +3167,7 @@ func (x *ListApiKeysRequest) String() string {
 func (*ListApiKeysRequest) ProtoMessage() {}
 
 func (x *ListApiKeysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[55]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2989,7 +3180,7 @@ func (x *ListApiKeysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListApiKeysRequest.ProtoReflect.Descriptor instead.
 func (*ListApiKeysRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{55}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{58}
 }
 
 type ListApiKeysResponse struct {
@@ -3001,7 +3192,7 @@ type ListApiKeysResponse struct {
 
 func (x *ListApiKeysResponse) Reset() {
 	*x = ListApiKeysResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[56]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3013,7 +3204,7 @@ func (x *ListApiKeysResponse) String() string {
 func (*ListApiKeysResponse) ProtoMessage() {}
 
 func (x *ListApiKeysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[56]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3026,7 +3217,7 @@ func (x *ListApiKeysResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListApiKeysResponse.ProtoReflect.Descriptor instead.
 func (*ListApiKeysResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{56}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *ListApiKeysResponse) GetKeys() []*ApiKeyInfo {
@@ -3052,7 +3243,7 @@ type ApiKeyInfo struct {
 
 func (x *ApiKeyInfo) Reset() {
 	*x = ApiKeyInfo{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[57]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3064,7 +3255,7 @@ func (x *ApiKeyInfo) String() string {
 func (*ApiKeyInfo) ProtoMessage() {}
 
 func (x *ApiKeyInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[57]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3077,7 +3268,7 @@ func (x *ApiKeyInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApiKeyInfo.ProtoReflect.Descriptor instead.
 func (*ApiKeyInfo) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{57}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *ApiKeyInfo) GetId() string {
@@ -3145,7 +3336,7 @@ type DeleteApiKeyRequest struct {
 
 func (x *DeleteApiKeyRequest) Reset() {
 	*x = DeleteApiKeyRequest{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[58]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3157,7 +3348,7 @@ func (x *DeleteApiKeyRequest) String() string {
 func (*DeleteApiKeyRequest) ProtoMessage() {}
 
 func (x *DeleteApiKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[58]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3170,7 +3361,7 @@ func (x *DeleteApiKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteApiKeyRequest.ProtoReflect.Descriptor instead.
 func (*DeleteApiKeyRequest) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{58}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *DeleteApiKeyRequest) GetId() string {
@@ -3188,7 +3379,7 @@ type DeleteApiKeyResponse struct {
 
 func (x *DeleteApiKeyResponse) Reset() {
 	*x = DeleteApiKeyResponse{}
-	mi := &file_discobox_vm_boxd_proto_msgTypes[59]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3200,7 +3391,7 @@ func (x *DeleteApiKeyResponse) String() string {
 func (*DeleteApiKeyResponse) ProtoMessage() {}
 
 func (x *DeleteApiKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_discobox_vm_boxd_proto_msgTypes[59]
+	mi := &file_discobox_vm_boxd_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3213,7 +3404,7 @@ func (x *DeleteApiKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteApiKeyResponse.ProtoReflect.Descriptor instead.
 func (*DeleteApiKeyResponse) Descriptor() ([]byte, []int) {
-	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{59}
+	return file_discobox_vm_boxd_proto_rawDescGZIP(), []int{62}
 }
 
 var File_discobox_vm_boxd_proto protoreflect.FileDescriptor
@@ -3308,7 +3499,21 @@ const file_discobox_vm_boxd_proto_rawDesc = "" +
 	" \x01(\bR\bisStderr\"\x12\n" +
 	"\x10GetConfigRequest\"8\n" +
 	"\x11GetConfigResponse\x12#\n" +
-	"\rdefault_image\x18\x01 \x01(\tR\fdefaultImage\"\x0f\n" +
+	"\rdefault_image\x18\x01 \x01(\tR\fdefaultImage\"+\n" +
+	"\x12ListRegionsRequest\x12\x15\n" +
+	"\x06org_id\x18\x01 \x01(\tR\x05orgId\"\x94\x01\n" +
+	"\x06Region\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
+	"\x04zone\x18\x03 \x01(\tR\x04zone\x12!\n" +
+	"\fapi_endpoint\x18\x04 \x01(\tR\vapiEndpoint\x12\x12\n" +
+	"\x04home\x18\b \x01(\bR\x04home\x12\x1b\n" +
+	"\torg_state\x18\t \x01(\tR\borgState\"|\n" +
+	"\x13ListRegionsResponse\x12-\n" +
+	"\aregions\x18\x01 \x03(\v2\x13.boxd.api.v1.RegionR\aregions\x12\x15\n" +
+	"\x06org_id\x18\x02 \x01(\tR\x05orgId\x12\x1f\n" +
+	"\vthis_region\x18\x03 \x01(\tR\n" +
+	"thisRegion\"\x0f\n" +
 	"\rWhoamiRequest\"L\n" +
 	"\x0eWhoamiResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12!\n" +
@@ -3423,7 +3628,7 @@ const file_discobox_vm_boxd_proto_rawDesc = "" +
 	" \x01(\bR\x04mine\"%\n" +
 	"\x13DeleteApiKeyRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x16\n" +
-	"\x14DeleteApiKeyResponse2\xc6\x12\n" +
+	"\x14DeleteApiKeyResponse2\x98\x13\n" +
 	"\aBoxdApi\x12G\n" +
 	"\bCreateVm\x12\x1c.boxd.api.v1.CreateVmRequest\x1a\x1d.boxd.api.v1.CreateVmResponse\x12J\n" +
 	"\tDestroyVm\x12\x1d.boxd.api.v1.DestroyVmRequest\x1a\x1e.boxd.api.v1.DestroyVmResponse\x12D\n" +
@@ -3453,7 +3658,8 @@ const file_discobox_vm_boxd_proto_rawDesc = "" +
 	"\x10SetVmEgressAllow\x12$.boxd.api.v1.SetVmEgressAllowRequest\x1a%.boxd.api.v1.SetVmEgressAllowResponse\x12S\n" +
 	"\fCreateApiKey\x12 .boxd.api.v1.CreateApiKeyRequest\x1a!.boxd.api.v1.CreateApiKeyResponse\x12P\n" +
 	"\vListApiKeys\x12\x1f.boxd.api.v1.ListApiKeysRequest\x1a .boxd.api.v1.ListApiKeysResponse\x12S\n" +
-	"\fDeleteApiKey\x12 .boxd.api.v1.DeleteApiKeyRequest\x1a!.boxd.api.v1.DeleteApiKeyResponseB=Z;github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapib\x06proto3"
+	"\fDeleteApiKey\x12 .boxd.api.v1.DeleteApiKeyRequest\x1a!.boxd.api.v1.DeleteApiKeyResponse\x12P\n" +
+	"\vListRegions\x12\x1f.boxd.api.v1.ListRegionsRequest\x1a .boxd.api.v1.ListRegionsResponseB=Z;github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapib\x06proto3"
 
 var (
 	file_discobox_vm_boxd_proto_rawDescOnce sync.Once
@@ -3467,7 +3673,7 @@ func file_discobox_vm_boxd_proto_rawDescGZIP() []byte {
 	return file_discobox_vm_boxd_proto_rawDescData
 }
 
-var file_discobox_vm_boxd_proto_msgTypes = make([]protoimpl.MessageInfo, 60)
+var file_discobox_vm_boxd_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_discobox_vm_boxd_proto_goTypes = []any{
 	(*VmConfig)(nil),                        // 0: boxd.api.v1.VmConfig
 	(*CreateVmRequest)(nil),                 // 1: boxd.api.v1.CreateVmRequest
@@ -3497,110 +3703,116 @@ var file_discobox_vm_boxd_proto_goTypes = []any{
 	(*ExecChunk)(nil),                       // 25: boxd.api.v1.ExecChunk
 	(*GetConfigRequest)(nil),                // 26: boxd.api.v1.GetConfigRequest
 	(*GetConfigResponse)(nil),               // 27: boxd.api.v1.GetConfigResponse
-	(*WhoamiRequest)(nil),                   // 28: boxd.api.v1.WhoamiRequest
-	(*WhoamiResponse)(nil),                  // 29: boxd.api.v1.WhoamiResponse
-	(*CreateSnapshotRequest)(nil),           // 30: boxd.api.v1.CreateSnapshotRequest
-	(*CreateSnapshotResponse)(nil),          // 31: boxd.api.v1.CreateSnapshotResponse
-	(*SnapshotInfo)(nil),                    // 32: boxd.api.v1.SnapshotInfo
-	(*ListSnapshotsRequest)(nil),            // 33: boxd.api.v1.ListSnapshotsRequest
-	(*ListSnapshotsResponse)(nil),           // 34: boxd.api.v1.ListSnapshotsResponse
-	(*GetSnapshotRequest)(nil),              // 35: boxd.api.v1.GetSnapshotRequest
-	(*GetSnapshotResponse)(nil),             // 36: boxd.api.v1.GetSnapshotResponse
-	(*DeleteSnapshotRequest)(nil),           // 37: boxd.api.v1.DeleteSnapshotRequest
-	(*DeleteSnapshotResponse)(nil),          // 38: boxd.api.v1.DeleteSnapshotResponse
-	(*CreateVmFromSnapshotRequest)(nil),     // 39: boxd.api.v1.CreateVmFromSnapshotRequest
-	(*ResizeVmRequest)(nil),                 // 40: boxd.api.v1.ResizeVmRequest
-	(*ResizeVmResponse)(nil),                // 41: boxd.api.v1.ResizeVmResponse
-	(*ListProxiesRequest)(nil),              // 42: boxd.api.v1.ListProxiesRequest
-	(*ListProxiesResponse)(nil),             // 43: boxd.api.v1.ListProxiesResponse
-	(*ProxyInfo)(nil),                       // 44: boxd.api.v1.ProxyInfo
-	(*SetProxyPortRequest)(nil),             // 45: boxd.api.v1.SetProxyPortRequest
-	(*SetProxyPortResponse)(nil),            // 46: boxd.api.v1.SetProxyPortResponse
-	(*SetBotProtectionRequest)(nil),         // 47: boxd.api.v1.SetBotProtectionRequest
-	(*SetBotProtectionResponse)(nil),        // 48: boxd.api.v1.SetBotProtectionResponse
-	(*SetVmNetworksRequest)(nil),            // 49: boxd.api.v1.SetVmNetworksRequest
-	(*SetVmNetworksResponse)(nil),           // 50: boxd.api.v1.SetVmNetworksResponse
-	(*SetVmEgressAllowRequest)(nil),         // 51: boxd.api.v1.SetVmEgressAllowRequest
-	(*SetVmEgressAllowResponse)(nil),        // 52: boxd.api.v1.SetVmEgressAllowResponse
-	(*CreateApiKeyRequest)(nil),             // 53: boxd.api.v1.CreateApiKeyRequest
-	(*CreateApiKeyResponse)(nil),            // 54: boxd.api.v1.CreateApiKeyResponse
-	(*ListApiKeysRequest)(nil),              // 55: boxd.api.v1.ListApiKeysRequest
-	(*ListApiKeysResponse)(nil),             // 56: boxd.api.v1.ListApiKeysResponse
-	(*ApiKeyInfo)(nil),                      // 57: boxd.api.v1.ApiKeyInfo
-	(*DeleteApiKeyRequest)(nil),             // 58: boxd.api.v1.DeleteApiKeyRequest
-	(*DeleteApiKeyResponse)(nil),            // 59: boxd.api.v1.DeleteApiKeyResponse
+	(*ListRegionsRequest)(nil),              // 28: boxd.api.v1.ListRegionsRequest
+	(*Region)(nil),                          // 29: boxd.api.v1.Region
+	(*ListRegionsResponse)(nil),             // 30: boxd.api.v1.ListRegionsResponse
+	(*WhoamiRequest)(nil),                   // 31: boxd.api.v1.WhoamiRequest
+	(*WhoamiResponse)(nil),                  // 32: boxd.api.v1.WhoamiResponse
+	(*CreateSnapshotRequest)(nil),           // 33: boxd.api.v1.CreateSnapshotRequest
+	(*CreateSnapshotResponse)(nil),          // 34: boxd.api.v1.CreateSnapshotResponse
+	(*SnapshotInfo)(nil),                    // 35: boxd.api.v1.SnapshotInfo
+	(*ListSnapshotsRequest)(nil),            // 36: boxd.api.v1.ListSnapshotsRequest
+	(*ListSnapshotsResponse)(nil),           // 37: boxd.api.v1.ListSnapshotsResponse
+	(*GetSnapshotRequest)(nil),              // 38: boxd.api.v1.GetSnapshotRequest
+	(*GetSnapshotResponse)(nil),             // 39: boxd.api.v1.GetSnapshotResponse
+	(*DeleteSnapshotRequest)(nil),           // 40: boxd.api.v1.DeleteSnapshotRequest
+	(*DeleteSnapshotResponse)(nil),          // 41: boxd.api.v1.DeleteSnapshotResponse
+	(*CreateVmFromSnapshotRequest)(nil),     // 42: boxd.api.v1.CreateVmFromSnapshotRequest
+	(*ResizeVmRequest)(nil),                 // 43: boxd.api.v1.ResizeVmRequest
+	(*ResizeVmResponse)(nil),                // 44: boxd.api.v1.ResizeVmResponse
+	(*ListProxiesRequest)(nil),              // 45: boxd.api.v1.ListProxiesRequest
+	(*ListProxiesResponse)(nil),             // 46: boxd.api.v1.ListProxiesResponse
+	(*ProxyInfo)(nil),                       // 47: boxd.api.v1.ProxyInfo
+	(*SetProxyPortRequest)(nil),             // 48: boxd.api.v1.SetProxyPortRequest
+	(*SetProxyPortResponse)(nil),            // 49: boxd.api.v1.SetProxyPortResponse
+	(*SetBotProtectionRequest)(nil),         // 50: boxd.api.v1.SetBotProtectionRequest
+	(*SetBotProtectionResponse)(nil),        // 51: boxd.api.v1.SetBotProtectionResponse
+	(*SetVmNetworksRequest)(nil),            // 52: boxd.api.v1.SetVmNetworksRequest
+	(*SetVmNetworksResponse)(nil),           // 53: boxd.api.v1.SetVmNetworksResponse
+	(*SetVmEgressAllowRequest)(nil),         // 54: boxd.api.v1.SetVmEgressAllowRequest
+	(*SetVmEgressAllowResponse)(nil),        // 55: boxd.api.v1.SetVmEgressAllowResponse
+	(*CreateApiKeyRequest)(nil),             // 56: boxd.api.v1.CreateApiKeyRequest
+	(*CreateApiKeyResponse)(nil),            // 57: boxd.api.v1.CreateApiKeyResponse
+	(*ListApiKeysRequest)(nil),              // 58: boxd.api.v1.ListApiKeysRequest
+	(*ListApiKeysResponse)(nil),             // 59: boxd.api.v1.ListApiKeysResponse
+	(*ApiKeyInfo)(nil),                      // 60: boxd.api.v1.ApiKeyInfo
+	(*DeleteApiKeyRequest)(nil),             // 61: boxd.api.v1.DeleteApiKeyRequest
+	(*DeleteApiKeyResponse)(nil),            // 62: boxd.api.v1.DeleteApiKeyResponse
 }
 var file_discobox_vm_boxd_proto_depIdxs = []int32{
 	0,  // 0: boxd.api.v1.CreateVmRequest.config:type_name -> boxd.api.v1.VmConfig
 	22, // 1: boxd.api.v1.ListVmsResponse.vms:type_name -> boxd.api.v1.GetVmResponse
-	32, // 2: boxd.api.v1.ListSnapshotsResponse.snapshots:type_name -> boxd.api.v1.SnapshotInfo
-	32, // 3: boxd.api.v1.GetSnapshotResponse.snapshot:type_name -> boxd.api.v1.SnapshotInfo
-	0,  // 4: boxd.api.v1.CreateVmFromSnapshotRequest.config:type_name -> boxd.api.v1.VmConfig
-	44, // 5: boxd.api.v1.ListProxiesResponse.proxies:type_name -> boxd.api.v1.ProxyInfo
-	57, // 6: boxd.api.v1.ListApiKeysResponse.keys:type_name -> boxd.api.v1.ApiKeyInfo
-	1,  // 7: boxd.api.v1.BoxdApi.CreateVm:input_type -> boxd.api.v1.CreateVmRequest
-	3,  // 8: boxd.api.v1.BoxdApi.DestroyVm:input_type -> boxd.api.v1.DestroyVmRequest
-	5,  // 9: boxd.api.v1.BoxdApi.StartVm:input_type -> boxd.api.v1.StartVmRequest
-	7,  // 10: boxd.api.v1.BoxdApi.StopVm:input_type -> boxd.api.v1.StopVmRequest
-	9,  // 11: boxd.api.v1.BoxdApi.RebootVm:input_type -> boxd.api.v1.RebootVmRequest
-	21, // 12: boxd.api.v1.BoxdApi.GetVm:input_type -> boxd.api.v1.GetVmRequest
-	23, // 13: boxd.api.v1.BoxdApi.ListVms:input_type -> boxd.api.v1.ListVmsRequest
-	25, // 14: boxd.api.v1.BoxdApi.Exec:input_type -> boxd.api.v1.ExecChunk
-	28, // 15: boxd.api.v1.BoxdApi.Whoami:input_type -> boxd.api.v1.WhoamiRequest
-	26, // 16: boxd.api.v1.BoxdApi.GetConfig:input_type -> boxd.api.v1.GetConfigRequest
-	11, // 17: boxd.api.v1.BoxdApi.SuspendVm:input_type -> boxd.api.v1.SuspendVmRequest
-	13, // 18: boxd.api.v1.BoxdApi.ResumeVm:input_type -> boxd.api.v1.ResumeVmRequest
-	15, // 19: boxd.api.v1.BoxdApi.WakeVm:input_type -> boxd.api.v1.WakeVmRequest
-	17, // 20: boxd.api.v1.BoxdApi.SetAutoSuspendTimeout:input_type -> boxd.api.v1.SetAutoSuspendTimeoutRequest
-	19, // 21: boxd.api.v1.BoxdApi.SetAutoHibernateTimeout:input_type -> boxd.api.v1.SetAutoHibernateTimeoutRequest
-	30, // 22: boxd.api.v1.BoxdApi.CreateSnapshot:input_type -> boxd.api.v1.CreateSnapshotRequest
-	35, // 23: boxd.api.v1.BoxdApi.GetSnapshot:input_type -> boxd.api.v1.GetSnapshotRequest
-	37, // 24: boxd.api.v1.BoxdApi.DeleteSnapshot:input_type -> boxd.api.v1.DeleteSnapshotRequest
-	33, // 25: boxd.api.v1.BoxdApi.ListSnapshots:input_type -> boxd.api.v1.ListSnapshotsRequest
-	39, // 26: boxd.api.v1.BoxdApi.CreateVmFromSnapshot:input_type -> boxd.api.v1.CreateVmFromSnapshotRequest
-	40, // 27: boxd.api.v1.BoxdApi.ResizeVm:input_type -> boxd.api.v1.ResizeVmRequest
-	42, // 28: boxd.api.v1.BoxdApi.ListProxies:input_type -> boxd.api.v1.ListProxiesRequest
-	45, // 29: boxd.api.v1.BoxdApi.SetProxyPort:input_type -> boxd.api.v1.SetProxyPortRequest
-	47, // 30: boxd.api.v1.BoxdApi.SetBotProtection:input_type -> boxd.api.v1.SetBotProtectionRequest
-	49, // 31: boxd.api.v1.BoxdApi.SetVmNetworks:input_type -> boxd.api.v1.SetVmNetworksRequest
-	51, // 32: boxd.api.v1.BoxdApi.SetVmEgressAllow:input_type -> boxd.api.v1.SetVmEgressAllowRequest
-	53, // 33: boxd.api.v1.BoxdApi.CreateApiKey:input_type -> boxd.api.v1.CreateApiKeyRequest
-	55, // 34: boxd.api.v1.BoxdApi.ListApiKeys:input_type -> boxd.api.v1.ListApiKeysRequest
-	58, // 35: boxd.api.v1.BoxdApi.DeleteApiKey:input_type -> boxd.api.v1.DeleteApiKeyRequest
-	2,  // 36: boxd.api.v1.BoxdApi.CreateVm:output_type -> boxd.api.v1.CreateVmResponse
-	4,  // 37: boxd.api.v1.BoxdApi.DestroyVm:output_type -> boxd.api.v1.DestroyVmResponse
-	6,  // 38: boxd.api.v1.BoxdApi.StartVm:output_type -> boxd.api.v1.StartVmResponse
-	8,  // 39: boxd.api.v1.BoxdApi.StopVm:output_type -> boxd.api.v1.StopVmResponse
-	10, // 40: boxd.api.v1.BoxdApi.RebootVm:output_type -> boxd.api.v1.RebootVmResponse
-	22, // 41: boxd.api.v1.BoxdApi.GetVm:output_type -> boxd.api.v1.GetVmResponse
-	24, // 42: boxd.api.v1.BoxdApi.ListVms:output_type -> boxd.api.v1.ListVmsResponse
-	25, // 43: boxd.api.v1.BoxdApi.Exec:output_type -> boxd.api.v1.ExecChunk
-	29, // 44: boxd.api.v1.BoxdApi.Whoami:output_type -> boxd.api.v1.WhoamiResponse
-	27, // 45: boxd.api.v1.BoxdApi.GetConfig:output_type -> boxd.api.v1.GetConfigResponse
-	12, // 46: boxd.api.v1.BoxdApi.SuspendVm:output_type -> boxd.api.v1.SuspendVmResponse
-	14, // 47: boxd.api.v1.BoxdApi.ResumeVm:output_type -> boxd.api.v1.ResumeVmResponse
-	16, // 48: boxd.api.v1.BoxdApi.WakeVm:output_type -> boxd.api.v1.WakeVmResponse
-	18, // 49: boxd.api.v1.BoxdApi.SetAutoSuspendTimeout:output_type -> boxd.api.v1.SetAutoSuspendTimeoutResponse
-	20, // 50: boxd.api.v1.BoxdApi.SetAutoHibernateTimeout:output_type -> boxd.api.v1.SetAutoHibernateTimeoutResponse
-	31, // 51: boxd.api.v1.BoxdApi.CreateSnapshot:output_type -> boxd.api.v1.CreateSnapshotResponse
-	36, // 52: boxd.api.v1.BoxdApi.GetSnapshot:output_type -> boxd.api.v1.GetSnapshotResponse
-	38, // 53: boxd.api.v1.BoxdApi.DeleteSnapshot:output_type -> boxd.api.v1.DeleteSnapshotResponse
-	34, // 54: boxd.api.v1.BoxdApi.ListSnapshots:output_type -> boxd.api.v1.ListSnapshotsResponse
-	2,  // 55: boxd.api.v1.BoxdApi.CreateVmFromSnapshot:output_type -> boxd.api.v1.CreateVmResponse
-	41, // 56: boxd.api.v1.BoxdApi.ResizeVm:output_type -> boxd.api.v1.ResizeVmResponse
-	43, // 57: boxd.api.v1.BoxdApi.ListProxies:output_type -> boxd.api.v1.ListProxiesResponse
-	46, // 58: boxd.api.v1.BoxdApi.SetProxyPort:output_type -> boxd.api.v1.SetProxyPortResponse
-	48, // 59: boxd.api.v1.BoxdApi.SetBotProtection:output_type -> boxd.api.v1.SetBotProtectionResponse
-	50, // 60: boxd.api.v1.BoxdApi.SetVmNetworks:output_type -> boxd.api.v1.SetVmNetworksResponse
-	52, // 61: boxd.api.v1.BoxdApi.SetVmEgressAllow:output_type -> boxd.api.v1.SetVmEgressAllowResponse
-	54, // 62: boxd.api.v1.BoxdApi.CreateApiKey:output_type -> boxd.api.v1.CreateApiKeyResponse
-	56, // 63: boxd.api.v1.BoxdApi.ListApiKeys:output_type -> boxd.api.v1.ListApiKeysResponse
-	59, // 64: boxd.api.v1.BoxdApi.DeleteApiKey:output_type -> boxd.api.v1.DeleteApiKeyResponse
-	36, // [36:65] is the sub-list for method output_type
-	7,  // [7:36] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	29, // 2: boxd.api.v1.ListRegionsResponse.regions:type_name -> boxd.api.v1.Region
+	35, // 3: boxd.api.v1.ListSnapshotsResponse.snapshots:type_name -> boxd.api.v1.SnapshotInfo
+	35, // 4: boxd.api.v1.GetSnapshotResponse.snapshot:type_name -> boxd.api.v1.SnapshotInfo
+	0,  // 5: boxd.api.v1.CreateVmFromSnapshotRequest.config:type_name -> boxd.api.v1.VmConfig
+	47, // 6: boxd.api.v1.ListProxiesResponse.proxies:type_name -> boxd.api.v1.ProxyInfo
+	60, // 7: boxd.api.v1.ListApiKeysResponse.keys:type_name -> boxd.api.v1.ApiKeyInfo
+	1,  // 8: boxd.api.v1.BoxdApi.CreateVm:input_type -> boxd.api.v1.CreateVmRequest
+	3,  // 9: boxd.api.v1.BoxdApi.DestroyVm:input_type -> boxd.api.v1.DestroyVmRequest
+	5,  // 10: boxd.api.v1.BoxdApi.StartVm:input_type -> boxd.api.v1.StartVmRequest
+	7,  // 11: boxd.api.v1.BoxdApi.StopVm:input_type -> boxd.api.v1.StopVmRequest
+	9,  // 12: boxd.api.v1.BoxdApi.RebootVm:input_type -> boxd.api.v1.RebootVmRequest
+	21, // 13: boxd.api.v1.BoxdApi.GetVm:input_type -> boxd.api.v1.GetVmRequest
+	23, // 14: boxd.api.v1.BoxdApi.ListVms:input_type -> boxd.api.v1.ListVmsRequest
+	25, // 15: boxd.api.v1.BoxdApi.Exec:input_type -> boxd.api.v1.ExecChunk
+	31, // 16: boxd.api.v1.BoxdApi.Whoami:input_type -> boxd.api.v1.WhoamiRequest
+	26, // 17: boxd.api.v1.BoxdApi.GetConfig:input_type -> boxd.api.v1.GetConfigRequest
+	11, // 18: boxd.api.v1.BoxdApi.SuspendVm:input_type -> boxd.api.v1.SuspendVmRequest
+	13, // 19: boxd.api.v1.BoxdApi.ResumeVm:input_type -> boxd.api.v1.ResumeVmRequest
+	15, // 20: boxd.api.v1.BoxdApi.WakeVm:input_type -> boxd.api.v1.WakeVmRequest
+	17, // 21: boxd.api.v1.BoxdApi.SetAutoSuspendTimeout:input_type -> boxd.api.v1.SetAutoSuspendTimeoutRequest
+	19, // 22: boxd.api.v1.BoxdApi.SetAutoHibernateTimeout:input_type -> boxd.api.v1.SetAutoHibernateTimeoutRequest
+	33, // 23: boxd.api.v1.BoxdApi.CreateSnapshot:input_type -> boxd.api.v1.CreateSnapshotRequest
+	38, // 24: boxd.api.v1.BoxdApi.GetSnapshot:input_type -> boxd.api.v1.GetSnapshotRequest
+	40, // 25: boxd.api.v1.BoxdApi.DeleteSnapshot:input_type -> boxd.api.v1.DeleteSnapshotRequest
+	36, // 26: boxd.api.v1.BoxdApi.ListSnapshots:input_type -> boxd.api.v1.ListSnapshotsRequest
+	42, // 27: boxd.api.v1.BoxdApi.CreateVmFromSnapshot:input_type -> boxd.api.v1.CreateVmFromSnapshotRequest
+	43, // 28: boxd.api.v1.BoxdApi.ResizeVm:input_type -> boxd.api.v1.ResizeVmRequest
+	45, // 29: boxd.api.v1.BoxdApi.ListProxies:input_type -> boxd.api.v1.ListProxiesRequest
+	48, // 30: boxd.api.v1.BoxdApi.SetProxyPort:input_type -> boxd.api.v1.SetProxyPortRequest
+	50, // 31: boxd.api.v1.BoxdApi.SetBotProtection:input_type -> boxd.api.v1.SetBotProtectionRequest
+	52, // 32: boxd.api.v1.BoxdApi.SetVmNetworks:input_type -> boxd.api.v1.SetVmNetworksRequest
+	54, // 33: boxd.api.v1.BoxdApi.SetVmEgressAllow:input_type -> boxd.api.v1.SetVmEgressAllowRequest
+	56, // 34: boxd.api.v1.BoxdApi.CreateApiKey:input_type -> boxd.api.v1.CreateApiKeyRequest
+	58, // 35: boxd.api.v1.BoxdApi.ListApiKeys:input_type -> boxd.api.v1.ListApiKeysRequest
+	61, // 36: boxd.api.v1.BoxdApi.DeleteApiKey:input_type -> boxd.api.v1.DeleteApiKeyRequest
+	28, // 37: boxd.api.v1.BoxdApi.ListRegions:input_type -> boxd.api.v1.ListRegionsRequest
+	2,  // 38: boxd.api.v1.BoxdApi.CreateVm:output_type -> boxd.api.v1.CreateVmResponse
+	4,  // 39: boxd.api.v1.BoxdApi.DestroyVm:output_type -> boxd.api.v1.DestroyVmResponse
+	6,  // 40: boxd.api.v1.BoxdApi.StartVm:output_type -> boxd.api.v1.StartVmResponse
+	8,  // 41: boxd.api.v1.BoxdApi.StopVm:output_type -> boxd.api.v1.StopVmResponse
+	10, // 42: boxd.api.v1.BoxdApi.RebootVm:output_type -> boxd.api.v1.RebootVmResponse
+	22, // 43: boxd.api.v1.BoxdApi.GetVm:output_type -> boxd.api.v1.GetVmResponse
+	24, // 44: boxd.api.v1.BoxdApi.ListVms:output_type -> boxd.api.v1.ListVmsResponse
+	25, // 45: boxd.api.v1.BoxdApi.Exec:output_type -> boxd.api.v1.ExecChunk
+	32, // 46: boxd.api.v1.BoxdApi.Whoami:output_type -> boxd.api.v1.WhoamiResponse
+	27, // 47: boxd.api.v1.BoxdApi.GetConfig:output_type -> boxd.api.v1.GetConfigResponse
+	12, // 48: boxd.api.v1.BoxdApi.SuspendVm:output_type -> boxd.api.v1.SuspendVmResponse
+	14, // 49: boxd.api.v1.BoxdApi.ResumeVm:output_type -> boxd.api.v1.ResumeVmResponse
+	16, // 50: boxd.api.v1.BoxdApi.WakeVm:output_type -> boxd.api.v1.WakeVmResponse
+	18, // 51: boxd.api.v1.BoxdApi.SetAutoSuspendTimeout:output_type -> boxd.api.v1.SetAutoSuspendTimeoutResponse
+	20, // 52: boxd.api.v1.BoxdApi.SetAutoHibernateTimeout:output_type -> boxd.api.v1.SetAutoHibernateTimeoutResponse
+	34, // 53: boxd.api.v1.BoxdApi.CreateSnapshot:output_type -> boxd.api.v1.CreateSnapshotResponse
+	39, // 54: boxd.api.v1.BoxdApi.GetSnapshot:output_type -> boxd.api.v1.GetSnapshotResponse
+	41, // 55: boxd.api.v1.BoxdApi.DeleteSnapshot:output_type -> boxd.api.v1.DeleteSnapshotResponse
+	37, // 56: boxd.api.v1.BoxdApi.ListSnapshots:output_type -> boxd.api.v1.ListSnapshotsResponse
+	2,  // 57: boxd.api.v1.BoxdApi.CreateVmFromSnapshot:output_type -> boxd.api.v1.CreateVmResponse
+	44, // 58: boxd.api.v1.BoxdApi.ResizeVm:output_type -> boxd.api.v1.ResizeVmResponse
+	46, // 59: boxd.api.v1.BoxdApi.ListProxies:output_type -> boxd.api.v1.ListProxiesResponse
+	49, // 60: boxd.api.v1.BoxdApi.SetProxyPort:output_type -> boxd.api.v1.SetProxyPortResponse
+	51, // 61: boxd.api.v1.BoxdApi.SetBotProtection:output_type -> boxd.api.v1.SetBotProtectionResponse
+	53, // 62: boxd.api.v1.BoxdApi.SetVmNetworks:output_type -> boxd.api.v1.SetVmNetworksResponse
+	55, // 63: boxd.api.v1.BoxdApi.SetVmEgressAllow:output_type -> boxd.api.v1.SetVmEgressAllowResponse
+	57, // 64: boxd.api.v1.BoxdApi.CreateApiKey:output_type -> boxd.api.v1.CreateApiKeyResponse
+	59, // 65: boxd.api.v1.BoxdApi.ListApiKeys:output_type -> boxd.api.v1.ListApiKeysResponse
+	62, // 66: boxd.api.v1.BoxdApi.DeleteApiKey:output_type -> boxd.api.v1.DeleteApiKeyResponse
+	30, // 67: boxd.api.v1.BoxdApi.ListRegions:output_type -> boxd.api.v1.ListRegionsResponse
+	38, // [38:68] is the sub-list for method output_type
+	8,  // [8:38] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_discobox_vm_boxd_proto_init() }
@@ -3614,7 +3826,7 @@ func file_discobox_vm_boxd_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_discobox_vm_boxd_proto_rawDesc), len(file_discobox_vm_boxd_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   60,
+			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

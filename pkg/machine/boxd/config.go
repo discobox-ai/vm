@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"regexp"
 
 	"github.com/discobox-ai/vm/pkg/machine"
 )
@@ -20,8 +21,9 @@ const (
 	defaultTokenURL = "https://app.boxd.sh/api/v1/auth/token" //nolint:gosec // G101: an endpoint URL, not a credential
 )
 
-// errNoRegions refuses a region until the driver calls one (vm#68).
-var errNoRegions = errors.New("boxd: configuration: region: this disco-vm calls boxd's home region alone; regions are vm#68's")
+// regionID is the shape of a boxd region's ID: a short lowercase code. Which
+// regions there are is boxd's, and is asked only once the driver calls one.
+var regionID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
 // Config is the boxd driver's configuration (machine.Config.DriverConfig,
 // ADR 26-11-11-215): the cluster it calls.
@@ -32,9 +34,11 @@ type Config struct {
 	// TokenURL is where an API key is exchanged for a token. Empty is
 	// boxd.sh's.
 	TokenURL string `json:"tokenUrl,omitempty"`
-	// Region picks the endpoint the home endpoint names for it, for the
-	// calls that are the region's. Empty is the home region; another is
-	// refused until the driver calls one (vm#68).
+	// Region picks the endpoint the home endpoint names for it
+	// (ListRegions), for the calls that are the region's: every call on a
+	// machine or a snapshot. Empty is the home endpoint's own. A region boxd
+	// does not list, or one the key's org has not enabled, fails Check and
+	// every such call: the list is boxd's, and is read only once it is used.
 	Region string `json:"region,omitempty"`
 }
 
@@ -50,7 +54,7 @@ func Definition() machine.Definition {
 			{Key: "tokenUrl", Label: "Token URL", Type: machine.ConfigString, Env: TokenURLEnv, Default: defaultTokenURL, Advanced: true, Privileged: true,
 				Description: "Where the cluster exchanges an API key for a token; it is sent the key, so it is https, or http to a loopback address."},
 			{Key: "region", Label: "Region", Type: machine.ConfigString, Env: RegionEnv,
-				Description: "The boxd region the driver's machines and snapshots are in. Only the home region (empty) works yet: another is refused until the driver calls a region's endpoint (vm#68)."},
+				Description: "The boxd region the driver's machines and snapshots are in, such as fra or nyc; the driver lists and makes only that region's. Empty is the home endpoint's own region."},
 		},
 	}
 }
@@ -72,8 +76,8 @@ func decode(config json.RawMessage) (Config, error) {
 	if err := machine.CheckKeyURL("boxd", "tokenUrl", cfg.TokenURL); err != nil {
 		return cfg, err
 	}
-	if cfg.Region != "" {
-		return cfg, errNoRegions
+	if cfg.Region != "" && !regionID.MatchString(cfg.Region) {
+		return cfg, errors.New("boxd: configuration: region: not a boxd region ID, such as fra or nyc")
 	}
 	return cfg, nil
 }

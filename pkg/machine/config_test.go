@@ -108,7 +108,7 @@ func TestValidateRefusesWhatTheDriverDoesNotTake(t *testing.T) {
 		{"docker", `{"root":"relative"}`, "root: not an absolute path"},
 		{"boxd", `{"addr":"no-port"}`, "addr: not HOST:PORT"},
 		{"boxd", `{"tokenUrl":"http://example.com/t"}`, "tokenUrl: a URL the key is sent to is https"},
-		{"boxd", `{"region":"nyc"}`, "region:"},
+		{"boxd", `{"region":"New York"}`, "region: not a boxd region ID"},
 		{"archil", `{"region":"mars"}`, "region: not one that runs sandboxes"},
 		{"archil", `{"baseUrl":"https://h/?k=v"}`, "baseUrl: a URL the key is sent to has no userinfo, query"},
 		{"nope", `{}`, `no driver "nope"`},

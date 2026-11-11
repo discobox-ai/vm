@@ -60,6 +60,7 @@ const (
 	BoxdApi_CreateApiKey_FullMethodName            = "/boxd.api.v1.BoxdApi/CreateApiKey"
 	BoxdApi_ListApiKeys_FullMethodName             = "/boxd.api.v1.BoxdApi/ListApiKeys"
 	BoxdApi_DeleteApiKey_FullMethodName            = "/boxd.api.v1.BoxdApi/DeleteApiKey"
+	BoxdApi_ListRegions_FullMethodName             = "/boxd.api.v1.BoxdApi/ListRegions"
 )
 
 // BoxdApiClient is the client API for BoxdApi service.
@@ -120,6 +121,11 @@ type BoxdApiClient interface {
 	// Revokes a key the caller made, or an org-kind key of an org the caller
 	// administers.
 	DeleteApiKey(ctx context.Context, in *DeleteApiKeyRequest, opts ...grpc.CallOption) (*DeleteApiKeyResponse, error)
+	// The regions boxd runs in. Each has its own API endpoint, and a machine
+	// or snapshot lives in one of them; calls on machines and snapshots go to
+	// their region's endpoint, and account and API key calls to boxd.sh:9443.
+	// An org can use its home region and the regions enabled for it.
+	ListRegions(ctx context.Context, in *ListRegionsRequest, opts ...grpc.CallOption) (*ListRegionsResponse, error)
 }
 
 type boxdApiClient struct {
@@ -423,6 +429,16 @@ func (c *boxdApiClient) DeleteApiKey(ctx context.Context, in *DeleteApiKeyReques
 	return out, nil
 }
 
+func (c *boxdApiClient) ListRegions(ctx context.Context, in *ListRegionsRequest, opts ...grpc.CallOption) (*ListRegionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRegionsResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_ListRegions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BoxdApiServer is the server API for BoxdApi service.
 // All implementations must embed UnimplementedBoxdApiServer
 // for forward compatibility.
@@ -481,6 +497,11 @@ type BoxdApiServer interface {
 	// Revokes a key the caller made, or an org-kind key of an org the caller
 	// administers.
 	DeleteApiKey(context.Context, *DeleteApiKeyRequest) (*DeleteApiKeyResponse, error)
+	// The regions boxd runs in. Each has its own API endpoint, and a machine
+	// or snapshot lives in one of them; calls on machines and snapshots go to
+	// their region's endpoint, and account and API key calls to boxd.sh:9443.
+	// An org can use its home region and the regions enabled for it.
+	ListRegions(context.Context, *ListRegionsRequest) (*ListRegionsResponse, error)
 	mustEmbedUnimplementedBoxdApiServer()
 }
 
@@ -577,6 +598,9 @@ func (UnimplementedBoxdApiServer) ListApiKeys(context.Context, *ListApiKeysReque
 }
 func (UnimplementedBoxdApiServer) DeleteApiKey(context.Context, *DeleteApiKeyRequest) (*DeleteApiKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteApiKey not implemented")
+}
+func (UnimplementedBoxdApiServer) ListRegions(context.Context, *ListRegionsRequest) (*ListRegionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRegions not implemented")
 }
 func (UnimplementedBoxdApiServer) mustEmbedUnimplementedBoxdApiServer() {}
 func (UnimplementedBoxdApiServer) testEmbeddedByValue()                 {}
@@ -1110,6 +1134,24 @@ func _BoxdApi_DeleteApiKey_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BoxdApi_ListRegions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRegionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).ListRegions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_ListRegions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).ListRegions(ctx, req.(*ListRegionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // BoxdApi_ServiceDesc is the grpc.ServiceDesc for BoxdApi service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1228,6 +1270,10 @@ var BoxdApi_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteApiKey",
 			Handler:    _BoxdApi_DeleteApiKey_Handler,
+		},
+		{
+			MethodName: "ListRegions",
+			Handler:    _BoxdApi_ListRegions_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

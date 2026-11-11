@@ -147,10 +147,17 @@ containers are `dvm-<pool>--...`, docker's committed images
 a local driver records it in each `instance.json`. `--` cannot occur
 in a pool, so a name belongs to exactly one pool.
 
+A driver whose configuration names a region (boxd's and archil's `region`)
+is also made for one region, and lists and makes only that region's VMs:
+the same pool in two regions is two sets of VMs that share a name, and
+neither lists the other's.
+
 There are no orphans in disco-vm (ADR 26-10-23-417): everything under a
-pool's names is that pool's, and is listed. A program that embeds the
+pool's names in a region is that pool's, and is listed by a driver made for
+that pool and region. A program that embeds the
 engine and owns a set of its own (discobox's control plane) reaps against it,
-as its pool agent reaps Docker: list the pool's VMs,
+as its pool agent reaps Docker: list the pool's VMs with a driver configured
+as the one that made them, region included, and in every region it has used,
 remove what it does not hold, treat a failed listing as no answer, and spare
 what is younger than a grace period. A driver's own short-lived resources are listed as
 VMs while they run (docker's `base-<random>` readying container), and a

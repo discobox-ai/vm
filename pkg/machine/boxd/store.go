@@ -112,7 +112,7 @@ func (d *Driver) refuseCommitted(ctx context.Context, api boxdapi.BoxdApiClient,
 // Commit that has not deleted the machine yet: it is listed, committed, and
 // the machine is not, and Destroy removes both.
 func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
-	api, err := d.api.API()
+	api, err := d.api.API(ctx)
 	if err != nil {
 		return nil, err
 	}

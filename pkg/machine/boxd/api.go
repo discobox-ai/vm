@@ -38,19 +38,30 @@ const (
 // errNoCredentials names the fix, since Check is where a user meets it first.
 var errNoCredentials = fmt.Errorf("boxd: no credentials: set %s to an API key from `boxd auth keys create disco-vm`", APIKeyEnv)
 
-// client is a lazily dialed connection to the boxd API. Construction touches
+// client is boxd's API, dialed lazily: the home endpoint (addr), which
+// answers account and API key calls and lists the regions, and the region's
+// endpoint, where calls on machines and snapshots go. Construction touches
 // nothing, so `disco-vm info` can list the driver on a host with no account.
 type client struct {
 	addr     string
 	tokenURL string
+	// region is the boxd region ID the driver's machines and snapshots live
+	// in; empty is the home endpoint's own.
+	region string
 	// keys is asked for the key on every call, so a key replaced where it
 	// reads is used from the next one.
 	keys machine.KeySource
+	// creds secure every connection, and proxy, when set, dials it
+	// (ALL_PROXY); proxyErr is an ALL_PROXY that could not be used.
+	creds    credentials.TransportCredentials
+	proxy    func(context.Context, string) (net.Conn, error)
+	proxyErr error
 
-	once sync.Once
-	conn *grpc.ClientConn
-	api  boxdapi.BoxdApiClient
-	err  error
+	dialMu sync.Mutex
+	// conns are the endpoints dialed, by address.
+	conns map[string]*grpc.ClientConn
+	// regional is the region's endpoint, once ListRegions has named it.
+	regional boxdapi.BoxdApiClient
 
 	mu sync.Mutex
 	// jwt is exchanged from the API key jwtFor, and lives until expires.
@@ -60,36 +71,142 @@ type client struct {
 }
 
 func newClient(cfg Config, keys machine.KeySource) *client {
-	return &client{addr: cfg.Addr, tokenURL: cfg.TokenURL, keys: keys}
+	proxy, err := socksDialer()
+	return &client{
+		addr:     cfg.Addr,
+		tokenURL: cfg.TokenURL,
+		region:   cfg.Region,
+		keys:     keys,
+		creds:    credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}),
+		proxy:    proxy,
+		proxyErr: err,
+	}
 }
 
-// API returns the generated client, dialing on first use.
-func (c *client) API() (boxdapi.BoxdApiClient, error) {
-	c.once.Do(func() {
-		opts := []grpc.DialOption{
-			grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})),
+// Account is the API at the home endpoint, where account and API key calls
+// go whatever the region.
+func (c *client) Account() (boxdapi.BoxdApiClient, error) { return c.dial(c.addr) }
+
+// API is the API at the region's endpoint, where calls on machines and
+// snapshots go: the home endpoint's for no region, and otherwise the one
+// ListRegions names for it, asked once it answers.
+func (c *client) API(ctx context.Context) (boxdapi.BoxdApiClient, error) {
+	if c.region == "" {
+		return c.Account()
+	}
+	c.dialMu.Lock()
+	api := c.regional
+	c.dialMu.Unlock()
+	if api != nil {
+		return api, nil
+	}
+	addr, err := c.regionAddr(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if api, err = c.dial(addr); err != nil {
+		return nil, err
+	}
+	c.dialMu.Lock()
+	c.regional = api
+	c.dialMu.Unlock()
+	return api, nil
+}
+
+// regionAddr is the endpoint of the region, which the key's org must have
+// enabled. A failure is not kept, so the next call asks again.
+func (c *client) regionAddr(ctx context.Context) (string, error) {
+	home, err := c.Account()
+	if err != nil {
+		return "", err
+	}
+	list, err := home.ListRegions(ctx, &boxdapi.ListRegionsRequest{})
+	if err != nil {
+		return "", fmt.Errorf("boxd: list regions at %s: %w", c.addr, err)
+	}
+	var ids []string
+	for _, r := range list.GetRegions() {
+		ids = append(ids, r.GetId())
+		if r.GetId() != c.region {
+			continue
 		}
-		// Debugging first, so a call its key refuses is reported too.
-		opts = append(opts, debugOptions()...)
-		opts = append(opts, c.authOptions()...)
-		dialer, err := socksDialer()
+		if state := r.GetOrgState(); state != "" && state != "enabled" {
+			return "", fmt.Errorf("boxd: region %s is %s for this key's org, not enabled: an org admin can ask boxd for it", c.region, state)
+		}
+		if r.GetId() == list.GetThisRegion() {
+			return c.addr, nil
+		}
+		return endpointAddr(r.GetApiEndpoint(), c.addr)
+	}
+	return "", fmt.Errorf("boxd: no region %q at %s (it has %s)", c.region, c.addr, strings.Join(ids, ", "))
+}
+
+// endpointAddr is a region's api_endpoint as a host and port to dial. boxd
+// documents one as a host and port (nyc.boxd.sh:9443); a URL is taken as
+// its host, at its scheme's port when it names none, and a bare host at the
+// home endpoint's port.
+func endpointAddr(endpoint, home string) (string, error) {
+	addr := endpoint
+	if strings.Contains(addr, "://") {
+		u, err := url.Parse(addr)
 		if err != nil {
-			c.err = err
-			return
+			return "", fmt.Errorf("boxd: region endpoint %q: %w", endpoint, err)
 		}
-		target := c.addr
-		if dialer != nil {
-			// passthrough hands the proxy the host name, as socks5h means:
-			// gRPC's own resolver would look it up here first.
-			opts = append(opts, grpc.WithContextDialer(dialer))
-			target = "passthrough:///" + c.addr
+		if u.Hostname() == "" {
+			return "", fmt.Errorf("boxd: region endpoint %q names no host", endpoint)
 		}
-		c.conn, c.err = grpc.NewClient(target, opts...)
-		if c.err == nil {
-			c.api = boxdapi.NewBoxdApiClient(c.conn)
+		port := u.Port()
+		if port == "" {
+			if port = map[string]string{"https": "443", "http": "80"}[u.Scheme]; port == "" {
+				return "", fmt.Errorf("boxd: region endpoint %q names no port", endpoint)
+			}
 		}
-	})
-	return c.api, c.err
+		return net.JoinHostPort(u.Hostname(), port), nil
+	}
+	if addr == "" {
+		return "", fmt.Errorf("boxd: region endpoint %q names no host", endpoint)
+	}
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		_, port, herr := net.SplitHostPort(home)
+		if herr != nil {
+			return "", fmt.Errorf("boxd: region endpoint %q names no port: %w", endpoint, err)
+		}
+		addr = net.JoinHostPort(addr, port)
+	}
+	return addr, nil
+}
+
+// dial returns the generated client for the endpoint at addr, dialing it on
+// first use.
+func (c *client) dial(addr string) (boxdapi.BoxdApiClient, error) {
+	if c.proxyErr != nil {
+		return nil, c.proxyErr
+	}
+	c.dialMu.Lock()
+	defer c.dialMu.Unlock()
+	if conn, ok := c.conns[addr]; ok {
+		return boxdapi.NewBoxdApiClient(conn), nil
+	}
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(c.creds)}
+	// Debugging first, so a call its key refuses is reported too.
+	opts = append(opts, debugOptions()...)
+	opts = append(opts, c.authOptions()...)
+	target := addr
+	if c.proxy != nil {
+		// passthrough hands the proxy the host name, as socks5h means:
+		// gRPC's own resolver would look it up here first.
+		opts = append(opts, grpc.WithContextDialer(c.proxy))
+		target = "passthrough:///" + addr
+	}
+	conn, err := grpc.NewClient(target, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if c.conns == nil {
+		c.conns = map[string]*grpc.ClientConn{}
+	}
+	c.conns[addr] = conn
+	return boxdapi.NewBoxdApiClient(conn), nil
 }
 
 // authOptions have every call carry a JWT, exchanged from the API key and

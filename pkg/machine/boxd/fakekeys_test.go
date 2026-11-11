@@ -70,6 +70,9 @@ func (f *fakeAPI) serveTokens(w http.ResponseWriter, r *http.Request) {
 // caller is the key a call is made with: "" for the session, or an API key's
 // ID. A bearer that is neither, or a key revoked or expired, is refused.
 func (f *fakeAPI) caller(ctx context.Context) (string, error) {
+	if f.account != nil {
+		return f.account.caller(ctx)
+	}
 	md, _ := metadata.FromIncomingContext(ctx)
 	bearer, _ := strings.CutPrefix(strings.Join(md.Get("authorization"), ""), "Bearer ")
 	if bearer == fakeSession {
@@ -112,6 +115,9 @@ func session(ctx context.Context) error {
 
 //nolint:revive // boxd's RPC name
 func (f *fakeAPI) CreateApiKey(ctx context.Context, req *boxdapi.CreateApiKeyRequest) (*boxdapi.CreateApiKeyResponse, error) {
+	if err := f.accountCall(); err != nil {
+		return nil, err
+	}
 	if err := session(ctx); err != nil {
 		return nil, err
 	}
@@ -130,6 +136,9 @@ func (f *fakeAPI) CreateApiKey(ctx context.Context, req *boxdapi.CreateApiKeyReq
 
 //nolint:revive // boxd's RPC name
 func (f *fakeAPI) ListApiKeys(ctx context.Context, _ *boxdapi.ListApiKeysRequest) (*boxdapi.ListApiKeysResponse, error) {
+	if err := f.accountCall(); err != nil {
+		return nil, err
+	}
 	if err := session(ctx); err != nil {
 		return nil, err
 	}
@@ -146,6 +155,9 @@ func (f *fakeAPI) ListApiKeys(ctx context.Context, _ *boxdapi.ListApiKeysRequest
 
 //nolint:revive // boxd's RPC name
 func (f *fakeAPI) DeleteApiKey(ctx context.Context, req *boxdapi.DeleteApiKeyRequest) (*boxdapi.DeleteApiKeyResponse, error) {
+	if err := f.accountCall(); err != nil {
+		return nil, err
+	}
 	if err := session(ctx); err != nil {
 		return nil, err
 	}

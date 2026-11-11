@@ -57,7 +57,7 @@ func TestService(t *testing.T) {
 	url, port := service.URL, guest.ServicePort
 	t.Logf("URL %s", url)
 	ref := vmRef{ID: inst.ID}
-	api, _ := d.api.API()
+	api, _ := d.api.API(ctx)
 
 	for boot := 1; boot <= 2; boot++ {
 		m, err := d.Boot(ctx, inst, machine.BootOptions{})
