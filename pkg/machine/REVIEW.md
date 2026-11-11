@@ -31,3 +31,10 @@
   checked with `machine.CheckFile` before anything reads it.
 - **A field is never removed or renamed**: it is `Retired`, with
   `ReplacedBy` where it has a replacement, and stays accepted for good.
+- **A driver's configuration that scopes what it lists is part of the
+  reaper contract.** The pool does, and so does a region (boxd's and
+  archil's `region`): a driver lists only its region's VMs, so a reaper that
+  lists with another region, or none, never sees them and they are billed
+  forever. A new setting that narrows what `Instances` returns updates the
+  reaping paragraph of `pkg/engine/DESIGN.md` in the same change. A review
+  found the region added without it.

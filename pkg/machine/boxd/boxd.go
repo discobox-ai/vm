@@ -72,7 +72,8 @@ type Driver struct {
 var _ machine.Driver = (*Driver)(nil)
 
 // New returns a driver for cfg's pool (machine.DefaultPool when empty),
-// on the cluster its configuration (cfg.DriverConfig) names, that
+// on the cluster and in the region its configuration (cfg.DriverConfig)
+// names, that
 // authenticates with the key cfg.Keys answers on each call. It dials
 // nothing until it is used.
 func New(cfg machine.Config) (*Driver, error) {
@@ -103,15 +104,30 @@ func (*Driver) Capabilities() machine.Capabilities {
 	}
 }
 
+// Check asks boxd who the key is, at the home endpoint. With a region it
+// also finds the region's endpoint, which needs the region to be one the
+// key's org has enabled, and lists the machines there, so an endpoint that
+// does not answer, or refuses the key, fails here rather than at the first
+// create.
 func (d *Driver) Check(ctx context.Context) error {
-	api, err := d.api.API()
+	account, err := d.api.Account()
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if _, err := api.Whoami(ctx, &boxdapi.WhoamiRequest{}); err != nil {
+	if _, err := account.Whoami(ctx, &boxdapi.WhoamiRequest{}); err != nil {
 		return fmt.Errorf("boxd: %s: %w", d.api.addr, err)
+	}
+	if d.api.region == "" {
+		return nil
+	}
+	api, err := d.api.API(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := api.ListVms(ctx, &boxdapi.ListVmsRequest{}); err != nil {
+		return fmt.Errorf("boxd: region %s: %w", d.api.region, err)
 	}
 	return nil
 }
@@ -173,7 +189,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		// machine that is not isolated is on the default network until then.
 		return machine.Instance{}, fmt.Errorf("boxd: networks on a VM created from a committed one need it isolated, or it peers on the default network until they are set: %w", machine.ErrUnsupported)
 	}
-	api, err := d.api.API()
+	api, err := d.api.API(ctx)
 	if err != nil {
 		return machine.Instance{}, err
 	}
@@ -330,7 +346,7 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 	if opts.GUI {
 		return nil, fmt.Errorf("boxd: a window on the guest's display: %w", machine.ErrUnsupported)
 	}
-	api, err := d.api.API()
+	api, err := d.api.API(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -412,7 +428,7 @@ func stopped(ctx context.Context, api boxdapi.BoxdApiClient, vm string) <-chan s
 // Its state is boxd's: a guest that powered itself off from inside is left
 // running by boxd, and reads as running until `disco-vm stop`.
 func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
-	api, err := d.api.API()
+	api, err := d.api.API(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -449,7 +465,7 @@ func (*Driver) Upgrade(context.Context, machine.Instance, *machine.Instance) (ma
 // machine. The snapshot's disk is the one the guest flushed at its last
 // orderly shutdown.
 func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Instance, error) {
-	api, err := d.api.API()
+	api, err := d.api.API(ctx)
 	if err != nil {
 		return machine.Instance{}, err
 	}
@@ -488,7 +504,7 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 // machine of its name a Commit left. A machine restored from the snapshot
 // has a disk of its own, and outlives it.
 func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
-	api, err := d.api.API()
+	api, err := d.api.API(ctx)
 	if err != nil {
 		return err
 	}
@@ -580,12 +596,12 @@ func syncDisks(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error 
 // destroyVM is best-effort cleanup of a machine the driver made and will not
 // hand out.
 func (d *Driver) destroyVM(vm string) {
-	api, err := d.api.API()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	api, err := d.api.API(ctx)
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
 	_, _ = api.DestroyVm(ctx, &boxdapi.DestroyVmRequest{VmId: vm})
 }
 

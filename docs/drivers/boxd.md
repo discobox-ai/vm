@@ -124,7 +124,7 @@ reads.
 | `BOXD_API_KEY` | | an API key. `BOXD_TOKEN`, which the boxd CLI reads, also works, and may hold a JWT. The command line reads them (`machine.KeyFromEnv`); a program that embeds the engine gives the driver a `machine.KeySource` instead, and the driver reads neither. |
 | `BOXD_GRPC_ADDR` | `boxd.sh:9443` | another cluster: the configuration's `addr` (`--boxd-addr`; ADR 26-11-11-215), always over TLS, which the command line reads from it and the driver never does. `addr` and `tokenUrl` are privileged: they are sent the key |
 | `BOXD_TOKEN_URL` | `https://app.boxd.sh/api/v1/auth/token` | its key exchange: the configuration's `tokenUrl` (`--boxd-token-url`), `https`, or `http` to a loopback address |
-| `BOXD_REGION` | the home region | the configuration's `region` (`--boxd-region`): refused until the driver calls a region's endpoint (vm#68) |
+| `BOXD_REGION` | the home region | the configuration's `region` (`--boxd-region`): the boxd region the driver's machines and snapshots live in, such as `nyc` ([Regions](#regions)) |
 | `HTTPS_PROXY` | | gRPC goes through it with HTTP CONNECT, as does the key exchange. A proxy that intercepts TLS has to offer HTTP/2 (ALPN `h2`) for gRPC to work through it. A discobox's egress proxy does, and the conformance suite passes through it (2026-10-08). |
 | `DISCO_VM_DEBUG` | | any value is `disco-vm --debug`: one line on stderr for every API call, when it finished, how long it took, and its request and answer. A stream (Exec, an upload) is one line when it ends. |
 | `ALL_PROXY` | | a `socks5://` or `socks5h://` proxy carries the gRPC connection instead, for an HTTP proxy without HTTP/2. The key exchange still goes through `HTTPS_PROXY`. |
@@ -234,6 +234,31 @@ did after a stop and a start. Restores of its snapshot got the fence each
 asked for: `none`, `example.com` (example.com answered, github.com did not
 resolve), and none at all, which reached both.
 
+## Regions
+
+boxd runs in regions, Frankfurt (`fra`, the home region) and New York
+(`nyc`), and a machine or snapshot lives in the one it was made in. Each has
+its own API endpoint; `ListRegions` on the home endpoint (`boxd.sh:9443`)
+names them, with each one's `api_endpoint` and whether the key's org has it
+`enabled`. Machine and snapshot calls go to a region's endpoint, and account
+and API key calls, and the key exchange, to the home endpoint.
+
+A driver is given its region in its configuration, the field `region`
+(`--boxd-region`, `$BOXD_REGION`; ADR 26-11-11-215). With none it calls the home endpoint, as before regions, and
+boxd places its machines there. With one it asks `ListRegions` once, the
+first time it needs the region, and sends every machine and snapshot call to
+that region's endpoint (the home endpoint itself, for the home region); a
+region boxd does not list, or one the org has not enabled, fails `Check` and
+every call, naming why, and is asked again next time. Since a region's
+endpoint lists only that region's machines and snapshots, a pool sees its
+region's VMs alone: the same pool in two regions is two pools, and a name
+can be used in both, as boxd's names can. Keys are the account's, so a key
+issued from any region reaches the org's machines in every one.
+
+A machine's URL is its default proxy's domain, which boxd reports in the
+machine's region's zone (`<machine>.nyc.boxd.sh`). A machine's private URL,
+`<machine>.boxd`, is reached from its region alone, as boxd's networks are.
+
 ## The URL
 
 Every boxd machine has a default proxy at `<machine>.boxd.sh`, which
@@ -303,6 +328,11 @@ its listener on it.
 
 ## Not verified yet
 
+- Regions on boxd itself: that `ListRegions` names `nyc`'s endpoint in a
+  form the driver dials (a host and port, or a URL), that a machine made
+  there lists from it and not from `fra`, and that its proxy's domain is in
+  `nyc`'s zone. It passes against the fake only, which serves each region on
+  an endpoint of its own.
 - `ResizeVm` on a stopped machine, which a boot at a size other than the
   snapshot's uses. It passes against the fake only.
 - Committed VMs (ADR 26-11-03-606) on boxd itself: a snapshot named as its

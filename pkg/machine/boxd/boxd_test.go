@@ -57,41 +57,67 @@ func envDriver(t *testing.T) *Driver {
 
 // TestConformanceFakeAPI runs the conformance suite against an in-process fake
 // of boxd's API, which proves the driver's use of the API and the command
-// lines it sends, not boxd. Its guests' commands run on this host, and the
+// lines it sends, not boxd: with no region, at the home endpoint, and in
+// another region, at its own. Its guests' commands run on this host, and the
 // suite checks that a guest reports linux, so it runs on Linux.
 func TestConformanceFakeAPI(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
-	// A short directory: unix socket paths are limited to about 100 bytes.
-	dir, err := os.MkdirTemp("", "boxd")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	d, fake := fakeDriver(t, dir)
-	// Registered first, so it runs once the suite's own cleanups have.
-	t.Cleanup(func() {
-		fake.mu.Lock()
-		defer fake.mu.Unlock()
-		if left := len(fake.vms); left != 0 {
-			t.Errorf("%d machines were left behind", left)
-		}
-		if left := len(fake.snapshots); left != 0 {
-			t.Errorf("%d snapshots were left behind", left)
-		}
-	})
+	for _, region := range []string{"", "nyc"} {
+		t.Run("region="+region, func(t *testing.T) {
+			// A short directory: unix socket paths are limited to about 100
+			// bytes.
+			dir, err := os.MkdirTemp("", "boxd")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
+			d, home := fakeDriver(t, dir)
+			served := home
+			if region != "" {
+				served = fakeRegion(t, home, dir, region, "enabled")
+				d = fakeIn(t, home, region, machine.DefaultPool, d.api.keys)
+			}
+			// Registered first, so it runs once the suite's own cleanups
+			// have.
+			t.Cleanup(func() {
+				for _, fake := range []*fakeAPI{home, served} {
+					fake.mu.Lock()
+					if left := len(fake.vms); left != 0 {
+						t.Errorf("%d machines were left behind in %s", left, fake.region)
+					}
+					if left := len(fake.snapshots); left != 0 {
+						t.Errorf("%d snapshots were left behind in %s", left, fake.region)
+					}
+					fake.mu.Unlock()
+				}
+			})
+			// Every machine and snapshot is the region's.
+			t.Cleanup(func() {
+				if region == "" {
+					return
+				}
+				home.mu.Lock()
+				defer home.mu.Unlock()
+				if len(home.vms) != 0 || len(home.snapshots) != 0 {
+					t.Errorf("the home region has %d machines and %d snapshots of a driver in %s", len(home.vms), len(home.snapshots), region)
+				}
+			})
 
-	machinetest.Run(t, d, machinetest.Config{
-		// Not the fake's default size, so every clone is made at its own.
-		CPUs:       4,
-		Memory:     16 << 30,
-		Timeout:    30 * time.Second,
-		ScratchDir: "/scratch",
-		Keyed: func(keys machine.KeySource) machine.Driver {
-			return fakeKeyed(t, fake, machine.DefaultPool, keys)
-		},
-	})
+			machinetest.Run(t, d, machinetest.Config{
+				// Not the fake's default size, so every clone is made at its
+				// own.
+				CPUs:       4,
+				Memory:     16 << 30,
+				Timeout:    30 * time.Second,
+				ScratchDir: "/scratch",
+				Keyed: func(keys machine.KeySource) machine.Driver {
+					return fakeIn(t, home, region, machine.DefaultPool, keys)
+				},
+			})
+		})
+	}
 }
 
 // commitFresh makes the committed VM name, as every boxd one is made: a
@@ -272,7 +298,7 @@ func TestCopyFromMissing(t *testing.T) {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
 	d, _ := fakeDriver(t, t.TempDir())
-	api, _ := d.api.API()
+	api, _ := d.api.API(context.Background())
 	ctx := context.Background()
 	created, err := api.CreateVm(ctx, &boxdapi.CreateVmRequest{})
 	if err != nil {
@@ -310,7 +336,7 @@ func TestKillGivesUp(t *testing.T) {
 	defer func(poll, limit time.Duration) { pollEvery, killLimit = poll, limit }(pollEvery, killLimit)
 	pollEvery, killLimit = 100*time.Millisecond, time.Second
 	d, fake := fakeDriver(t, t.TempDir())
-	api, _ := d.api.API()
+	api, _ := d.api.API(context.Background())
 	created, err := api.CreateVm(context.Background(), &boxdapi.CreateVmRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -350,7 +376,7 @@ func TestShutdownFlushesFirst(t *testing.T) {
 	for _, fails := range []bool{false, true} {
 		d, fake := fakeDriver(t, t.TempDir())
 		fake.syncFails.Store(fails)
-		api, _ := d.api.API()
+		api, _ := d.api.API(context.Background())
 		ctx := context.Background()
 		created, err := api.CreateVm(ctx, &boxdapi.CreateVmRequest{})
 		if err != nil {
@@ -425,11 +451,38 @@ func TestCreateUndone(t *testing.T) {
 	}
 }
 
-// fakeDriver serves a fake boxd API on loopback and returns a driver bound to
-// it, which calls it as the owner's interactive session.
+// fakeDriver serves a fake boxd API on loopback, the home region "fra", and
+// returns a driver bound to it with no region, which calls it as the owner's
+// interactive session.
 func fakeDriver(t *testing.T, dir string) (*Driver, *fakeAPI) {
 	t.Helper()
 	fake := newFakeAPI(dir)
+	fake.region = "fra"
+	serveFake(t, fake)
+	tokens := fake.tokenServer()
+	t.Cleanup(tokens.Close)
+	fake.tokenURL = tokens.URL
+	fake.regions = []*boxdapi.Region{{Id: "fra", Name: "Frankfurt", ApiEndpoint: fake.addr, Home: true, OrgState: "enabled"}}
+	return fakeKeyed(t, fake, machine.DefaultPool, machine.StaticKey(machine.Key{Driver: "boxd", Secret: fakeSession})), fake
+}
+
+// fakeRegion serves another region of home's boxd, which the org has in
+// state ("enabled", "available"), at an api_endpoint given as a URL, and
+// returns its API. Its keys and tokens are home's.
+func fakeRegion(t *testing.T, home *fakeAPI, dir, id, state string) *fakeAPI {
+	t.Helper()
+	region := newFakeAPI(dir)
+	region.region, region.account, region.tokenURL = id, home, home.tokenURL
+	serveFake(t, region)
+	home.mu.Lock()
+	defer home.mu.Unlock()
+	home.regions = append(home.regions, &boxdapi.Region{Id: id, ApiEndpoint: "https://" + region.addr, OrgState: state})
+	return region
+}
+
+// serveFake serves fake's API on loopback, at fake.addr.
+func serveFake(t *testing.T, fake *fakeAPI) {
+	t.Helper()
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -438,22 +491,28 @@ func fakeDriver(t *testing.T, dir string) (*Driver, *fakeAPI) {
 	boxdapi.RegisterBoxdApiServer(server, fake)
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(server.Stop)
-	tokens := fake.tokenServer()
-	t.Cleanup(tokens.Close)
-	fake.addr, fake.tokenURL = listener.Addr().String(), tokens.URL
-	return fakeKeyed(t, fake, machine.DefaultPool, machine.StaticKey(machine.Key{Driver: "boxd", Secret: fakeSession})), fake
+	fake.addr = listener.Addr().String()
 }
 
-// fakeKeyed is a driver of the fake API for a pool, with a key.
-func fakeKeyed(t *testing.T, fake *fakeAPI, pool string, keys machine.KeySource) *Driver {
+// fakeKeyed is a driver of the fake API home for a pool, with a key, in
+// home's own region.
+func fakeKeyed(t *testing.T, home *fakeAPI, pool string, keys machine.KeySource) *Driver {
 	t.Helper()
-	c := &client{tokenURL: fake.tokenURL, keys: keys}
-	opts := append(debugOptions(), c.authOptions()...)
-	conn, err := grpc.NewClient(fake.addr, append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	c.once.Do(func() { c.api = boxdapi.NewBoxdApiClient(conn) })
+	return fakeIn(t, home, "", pool, keys)
+}
+
+// fakeIn is a driver of the fake boxd whose home endpoint is home, in a
+// region (home's own for ""), for a pool, with a key. It dials in plain text
+// and through no proxy.
+func fakeIn(t *testing.T, home *fakeAPI, region, pool string, keys machine.KeySource) *Driver {
+	t.Helper()
+	c := &client{addr: home.addr, tokenURL: home.tokenURL, region: region, keys: keys, creds: insecure.NewCredentials()}
+	t.Cleanup(func() {
+		c.dialMu.Lock()
+		defer c.dialMu.Unlock()
+		for _, conn := range c.conns {
+			_ = conn.Close()
+		}
+	})
 	return &Driver{api: c, pool: pool}
 }

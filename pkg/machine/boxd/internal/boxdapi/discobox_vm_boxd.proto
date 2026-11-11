@@ -69,6 +69,11 @@ service BoxdApi {
   // Revokes a key the caller made, or an org-kind key of an org the caller
   // administers.
   rpc DeleteApiKey(DeleteApiKeyRequest)     returns (DeleteApiKeyResponse);
+  // The regions boxd runs in. Each has its own API endpoint, and a machine
+  // or snapshot lives in one of them; calls on machines and snapshots go to
+  // their region's endpoint, and account and API key calls to boxd.sh:9443.
+  // An org can use its home region and the regions enabled for it.
+  rpc ListRegions(ListRegionsRequest)       returns (ListRegionsResponse);
 }
 
 message VmConfig {
@@ -177,6 +182,28 @@ message ExecChunk {
 message GetConfigRequest {}
 message GetConfigResponse {
   string default_image = 1;
+}
+
+message ListRegionsRequest {
+  string org_id = 1;  // name or id; "" = your default org (an API key's own org)
+}
+
+message Region {
+  string id           = 1;  // a short code, e.g. "fra"
+  string name         = 2;  // e.g. "Frankfurt"
+  string zone         = 3;  // machines are reached at <name>.<zone>
+  string api_endpoint = 4;  // the region's API
+  bool   home         = 8;  // accounts, billing and settings live in the home region
+  // For the org asked about: "enabled" (it can create here: always the
+  // home region), "requested" (an admin asked), or "available".
+  string org_state    = 9;
+}
+
+message ListRegionsResponse {
+  repeated Region regions = 1;
+  string org_id           = 2;
+  // The region this endpoint serves; "" when boxd runs in one place.
+  string this_region      = 3;
 }
 
 message WhoamiRequest {}

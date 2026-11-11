@@ -9,6 +9,9 @@ the provider mounts in them. A sandbox has no labels and its name never
 changes, which is all a VM needs. The driver has nothing of disco-vm's in
 the guest and nothing on the host:
 
+- **A driver is one region's**, its configuration's `region`
+  (`aws-us-east-1` by default). Each region is its own control plane, with
+  its own sandboxes and disks, so a pool sees only its region's VMs.
 - **A VM is the sandbox `dvm-<pool>--<name>`** (`names.go`). Archil
   refuses a sandbox name it has, so a Create takes the name before it makes
   anything else, and the refusal is `machine.ErrExists`. A listing reads the

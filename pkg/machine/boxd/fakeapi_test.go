@@ -61,6 +61,34 @@ type fakeAPI struct {
 	// addr and tokenURL are where the API and its token exchange are
 	// served.
 	addr, tokenURL string
+
+	// region is the region this API serves, and regions every region boxd
+	// has, as ListRegions answers them on the home endpoint.
+	region  string
+	regions []*boxdapi.Region
+	// account, on a region's API, is the home endpoint's: it holds the
+	// keys and answers for the regions, and a key call made here is refused.
+	account *fakeAPI
+}
+
+// ListRegions is the home endpoint's list, with the region this one serves.
+func (f *fakeAPI) ListRegions(context.Context, *boxdapi.ListRegionsRequest) (*boxdapi.ListRegionsResponse, error) {
+	home := f
+	if f.account != nil {
+		home = f.account
+	}
+	home.mu.Lock()
+	defer home.mu.Unlock()
+	return &boxdapi.ListRegionsResponse{Regions: home.regions, ThisRegion: f.region}, nil
+}
+
+// accountCall refuses an account call made to a region's endpoint, which
+// the driver must make at the home endpoint.
+func (f *fakeAPI) accountCall() error {
+	if f.account != nil {
+		return status.Errorf(codes.Unimplemented, "the %s endpoint answers no account calls: call boxd.sh:9443", f.region)
+	}
+	return nil
 }
 
 type fakeVM struct {
@@ -174,6 +202,9 @@ func (f *fakeAPI) GetConfig(context.Context, *boxdapi.GetConfigRequest) (*boxdap
 }
 
 func (f *fakeAPI) Whoami(context.Context, *boxdapi.WhoamiRequest) (*boxdapi.WhoamiResponse, error) {
+	if err := f.accountCall(); err != nil {
+		return nil, err
+	}
 	return &boxdapi.WhoamiResponse{UserId: "usr_fake"}, nil
 }
 

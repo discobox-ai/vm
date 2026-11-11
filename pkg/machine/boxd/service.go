@@ -21,7 +21,7 @@ var serviceListen = "tcp:0.0.0.0:" + strconv.FormatUint(uint64(guest.ServicePort
 // at its name on boxd's internal DNS, <machine>.boxd, on every port; one on
 // none, by its URL.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
-	api, err := d.api.API()
+	api, err := d.api.API(ctx)
 	if err != nil {
 		return machine.Service{}, err
 	}

@@ -38,7 +38,7 @@ func (d *Driver) IssueKey(ctx context.Context, req machine.IssueRequest) (machin
 		return machine.Key{}, err
 	}
 	name := d.keyName(req.Name)
-	api, err := d.api.API()
+	api, err := d.api.Account()
 	if err != nil {
 		return machine.Key{}, err
 	}
@@ -119,7 +119,7 @@ func (d *Driver) issuedName(info *boxdapi.ApiKeyInfo) (string, bool) {
 }
 
 func (d *Driver) listKeys(ctx context.Context) ([]*boxdapi.ApiKeyInfo, error) {
-	api, err := d.api.API()
+	api, err := d.api.Account()
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ func (d *Driver) RevokeKey(ctx context.Context, key machine.Key) error {
 	if _, ok := d.issuedName(found); !ok {
 		return fmt.Errorf("boxd: API key %s (%s) is not one disco-vm issued for pool %s", key.ID, found.GetName(), d.pool)
 	}
-	api, err := d.api.API()
+	api, err := d.api.Account()
 	if err != nil {
 		return err
 	}

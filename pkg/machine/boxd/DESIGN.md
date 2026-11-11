@@ -55,6 +55,17 @@ machines and snapshots (the root
   and Kill is `StopVm`. A guest that powers itself off from inside is not
   supported: boxd leaves it `running`, and so does disco-vm, until `disco-vm
   stop`. An image built before this has a shutdown hook that nothing reads.
+- **A driver is one region's**: its configuration's `region`, a boxd region
+  ID (ADR 26-11-11-215).
+  boxd gives each region its own API endpoint, so the region is where calls
+  on machines and snapshots go: the home endpoint (`boxd.sh:9443`) for none,
+  and otherwise the endpoint `ListRegions` names for the region, asked there
+  once it answers (a failure is asked again). A region boxd does not list,
+  or one the key's org has not `enabled`, is an error naming why. Account and
+  key calls (`Whoami`, the API keys, the key exchange) always go to the home
+  endpoint. A region's endpoint lists that region's machines and snapshots
+  alone, so a pool never sees another region's, and a name is the pool's in
+  each region. The URL needs nothing: the proxy's domain is the region's.
 - **The driver talks to boxd's public gRPC API directly**, not through the
   boxd CLI: it works from a server that embeds the engine, from any host OS,
   and with an API key rather than a browser login. The key is the one
