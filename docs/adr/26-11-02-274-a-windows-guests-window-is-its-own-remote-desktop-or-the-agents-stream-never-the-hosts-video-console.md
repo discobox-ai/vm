@@ -1,6 +1,9 @@
 # 26-11-02-274 — A Windows guest's window is its own Remote Desktop or the agent's stream, never the host's video console
 
-- **Status**: Accepted
+- **Status**: Accepted (§1's one sign-in for `TERMSRV/127.0.0.1`, and §3
+  and §5's optional `machine.Viewer` and `local.MachineViewer`, superseded
+  by 26-11-11-746; §1's `DISCO_VM_HCS_VIEW` read by the driver superseded
+  by 26-11-11-215)
 - **Date**: 2026-11-02
 
 ## Context
