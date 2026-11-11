@@ -1,6 +1,8 @@
 # 26-11-04-412 — Docker runs in a VM owned by its pool
 
-- **Status**: Accepted
+- **Status**: Accepted (§3's native Docker constructor read from the
+  environment superseded by
+  [26-11-11-215](26-11-11-215-a-driver-declares-and-validates-its-own-configuration-and-reads-no-environment-for-it.md))
 - **Date**: 2026-11-04
 
 Accepted by the owner by merging #54, 2026-11-04.
