@@ -1,6 +1,8 @@
 # 26-11-03-530 — libkrun runs Linux VMs through a launcher, in a runtime pulled by digest that brings its own libc
 
-- **Status**: Accepted
+- **Status**: Accepted (its runtime `$DISCO_VM_KRUN_RUNTIME` read by the
+  driver superseded by
+  [26-11-11-215](26-11-11-215-a-driver-declares-and-validates-its-own-configuration-and-reads-no-environment-for-it.md))
 - **Date**: 2026-11-03
 
 Accepted by the owner by merging #40, 2026-11-03.

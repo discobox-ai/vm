@@ -3,7 +3,9 @@
 - **Status**: Accepted (supersedes in part 0001, its raw guest ports leaving
   the seam; and 26-10-29-129, vz listing no `Egress` and `Capabilities.Egress`
   as a bool; §4's `Dial` of any guest port superseded by
-  [26-11-03-247](26-11-03-247-a-caller-reaches-a-guest-at-its-agent-and-service-ports-alone.md))
+  [26-11-03-247](26-11-03-247-a-caller-reaches-a-guest-at-its-agent-and-service-ports-alone.md);
+  §2's agent `$DISCO_VM_AGENT` read by the driver superseded by
+  [26-11-11-215](26-11-11-215-a-driver-declares-and-validates-its-own-configuration-and-reads-no-environment-for-it.md))
 - **Date**: 2026-10-31
 
 ## Context

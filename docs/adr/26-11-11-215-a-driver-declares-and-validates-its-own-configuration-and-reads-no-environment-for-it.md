@@ -1,10 +1,12 @@
 # 26-11-11-215 — A driver declares and validates its own configuration, and reads no environment for it
 
-- **Status**: Proposed (supersedes in part 26-10-31-990 §2, its agent
+- **Status**: Accepted (supersedes in part 26-10-31-990 §2, its agent
   `$DISCO_VM_AGENT` read by the driver; 26-11-03-530, its runtime
   `$DISCO_VM_KRUN_RUNTIME` read by the driver; and 26-11-04-412 §3, native
   Docker's environment-based constructor)
 - **Date**: 2026-11-11
+
+Accepted by the owner by merging vm#72, 2026-11-11.
 
 ## Context
 
