@@ -218,7 +218,8 @@ guests has none and is macOS.
   sparse, to 64 GiB, and writes a new machine ID and MAC. A VM created from
   a committed Linux VM clones its layer and gets a new identity the same
   way.
-- **Boot** refuses a window, checks `$DISCO_VM_AGENT` names a linux
+- **Boot** refuses a window, checks the configured agent (`--vz-agent`,
+  `$DISCO_VM_AGENT`; ADR 26-11-11-215, which the shim is given) names a linux
   executable of this Mac's architecture (`go tool task build` builds
   `build/linux-arm64/disco-vm` beside the darwin one), and writes
   `boot-initrd.img`: the image's initrd, padded to four bytes, then a newc

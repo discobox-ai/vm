@@ -5,6 +5,7 @@ package vz
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"os"
@@ -46,10 +47,12 @@ func TestConformance(t *testing.T) {
 		t.Fatal("$DISCO_VM_TEST_BINARY names no signed disco-vm to run each started instance's shim")
 	}
 	dir := machine.DefaultDir()
+	config, conf := envConfig(t)
 	driver, err := local.New(machine.Config{
-		Dir:         dir,
-		ShimCommand: []string{binary, "--root", dir, "--driver", "vz", "shim"},
-	}, &Hypervisor{})
+		Dir:          dir,
+		ShimCommand:  []string{binary, "--root", dir, "--driver", "vz", "--driver-config", string(config), "shim"},
+		DriverConfig: config,
+	}, &Hypervisor{agent: conf.Agent})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +145,8 @@ func linuxDriver(t *testing.T) *local.Driver {
 	if _, err := parseLinuxBase(ref); err != nil {
 		t.Fatal(err)
 	}
-	if os.Getenv(AgentEnv) == "" {
+	config, conf := envConfig(t)
+	if conf.Agent == "" {
 		t.Fatalf("$%s names no linux/arm64 disco-vm to boot the guest with", AgentEnv)
 	}
 	binary := os.Getenv("DISCO_VM_TEST_BINARY")
@@ -151,13 +155,33 @@ func linuxDriver(t *testing.T) *local.Driver {
 	}
 	dir := machine.DefaultDir()
 	driver, err := local.New(machine.Config{
-		Dir:         dir,
-		ShimCommand: []string{binary, "--root", dir, "--driver", "vz", "shim"},
-	}, &Hypervisor{base: ref})
+		Dir:          dir,
+		ShimCommand:  []string{binary, "--root", dir, "--driver", "vz", "--driver-config", string(config), "shim"},
+		DriverConfig: config,
+	}, &Hypervisor{base: ref, agent: conf.Agent})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return driver
+}
+
+// envConfig is the vz configuration the command line would read from the
+// environment, which a test's driver and its shims are both given (ADR
+// 26-11-11-215 §6): a shim made from another is refused.
+func envConfig(t *testing.T) (json.RawMessage, Config) {
+	t.Helper()
+	config, err := machine.ConfigFromValues("vz", machine.ConfigFromEnv("vz"))
+	if err == nil && config == nil {
+		config = json.RawMessage("{}")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := decode(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config, conf
 }
 
 func TestLeaseFor(t *testing.T) {

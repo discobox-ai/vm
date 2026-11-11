@@ -30,7 +30,12 @@ import (
 )
 
 func init() {
-	machine.Register("archil", func(cfg machine.Config) (machine.Driver, error) { return New(cfg), nil }, APIKeyEnv)
+	machine.Register("archil", machine.Registration{
+		New:        func(cfg machine.Config) (machine.Driver, error) { return New(cfg) },
+		Definition: Definition(),
+		Validate:   Validate,
+		KeyEnv:     []string{APIKeyEnv},
+	})
 }
 
 // waitLimit bounds each wait for a sandbox to change state.
@@ -47,14 +52,23 @@ type Driver struct {
 var _ machine.Driver = (*Driver)(nil)
 
 // New returns a driver for cfg's pool (machine.DefaultPool when empty)
-// whose fresh VMs run cfg.Base, and that calls Archil with the key cfg.Keys
+// whose fresh VMs run cfg.Base, in the region its configuration
+// (cfg.DriverConfig) names, and that calls Archil with the key cfg.Keys
 // answers on each call. It calls nothing until it is used.
-func New(cfg machine.Config) *Driver {
+func New(cfg machine.Config) (*Driver, error) {
+	config, err := machine.Normalize("archil", cfg.DriverConfig)
+	if err != nil {
+		return nil, err
+	}
+	conf, err := decode(config)
+	if err != nil {
+		return nil, err
+	}
 	pool := cfg.Pool
 	if pool == "" {
 		pool = machine.DefaultPool
 	}
-	return &Driver{api: newAPI(cfg.Keys), pool: pool, base: cfg.Base}
+	return &Driver{api: newAPI(conf, cfg.Keys), pool: pool, base: cfg.Base}, nil
 }
 
 func (*Driver) Name() string { return "archil" }

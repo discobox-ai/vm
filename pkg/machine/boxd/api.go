@@ -33,12 +33,6 @@ const (
 	// key or an already-exchanged JWT.
 	APIKeyEnv = "BOXD_API_KEY" //nolint:gosec // G101: an environment variable's name, not a credential
 	TokenEnv  = "BOXD_TOKEN"
-	// AddrEnv and TokenURLEnv point the driver at another boxd cluster.
-	AddrEnv     = "BOXD_GRPC_ADDR"
-	TokenURLEnv = "BOXD_TOKEN_URL" //nolint:gosec // G101: an environment variable's name, not a credential
-
-	defaultAddr     = "boxd.sh:9443"
-	defaultTokenURL = "https://app.boxd.sh/api/v1/auth/token" //nolint:gosec // G101: an endpoint URL, not a credential
 )
 
 // errNoCredentials names the fix, since Check is where a user meets it first.
@@ -65,19 +59,8 @@ type client struct {
 	expires time.Time
 }
 
-func newClient(keys machine.KeySource) *client {
-	return &client{
-		addr:     envOr(AddrEnv, defaultAddr),
-		tokenURL: envOr(TokenURLEnv, defaultTokenURL),
-		keys:     keys,
-	}
-}
-
-func envOr(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return fallback
+func newClient(cfg Config, keys machine.KeySource) *client {
+	return &client{addr: cfg.Addr, tokenURL: cfg.TokenURL, keys: keys}
 }
 
 // API returns the generated client, dialing on first use.

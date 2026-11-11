@@ -25,6 +25,9 @@ type Driver struct {
 	pool string
 	shim []string
 	keys machine.KeySource
+	// config is the hypervisor's configuration, which a shim of this
+	// executable is given again (shimCommand).
+	config json.RawMessage
 }
 
 var (
@@ -47,7 +50,7 @@ func New(cfg machine.Config, hv Hypervisor) (*Driver, error) {
 	if pool == "" {
 		pool = machine.DefaultPool
 	}
-	return &Driver{hv: hv, dir: dir, pool: pool, shim: cfg.ShimCommand, keys: cfg.Keys}, nil
+	return &Driver{hv: hv, dir: dir, pool: pool, shim: cfg.ShimCommand, keys: cfg.Keys, config: cfg.DriverConfig}, nil
 }
 
 // Hypervisor is the hypervisor the driver keeps state for.

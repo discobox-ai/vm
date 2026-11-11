@@ -147,7 +147,7 @@ func (r IssueRequest) Validate() error {
 // set. It is nil, no key, when the driver registered none or none is set.
 func KeyFromEnv(driver string) KeySource {
 	registryMu.Lock()
-	vars := keyEnv[driver]
+	vars := registry[driver].KeyEnv
 	registryMu.Unlock()
 	for _, name := range vars {
 		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
@@ -165,8 +165,8 @@ func WithoutKeys(env []string) []string {
 	defer registryMu.Unlock()
 	return slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
-		for _, vars := range keyEnv {
-			if slices.Contains(vars, name) {
+		for _, r := range registry {
+			if slices.Contains(r.KeyEnv, name) {
 				return true
 			}
 		}

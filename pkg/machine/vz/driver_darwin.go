@@ -14,8 +14,16 @@ func init() {
 	// The base is checked where a fresh VM is made from it (Prepare), so
 	// a moved guest-image directory, or a base meant for another driver,
 	// stops nothing but that.
-	machine.Register("vz", func(cfg machine.Config) (machine.Driver, error) {
-		return local.New(cfg, &Hypervisor{base: cfg.Base})
+	machine.Register("vz", machine.Registration{
+		New: func(cfg machine.Config) (machine.Driver, error) {
+			conf, err := decode(cfg.DriverConfig)
+			if err != nil {
+				return nil, err
+			}
+			return local.New(cfg, &Hypervisor{base: cfg.Base, agent: conf.Agent})
+		},
+		Definition: Definition(),
+		Validate:   Validate,
 	})
 }
 
@@ -28,6 +36,9 @@ type Hypervisor struct {
 	// (machine.Config.Base), as parseLinuxBase reads it; empty is
 	// DefaultLinuxBase.
 	base string
+	// agent is the disco-vm built for linux that a Linux guest's boot hands
+	// it (Config.Agent).
+	agent string
 }
 
 var _ local.Hypervisor = (*Hypervisor)(nil)

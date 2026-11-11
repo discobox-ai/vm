@@ -37,7 +37,22 @@ func TestConformance(t *testing.T) {
 		ScratchDir: "/var/lib",
 	}
 	cfg.From = os.Getenv(FromEnv)
-	machinetest.Run(t, New(machine.Config{Keys: machine.KeyFromEnv("boxd")}), cfg)
+	machinetest.Run(t, envDriver(t), cfg)
+}
+
+// envDriver is the driver the command line would make: its key and its
+// configuration from the environment.
+func envDriver(t *testing.T) *Driver {
+	t.Helper()
+	config, err := machine.ConfigFromValues("boxd", machine.ConfigFromEnv("boxd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := New(machine.Config{Keys: machine.KeyFromEnv("boxd"), DriverConfig: config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }
 
 // TestConformanceFakeAPI runs the conformance suite against an in-process fake

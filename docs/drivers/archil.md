@@ -21,7 +21,8 @@ proof table. Criterion 2 waits on a layout for `DISCO_VM_DRIVER=archil` in
 Archil (https://archil.com, docs at https://docs.archil.com) runs Firecracker
 microVM sandboxes, amd64 only, from public OCI images, beside disks backed by
 object storage that the provider mounts in them. Its control plane is a REST
-API per region (`$ARCHIL_REGION`, `aws-us-east-1` by default), authenticated
+API per region (the configuration's `region`: `--archil-region`,
+`$ARCHIL_REGION`, `aws-us-east-1` by default; ADR 26-11-11-215), authenticated
 with an API key (`ARCHIL_API_KEY`); there is no Go SDK. Processes run over a
 WebSocket protocol only its TypeScript SDK implements.
 

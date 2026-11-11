@@ -143,6 +143,25 @@ func TestShimSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Start gave the shim its driver's configuration in an owner-only file
+	// beside the instance, never on its command line (ADR 26-11-11-215 §6).
+	configPath := filepath.Join(root, "instances", inst.ID, "driver-config.json")
+	if data, err := os.ReadFile(configPath); err != nil || string(data) != "{}" {
+		t.Fatalf("the shim's configuration: %q, %v", data, err)
+	}
+	if info, err := os.Stat(configPath); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("the shim's configuration file: %v, %v", info.Mode(), err)
+	}
+	// A shim whose driver is made from another configuration than its
+	// starter's is refused, and boots nothing.
+	other, err := local.New(machine.Config{Dir: root, ShimCommand: []string{binary, "--root", root, "--driver", "fake", "--driver-config", `{"noCommit":true}`, "shim"}}, &fake.Hypervisor{Agent: binary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Start(startCtx, inst, machine.BootOptions{}); err == nil || !strings.Contains(err.Error(), "is not the one instance") {
+		t.Fatalf("a shim made from another configuration: %v", err)
+	}
+
 	// A shim from before serves on a loopback port, behind its token.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer old-token" || r.URL.Path != "/status" {

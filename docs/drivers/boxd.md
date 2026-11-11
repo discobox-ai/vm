@@ -122,8 +122,9 @@ reads.
 | env | default | |
 |---|---|---|
 | `BOXD_API_KEY` | | an API key. `BOXD_TOKEN`, which the boxd CLI reads, also works, and may hold a JWT. The command line reads them (`machine.KeyFromEnv`); a program that embeds the engine gives the driver a `machine.KeySource` instead, and the driver reads neither. |
-| `BOXD_GRPC_ADDR` | `boxd.sh:9443` | another cluster |
-| `BOXD_TOKEN_URL` | `https://app.boxd.sh/api/v1/auth/token` | its key exchange |
+| `BOXD_GRPC_ADDR` | `boxd.sh:9443` | another cluster: the configuration's `addr` (`--boxd-addr`; ADR 26-11-11-215), always over TLS, which the command line reads from it and the driver never does. `addr` and `tokenUrl` are privileged: they are sent the key |
+| `BOXD_TOKEN_URL` | `https://app.boxd.sh/api/v1/auth/token` | its key exchange: the configuration's `tokenUrl` (`--boxd-token-url`), `https`, or `http` to a loopback address |
+| `BOXD_REGION` | the home region | the configuration's `region` (`--boxd-region`): refused until the driver calls a region's endpoint (vm#68) |
 | `HTTPS_PROXY` | | gRPC goes through it with HTTP CONNECT, as does the key exchange. A proxy that intercepts TLS has to offer HTTP/2 (ALPN `h2`) for gRPC to work through it. A discobox's egress proxy does, and the conformance suite passes through it (2026-10-08). |
 | `DISCO_VM_DEBUG` | | any value is `disco-vm --debug`: one line on stderr for every API call, when it finished, how long it took, and its request and answer. A stream (Exec, an upload) is one line when it ends. |
 | `ALL_PROXY` | | a `socks5://` or `socks5h://` proxy carries the gRPC connection instead, for an HTTP proxy without HTTP/2. The key exchange still goes through `HTTPS_PROXY`. |

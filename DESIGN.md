@@ -64,9 +64,9 @@ Each package's `DESIGN.md` holds the decisions it owns:
 VM's supervisor (`disco-vm shim <id>`). The agent is the same program built for
 the guest's GOOS. On a Windows host the guest is Windows, and on a macOS host
 the guest is macOS, so the running binary is also the agent, and install bakes
-in `os.Executable()`. A Docker guest is Linux, so from another host
-`$DISCO_VM_AGENT` names a disco-vm built for it, and so does a Linux guest on
-vz, which every boot hands that agent in its initrd and refuses if it speaks
+in `os.Executable()`. A Docker guest is Linux, so from another host the
+driver's `agent` field (`$DISCO_VM_AGENT`) names a disco-vm built for it, and
+so does a Linux guest on vz, which every boot hands that agent in its initrd and refuses if it speaks
 another `guest.Protocol`; `go tool task build` builds it beside the darwin
 binary. On a Linux host the binary is static, so a libkrun guest's agent is
 the running binary, handed it the same way. Protocol changes therefore
@@ -129,6 +129,32 @@ line's. A driver issues keys for another host to run the pool's machines
 that expire and cannot issue keys, or issues none (ADR 26-10-24-562;
 [pkg/machine](pkg/machine/DESIGN.md#a-driver-is-given-its-key-and-issues-keys-that-cannot-issue)).
 
+## A driver's configuration is its own
+
+Each driver takes a configuration no other driver shares
+(`machine.Config.DriverConfig`, a JSON object; ADR 26-11-11-215): docker's
+daemon, archil's region, libkrun's runtime. It declares every field in its
+`machine.Definition`, the shape of discobox's `sandbox.ProviderDefinition`
+plus a default, a variable, and whether it is privileged, and checks it with
+its own `Validator`; `machine.New` refuses a field it does not declare, and a
+value it does not take, before it constructs anything, and no error quotes a
+value ([pkg/machine](pkg/machine/DESIGN.md#a-drivers-configuration-is-its-own)).
+`machine.Config` keeps only what the seam reads: the pool, the base, the
+directory, the shim, and the key.
+
+A driver never reads the environment for its configuration. The command line
+builds it (`internal/cli/driverconfig.go`) in one of two ways that do not
+mix: `--driver-config JSON|@FILE`, whole (a file of at most 1 MiB), with no
+variable read and any that disagrees named in a warning; or a flag per field,
+`--DRIVER-FIELD` (`--docker-host`), over the field's environment variable
+(`DOCKER_HOST`). Another driver's flag is refused. The base stays
+`$DISCO_VM_BASE` either way. `--help=DRIVER` lists a driver's base and fields,
+as `discobox admin provider create --help=PROVIDER` does, `disco-vm drivers`
+describes each driver, and `info` prints the configuration in effect. A
+local driver writes the configuration to a VM's directory, owner-only, when
+it starts it, and its shim reads it from there, never from its command line
+or its environment.
+
 `--debug` (`machine.SetDebug`) has a driver report every call it makes to a
 service outside the process, boxd's API or the Docker daemon, and how long the
 answer took.
@@ -171,6 +197,7 @@ answer took.
 | a host that cannot run libkrun is refused naming why and what to use instead, with no fallback (ADR 26-11-03-530 §8, §11) | n/a | n/a | n/a | n/a | n/a | n/a | ✅ no `/dev/kvm`, and one this user cannot open, by unit (TestCheckHost); ⬜ another architecture, and any of them on such a host |
 | project-to-pool cutover (ADR 26-11-04-412): `--pool` / `DISCO_VM_POOL`, scoped VMs and keys, new storage metadata; no migration | ✅ `internal/e2e` TestPoolScope: flag precedence, separate pools, old flag refused; engine/local key and scope tests | ⬜ compile/vet only | ⬜ compile/vet only | ✅ fake API scope/key tests; ⬜ boxd itself after rename | ✅ by hand (2026-11-04, Docker 29.9.2, debian:trixie): pool label and bind paths inspected; another pool lists none and cannot inspect; data/cache/root files survive stop/start; saved cache and root survive commit/copy; old flag refused; scratch resources removed | ⬜ unit/vet only | ⬜ unit/vet only |
 | `MaxRunning` enforced below the seam across every pool and process in a root (ADR 26-11-04-412): boots at once in different pools admitted no further than the cap, a VM booted twice holding one slot, a slot freed by a stop, a failed or canceled boot, and a holder killed, a shim refused past the cap, an uncapped OS unaffected (`pkg/machine/local` TestCapacityIsTheRootsAcrossPools, TestCapacityAcrossProcesses; `internal/fsutil` TestTryLock; `machinetest` max-running; `internal/e2e` TestCapacityAcrossPools) | ✅ (a fake capped at 1 and 2) | n/a (no cap) | ⬜ two macOS guests across pools on a real Mac | n/a (no cap) | n/a (no cap) | n/a (no cap) | n/a (no cap) |
+| a driver's own configuration (ADR 26-11-11-215): a definition per driver that its decoder agrees with, its defaults applied, unknown fields and bad values refused before construction with no value quoted, privileged fields held to a list, retired keys, `--help=DRIVER`, flags over variables or a whole `--driver-config` (1 MiB, a warning for a variable it ignores), `info`'s configuration in effect, and the shim given its configuration in an owner-only file, refused one made from another | ✅ `pkg/machine` TestEveryDriverDecodesItsDefinition, TestPrivileged, TestNoErrorQuotesAValue, TestRegistration; `pkg/machine/local` TestShimSocket (the file, its mode, a shim of another configuration refused); `internal/e2e` TestDriverConfig, including a shim refused a configured agent that is missing, and its `/proc` command line holding the file's path alone (2026-11-11) | ⬜ vet only | ⬜ no-cgo vet only; the cgo files that take the agent from the configuration reviewed by hand | ✅ validation by unit; ⬜ boxd itself | ✅ validation by unit; ⬜ a daemon since | ✅ validation by unit; ⬜ Archil itself | ✅ validation by unit; ⬜ KVM since |
 
 A platform driver is done when `machinetest.Run` passes against it on real
 hardware and `internal/e2e` passes with `DISCO_VM_DRIVER` set to it. See

@@ -35,11 +35,6 @@ import (
 // here; the ADR pins it by digest, and the pin moves by hand.
 const DefaultRuntime = "ghcr.io/discobox-ai/disco-vm-krun:v1"
 
-// RuntimeEnv names a runtime directory to use as it is, in place of
-// DefaultRuntime: one `go tool task build:krun-runtime` built from the
-// checkout.
-const RuntimeEnv = "DISCO_VM_KRUN_RUNTIME"
-
 // launchVersion is the version of the launcher's configuration (launch.conf)
 // this driver writes, which a runtime's runtime.json and its launcher's
 // --version must name.
@@ -176,11 +171,11 @@ func checkRuntime(ctx context.Context, dir string) error {
 }
 
 // cachedRuntime is the runtime the driver would run with, if it needs no
-// pull: $DISCO_VM_KRUN_RUNTIME's, or DefaultRuntime's in the cache.
+// pull: the configured one (Config.Runtime), or DefaultRuntime's in the cache.
 func (h *Hypervisor) cachedRuntime() (string, bool, error) {
 	if h.runtimeDir != "" {
 		if !filepath.IsAbs(h.runtimeDir) {
-			return "", false, fmt.Errorf("libkrun: $%s is %q, which is not an absolute directory", RuntimeEnv, h.runtimeDir)
+			return "", false, fmt.Errorf("libkrun: runtime %q is not an absolute directory", h.runtimeDir)
 		}
 		return h.runtimeDir, true, nil
 	}
@@ -188,7 +183,7 @@ func (h *Hypervisor) cachedRuntime() (string, bool, error) {
 	return dir, ok, nil
 }
 
-// runtime is the runtime a VM runs with: $DISCO_VM_KRUN_RUNTIME's, checked
+// runtime is the runtime a VM runs with: the configured one, checked
 // complete, or DefaultRuntime in cacheDir. Prepare passes pull, which asks
 // the registry for DefaultRuntime (a tag, until it is pinned by digest);
 // Boot does not, and uses the cached one, pulling only if it was removed
@@ -196,10 +191,10 @@ func (h *Hypervisor) cachedRuntime() (string, bool, error) {
 func (h *Hypervisor) runtime(ctx context.Context, cacheDir string, pull bool) (krunRuntime, error) {
 	if h.runtimeDir != "" {
 		if !filepath.IsAbs(h.runtimeDir) {
-			return "", fmt.Errorf("libkrun: $%s is %q, which is not an absolute directory", RuntimeEnv, h.runtimeDir)
+			return "", fmt.Errorf("libkrun: runtime %q is not an absolute directory", h.runtimeDir)
 		}
 		if err := completeRuntime(h.runtimeDir); err != nil {
-			return "", fmt.Errorf("libkrun: runtime ($%s) %w", RuntimeEnv, err)
+			return "", fmt.Errorf("libkrun: runtime (%s) %w", h.runtimeDir, err)
 		}
 		if _, err := readManifest(h.runtimeDir); err != nil {
 			return "", err

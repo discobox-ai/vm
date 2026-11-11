@@ -163,15 +163,14 @@ func testAgentPath(t *testing.T) string {
 
 // TestDaemonRequests drives both request paths, an ordinary request and a
 // hijacked exec stream with its half-close, against the daemon reached
-// natively ($DOCKER_HOST) and through a guest's agent; the guest's leave no
+// natively (the configured host) and through a guest's agent; the guest's leave no
 // connection to the daemon, which is to say no relay, once each is done.
 func TestDaemonRequests(t *testing.T) {
 	agent := startTestAgent(t)
 	daemons := map[string]func(t *testing.T, fd *fakeDaemon) Daemon{
 		"native": func(t *testing.T, fd *fakeDaemon) Daemon {
 			t.Helper()
-			t.Setenv(HostEnv, "tcp://"+fd.addr)
-			return EnvDaemon()
+			return HostDaemon("tcp://" + fd.addr)
 		},
 		"guest": func(t *testing.T, fd *fakeDaemon) Daemon {
 			t.Helper()
@@ -182,7 +181,11 @@ func TestDaemonRequests(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fd := startFakeDaemon(t)
 			d := daemon(t, fd)
-			a := NewWithDaemon(machine.Config{}, d).api
+			driver, err := NewWithDaemon(machine.Config{}, d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := driver.api
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			in, err := a.info(ctx)

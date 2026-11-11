@@ -77,6 +77,34 @@ base, makes VMs only by copying, so reports `Commit`; `machinetest` asserts
 both. Every driver reports it today; fake's `NoCommit` is the one without,
 so the refusals, and the suite's paths that skip a commit, run on every OS.
 
+## A driver's configuration is its own
+
+What differs between providers is not abstracted (ADR 26-11-11-215): each
+driver takes `Config.DriverConfig`, a JSON object of fields no other driver
+shares. `machine.Register` takes its factory, its `Definition` (a
+description, its base, and a `ConfigField` per field, in the shape of
+discobox's `sandbox.ProviderDefinition`, plus `Default`, `Env`,
+`Privileged`, and `Retired`), and its `Validator`, all required.
+`Config.Base` stays common, described per driver by `Definition.Base`.
+
+- **A driver decodes its own type** (`machine.DecodeConfig[T]`, refusing a
+  key T lacks) in one `decode` that applies its defaults and checks its
+  values for its factory and validator alike; an error names a field.
+- **`New` normalizes before it constructs** (`machine.Normalize`): a key the
+  definition does not list, a missing required field, a retired key beside
+  its replacement are refused; a retired key is decoded into its
+  replacement, or dropped, for good; then the driver's validator.
+- **A driver reads no environment for its configuration**; the command line
+  does (`ConfigFromEnv`, `ConfigFromValues`), as for a key. What a boot
+  reads (an agent) its hypervisor holds, and a local driver's `Start`
+  writes the configuration owner-only to the VM's directory; the shim reads
+  it there, and one whose driver has another is refused.
+- **A configuration is trusted as the key is.** A field that names a host
+  resource, or where the key or a guest's data goes, is `Privileged`
+  (`TestPrivileged` holds the list); a URL the key goes to is `https`, or
+  `http` to loopback (`CheckKeyURL`); an agent is a regular file at an
+  absolute path, checked before it is read (`CheckFile`).
+
 ## A driver is given its key, and issues keys that cannot issue
 
 A driver calls its provider with the key `Config.Keys` answers, asked on

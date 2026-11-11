@@ -16,14 +16,22 @@ import (
 func init() {
 	// The base is checked where a fresh VM is made from it (Prepare), so a
 	// moved guest-image directory stops nothing but that.
-	machine.Register("libkrun", func(cfg machine.Config) (machine.Driver, error) {
-		h := &Hypervisor{base: cfg.Base, runtimeDir: os.Getenv(RuntimeEnv)}
-		d, err := local.New(cfg, h)
-		if err != nil {
-			return nil, err
-		}
-		h.cacheDir = d.CacheDir()
-		return d, nil
+	machine.Register("libkrun", machine.Registration{
+		New: func(cfg machine.Config) (machine.Driver, error) {
+			conf, err := decode(cfg.DriverConfig)
+			if err != nil {
+				return nil, err
+			}
+			h := &Hypervisor{base: cfg.Base, runtimeDir: conf.Runtime, agent: conf.Agent}
+			d, err := local.New(cfg, h)
+			if err != nil {
+				return nil, err
+			}
+			h.cacheDir = d.CacheDir()
+			return d, nil
+		},
+		Definition: Definition(),
+		Validate:   Validate,
 	})
 }
 
@@ -33,9 +41,12 @@ type Hypervisor struct {
 	// base is the Linux guest image a fresh VM starts from, as
 	// linuximage.Parse reads it; empty is linuximage.DefaultBase.
 	base string
-	// runtimeDir is a runtime directory used as it is ($DISCO_VM_KRUN_RUNTIME),
-	// or empty for DefaultRuntime, pulled into the cache.
+	// runtimeDir is a runtime directory used as it is (Config.Runtime), or
+	// empty for DefaultRuntime, pulled into the cache.
 	runtimeDir string
+	// agent is the disco-vm a boot hands the guest (Config.Agent), or empty
+	// for the running one.
+	agent string
 	// cacheDir is the driver's cache (cache/libkrun), where Check looks for
 	// a pulled runtime. Prepare and Boot are given it in their InstanceSpec.
 	cacheDir string

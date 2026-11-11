@@ -159,8 +159,13 @@ func (d *Driver) unstage(staging string) {
 // have it yet. Helpers of other agents are removed, best-effort.
 func (d *Driver) helper(ctx context.Context) (string, error) {
 	if d.Agent == "" {
-		return "", fmt.Errorf("docker: the driver keeps volumes and caches with the disco-vm agent built for linux: set %s to one", AgentEnv)
+		return "", fmt.Errorf("docker: the driver keeps volumes and caches with the disco-vm agent built for linux: configure agent (%s) as one", AgentEnv)
 	}
+	f, err := openAgent(d.Agent)
+	if err != nil {
+		return "", err
+	}
+	_ = f.Close()
 	data, err := os.ReadFile(d.Agent)
 	if err != nil {
 		return "", fmt.Errorf("docker: agent: %w", err)
@@ -203,7 +208,7 @@ func (d *Driver) helper(ctx context.Context) (string, error) {
 // and old, a named volume, at helperOld where it is not empty.
 func (d *Driver) runDirs(ctx context.Context, req dirsRequest, old string) (dirsResult, error) {
 	if !path.IsAbs(d.Root) {
-		return dirsResult{}, fmt.Errorf("docker: the driver's root %q (%s) is not an absolute path", d.Root, RootEnv)
+		return dirsResult{}, fmt.Errorf("docker: the driver's root %q is not an absolute path", d.Root)
 	}
 	req.Pool = d.pool
 	image, err := d.helper(ctx)

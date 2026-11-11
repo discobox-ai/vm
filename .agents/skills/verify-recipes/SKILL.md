@@ -60,7 +60,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   agent and the container's init, where it runs on the image's libc. A plain
   `go build` links glibc dynamically (the devShell's from `/nix/store`), and
   it fails at create or boot on an image without that libc. Off linux,
-  `DISCO_VM_AGENT` names the linux build.
+  `DISCO_VM_AGENT` names the linux build, by an absolute path.
 - Isolate state: `export DISCO_VM_POOL=<a scratch pool>
   DISCO_VM_DRIVER=docker DISCO_VM_BASE=debian:trixie`. The daemon keeps
   everything: a committed VM is a Docker image `disco-vm-vm:<pool>--<name>`

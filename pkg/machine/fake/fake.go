@@ -32,32 +32,27 @@ import (
 )
 
 func init() {
-	machine.Register("fake", func(cfg machine.Config) (machine.Driver, error) {
-		hv, err := New(cfg.Base)
-		if err != nil {
-			return nil, err
-		}
-		return local.New(cfg, hv)
-	}, KeyEnv)
+	machine.Register("fake", machine.Registration{
+		New: func(cfg machine.Config) (machine.Driver, error) {
+			conf, err := decode(cfg.DriverConfig)
+			if err != nil {
+				return nil, err
+			}
+			hv, err := New(cfg.Base, conf)
+			if err != nil {
+				return nil, err
+			}
+			return local.New(cfg, hv)
+		},
+		Definition: Definition(),
+		Validate:   Validate,
+		KeyEnv:     []string{KeyEnv},
+	})
 }
 
 // KeyEnv is the key the command line calls the fake driver with: one it
 // issued. Unset, the caller is the root directory's owner.
 const KeyEnv = "DISCO_VM_FAKE_KEY" //nolint:gosec // G101: an environment variable's name, not a credential
-
-// AgentEnv overrides the agent binary; by default it is the running disco-vm.
-const AgentEnv = "DISCO_VM_AGENT"
-
-// NoCommitEnv, set to anything, makes the fake driver from New one without
-// Capabilities.Commit, as Hypervisor.NoCommit does. It exists to test the
-// refusals of such a driver from the command line.
-const NoCommitEnv = "DISCO_VM_FAKE_NO_COMMIT"
-
-// MaxRunningEnv, set to a number, makes the fake driver from New cap
-// running guests of the host's OS at it (Capabilities.MaxRunning), as
-// Hypervisor.MaxRunning does, so a shim the driver spawns enforces the same
-// cap as the process that spawned it.
-const MaxRunningEnv = "DISCO_VM_FAKE_MAX_RUNNING"
 
 // DefaultBase is the base of a driver from New given none.
 const DefaultBase = "scratch"
@@ -82,12 +77,11 @@ type Hypervisor struct {
 
 var _ local.Hypervisor = (*Hypervisor)(nil)
 
-// New returns a fake hypervisor whose guests run this binary, or
-// $DISCO_VM_AGENT, and whose base is base (machine.Config.Base), or
-// DefaultBase. It commits unless $DISCO_VM_FAKE_NO_COMMIT is set, and caps
-// running guests where $DISCO_VM_FAKE_MAX_RUNNING says.
-func New(base string) (*Hypervisor, error) {
-	agent := os.Getenv(AgentEnv)
+// New returns a fake hypervisor whose base is base (machine.Config.Base),
+// or DefaultBase, and whose guests run cfg's agent, or this binary. It
+// commits unless cfg says not to, and caps running guests where cfg says.
+func New(base string, cfg Config) (*Hypervisor, error) {
+	agent := cfg.Agent
 	if agent == "" {
 		exe, err := os.Executable()
 		if err != nil {
@@ -98,13 +92,9 @@ func New(base string) (*Hypervisor, error) {
 	if base == "" {
 		base = DefaultBase
 	}
-	hv := &Hypervisor{Agent: agent, BaseName: base, NoCommit: os.Getenv(NoCommitEnv) != ""}
-	if v := os.Getenv(MaxRunningEnv); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			return nil, fmt.Errorf("fake: $%s is %q, not a count", MaxRunningEnv, v)
-		}
-		hv.MaxRunning = map[machine.OS]int{machine.OS(runtime.GOOS): n}
+	hv := &Hypervisor{Agent: agent, BaseName: base, NoCommit: cfg.NoCommit}
+	if cfg.MaxRunning != nil {
+		hv.MaxRunning = map[machine.OS]int{machine.OS(runtime.GOOS): *cfg.MaxRunning}
 	}
 	return hv, nil
 }
@@ -234,6 +224,9 @@ func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 }
 
 func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
+	if err := machine.CheckFile(d.Agent); err != nil {
+		return nil, fmt.Errorf("fake: the agent: %w", err)
+	}
 	addrFile := filepath.Join(inst.Dir, addrName)
 	_ = os.Remove(addrFile)
 	//nolint:gosec,noctx // G204: the agent is the driver's own disco-vm binary; noctx: the guest outlives Boot's ctx and stops through Stop or Kill

@@ -15,3 +15,19 @@
   every test on hcs, vz, and fake, whose hypervisors connect to any port at
   any time, and fails only on libkrun, which maps ports before its VM starts
   and never after.
+- **A driver's setting is a field of its configuration, never an
+  environment variable it reads** (ADR 26-11-11-215). A new one is a field of
+  the driver's `Config`, a `ConfigField` in its `Definition` with the
+  variable the command line reads as `Env`, and a check in its `decode`. An
+  `os.Getenv` in a driver passes every test that sets the variable, and
+  fails for an embedder, which sets none, and for a shim, which reads its
+  configuration from the VM's file. A process-wide convention every client
+  honours (boxd's `ALL_PROXY`, as gRPC honours `HTTPS_PROXY`) is not a
+  driver's setting.
+- **A new field is placed on the privileged list or argued off it**
+  (`TestPrivileged`): one that names a host path, socket, or directory, or
+  an endpoint the key or a guest's data reaches, is `Privileged`. A
+  validator's error names the field and never its value, and a path is
+  checked with `machine.CheckFile` before anything reads it.
+- **A field is never removed or renamed**: it is `Retired`, with
+  `ReplacedBy` where it has a replacement, and stays accepted for good.

@@ -28,6 +28,8 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // What a Linux guest image is made of. A hypervisor names the ones it boots
@@ -330,6 +332,11 @@ func NewMachineID() (string, error) {
 // CheckAgent refuses an agent that is not a linux executable for the guest's
 // architecture, before a VM is started that could never answer.
 func CheckAgent(agent, arch string) error {
+	// Nothing else is read from a path the configuration names (ADR
+	// 26-11-11-215 §7).
+	if err := machine.CheckFile(agent); err != nil {
+		return fmt.Errorf("the agent: %w", err)
+	}
 	f, err := elf.Open(agent)
 	if err != nil {
 		return fmt.Errorf("the agent %s is not a linux executable: %w", agent, err)

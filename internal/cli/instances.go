@@ -555,9 +555,13 @@ func infoCommand(g *globals) *cobra.Command {
 			if err := e.Driver.Check(cmd.Context()); err != nil {
 				check = err.Error()
 			}
+			config, err := g.configInEffect(e.Driver.Name())
+			if err != nil {
+				return err
+			}
 			caps, _ := json.MarshalIndent(e.Driver.Capabilities(), "  ", "  ")
-			fmt.Printf("version:  %s\nroot:     %s\npool:  %s\ndriver:   %s (available: %s)\ncheck:    %s\ncapabilities:\n  %s\n",
-				version.String(), g.dir(), e.Pool, e.Driver.Name(), strings.Join(machine.Names(), ", "), check, caps)
+			fmt.Printf("version:  %s\nroot:     %s\npool:  %s\ndriver:   %s (available: %s)\nconfig:   %s\ncheck:    %s\ncapabilities:\n  %s\n",
+				version.String(), g.dir(), e.Pool, e.Driver.Name(), strings.Join(machine.Names(), ", "), config, check, caps)
 			return nil
 		},
 	}
