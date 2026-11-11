@@ -4,8 +4,8 @@
 // static, and stays the guest agent.
 //
 // The host side is a runtime, one directory pulled by digest into the
-// driver's cache (cache/libkrun/runtime/<digest>), or named by
-// $DISCO_VM_KRUN_RUNTIME: the launcher, passt, and libkrun with every library
+// driver's cache (cache/libkrun/runtime/<digest>), or named by the
+// configuration's runtime (Config.Runtime): the launcher, passt, and libkrun with every library
 // it needs, glibc and its loader among them. The launcher is run through that
 // loader, so the host's libc sets no floor (§4).
 //

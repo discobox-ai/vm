@@ -76,14 +76,14 @@ const pendingName = "resume.pending"
 // Boot starts a prepared instance from power-off and waits for its agent. A
 // Linux guest's agent is the one this boot handed it, and one that speaks
 // another protocol is killed and refused.
-func (*Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
+func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
 	m, err := bundle(inst.Dir).readMeta()
 	if err != nil {
 		return nil, err
 	}
 	var vm *vmMachine
 	if m.guestOS() == machine.Linux {
-		vm, err = bootLinux(inst, m, opts)
+		vm, err = bootLinux(inst, m, opts, h.agent)
 	} else {
 		vm, err = bootInstance(inst, opts)
 	}

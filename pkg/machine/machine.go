@@ -23,6 +23,7 @@ package machine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -208,6 +209,13 @@ type Config struct {
 	// command line passes KeyFromEnv; nothing else reads the environment
 	// for a key.
 	Keys KeySource
+	// DriverConfig is the driver's own configuration: a JSON object whose
+	// fields its Definition describes (DefinitionOf) and its Validator
+	// checks, which no other driver shares. Empty is the driver's defaults.
+	// New refuses one its driver does not accept. A driver never reads
+	// the environment for it: the command line reads each field's
+	// ConfigField.Env (ConfigFromEnv). It holds no secret; a key is Keys'.
+	DriverConfig json.RawMessage
 }
 
 // DirEnv overrides DefaultDir.

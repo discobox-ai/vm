@@ -82,7 +82,7 @@ func (b bundle) newLinuxIdentity() error {
 // image's kernel, the initrd with this host's linux agent appended, and the
 // command line naming the instance's identity, and whether it has a network
 // device.
-func bootLinux(inst local.InstanceSpec, m meta, opts local.BootOptions) (*vmMachine, error) {
+func bootLinux(inst local.InstanceSpec, m meta, opts local.BootOptions, agent string) (*vmMachine, error) {
 	if opts.GUI {
 		return nil, fmt.Errorf("vz: a Linux guest has no display to show: %w", machine.ErrUnsupported)
 	}
@@ -94,7 +94,6 @@ func bootLinux(inst local.InstanceSpec, m meta, opts local.BootOptions) (*vmMach
 	if err := b.installed(machine.Linux); err != nil {
 		return nil, err
 	}
-	agent := os.Getenv(AgentEnv)
 	if err := checkAgent(agent, runtime.GOARCH); err != nil {
 		return nil, err
 	}

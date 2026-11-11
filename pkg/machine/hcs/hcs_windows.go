@@ -25,8 +25,10 @@ func init() {
 	// cfg.Base is not read: hcs has no base (Base), so a fresh VM is
 	// refused at Create, and a base configured for another driver
 	// ($DISCO_VM_BASE) stops nothing else.
-	machine.Register("hcs", func(cfg machine.Config) (machine.Driver, error) {
-		return local.New(cfg, &Hypervisor{})
+	machine.Register("hcs", machine.Registration{
+		New:        func(cfg machine.Config) (machine.Driver, error) { return local.New(cfg, &Hypervisor{}) },
+		Definition: Definition(),
+		Validate:   Validate,
 	})
 }
 

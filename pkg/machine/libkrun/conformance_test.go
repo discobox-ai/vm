@@ -57,13 +57,27 @@ func realDriver(t *testing.T) *local.Driver {
 	if binary == "" {
 		t.Fatal("$DISCO_VM_TEST_BINARY names no disco-vm to run each started instance's shim")
 	}
-	// A test boots in this process, whose binary is no agent.
-	t.Setenv(AgentEnv, binary)
+	// A test boots in this process, whose binary is no agent. The shim is
+	// given the configuration this driver has (ADR 26-11-11-215 §6), or it
+	// refuses to run.
+	values := map[string]string{"agent": binary}
+	if rt := os.Getenv(RuntimeEnv); rt != "" {
+		values["runtime"] = rt
+	}
+	config, err := machine.ConfigFromValues("libkrun", values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := decode(config)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	h := &Hypervisor{base: base, runtimeDir: os.Getenv(RuntimeEnv)}
+	h := &Hypervisor{base: base, runtimeDir: conf.Runtime, agent: conf.Agent}
 	driver, err := local.New(machine.Config{
-		Dir:         dir,
-		ShimCommand: []string{binary, "--root", dir, "--driver", "libkrun", "shim"},
+		Dir:          dir,
+		ShimCommand:  []string{binary, "--root", dir, "--driver", "libkrun", "--driver-config", string(config), "shim"},
+		DriverConfig: config,
 	}, h)
 	if err != nil {
 		t.Fatal(err)

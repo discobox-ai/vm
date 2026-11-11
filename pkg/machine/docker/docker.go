@@ -65,7 +65,11 @@ import (
 )
 
 func init() {
-	machine.Register("docker", func(cfg machine.Config) (machine.Driver, error) { return New(cfg), nil })
+	machine.Register("docker", machine.Registration{
+		New:        func(cfg machine.Config) (machine.Driver, error) { return New(cfg) },
+		Definition: Definition(),
+		Validate:   Validate,
+	})
 }
 
 const (
@@ -111,15 +115,6 @@ const (
 	labelImage = "ai.discobox.vm.image"
 )
 
-// BaseEnv is where the command line reads machine.Config.Base from, named
-// in the error of a fresh Create with no base.
-const BaseEnv = "DISCO_VM_BASE"
-
-// AgentEnv names the disco-vm binary, built for linux and the daemon's CPU,
-// that Create puts in a base's image. It is this binary when unset on a linux
-// host.
-const AgentEnv = "DISCO_VM_AGENT"
-
 // Driver is the docker driver.
 type Driver struct {
 	api  *api
@@ -130,37 +125,61 @@ type Driver struct {
 	// helper image (helperRepo) runs.
 	Agent string
 	// Root is where the driver keeps volumes and caches on the daemon's host
-	// (ADR 26-11-03-782): RootEnv, or DefaultRoot.
+	// (ADR 26-11-03-782): Config.Root, or DefaultRoot.
 	Root string
 }
 
 var _ machine.Driver = (*Driver)(nil)
 
-// New returns a driver for the daemon $DOCKER_HOST names (EnvDaemon), as
-// NewWithDaemon does.
-func New(cfg machine.Config) *Driver {
-	return NewWithDaemon(cfg, EnvDaemon())
+// New returns a driver for the daemon its configuration (cfg.DriverConfig)
+// names (HostDaemon), as NewWithDaemon does.
+func New(cfg machine.Config) (*Driver, error) {
+	config, err := machine.Normalize("docker", cfg.DriverConfig)
+	if err != nil {
+		return nil, err
+	}
+	conf, err := decode(config)
+	if err != nil {
+		return nil, err
+	}
+	return newDriver(cfg, conf, HostDaemon(conf.Host)), nil
 }
 
 // NewWithDaemon returns a driver for the daemon d, for cfg's pool
 // (machine.DefaultPool when empty), whose fresh VMs are readied from
-// cfg.Base, whose agent is $DISCO_VM_AGENT or, on linux, this binary, and
-// whose directories are under $DISCO_VM_DOCKER_ROOT or DefaultRoot on the
-// daemon's host. It dials nothing until it is used.
-func NewWithDaemon(cfg machine.Config, d Daemon) *Driver {
+// cfg.Base, whose agent is the configured one or, on linux, this binary,
+// and whose directories are under the configured root on the daemon's
+// host. A configuration that names a host is refused: the daemon is d. It
+// dials nothing until it is used.
+func NewWithDaemon(cfg machine.Config, d Daemon) (*Driver, error) {
+	// Normalized first, as machine.New does, so a stored configuration
+	// with a retired key is taken here too (ADR 26-11-11-215 §3).
+	config, err := machine.Normalize("docker", cfg.DriverConfig)
+	if err != nil {
+		return nil, err
+	}
+	if given, err := machine.DecodeConfig[Config]("docker", config); err != nil {
+		return nil, err
+	} else if given.Host != "" {
+		return nil, errors.New("docker: configuration: host: the driver is given its daemon")
+	}
+	conf, err := decode(config)
+	if err != nil {
+		return nil, err
+	}
+	return newDriver(cfg, conf, d), nil
+}
+
+func newDriver(cfg machine.Config, conf Config, d Daemon) *Driver {
 	pool := cfg.Pool
 	if pool == "" {
 		pool = machine.DefaultPool
 	}
-	agent := os.Getenv(AgentEnv)
+	agent := conf.Agent
 	if agent == "" && runtime.GOOS == "linux" {
 		agent, _ = os.Executable()
 	}
-	root := os.Getenv(RootEnv)
-	if root == "" {
-		root = DefaultRoot
-	}
-	return &Driver{api: newAPI(d), pool: pool, base: cfg.Base, Agent: agent, Root: root}
+	return &Driver{api: newAPI(d), pool: pool, base: cfg.Base, Agent: agent, Root: conf.Root}
 }
 
 func (*Driver) Name() string { return "docker" }
@@ -204,7 +223,7 @@ type containerRef struct {
 
 // Install is not offered: a fresh VM is readied from the configured base.
 func (*Driver) Install(context.Context, machine.InstallSpec, string) (machine.Instance, error) {
-	return machine.Instance{}, fmt.Errorf("docker: create a fresh VM from the configured base (%s, such as debian:trixie) instead: %w", BaseEnv, machine.ErrUnsupported)
+	return machine.Instance{}, fmt.Errorf("docker: create a fresh VM from the configured base (%s, such as debian:trixie) instead: %w", machine.BaseEnv, machine.ErrUnsupported)
 }
 
 // ready makes the image a fresh VM runs: it pulls the base's image, installs
@@ -219,7 +238,7 @@ func (d *Driver) ready(ctx context.Context, image, name, tag string) error {
 		return err
 	}
 	if d.Agent == "" {
-		return fmt.Errorf("docker: a guest needs the disco-vm agent built for linux: set %s to one", AgentEnv)
+		return fmt.Errorf("docker: a guest needs the disco-vm agent built for linux: configure agent (%s) as one", AgentEnv)
 	}
 	if err := checkArch(d.Agent, in.Architecture); err != nil {
 		return err
@@ -391,7 +410,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("docker: egress: %w", machine.ErrUnsupported)
 	}
 	if spec.From == nil && d.base == "" {
-		return machine.Instance{}, fmt.Errorf("docker: a fresh VM needs a base image, which is the driver's configuration: set %s to one, such as debian:trixie: %w", BaseEnv, machine.ErrUnsupported)
+		return machine.Instance{}, fmt.Errorf("docker: a fresh VM needs a base image, which is the driver's configuration: set %s to one, such as debian:trixie: %w", machine.BaseEnv, machine.ErrUnsupported)
 	}
 	name := containerName(d.pool, spec.Name)
 	// Refused before a base is readied, which takes a minute.
@@ -851,12 +870,26 @@ func dialAgent(ctx context.Context, a *api, container string) (net.Conn, error) 
 	return dialExec(ctx, a, container, []string{agentPath, "pipe", "unix:" + relayDir + "/guest" + agentSocket}, guestAddr{container: container, port: guest.AgentPort})
 }
 
+// openAgent opens the agent as an ELF file, once it is checked to be a
+// regular file at an absolute path (ADR 26-11-11-215 §7): nothing else is
+// read from a path the configuration names.
+func openAgent(agent string) (*elf.File, error) {
+	if err := machine.CheckFile(agent); err != nil {
+		return nil, fmt.Errorf("docker: the agent: %w", err)
+	}
+	f, err := elf.Open(agent)
+	if err != nil {
+		return nil, fmt.Errorf("docker: the agent %s is not a linux binary (build disco-vm with GOOS=linux and configure agent, $DISCO_VM_AGENT, as it): %w", agent, err)
+	}
+	return f, nil
+}
+
 // checkArch refuses an agent built for another CPU than the daemon's, which
 // would otherwise fail later as a container that never starts.
 func checkArch(agent, arch string) error {
-	f, err := elf.Open(agent)
+	f, err := openAgent(agent)
 	if err != nil {
-		return fmt.Errorf("docker: the agent %s is not a linux binary (build disco-vm with GOOS=linux and set DISCO_VM_AGENT to it): %w", agent, err)
+		return err
 	}
 	defer f.Close()
 	want := map[elf.Machine]string{elf.EM_X86_64: "x86_64", elf.EM_AARCH64: "aarch64"}[f.Machine]

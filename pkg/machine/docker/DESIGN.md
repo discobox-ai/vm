@@ -16,7 +16,8 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   (`machine.Config.Base`, the command line's `$DISCO_VM_BASE`; ADR
   26-11-03-606). There is no install, and with no base a fresh VM is
   `ErrUnsupported`. A fresh Create pulls the image, adds systemd and the
-  agent (`$DISCO_VM_AGENT`, or this binary on linux), chowns its files into
+  agent (the configuration's `agent`, `$DISCO_VM_AGENT` to the command line,
+  or this binary on linux), chowns its files into
   the guest's uids, and commits that as the VM's own Docker image,
   `disco-vm-base:<pool>--<name>--<random>`, which Destroy removes with
   every other such tag of the name older than a readying could be that no
@@ -48,9 +49,11 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   Only volumes and caches are kept on the daemon's host, in directories
   (below).
 - **The daemon is a connection the driver is given** (`Daemon`; ADR
-  26-11-04-412 §3). `New` reaches the one `$DOCKER_HOST` names
-  (`EnvDaemon`: a Unix socket or plain TCP, its connections kept idle
-  between requests); `NewWithDaemon` takes any other. Ordinary requests and
+  26-11-04-412 §3). `New` reaches the one its configuration's
+  `host` names (`HostDaemon`: a Unix socket or plain TCP, its connections
+  kept idle between requests; the command line reads `$DOCKER_HOST` for it,
+  ADR 26-11-11-215); `NewWithDaemon` takes any other, and refuses a
+  configuration that also names a host. Ordinary requests and
   hijacked exec streams both dial through it, and a connection must
   half-close. `GuestDaemon` reaches a daemon inside a running guest through
   its agent: each connection is an Exec of the guest's own `disco-vm pipe`
@@ -66,7 +69,7 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   container's IPv4 address on its network, where another container dials it,
   and none for a container with no IPv4 address (ADR 26-10-29-129). There is no egress fence.
 - **A volume is a directory on the daemon's host** (ADR 26-11-03-782 §6),
-  under the driver's root (`Driver.Root`, `$DISCO_VM_DOCKER_ROOT`, default
+  under the driver's root (`Driver.Root`, the configuration's `root`, `$DISCO_VM_DOCKER_ROOT`, default
   `/var/lib/discobox`), laid out as discobox's own docker driver lays out
   its tree: `data/pools/<pool>/vms/<name>`,
   `cache/pools/<pool>/vms/<name>`, and a key's generations at

@@ -2,7 +2,9 @@ package local_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -30,13 +32,18 @@ func (c capped) driver(pool string) *local.Driver {
 	hv := &fake.Hypervisor{Agent: c.agent, BaseName: "stock", MaxRunning: map[machine.OS]int{machine.OS(runtime.GOOS): c.limit}}
 	d, err := local.New(machine.Config{
 		Dir: c.root, Pool: pool,
-		ShimCommand: []string{c.agent, "--root", c.root, "--driver", "fake", "--pool", pool, "shim"},
+		ShimCommand:  []string{c.agent, "--root", c.root, "--driver", "fake", "--pool", pool, "--driver-config", c.config(), "shim"},
+		DriverConfig: json.RawMessage(c.config()),
 	}, hv)
 	if err != nil {
 		c.t.Fatal(err)
 	}
 	return d
 }
+
+// config is the fake driver's configuration capped at the limit, which a
+// shim is given as its starter is (ADR 26-11-11-215 §6).
+func (c capped) config() string { return fmt.Sprintf(`{"maxRunning":%d}`, c.limit) }
 
 func (c capped) create(d *local.Driver, name string) machine.Instance {
 	c.t.Helper()
@@ -193,7 +200,6 @@ func TestCapacityIsTheRootsAcrossPools(t *testing.T) {
 // once the shim stops, the slot is free.
 func TestCapacityAcrossProcesses(t *testing.T) {
 	ctx := context.Background()
-	t.Setenv(fake.MaxRunningEnv, "1")
 	c := capped{t: t, root: t.TempDir(), agent: buildAgent(t), limit: 1}
 	a, b := c.driver("a"), c.driver("b")
 	one, two := c.create(a, "vm"), c.create(b, "vm")
@@ -218,7 +224,8 @@ func TestCapacityAcrossProcesses(t *testing.T) {
 	// this process's driver caps nothing, and the shim's caps at one.
 	loose, err := local.New(machine.Config{
 		Dir: c.root, Pool: "b",
-		ShimCommand: []string{c.agent, "--root", c.root, "--driver", "fake", "--pool", "b", "shim"},
+		ShimCommand:  []string{c.agent, "--root", c.root, "--driver", "fake", "--pool", "b", "--driver-config", c.config(), "shim"},
+		DriverConfig: json.RawMessage(c.config()),
 	}, &fake.Hypervisor{Agent: c.agent, BaseName: "stock"})
 	if err != nil {
 		t.Fatal(err)

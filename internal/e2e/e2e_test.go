@@ -567,10 +567,138 @@ func TestDrivers(t *testing.T) {
 	}
 }
 
+// TestDriverConfig configures the fake driver, on every target: --help=DRIVER
+// lists its fields; a field's flag, its environment variable, and
+// --driver-config each reach the driver; a flag beats the variable; a
+// configuration the driver does not take, another driver's flag, and a flag
+// beside --driver-config are refused before anything is made; and a VM's
+// shim is given the configuration of the command that started it.
+func TestDriverConfig(t *testing.T) {
+	// Empty is unset: the suite may run with the fake driver's variables set
+	// (task test's second run sets DISCO_VM_FAKE_NO_COMMIT).
+	unset := []string{"DISCO_VM_FAKE_NO_COMMIT=", "DISCO_VM_AGENT=", "DISCO_VM_FAKE_MAX_RUNNING="}
+	e := env{t: t, root: t.TempDir(), extra: unset}
+	fake := func(args ...string) []string { return append([]string{"--driver", "fake"}, args...) }
+
+	help := e.ok("--help=fake")
+	mustContain(t, help, "The fake driver", "--fake-no-commit", "key: noCommit", "env: $DISCO_VM_FAKE_NO_COMMIT", "default: false",
+		"--fake-agent string", "privileged", "Base ($DISCO_VM_BASE", "default: scratch", "--driver-config")
+	mustContain(t, e.ok("run", "--help=fake"), "--fake-no-commit")
+	mustContain(t, e.ok("--help"), "--help=DRIVER")
+	if strings.Contains(e.ok("--help"), "--fake-no-commit") {
+		t.Fatal("a driver's flags are in every command's help")
+	}
+	mustContain(t, e.ok("drivers"), "Guests as disco-vm agent processes")
+	if out, _ := e.run("--help=nope"); !strings.Contains(out, `no driver "nope"`) {
+		t.Fatalf("--help=nope:\n%s", out)
+	}
+
+	config := filepath.Join(t.TempDir(), "fake.json")
+	if err := os.WriteFile(config, []byte(`{"noCommit": true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		fake("--fake-no-commit", "info"),
+		fake("--driver-config", `{"noCommit":true}`, "info"),
+		fake("--driver-config", "@"+config, "info"),
+	} {
+		out := e.ok(args...)
+		mustContain(t, out, `"commit": false`, `config:   {"noCommit":true}`)
+		if strings.Contains(out, "warning") {
+			t.Fatalf("disco-vm %s warned of nothing set:\n%s", strings.Join(args, " "), out)
+		}
+	}
+	withEnv := e
+	withEnv.extra = append(slices.Clone(unset), "DISCO_VM_FAKE_NO_COMMIT=1")
+	mustContain(t, withEnv.ok(fake("info")...), `"commit": false`)
+	mustContain(t, withEnv.ok(fake("--fake-no-commit=false", "info")...), `"commit": true`)
+	mustContain(t, e.ok(fake("info")...), `"commit": true`, `config:   {"noCommit":false}`)
+	// A whole configuration reads no variable, and names one it ignores
+	// that says otherwise, never with its value.
+	mustContain(t, withEnv.ok(fake("--driver-config", "{}", "info")...), `"commit": true`,
+		"warning: $DISCO_VM_FAKE_NO_COMMIT is set and not read")
+
+	// @FILE is read at most 1 MiB, and no error quotes it.
+	const secret = "s3cr3t-in-a-file"
+	notJSON := filepath.Join(t.TempDir(), "id_ed25519")
+	if err := os.WriteFile(notJSON, []byte("-----BEGIN "+secret+"-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(t.TempDir(), "big.json")
+	if err := os.WriteFile(big, []byte(`{"agent":"/`+strings.Repeat("a", 1<<20)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for file, want := range map[string]string{notJSON: "not JSON", big: "is over 1048576 bytes"} {
+		out, code := e.run(fake("--driver-config", "@"+file, "ls")...)
+		if code == 0 || !strings.Contains(out, want) || strings.Contains(out, secret) {
+			t.Errorf("--driver-config @%s: exit %d, want %q and nothing of the file:\n%s", filepath.Base(file), code, want, out)
+		}
+	}
+
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{fake("--driver-config", `{"noComit":true}`, "ls"), `unknown field "noComit" (the driver takes agent, noCommit, maxRunning)`},
+		{fake("--driver-config", `{"noCommit":"yes"}`, "ls"), "noCommit: not a bool"},
+		{fake("--fake-agent", "disco-vm", "ls"), "agent: not an absolute path"},
+		{fake("--driver-config", `not json`, "ls"), "not JSON"},
+		{fake("--fake-no-commit=maybe", "ls"), "noCommit"},
+		{fake("--docker-host", "unix:///x", "ls"), "--docker-host configures the docker driver, and the driver is fake"},
+		{fake("--driver-config", "{}", "--fake-no-commit", "ls"), "--driver-config cannot be combined with --fake-no-commit"},
+		{[]string{"--driver", "docker", "--docker-host", "ssh://h", "ls"}, "host: only unix:// and tcp://"},
+		{[]string{"--driver", "boxd", "--boxd-token-url", "http://example.com/t", "ls"}, "tokenUrl: a URL the key is sent to is https"},
+	} {
+		if out, code := e.run(c.args...); code == 0 || !strings.Contains(out, c.want) {
+			t.Errorf("disco-vm %s: exit %d, want %q:\n%s", strings.Join(c.args, " "), code, c.want, out)
+		}
+	}
+
+	// Only a boot runs the agent, and a started VM boots in its shim: a
+	// missing one fails the start only if the shim was given it.
+	missing := filepath.Join(t.TempDir(), "no-agent")
+	t.Cleanup(func() { e.run(fake("rm", "-f", "vm")...) })
+	if out, code := e.run(fake("--fake-agent", missing, "run", "vm")...); code == 0 || !strings.Contains(out, missing) {
+		t.Fatalf("a VM started with a missing agent: exit %d\n%s", code, out)
+	}
+	e.run(fake("rm", "-f", "vm")...)
+	e.ok(fake("--fake-no-commit", "run", "vm")...)
+
+	// The shim was given the configuration in a file of the VM's, readable
+	// by its owner alone, and nothing of it on its command line.
+	files, err := filepath.Glob(filepath.Join(e.root, "instances", "*", "driver-config.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("the shim's configuration files: %v, %v", files, err)
+	}
+	if data, err := os.ReadFile(files[0]); err != nil || string(data) != `{"noCommit":true}` {
+		t.Fatalf("the shim's configuration: %q, %v", data, err)
+	}
+	if runtime.GOOS == "linux" {
+		var state struct {
+			PID int `json:"pid"`
+		}
+		data, err := os.ReadFile(filepath.Join(filepath.Dir(files[0]), "shim.json"))
+		if err == nil {
+			err = json.Unmarshal(data, &state)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", state.PID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := strings.ReplaceAll(string(cmdline), "\x00", " ")
+		if !strings.Contains(args, "--driver-config @"+files[0]) || strings.Contains(args, "noCommit") {
+			t.Fatalf("the shim's command line: %s", args)
+		}
+	}
+}
+
 func driverSelected(out, name string) bool {
 	for line := range strings.SplitSeq(out, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[0] == name && fields[1] == "*" {
+		if len(fields) >= 2 && fields[0] == name && fields[1] == "*" {
 			return true
 		}
 	}

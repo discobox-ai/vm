@@ -28,7 +28,7 @@ func TestService(t *testing.T) {
 	if os.Getenv(IntegrationEnv) != "1" || (os.Getenv(APIKeyEnv) == "" && os.Getenv(TokenEnv) == "") {
 		t.Skipf("set %s=1 and %s to reach a service on boxd, which bills the account", IntegrationEnv, APIKeyEnv)
 	}
-	d := New(machine.Config{Keys: machine.KeyFromEnv("boxd")})
+	d := envDriver(t)
 	ctx := context.Background()
 	var from machine.Instance
 	if name := os.Getenv(FromEnv); name != "" {

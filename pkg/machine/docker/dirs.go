@@ -23,9 +23,9 @@ import (
 
 const (
 	// DefaultRoot is where the driver keeps its directories on the daemon's
-	// host when neither Driver.Root nor RootEnv names another.
+	// host when its configuration (Config.Root) names no other.
 	DefaultRoot = "/var/lib/discobox"
-	// RootEnv overrides DefaultRoot.
+	// RootEnv is where the command line reads Config.Root from.
 	RootEnv = "DISCO_VM_DOCKER_ROOT"
 
 	// helperRoot is where a helper container mounts the driver's root, and

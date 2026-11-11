@@ -103,16 +103,12 @@ func (l launch) render() ([]byte, error) {
 	return b.Bytes(), errors.Join(errs...)
 }
 
-// AgentEnv names the disco-vm a boot hands the guest as its agent, in place
-// of the running binary: a test's, whose own binary is not disco-vm.
-const AgentEnv = "DISCO_VM_AGENT"
-
-// agentBinary is the agent a boot appends to the initrd: $DISCO_VM_AGENT, or
-// the running disco-vm, which on a Linux amd64 host is a static linux/amd64
-// executable (ADR 26-11-03-530 §6). The protocol check after boot refuses
-// one of another disco-vm.
-func agentBinary() (string, error) {
-	agent := os.Getenv(AgentEnv)
+// agentBinary is the agent a boot appends to the initrd: the configured one
+// (Config.Agent), or the running disco-vm, which on a Linux amd64 host is a
+// static linux/amd64 executable (ADR 26-11-03-530 §6). The protocol check
+// after boot refuses one of another disco-vm.
+func (h *Hypervisor) agentBinary() (string, error) {
+	agent := h.agent
 	if agent == "" {
 		exe, err := os.Executable()
 		if err != nil {
@@ -121,7 +117,7 @@ func agentBinary() (string, error) {
 		agent = exe
 	}
 	if err := linuximage.CheckAgent(agent, runtime.GOARCH); err != nil {
-		return "", fmt.Errorf("libkrun: %w: the agent is the running disco-vm, or $%s, and must be a static linux build (`go tool task build`)", err, AgentEnv)
+		return "", fmt.Errorf("libkrun: %w: the agent is the running disco-vm, or the configured one ($%s), and must be a static linux build (`go tool task build`)", err, AgentEnv)
 	}
 	return agent, nil
 }
@@ -173,7 +169,7 @@ func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 	if err != nil {
 		return nil, err
 	}
-	agent, err := agentBinary()
+	agent, err := h.agentBinary()
 	if err != nil {
 		return nil, err
 	}

@@ -22,7 +22,7 @@ import (
 
 // ImageEnv names a registry image, such as debian:trixie, to run the
 // conformance suite from as the driver's base (machine.Config.Base),
-// against the Docker daemon $DOCKER_HOST names.
+// against the Docker daemon $DOCKER_HOST names (Config.Host).
 const ImageEnv = "DISCO_VM_DOCKER_IMAGE"
 
 // TestConformance runs the conformance suite against a real Docker daemon. It
@@ -33,7 +33,7 @@ func TestConformance(t *testing.T) {
 	if image == "" {
 		t.Skipf("set %s (an image, such as debian:trixie) to run the conformance suite against docker", ImageEnv)
 	}
-	d := New(machine.Config{Base: image})
+	d := envNew(t, machine.Config{Base: image})
 	d.Agent = linuxAgent(t)
 	machinetest.Run(t, d, machinetest.Config{
 		CPUs:    2,
@@ -64,7 +64,10 @@ func TestConformanceThroughAnAgent(t *testing.T) {
 		t.Skipf("%s=%s: the relay is run against a unix socket", HostEnv, host)
 	}
 	agent := linuxAgent(t)
-	d := NewWithDaemon(machine.Config{Base: image, Pool: "relay"}, GuestDaemon(startTestAgent(t), agent, "unix:"+socket))
+	d, err := NewWithDaemon(machine.Config{Base: image, Pool: "relay"}, GuestDaemon(startTestAgent(t), agent, "unix:"+socket))
+	if err != nil {
+		t.Fatal(err)
+	}
 	d.Agent = agent
 	machinetest.Run(t, d, machinetest.Config{
 		CPUs:       2,
@@ -74,11 +77,33 @@ func TestConformanceThroughAnAgent(t *testing.T) {
 	})
 }
 
+// mustNew is New, failing the test on an error.
+func mustNew(t *testing.T, cfg machine.Config) *Driver {
+	t.Helper()
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// envNew is New with the configuration the command line reads from the
+// environment, so a daemon test reaches the daemon $DOCKER_HOST names.
+func envNew(t *testing.T, cfg machine.Config) *Driver {
+	t.Helper()
+	config, err := machine.ConfigFromValues("docker", machine.ConfigFromEnv("docker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DriverConfig = config
+	return mustNew(t, cfg)
+}
+
 // TestNoBase refuses a fresh VM where no base is configured, before it asks
 // the daemon anything.
 func TestNoBase(t *testing.T) {
-	_, err := New(machine.Config{}).Create(t.Context(), machine.InstanceSpec{Name: "fresh"})
-	if !errors.Is(err, machine.ErrUnsupported) || !strings.Contains(err.Error(), BaseEnv) {
+	_, err := mustNew(t, machine.Config{}).Create(t.Context(), machine.InstanceSpec{Name: "fresh"})
+	if !errors.Is(err, machine.ErrUnsupported) || !strings.Contains(err.Error(), machine.BaseEnv) {
 		t.Fatalf("a fresh VM with no base: %v", err)
 	}
 }
@@ -87,7 +112,7 @@ func TestNoBase(t *testing.T) {
 // committed one, a Docker image with no container, before it asks the
 // daemon anything.
 func TestCommittedRefused(t *testing.T) {
-	d := New(machine.Config{})
+	d := mustNew(t, machine.Config{})
 	inst := machine.Instance{ID: "sha256:0", Name: "frozen"}
 	if _, err := d.Boot(t.Context(), inst, machine.BootOptions{}); !errors.Is(err, machine.ErrCommitted) {
 		t.Errorf("boot: %v", err)
@@ -167,7 +192,7 @@ func linuxAgent(t *testing.T) string {
 // the pool's, and not a container from before ADR 26-11-03-606, an
 // instance of an image, which labelImage names.
 func TestManagedLeavesTheOldOut(t *testing.T) {
-	d := New(machine.Config{Pool: "p"})
+	d := mustNew(t, machine.Config{Pool: "p"})
 	for _, c := range []struct {
 		labels map[string]string
 		want   bool
@@ -198,7 +223,7 @@ func TestUpgradeInterrupted(t *testing.T) {
 	if image == "" {
 		t.Skipf("set %s (an image, such as debian:trixie) to run against docker", ImageEnv)
 	}
-	d := New(machine.Config{Base: image, Pool: "upgradetest"})
+	d := envNew(t, machine.Config{Base: image, Pool: "upgradetest"})
 	d.Agent = linuxAgent(t)
 	ctx := t.Context()
 	cleanup := func(inst machine.Instance) { t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) }) }

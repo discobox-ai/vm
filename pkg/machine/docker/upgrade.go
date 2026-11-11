@@ -171,7 +171,7 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 		}
 		img = src.ID
 	case d.base == "":
-		return machine.Instance{}, fmt.Errorf("docker: a fresh root needs a base image, which is the driver's configuration: set %s to one, such as debian:trixie: %w", BaseEnv, machine.ErrUnsupported)
+		return machine.Instance{}, fmt.Errorf("docker: a fresh root needs a base image, which is the driver's configuration: set %s to one, such as debian:trixie: %w", machine.BaseEnv, machine.ErrUnsupported)
 	}
 	if old == nil {
 		return machine.Instance{}, fmt.Errorf("docker: VM %s: %w", inst.Name, machine.ErrNotFound)

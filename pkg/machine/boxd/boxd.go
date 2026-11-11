@@ -43,7 +43,12 @@ import (
 )
 
 func init() {
-	machine.Register("boxd", func(cfg machine.Config) (machine.Driver, error) { return New(cfg), nil }, APIKeyEnv, TokenEnv)
+	machine.Register("boxd", machine.Registration{
+		New:        func(cfg machine.Config) (machine.Driver, error) { return New(cfg) },
+		Definition: Definition(),
+		Validate:   Validate,
+		KeyEnv:     []string{APIKeyEnv, TokenEnv},
+	})
 }
 
 const (
@@ -66,15 +71,24 @@ type Driver struct {
 
 var _ machine.Driver = (*Driver)(nil)
 
-// New returns a driver for cfg's pool (machine.DefaultPool when empty)
-// that authenticates with the key cfg.Keys answers on each call. It dials
+// New returns a driver for cfg's pool (machine.DefaultPool when empty),
+// on the cluster its configuration (cfg.DriverConfig) names, that
+// authenticates with the key cfg.Keys answers on each call. It dials
 // nothing until it is used.
-func New(cfg machine.Config) *Driver {
+func New(cfg machine.Config) (*Driver, error) {
+	config, err := machine.Normalize("boxd", cfg.DriverConfig)
+	if err != nil {
+		return nil, err
+	}
+	conf, err := decode(config)
+	if err != nil {
+		return nil, err
+	}
 	pool := cfg.Pool
 	if pool == "" {
 		pool = machine.DefaultPool
 	}
-	return &Driver{api: newClient(cfg.Keys), pool: pool, base: cfg.Base}
+	return &Driver{api: newClient(conf, cfg.Keys), pool: pool, base: cfg.Base}, nil
 }
 
 func (*Driver) Name() string { return "boxd" }

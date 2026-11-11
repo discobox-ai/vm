@@ -155,7 +155,7 @@ guests share it.
 | `Commit` | refuse a running container; empty its `/etc/machine-id`, so every VM created from it makes its own, `docker commit` it as `disco-vm-vm:<pool>--<name>`, then remove the container and its directories as `Destroy` does. `docker commit` never holds a bind mount. |
 | `Destroy` | of a VM: its directories, then `docker rm -f` of its container and an upgrade's new one, then the named volumes of a VM from before ADR 26-11-03-782, found by their labels (one a later VM of the name mounts is left), then the image the container ran if no tag names it any more, then the `disco-vm-base:<pool>--<name>--*` tag of the image the container ran, and every other one of the name older than 30 minutes that no container runs: what a Destroy that failed partway or a create that lost a race left, and never a create of the name still readying (no name has `--`, so another name's are never matched). Of a committed VM: a container a failed commit left, then its tag, removed with `force`, which the daemon turns into an untag where a container runs the image: a VM created from it stands alone, and its own `Destroy` removes the untagged image. |
 
-The driver talks to the Docker Engine API over `DOCKER_HOST` itself, not
+The driver talks to the Docker Engine API over its `host` itself, not
 through the docker CLI or SDK, as boxd's does. A caller that embeds it can
 give it another daemon connection (`docker.NewWithDaemon`); `docker.GuestDaemon`
 reaches a daemon inside a running guest through that guest's agent, each
@@ -188,17 +188,30 @@ export DISCO_VM_BASE=debian:trixie
 From a host whose daemon is elsewhere, the agent must be built for the
 daemon's OS and CPU, static:
 `CGO_ENABLED=0 GOOS=linux go build -o disco-vm-linux ./cmd/disco-vm`, and
-`DISCO_VM_AGENT=./disco-vm-linux`. Create checks only the CPU, so a binary
+`DISCO_VM_AGENT=$PWD/disco-vm-linux` (an absolute path). Create checks only the CPU, so a binary
 linked against a libc the base lacks fails at create, where the readying
 script runs it to shift the image's owners (exit 127), before any guest
 boots.
 
 ## Configuration
 
+The driver's own fields (`docker.Config`, ADR 26-11-11-215) are flags,
+environment variables, or `--driver-config` keys; `disco-vm --help=docker`
+lists them. The driver reads none of the variables itself: the command line
+does, and an embedder sets `machine.Config.DriverConfig`. `New` refuses a
+`host` that is not `unix://` or `tcp://`, and a `root` or an `agent` that is
+not absolute; the agent is checked a regular ELF file before it is read.
+All three are privileged: they choose the daemon, host directories guests
+mount, and what runs as root in a guest.
+
+| key | flag | env | default | |
+|---|---|---|---|---|
+| `host` | `--docker-host` | `DOCKER_HOST` | `unix:///var/run/docker.sock` | `unix://` or `tcp://` without TLS. Docker contexts, `ssh://`, and TLS are not read. |
+| `root` | `--docker-root` | `DISCO_VM_DOCKER_ROOT` | `/var/lib/discobox` | where volumes and caches are kept on the daemon's host |
+| `agent` | `--docker-agent` | `DISCO_VM_AGENT` | this binary, on linux | the absolute path of the static linux disco-vm, for the daemon's CPU, that Create puts in the base |
+
 | env | default | |
 |---|---|---|
-| `DOCKER_HOST` | `unix:///var/run/docker.sock` | `unix://` or `tcp://` without TLS. Docker contexts, `ssh://`, and TLS are not read. |
-| `DISCO_VM_AGENT` | this binary, on linux | the static linux disco-vm, for the daemon's CPU, that Create puts in the base |
 | `DISCO_VM_BASE` | none | the base, an image reference such as `debian:trixie` (`machine.Config.Base`); with none, a fresh VM is refused |
 
 `Check` refuses a daemon on cgroup v1, one that runs Windows containers, and a

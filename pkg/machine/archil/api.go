@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -19,13 +18,6 @@ import (
 const (
 	// APIKeyEnv is the key the command line calls Archil with.
 	APIKeyEnv = "ARCHIL_API_KEY" //nolint:gosec // G101: an environment variable's name, not a credential
-	// RegionEnv names the region the driver calls: its control plane, its
-	// sandboxes, and its disks. Empty is DefaultRegion.
-	RegionEnv = "ARCHIL_REGION"
-	// BaseURLEnv overrides the region's control plane, for a test.
-	BaseURLEnv = "ARCHIL_BASE_URL"
-	// DefaultRegion is where the driver calls when RegionEnv is unset.
-	DefaultRegion = "aws-us-east-1"
 )
 
 // controlPlanes are the regions that run sandboxes, from Archil's OpenAPI
@@ -48,16 +40,12 @@ type api struct {
 	http   *http.Client
 }
 
-func newAPI(keys machine.KeySource) *api {
-	region := os.Getenv(RegionEnv)
-	if region == "" {
-		region = DefaultRegion
-	}
-	base := os.Getenv(BaseURLEnv)
+func newAPI(cfg Config, keys machine.KeySource) *api {
+	base := cfg.BaseURL
 	if base == "" {
-		base = controlPlanes[region]
+		base = controlPlanes[cfg.Region]
 	}
-	return &api{base: strings.TrimRight(base, "/"), region: region, keys: keys, http: &http.Client{Timeout: 5 * time.Minute}}
+	return &api{base: strings.TrimRight(base, "/"), region: cfg.Region, keys: keys, http: &http.Client{Timeout: 5 * time.Minute}}
 }
 
 // apiError is an error Archil answered with.

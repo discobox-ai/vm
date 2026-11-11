@@ -1,6 +1,7 @@
 package fake_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,15 +48,19 @@ func TestConformance(t *testing.T) {
 		t.Run(from.name, func(t *testing.T) {
 			dir := t.TempDir()
 			hv := &fake.Hypervisor{Agent: agent, BaseName: "stock", NoCommit: from.noCommit}
+			// The shim is given the configuration its starter has (ADR
+			// 26-11-11-215 §6).
+			config := "{}"
 			if from.maxRunning > 0 {
-				t.Setenv(fake.MaxRunningEnv, strconv.Itoa(from.maxRunning))
+				config = `{"maxRunning":` + strconv.Itoa(from.maxRunning) + `}`
 				hv.MaxRunning = map[machine.OS]int{machine.OS(runtime.GOOS): from.maxRunning}
 			}
 			newDriver := func(keys machine.KeySource) machine.Driver {
 				driver, err := local.New(machine.Config{
-					Dir:         dir,
-					ShimCommand: []string{agent, "--root", dir, "--driver", "fake", "shim"},
-					Keys:        keys,
+					Dir:          dir,
+					ShimCommand:  []string{agent, "--root", dir, "--driver", "fake", "--driver-config", config, "shim"},
+					Keys:         keys,
+					DriverConfig: json.RawMessage(config),
 				}, hv)
 				if err != nil {
 					t.Fatal(err)

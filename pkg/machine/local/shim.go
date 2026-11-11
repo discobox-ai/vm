@@ -32,6 +32,9 @@ const (
 	// written before the shim exits and removed by the Start that spawns
 	// the next one.
 	shimRefusedName = "shim.refused"
+	// shimConfigName is the driver configuration a shim is started with
+	// (writeShimConfig), readable by its owner alone.
+	shimConfigName = "driver-config.json"
 	// maxSocketPath is the longest path a Unix socket may have on every host
 	// a shim runs on: macOS's sun_path holds 104 bytes, Linux's 108.
 	maxSocketPath = 103
@@ -100,6 +103,9 @@ func listenControl(ctx context.Context, dir string) (net.Listener, string, func(
 func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 	rec, err := d.readPool(id)
 	if err != nil {
+		return err
+	}
+	if err := d.checkShimConfig(id); err != nil {
 		return err
 	}
 	inst := rec.Instance
@@ -456,8 +462,10 @@ func ShimMain(ctx context.Context, driver machine.Driver, args []string) error {
 }
 
 // shimCommand is how a shim is started: the configured command, or this
-// executable's `shim` subcommand for the same driver, pool, and directory.
-func (d *Driver) shimCommand() ([]string, error) {
+// executable's `shim` subcommand for the same driver, pool, and directory,
+// given the driver's configuration in the file config names, never on its
+// command line (ADR 26-11-11-215 §6).
+func (d *Driver) shimCommand(config string) ([]string, error) {
 	if len(d.shim) > 0 {
 		return d.shim, nil
 	}
@@ -465,14 +473,57 @@ func (d *Driver) shimCommand() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []string{exe, "--root", d.dir, "--driver", d.hv.Name(), "--pool", d.pool, "shim"}, nil
+	return []string{exe, "--root", d.dir, "--driver", d.hv.Name(), "--pool", d.pool, "--driver-config", "@" + config, "shim"}, nil
+}
+
+// writeShimConfig writes the driver's configuration to the instance's
+// directory, readable by its owner alone, for the shim Start spawns: a shim
+// of this executable is started with it, and any shim is refused a driver
+// whose configuration is not it (checkShimConfig).
+func (d *Driver) writeShimConfig(dir string) (string, error) {
+	config, err := machine.CanonicalConfig(d.config)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, shimConfigName)
+	_ = os.Remove(path)
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// checkShimConfig refuses to run a shim with a driver whose configuration
+// is not the one Start wrote for the instance: an embedder's shim made from
+// another, or one that read its own environment. A shim run by hand, of an
+// instance no Start wrote one for, has no starter to agree with.
+func (d *Driver) checkShimConfig(id string) error {
+	data, err := os.ReadFile(filepath.Join(d.instanceDir(id), shimConfigName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("shim: the configuration the instance was started with: %w", err)
+	}
+	want, err := machine.CanonicalConfig(data)
+	if err != nil {
+		return fmt.Errorf("shim: the configuration the instance was started with: %w", err)
+	}
+	got, err := machine.CanonicalConfig(d.config)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("shim: the %s driver's configuration is not the one instance %s was started with", d.hv.Name(), id)
+	}
+	return nil
 }
 
 // spawnShim starts a shim with args, detached from this process, so the VM
 // outlives the command that started it. The returned channel yields once,
 // when the shim exits.
-func (d *Driver) spawnShim(args []string, log *os.File) (<-chan error, error) {
-	argv, err := d.shimCommand()
+func (d *Driver) spawnShim(config string, args []string, log *os.File) (<-chan error, error) {
+	argv, err := d.shimCommand(config)
 	if err != nil {
 		return nil, err
 	}
@@ -525,11 +576,15 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 		return nil, err
 	}
 	defer logFile.Close()
+	config, err := d.writeShimConfig(dir)
+	if err != nil {
+		return nil, err
+	}
 	args := []string{inst.ID}
 	if opts.GUI {
 		args = []string{"--gui", inst.ID}
 	}
-	exited, err := d.spawnShim(args, logFile)
+	exited, err := d.spawnShim(config, args, logFile)
 	if err != nil {
 		return nil, err
 	}

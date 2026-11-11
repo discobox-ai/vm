@@ -11,24 +11,17 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// HostEnv names the Docker daemon, as the docker CLI reads it:
-// unix:///var/run/docker.sock (the default) or tcp://HOST:PORT without TLS.
-const HostEnv = "DOCKER_HOST"
-
-const defaultHost = "unix:///var/run/docker.sock"
-
 // Daemon is a connection to a Docker daemon's Engine API: how a driver
 // reaches it, made explicit so that a daemon with no socket on this host (one
 // in a guest, reached through its agent) is driven like a local one.
 type Daemon struct {
-	// Name says which daemon this is, in errors: DOCKER_HOST's value, or the
+	// Name says which daemon this is, in errors: the configured host, or the
 	// guest address GuestDaemon relays to.
 	Name string
 	// Dial opens one connection to the daemon; ctx bounds opening it, not
@@ -43,15 +36,11 @@ type Daemon struct {
 	KeepIdle bool
 }
 
-// EnvDaemon is the daemon $DOCKER_HOST names, as the docker CLI reads it:
-// unix:///var/run/docker.sock (the default) or tcp://HOST:PORT without TLS.
-// It reads the environment now and dials nothing until a request; another
-// scheme fails each dial.
-func EnvDaemon() Daemon {
-	host := os.Getenv(HostEnv)
-	if host == "" {
-		host = defaultHost
-	}
+// HostDaemon is the daemon a host names, as the docker CLI reads one:
+// unix:///var/run/docker.sock or tcp://HOST:PORT without TLS (Config.Host,
+// which decode checks). It dials nothing until a request; another scheme
+// fails each dial.
+func HostDaemon(host string) Daemon {
 	var network, addr string
 	switch {
 	case strings.HasPrefix(host, "unix://"):
@@ -63,7 +52,7 @@ func EnvDaemon() Daemon {
 		Name: host,
 		Dial: func(ctx context.Context) (net.Conn, error) {
 			if network == "" {
-				return nil, fmt.Errorf("docker: %s=%q: only unix:// and tcp:// (without TLS) are supported", HostEnv, host)
+				return nil, errors.New("docker: host: only unix:// and tcp:// (without TLS) are supported")
 			}
 			var d net.Dialer
 			return d.DialContext(ctx, network, addr)
