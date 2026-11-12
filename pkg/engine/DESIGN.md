@@ -79,7 +79,9 @@ on hcs, vz, libkrun, and fake. It is no
 URL and needs the owner's access to the driver's directory; boxd and docker
 refuse it. Where vz and hcs give no private URL, a guest reaches a peer's
 port through a `Forward` to that instance instead
-([pkg/machine](../machine/DESIGN.md#ports-not-guids)).
+([pkg/machine](../machine/DESIGN.md#ports-not-guids)). Forwards are the
+embedder's, set on the `Engine` ([below](#a-pool-scopes-everything-and-is-in-every-name)),
+and every VM `Create` makes carries them.
 
 ## There are only VMs, and a VM is made fresh or from a committed VM
 
@@ -163,6 +165,32 @@ what is younger than a grace period. A driver's own short-lived resources are li
 VMs while they run (docker's `base-<random>` readying container), and a
 readying takes minutes, so the grace period
 is longer than that.
+
+**Only the embedder reaches across pools** (discobox's ADR 26-11-11-963
+§§3, 5, 9). The program that embeds the engine sets two fields on each
+`Engine` it opens, and no `CreateOptions` or `UpgradeOptions` carries
+either, so a request a pool makes sets neither, and every name it gives is
+its pool's. A pool's engine on a served driver's client is the pool's own,
+so the embedder sets both in the served `Options.Create` hook instead,
+which the server refuses to take from the client: on a create, since
+served has no upgrade hook yet, and an upgrade there with no `From` is to
+the driver's base ([pkg/machine/served](../machine/served/DESIGN.md)):
+
+- `Engine.Forwards`, served on every VM `Create` makes: discobox's one
+  forward from a sandbox to its pool machine's service port, whose
+  `Forward.Pool` names the provider's scope. The engine takes a peer's
+  agent port too, as it does within a pool, and that is exec and copy in
+  the peer: a forward from a VM running code its embedder does not trust
+  goes to the service port alone, which is the embedder's to hold to.
+- `Engine.From`, a committed VM the embedder found with an engine on its
+  pool, which may be another: what a VM created with no `From`, or upgraded
+  with none, is a copy of, in place of the driver's base; discobox's darwin
+  base VM, in a scope of its own.
+
+Another pool needs a driver that lists `Capabilities.AcrossPools`; the
+engine refuses it before the driver is asked, with `ErrUnsupported`, as it
+refuses a forward on a driver without `Ports` and a `From` on one without
+`Commit` ([pkg/machine](../machine/DESIGN.md#a-vm-reaches-another-pool-only-as-its-embedder-says)).
 
 The project-to-pool cutover (ADR 26-11-04-412) removes `--project` and
 `DISCO_VM_PROJECT`, along with the old Go names. No state migration is

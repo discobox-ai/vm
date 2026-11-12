@@ -783,9 +783,10 @@ func short(id string) string {
 	return id
 }
 
-// checkForwards refuses forwards of the VM name that make no sense: each
-// goes to exactly one of an absolute host socket, or another instance of the
-// pool and its agent's or service's port, and no port is forwarded twice.
+// checkForwards refuses forwards of the VM name, in pool, that make no
+// sense: each goes to exactly one of an absolute host socket, or another
+// instance, of pool or of the valid pool it names, and its agent's or
+// service's port, and no port is forwarded twice.
 // The engine checks the same before it asks, but a driver may be called
 // without one (a served driver's server, pkg/machine/served), so it refuses
 // them itself.

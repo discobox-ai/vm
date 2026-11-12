@@ -175,8 +175,12 @@ type driverInfo struct {
 // createRequest is POST /v1/vms. Each field but Name is a Field, and a
 // field the server does not know is refused.
 type createRequest struct {
-	Name     string              `json:"name"`
-	From     string              `json:"from,omitempty"`
+	Name string `json:"name"`
+	From string `json:"from,omitempty"`
+	// FromPool is the pool the client's From is in, as it found it: the
+	// server refuses one that is not its own, since another pool's VM is
+	// never served, and it finds From by name in its own.
+	FromPool string              `json:"fromPool,omitempty"`
 	CPUs     int                 `json:"cpus,omitempty"`
 	Memory   uint64              `json:"memory,omitempty"`
 	Forwards []machine.Forward   `json:"forwards,omitempty"`
@@ -194,7 +198,7 @@ func (r createRequest) set() []Field {
 			set = append(set, f)
 		}
 	}
-	add(FieldFrom, r.From != "")
+	add(FieldFrom, r.From != "" || r.FromPool != "")
 	add(FieldCPUs, r.CPUs != 0)
 	add(FieldMemory, r.Memory != 0)
 	add(FieldForwards, len(r.Forwards) > 0)
@@ -210,6 +214,8 @@ type upgradeRequest struct {
 	// From names the committed VM the new root is a copy of; empty is a
 	// fresh root.
 	From string `json:"from,omitempty"`
+	// FromPool is the pool From is in, as createRequest's.
+	FromPool string `json:"fromPool,omitempty"`
 }
 
 // stateResponse is GET /v1/vms/{name}/state.

@@ -85,3 +85,14 @@
   VM that can only be destroyed loses the data volume the upgrade exists to
   keep. (ADR
   26-11-03-782.)
+- **What a pool asks of its engine never reaches another pool.**
+  `CreateOptions` and `UpgradeOptions` take no forward, pool, or
+  `Instance`, and a served driver's server refuses a forward that names a
+  pool and a `From` of another (`pkg/machine/served`): another pool is the
+  embedder's to name, on the `Engine` (`Forwards`, `From`) or in its
+  served `Options.Create` hook (discobox's ADR 26-11-11-963 §3). A field
+  that carries one passes every test of the embedder and lets a pool exec
+  in another's VM through a peer forward
+  (`TestAPoolsRequestNamesNoForwardAndNoPool`,
+  `TestOnlyTheHookReachesAnotherPool`). The served protocol decodes
+  `machine.Forward` whole, so a field added to it is a field a pool sends.

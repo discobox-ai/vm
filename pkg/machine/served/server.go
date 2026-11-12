@@ -121,6 +121,17 @@ func (s *server) vm(op Op, h func(http.ResponseWriter, *http.Request, machine.In
 	})
 }
 
+// notAnother refuses a From the client found in a pool other than the
+// one the server found its name in: another pool's VM is never served
+// (Capabilities.AcrossPools is never reported), and the pool's own VM of
+// the name is not the one the client meant.
+func notAnother(found machine.Instance, pool string) error {
+	if pool != "" && pool != found.Pool {
+		return fmt.Errorf("committed VM %s of pool %s: another pool's VM is never served: %w", found.Name, pool, machine.ErrUnsupported)
+	}
+	return nil
+}
+
 // find is the pool's VM of a name.
 func (s *server) find(ctx context.Context, name string) (machine.Instance, error) {
 	if err := machine.ValidateName(name); err != nil {
@@ -195,12 +206,18 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	// A host socket is never served: only the embedder's hook may set one.
-	// The engine refuses the rest of a malformed forward on the client,
-	// which is the caller's, and the driver refuses it again here.
+	// A host socket (ErrRefused) and a forward that names a pool
+	// (ErrUnsupported: AcrossPools is never reported) are never served:
+	// only the embedder's hook may set either. The engine refuses
+	// the rest of a malformed forward on the client, which is the caller's,
+	// and the driver refuses it again here.
 	for _, f := range req.Forwards {
-		if !f.Peer() {
+		switch {
+		case !f.Peer():
 			writeError(w, fmt.Errorf("create: port %d: a forward to a host socket: %w", f.Port, ErrRefused))
+			return
+		case f.Pool != "":
+			writeError(w, fmt.Errorf("create: port %d: a forward that names a pool: another pool's instance is never served: %w", f.Port, machine.ErrUnsupported))
 			return
 		}
 	}
@@ -210,11 +227,17 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.From != "" {
 		from, err := s.find(r.Context(), req.From)
+		if err == nil {
+			err = notAnother(from, req.FromPool)
+		}
 		if err != nil {
 			writeError(w, err)
 			return
 		}
 		spec.From = &from
+	} else if req.FromPool != "" {
+		writeError(w, fmt.Errorf("create: a pool with no From: %w", ErrRefused))
+		return
 	}
 	if s.opts.Create != nil {
 		if err := s.opts.Create(r.Context(), &spec); err != nil {
@@ -295,12 +318,19 @@ func (s *server) upgrade(w http.ResponseWriter, r *http.Request, inst machine.In
 		return
 	}
 	var from *machine.Instance
+	if req.From == "" && req.FromPool != "" {
+		writeError(w, fmt.Errorf("upgrade: a pool with no From: %w", ErrRefused))
+		return
+	}
 	if req.From != "" {
 		if !s.field(FieldFrom) {
 			writeError(w, fmt.Errorf("upgrade: field %s: %w", FieldFrom, ErrRefused))
 			return
 		}
 		src, err := s.find(r.Context(), req.From)
+		if err == nil {
+			err = notAnother(src, req.FromPool)
+		}
 		switch {
 		case errors.Is(err, machine.ErrNotFound) && machine.ValidateName(req.From) == nil:
 			// An upgrade caught between its roots finishes without the
