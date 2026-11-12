@@ -18,7 +18,11 @@ import (
 // start before upgrading, and a Client sees that as Exec's error.
 func Relay(g machine.Guest) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := g.Info(r.Context()); err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, r *http.Request) {

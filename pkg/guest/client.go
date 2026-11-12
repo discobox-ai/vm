@@ -58,7 +58,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("guest: %s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(msg)))
+		return nil, responseError(resp, fmt.Sprintf("guest: %s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(msg))))
 	}
 	return resp, nil
 }
@@ -195,7 +195,7 @@ func (c *Client) Exec(ctx context.Context, req machine.ExecRequest) (machine.Pro
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = conn.Close()
-		return nil, fmt.Errorf("guest: exec: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		return nil, responseError(resp, fmt.Sprintf("guest: exec: %s: %s", resp.Status, strings.TrimSpace(string(msg))))
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return &process{conn: conn, in: in}, nil

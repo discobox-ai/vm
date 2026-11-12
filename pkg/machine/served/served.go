@@ -52,7 +52,6 @@ package served
 import (
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/discobox-ai/vm/pkg/machine"
 )
@@ -249,16 +248,6 @@ var sentinels = []struct {
 }{
 	{"refused", ErrRefused},
 	{"version", ErrVersion},
-	{"not-found", machine.ErrNotFound},
-	{"exists", machine.ErrExists},
-	{"in-use", machine.ErrInUse},
-	{"committed", machine.ErrCommitted},
-	{"capacity", machine.ErrCapacity},
-	{"not-running", machine.ErrNotRunning},
-	{"stale", machine.ErrStale},
-	{"unsupported", machine.ErrUnsupported},
-	{"not-implemented", machine.ErrNotImplemented},
-	{"no-key", machine.ErrNoKey},
 }
 
 // codeOf is the code of the first sentinel err wraps, or "".
@@ -268,21 +257,17 @@ func codeOf(err error) string {
 			return s.code
 		}
 	}
-	return ""
+	return machine.ErrorCode(err)
 }
 
 // sentinelOf is the sentinel of a code, or nil.
 func sentinelOf(code string) error {
-	i := slices.IndexFunc(sentinels, func(s struct {
-		code string
-		err  error
-	}) bool {
-		return s.code == code
-	})
-	if i < 0 {
-		return nil
+	for _, s := range sentinels {
+		if s.code == code {
+			return s.err
+		}
 	}
-	return sentinels[i].err
+	return machine.ErrorSentinel(code)
 }
 
 // remoteError is the server's error on the client: its message, wrapping

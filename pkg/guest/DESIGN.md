@@ -17,6 +17,15 @@ protocol from its machine (`guest.Relay`) to other processes:
 | `GET`/`PUT /v1/files` | tar out of and into the guest |
 | `POST /v1/shutdown` | orderly power-off or reboot |
 
+Errors before response headers carry a machine sentinel's code in
+`Disco-Vm-Error-Code`, shared with served's JSON through `machine.ErrorCode`
+and `ErrorSentinel`. The client preserves the message and wraps the named
+sentinel for ordinary requests and exec refusals before upgrade. Missing or
+unknown codes remain message-only errors; older clients ignore the header,
+so `Protocol` stays unchanged. Errors after streaming starts remain stream
+errors. Relay health calls the machine's `Info`, so an unreachable or stale
+machine does not read as healthy.
+
 The guest, not the hypervisor, powers itself off: the agent where there is
 one, systemd on boxd. A vz stop request reaches macOS as a power-button press,
 and macOS answers it by sleeping. HCS has no graceful path for a stock Windows
