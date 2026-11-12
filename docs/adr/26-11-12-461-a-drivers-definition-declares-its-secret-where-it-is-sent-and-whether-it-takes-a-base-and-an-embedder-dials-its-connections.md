@@ -1,10 +1,12 @@
 # 26-11-12-461 — A driver's definition declares its secret, where it is sent, and whether it takes a base, and an embedder dials its connections
 
-- **Status**: Proposed (supersedes in part 26-11-11-215: §7, that a
+- **Status**: Accepted (supersedes in part 26-11-11-215: §7, that a
   definition has no type for a secret; §2, `Registration.KeyEnv`; §1, that
   every definition describes a base; and §4, that a process-wide proxy
   variable stays where it is read, for a driver given an embedder's dialer)
 - **Date**: 2026-11-12
+
+Accepted by the owner by merging #88, 2026-11-12.
 
 ## Context
 
