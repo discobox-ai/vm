@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -274,7 +275,7 @@ func TestPullRuntime(t *testing.T) {
 	ctx := context.Background()
 	cache := t.TempDir()
 	ref := pushRuntime(t, fakeRuntime(t, launchVersion, ""), runtime.GOARCH)
-	dir, err := pullRuntime(ctx, cache, ref)
+	dir, err := pullRuntime(ctx, http.DefaultTransport, cache, ref)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,17 +285,17 @@ func TestPullRuntime(t *testing.T) {
 	if got, ok := cachedRuntimeOf(cache, ref); !ok || got != dir {
 		t.Fatalf("the cache does not find the pull: %s, %v", got, ok)
 	}
-	if again, err := pullRuntime(ctx, cache, ref); err != nil || again != dir {
+	if again, err := pullRuntime(ctx, http.DefaultTransport, cache, ref); err != nil || again != dir {
 		t.Fatalf("a second pull: %s, %v", again, err)
 	}
 	other := map[string]string{"amd64": "arm64", "arm64": "amd64"}[runtime.GOARCH]
-	if _, err := pullRuntime(ctx, t.TempDir(), pushRuntime(t, fakeRuntime(t, launchVersion, ""), other)); err == nil || !strings.Contains(err.Error(), "is for linux/"+other) {
+	if _, err := pullRuntime(ctx, http.DefaultTransport, t.TempDir(), pushRuntime(t, fakeRuntime(t, launchVersion, ""), other)); err == nil || !strings.Contains(err.Error(), "is for linux/"+other) {
 		t.Fatalf("a runtime for linux/%s: %v", other, err)
 	}
 	broken := fakeRuntime(t, launchVersion, "")
 	broken[launcherName] = "#!/bin/sh\nexit 1\n"
 	empty := t.TempDir()
-	if _, err := pullRuntime(ctx, empty, pushRuntime(t, broken, runtime.GOARCH)); err == nil || !strings.Contains(err.Error(), "does not run") {
+	if _, err := pullRuntime(ctx, http.DefaultTransport, empty, pushRuntime(t, broken, runtime.GOARCH)); err == nil || !strings.Contains(err.Error(), "does not run") {
 		t.Fatalf("a runtime whose launcher does not run: %v", err)
 	}
 	if entries, _ := os.ReadDir(filepath.Join(empty, "runtime")); len(entries) != 0 {
@@ -341,7 +342,7 @@ func TestPrepareCommitBoot(t *testing.T) {
 	usableKVM(t)
 	ctx := context.Background()
 	rt := writeRuntime(t, fakeRuntime(t, launchVersion, "echo 'krun-launch: krun_start_enter: Operation not permitted' >&2; exit 1"))
-	h := &Hypervisor{base: guestDir(t), runtimeDir: rt}
+	h := newHypervisor(machine.Config{Base: guestDir(t)}, Config{Runtime: rt})
 	root := t.TempDir()
 	fresh := local.InstanceSpec{ID: "a", Dir: filepath.Join(root, "a"), GuestOS: machine.Linux, CacheDir: filepath.Join(root, "cache")}
 	agentForward := fresh

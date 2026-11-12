@@ -220,13 +220,16 @@ type Config struct {
 	// Dial opens every connection the driver makes to its provider's
 	// service, and is given the service's own address: boxd's API and
 	// token exchange, Archil's API and process API, a Docker daemon at its
-	// host (unix or tcp). Set, the driver reads no proxy variable
-	// (HTTPS_PROXY, boxd's ALL_PROXY): an embedder that checks where a
-	// driver connects, as it connects, proxies within its dialer if it
-	// proxies at all. Nil is the process's own way, proxy variables and
-	// all. A download a local driver makes of its base or runtime from a
-	// registry is not a service connection and does not go through it, and
-	// a shim is never given it.
+	// host (unix or tcp), and the registry a local driver pulls its base or
+	// runtime from (vz's and libkrun's). Set, the driver reads no proxy
+	// variable (HTTPS_PROXY, boxd's ALL_PROXY): an embedder that checks
+	// where a driver connects, as it connects, proxies within its dialer if
+	// it proxies at all. Nil is the process's own way, proxy variables and
+	// all. A shim is never given it, so libkrun's pull of a runtime removed
+	// from the cache behind the driver's back, which a boot makes, dials
+	// the process's own way. vz's download of macOS media (install's
+	// "latest") does not go through it yet: the vz library fetches it with
+	// http.DefaultClient.
 	Dial DialFunc
 }
 

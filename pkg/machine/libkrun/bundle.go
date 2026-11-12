@@ -216,7 +216,7 @@ func (h *Hypervisor) Prepare(ctx context.Context, inst local.InstanceSpec) error
 	if err != nil {
 		return err
 	}
-	from, err := base.Artifacts(ctx, inst.CacheDir, runtime.GOARCH)
+	from, err := base.Artifacts(ctx, h.transport, inst.CacheDir, runtime.GOARCH)
 	if err != nil {
 		return fmt.Errorf("libkrun: %w", err)
 	}

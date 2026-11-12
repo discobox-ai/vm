@@ -3,6 +3,7 @@ package vz
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/discobox-ai/vm/pkg/guest"
@@ -20,7 +21,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			return local.New(cfg, &Hypervisor{base: cfg.Base, agent: conf.Agent})
+			return local.New(cfg, newHypervisor(cfg, conf))
 		},
 		Definition: Definition(),
 		Validate:   Validate,
@@ -39,6 +40,16 @@ type Hypervisor struct {
 	// agent is the disco-vm built for linux that a Linux guest's boot hands
 	// it (Config.Agent).
 	agent string
+	// transport calls a registry for the Linux base
+	// (machine.Config.HTTPTransport): through an embedder's dialer, where
+	// one is set.
+	transport http.RoundTripper
+}
+
+// newHypervisor is the Hypervisor cfg and its decoded driver configuration
+// describe.
+func newHypervisor(cfg machine.Config, conf Config) *Hypervisor {
+	return &Hypervisor{base: cfg.Base, agent: conf.Agent, transport: cfg.HTTPTransport()}
 }
 
 var _ local.Hypervisor = (*Hypervisor)(nil)

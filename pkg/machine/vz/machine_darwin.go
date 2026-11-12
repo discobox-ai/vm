@@ -52,7 +52,7 @@ func (h *Hypervisor) Prepare(ctx context.Context, inst local.InstanceSpec) error
 		if err != nil {
 			return err
 		}
-		return prepareLinux(ctx, inst, base)
+		return prepareLinux(ctx, h.transport, inst, base)
 	}
 	src, dst := bundle(inst.Parent().Dir), bundle(inst.Dir)
 	m, err := src.readMeta()

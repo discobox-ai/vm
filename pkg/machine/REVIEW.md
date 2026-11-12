@@ -41,6 +41,13 @@
   no proxy variable; never a bare `net.Dialer` or `http.DefaultClient`
   regardless of it. A review found a driver that dialed through it for gRPC
   and through `HTTPS_PROXY` for its token exchange.
+- **A local driver's `Hypervisor` is made by its `newHypervisor`**, from
+  `machine.Config` and the decoded configuration, in `New` and in every
+  test. A field `New` sets from the config (the registry transport) and a
+  test's literal leaves unset passes CI, which skips the hardware suites,
+  and fails only in `task test:libkrun` or on a Mac: go-containerregistry
+  panics on a nil transport. A review found both drivers' conformance
+  tests building literals without it.
 - **A secret is never configuration and never read back**: no field holds
   one, and nothing printed, logged, returned, or written carries its value.
 - **A field is never removed or renamed**: it is `Retired`, with

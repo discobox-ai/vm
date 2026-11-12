@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -114,8 +115,9 @@ func (i Image) String() string {
 
 // Artifacts is the directory holding the image's artifacts: its own, or the
 // cache's copy of its image for linux/arch, pulled into cacheDir once per
-// manifest digest.
-func (i Image) Artifacts(ctx context.Context, cacheDir, arch string) (string, error) {
+// manifest digest. A pull calls the registry through transport: the driver's
+// machine.Config.HTTPTransport, so it dials through an embedder's dialer.
+func (i Image) Artifacts(ctx context.Context, transport http.RoundTripper, cacheDir, arch string) (string, error) {
 	if i.dir != "" {
 		return i.dir, complete(i.dir, i.need)
 	}
@@ -123,7 +125,7 @@ func (i Image) Artifacts(ctx context.Context, cacheDir, arch string) (string, er
 	if ref == "" {
 		ref = DefaultBase
 	}
-	return Pull(ctx, cacheDir, ref, arch, i.need...)
+	return Pull(ctx, transport, cacheDir, ref, arch, i.need...)
 }
 
 // source is a cached guest image's source.json: the reference it was pulled
@@ -197,8 +199,9 @@ func complete(dir string, need []string) error {
 // newest pull of it is used when the registry cannot be reached. An image
 // whose platform is not linux/arch, or that lacks an artifact of need, is
 // refused, naming the image: a bad release reported where it can be acted
-// on, not as a VM that never answers.
-func Pull(ctx context.Context, cacheDir, ref, arch string, need ...string) (string, error) {
+// on, not as a VM that never answers. The registry is called through
+// transport.
+func Pull(ctx context.Context, transport http.RoundTripper, cacheDir, ref, arch string, need ...string) (string, error) {
 	r, err := name.ParseReference(ref)
 	if err != nil {
 		return "", fmt.Errorf("guest image %q: %w", ref, err)
@@ -209,7 +212,7 @@ func Pull(ctx context.Context, cacheDir, ref, arch string, need ...string) (stri
 		}
 	}
 	platform := v1.Platform{OS: "linux", Architecture: arch}
-	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithPlatform(platform), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithTransport(transport), remote.WithPlatform(platform), remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
 		if dir, ok := cached(cacheDir, ref, need); ok {
 			return dir, nil
