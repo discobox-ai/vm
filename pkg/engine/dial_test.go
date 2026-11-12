@@ -49,28 +49,33 @@ func TestDial(t *testing.T) {
 	}
 }
 
-// A forward goes to exactly one of a host socket and a peer's agent or
-// service port, never to the instance itself; a fence the driver does not
-// hold is refused.
+// A forward the embedder sets goes to exactly one of a host socket and a
+// peer's agent or service port, of a valid pool, never to the instance
+// itself; a fence the driver does not hold is refused.
 func TestCreateRefuses(t *testing.T) {
 	ctx := context.Background()
 	e, _ := fakeEngine(t)
 	for _, c := range []struct {
-		name string
-		opts engine.CreateOptions
-		want string
+		name     string
+		vm       string
+		forwards []machine.Forward
+		want     string
 	}{
-		{"both", engine.CreateOptions{Forwards: []machine.Forward{{Port: 1, Socket: "/s", Instance: "peer", InstancePort: 2}}}, "both a socket and instance"},
-		{"no port", engine.CreateOptions{Forwards: []machine.Forward{{Port: 1, Instance: "peer"}}}, "with no port"},
-		{"bad name", engine.CreateOptions{Forwards: []machine.Forward{{Port: 1, Instance: "Peer!", InstancePort: 2}}}, "not an instance name"},
-		{"stray port", engine.CreateOptions{Forwards: []machine.Forward{{Port: 1, Socket: "/s", InstancePort: 2}}}, "port of no instance"},
-		{"itself", engine.CreateOptions{Name: "self", Forwards: []machine.Forward{{Port: 1, Instance: "self", InstancePort: guest.AgentPort}}}, "itself"},
-		{"another port", engine.CreateOptions{Forwards: []machine.Forward{{Port: 1, Instance: "peer", InstancePort: 22}}}, "agent's port (7300) or its service's (7302) alone"},
+		{"both", "", []machine.Forward{{Port: 1, Socket: "/s", Instance: "peer", InstancePort: 2}}, "both a socket and instance"},
+		{"no port", "", []machine.Forward{{Port: 1, Instance: "peer"}}, "with no port"},
+		{"bad name", "", []machine.Forward{{Port: 1, Instance: "Peer!", InstancePort: 2}}, "not an instance name"},
+		{"stray port", "", []machine.Forward{{Port: 1, Socket: "/s", InstancePort: 2}}, "port of no instance"},
+		{"stray pool", "", []machine.Forward{{Port: 1, Socket: "/s", Pool: "other"}}, "pool of no instance"},
+		{"bad pool", "", []machine.Forward{{Port: 1, Instance: "peer", InstancePort: guest.AgentPort, Pool: "Other!"}}, "pool"},
+		{"itself", "self", []machine.Forward{{Port: 1, Instance: "self", InstancePort: guest.AgentPort}}, "itself"},
+		{"another port", "", []machine.Forward{{Port: 1, Instance: "peer", InstancePort: 22}}, "agent's port (7300) or its service's (7302) alone"},
 	} {
-		if _, err := e.Create(ctx, withFrom(c.opts, "app")); err == nil || !strings.Contains(err.Error(), c.want) {
+		e.Forwards = c.forwards
+		if _, err := e.Create(ctx, engine.CreateOptions{From: "app", Name: c.vm}); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want an error saying %q", c.name, err, c.want)
 		}
 	}
+	e.Forwards = nil
 	if _, err := e.Create(ctx, engine.CreateOptions{From: "app", Egress: &machine.Egress{}}); !errors.Is(err, machine.ErrUnsupported) {
 		t.Errorf("a fence fake does not hold: %v, want ErrUnsupported", err)
 	}

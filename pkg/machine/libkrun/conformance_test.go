@@ -37,6 +37,13 @@ func TestConformance(t *testing.T) {
 		Timeout:    5 * time.Minute,
 		ScratchDir: "/var/tmp",
 		GuestAgent: "/run/disco-vm/disco-vm",
+		Pool: func(pool string) machine.Driver {
+			d, err := driver.InPool(pool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return d
+		},
 	})
 }
 

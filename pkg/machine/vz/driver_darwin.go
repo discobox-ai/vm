@@ -67,6 +67,7 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		SharedDirectories: true,
 		Display:           true,
 		Ports:             true,
+		AcrossPools:       true,
 		Agent:             true,
 		Install:           []machine.OS{machine.Darwin},
 		Commit:            true,

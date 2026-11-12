@@ -61,8 +61,8 @@ func TestEveryCallChecksTheKey(t *testing.T) {
 	}
 }
 
-// A key issued for one pool reaches no other's instance by its ID, and
-// an expired key's name is free again.
+// A key issued for one pool reaches no other's instance by its ID, nor
+// names another pool, and an expired key's name is free again.
 func TestAKeyIsItsPools(t *testing.T) {
 	ctx := t.Context()
 	root := t.TempDir()
@@ -100,8 +100,17 @@ func TestAKeyIsItsPools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := keyed.Create(ctx, machine.InstanceSpec{Name: "stolen", From: &installed}); !errors.Is(err, machine.ErrNotFound) {
-		t.Fatalf("a VM created from another pool's committed VM: %v, want ErrNotFound", err)
+	if _, err := keyed.Create(ctx, machine.InstanceSpec{Name: "stolen", From: &installed}); !errors.Is(err, machine.ErrUnauthorized) {
+		t.Fatalf("a VM created from another pool's committed VM: %v, want ErrUnauthorized", err)
+	}
+	// Its ID, said to be the key's pool's, is no VM of it.
+	forged := installed
+	forged.Pool = ""
+	if _, err := keyed.Create(ctx, machine.InstanceSpec{Name: "stolen", From: &forged}); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("a VM created from another pool's committed VM, its pool not named: %v, want ErrNotFound", err)
+	}
+	if _, err := keyed.Create(ctx, machine.InstanceSpec{Name: "stolen", Forwards: []machine.Forward{{Port: 7402, Pool: "other", Instance: "theirs", InstancePort: 7300}}}); !errors.Is(err, machine.ErrUnauthorized) {
+		t.Fatalf("a forward to another pool's instance: %v, want ErrUnauthorized", err)
 	}
 
 	// An unreadable record authorizes nothing and breaks nothing.

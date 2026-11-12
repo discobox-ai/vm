@@ -151,8 +151,10 @@ call: the key must be one it issued for the pool that has not expired or
 been revoked (its record removed). A name is issued once per pool while
 a key of it lives (`machine.ErrExists`); expired records go when the next key
 is issued. A method that takes an instance refuses one whose record is
-another pool's. Only the owner, the driver given no
-key, issues, lists, or revokes keys. A shim the driver starts runs as the
+another pool's, and `Create` and `Upgrade` refuse a `From` or a `Forward`
+of another pool to an issued key (`machine.ErrUnauthorized`): it is its
+pool's alone. Only the owner, the driver given no
+key, issues, lists, or revokes keys, or names another pool. A shim the driver starts runs as the
 owner, and neither a shim nor a fake guest is handed the variables a key is
 read from (`machine.WithoutKeys`). hcs, vz, and libkrun issue none (`machine.ErrNoKey`): whoever can read the
 directory owns it, and a key source is not asked.
@@ -164,7 +166,9 @@ HCS VM belongs to vmcompute, so `Start` spawns the shim command detached
 (setsid, or DETACHED_PROCESS): this executable's `shim` subcommand for the
 same root, driver, and pool, or `machine.Config.ShimCommand`, a
 subcommand of an embedder's own binary that makes the same driver and calls
-`ShimMain`. The shim boots the VM, holds it for its whole life, and exits when
+`ShimMain`. An embedder's command names no pool, so a shim runs the VM of
+any pool in its root, the pool its record names (`Driver.InPool`), for the
+owner alone: a driver given an issued key finds no VM of another pool. The shim boots the VM, holds it for its whole life, and exits when
 it stops. A shim is detached on purpose, and outlives whoever started it, an
 embedder's process included: a NIC-less guest's way to its peers must not
 depend on its caller (ADR 26-10-31-990). Once the machine answers it writes
@@ -186,7 +190,8 @@ It also serves the instance's URL on a loopback TCP port spliced into the
 machine's `Dial(service port)`, since ADR 0005 makes that an HTTP URL any
 process reaches; and the instance's forwards, each guest port accepted
 (`machine.HostListener`) and spliced into its Unix socket, or into its peer's
-guest port through the peer's shim's `/dial`.
+guest port through the peer's shim's `/dial`, the peer found by name at each
+connection in the forward's pool (`Forward.Pool`), its own by default.
 
 `Attach` reaches a running instance through its shim: its guest operations
 are the relay's, `Dial` is `/dial`, `Kill` is `/kill` (a shim from before

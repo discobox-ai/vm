@@ -109,10 +109,20 @@ type Capabilities struct {
 	// service, in three directions, all through the process that holds the
 	// machine: a caller dials the agent's port or the service's
 	// (Machine.Dial; guest.DialablePort), guest processes connect out to the
-	// host (Forwards to a Socket), and to another instance of the pool's
-	// agent or service port (Forwards to an Instance). Every port is known
-	// at boot (ADR 26-11-03-247).
+	// host (Forwards to a Socket), and to another instance's agent or
+	// service port (Forwards to an Instance), of the pool or, with
+	// AcrossPools, of another. Every port is known at boot (ADR
+	// 26-11-03-247).
 	Ports bool `json:"ports"`
+	// AcrossPools reports that the driver keeps every pool's VMs where each
+	// pool's driver reaches them (one root), so a VM is created from a
+	// committed VM of another pool (InstanceSpec.From with a Pool of its
+	// own) and forwards to an instance of another pool (Forward.Pool). Only
+	// the program that embeds the engine names another pool
+	// (engine.Engine.From and Forwards), never a pool's own request, and a
+	// driver called with a key it issued refuses it, since that key is one
+	// pool's. A driver without it refuses both with ErrUnsupported.
+	AcrossPools bool `json:"acrossPools"`
 	// Agent reports that the driver puts the disco-vm agent in the guest and
 	// reaches the guest's operations through it: Install bakes it in
 	// (InstallSpec.Agent) on hcs and vz, and docker adds it to its base
@@ -370,24 +380,33 @@ func ResourcePool(prefix, name string) string {
 // Forward sends the connections a guest process opens to the host on a port
 // (guest.DialHost: vsock to the host on vz, hvsocket on HCS) to a Unix socket
 // on the host, which something there serves, or to a guest port of another
-// instance of the pool. It is how a guest reaches a host service, or a
-// peer, without a TCP listener or a network device, as libkrun maps a vsock
-// port to a Unix socket. Exactly one of Socket and Instance is set.
+// instance, of the pool or, on a driver that lists Capabilities.AcrossPools,
+// of another pool. It is how a guest reaches a host service, or a peer,
+// without a TCP listener or a network device, as libkrun maps a vsock port
+// to a Unix socket. Exactly one of Socket and Instance is set.
 type Forward struct {
 	Port   uint32 `json:"port"`
 	Socket string `json:"socket,omitempty"`
-	// Instance names another instance of the pool, whose guest port
-	// InstancePort each connection is spliced into while both run. While
-	// the target is not running each connection is closed at once, so the
-	// guest connects and reads EOF. The target sees the connection come
-	// from the host, not from this instance.
+	// Instance names another instance, whose guest port InstancePort each
+	// connection is spliced into while both run. While the target is not
+	// running each connection is closed at once, so the guest connects and
+	// reads EOF. The target sees the connection come from the host, not
+	// from this instance.
 	Instance     string `json:"instance,omitempty"`
 	InstancePort uint32 `json:"instancePort,omitempty"`
+	// Pool is the pool Instance is in; empty is the forwarding instance's
+	// own. Another pool needs Capabilities.AcrossPools, and only the
+	// program that embeds the engine sets one (engine.Engine.Forwards).
+	Pool string `json:"pool,omitempty"`
 }
 
 // Peer reports whether the forward goes to another instance, not to a host
 // socket.
 func (f Forward) Peer() bool { return f.Instance != "" }
+
+// OtherPool reports whether pool, a Forward's or an Instance's, names a pool
+// other than own: an empty pool is own.
+func OtherPool(pool, own string) bool { return pool != "" && pool != own }
 
 // InstanceSpec is a new VM (ADR 26-11-03-606).
 type InstanceSpec struct {
@@ -395,7 +414,9 @@ type InstanceSpec struct {
 	// (ValidateName).
 	Name string
 	// From is the committed VM the new one is a copy of, as the driver
-	// found it; its guest OS is the new VM's. That it was committed is the
+	// found it; its guest OS is the new VM's. Its Pool is the driver's, or,
+	// on a driver that lists Capabilities.AcrossPools, another pool's,
+	// found by a driver made for that pool; an empty Pool is the driver's. That it was committed is the
 	// caller's to know: a driver whose provider cannot tell (Archil) copies
 	// any stopped VM. A driver that does not report Capabilities.Commit
 	// refuses it with ErrUnsupported. Nil is a fresh VM, from the
@@ -447,14 +468,19 @@ type Instance struct {
 	// machine's or snapshot's, the directory of a local driver's VM.
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// Pool is the pool it is in: the pool of the driver that found it.
+	Pool string `json:"pool"`
 	// From is the name of the committed VM this one was created from, where
 	// the provider says; empty for a fresh VM, an install, where it does
 	// not, and always on a driver that does not report Capabilities.Commit.
-	From    string    `json:"from,omitempty"`
-	GuestOS OS        `json:"guestOS"`
-	CPUs    int       `json:"cpus,omitempty"`
-	Memory  uint64    `json:"memory,omitempty"`
-	Created time.Time `json:"created,omitzero"`
+	From string `json:"from,omitempty"`
+	// FromPool is the pool From is in, where it is not this VM's own
+	// (Capabilities.AcrossPools).
+	FromPool string    `json:"fromPool,omitempty"`
+	GuestOS  OS        `json:"guestOS"`
+	CPUs     int       `json:"cpus,omitempty"`
+	Memory   uint64    `json:"memory,omitempty"`
+	Created  time.Time `json:"created,omitzero"`
 	// Forwards are served whenever it runs.
 	Forwards []Forward `json:"forwards,omitempty"`
 	// Isolated and Networks are as InstanceSpec's, as the provider reports
@@ -560,8 +586,10 @@ type Driver interface {
 	// power-off with a machine identity of its own. A name the pool
 	// already has, committed or not, is ErrExists; a From the provider no
 	// longer has is ErrNotFound, and a running one is refused; a From on a
-	// driver that does not report Capabilities.Commit, and a fresh VM on a
-	// driver with no base, are ErrUnsupported, and make nothing. Its data
+	// driver that does not report Capabilities.Commit, a From or a Forward
+	// of another pool on a driver that does not list AcrossPools, and a
+	// fresh VM on a driver with no base, are ErrUnsupported, and make
+	// nothing. Its data
 	// volume is made empty, and its cache volume a clone of the key's
 	// current generation.
 	Create(ctx context.Context, spec InstanceSpec) (Instance, error)
@@ -622,8 +650,10 @@ type Driver interface {
 	// It refuses, changing nothing, a running VM; a from whose guest OS is
 	// not the VM's, that the provider no longer has (ErrNotFound), or that
 	// is running; a fresh root on a driver with no base, a from on a driver
-	// that does not report Capabilities.Commit, and any upgrade on a driver
-	// that does not list VolumeData (ErrUnsupported). An upgrade
+	// that does not report Capabilities.Commit, a from of another pool on a
+	// driver that does not list AcrossPools, and any upgrade on a driver
+	// that does not list VolumeData (ErrUnsupported); and a from of another
+	// pool to a caller with a key the driver issued (ErrUnauthorized). An upgrade
 	// interrupted at any step leaves the VM listed under its name with its
 	// data volume: Upgrade again with the same from finishes it, Destroy
 	// removes it, and Boot and Start refuse it until one of them has.

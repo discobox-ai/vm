@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -67,6 +68,65 @@ func (f *failing) Destroy(ctx context.Context, inst local.InstanceSpec) error {
 // same one finishes it even once that committed VM is removed; before, it
 // is retargeted to another. Either way the volumes are kept and the root is
 // new. A
+
+// An upgrade to another pool's committed VM, which only an embedder's
+// Engine.From names, caught once its new disk is whole, says to finish it
+// as that engine does, never with a --from its pool's engine would look up
+// in the pool, and is finished so.
+func TestAnInterruptedUpgradeFromAnotherPoolSaysHow(t *testing.T) {
+	ctx := context.Background()
+	hv := &failing{Hypervisor: &fake.Hypervisor{Agent: buildAgent(t), BaseName: "stock"}}
+	d, err := local.New(machine.Config{Dir: t.TempDir(), Pool: "pool-a"}, hv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := d.InPool("server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := server.Create(ctx, machine.InstanceSpec{Name: "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, server, b, rootDir(), "marker.txt", "base")
+	base, err := server.Commit(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, err := d.Create(ctx, machine.InstanceSpec{Name: "dev", Data: &machine.DataVolume{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hv.at = "move"
+	if _, err := d.Upgrade(ctx, dev, &base); err == nil {
+		t.Fatal("an upgrade failing at move succeeded")
+	}
+	_, err = d.Boot(ctx, dev, machine.BootOptions{})
+	if err == nil || !strings.Contains(err.Error(), "base of pool server") || strings.Contains(err.Error(), "--from base") {
+		t.Fatalf("booting a VM caught between its roots: %v, want it to name base of pool server, never --from base", err)
+	}
+	// What a --from base would ask of the pool's engine: a VM of the pool's
+	// own, which is not the recorded root.
+	if _, err := d.Upgrade(ctx, dev, &machine.Instance{Name: "base"}); err == nil {
+		t.Fatal("an upgrade to the pool's own base finished one to the server's")
+	}
+	upgraded, err := d.Upgrade(ctx, dev, &base)
+	if err != nil {
+		t.Fatalf("finish the upgrade as the embedder's engine does: %v", err)
+	}
+	if upgraded.ID != dev.ID || upgraded.From != "base" || upgraded.FromPool != "server" || upgraded.Pool != "pool-a" {
+		t.Fatalf("upgraded %+v", upgraded)
+	}
+	m, err := d.Boot(ctx, upgraded, machine.BootOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Kill(context.Background()) }()
+	if got := read(t, m, rootDir()+"/marker.txt"); got != "base" {
+		t.Fatalf("the upgraded VM's root reads %q, want the server's base's", got)
+	}
+}
+
 // VM caught between its roots is removed whole.
 func TestAnInterruptedUpgradeIsFinishedAgain(t *testing.T) {
 	ctx := context.Background()

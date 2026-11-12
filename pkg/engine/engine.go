@@ -29,11 +29,29 @@ import (
 )
 
 // Engine is one pool, over a driver made for it.
+//
+// Forwards and From are the embedder's: the program that embeds the engine
+// sets them on the Engine it opens, and no CreateOptions carries either, so a
+// request a pool makes of an engine served to it sets neither (discobox's
+// ADR 26-11-11-963 §§3, 5, 9). They are the only way a VM the engine makes
+// reaches another pool: each may name a VM of another pool of the driver's,
+// on a driver that lists Capabilities.AcrossPools.
 type Engine struct {
 	Driver machine.Driver
 	// Pool is the driver's pool, which every VM the engine reads and
 	// makes is in.
 	Pool string
+	// Forwards are served on every VM Create makes, whenever it runs,
+	// each to a host socket or to another instance's agent or service
+	// port, of the pool or of another (Forward.Pool); the driver must list
+	// Capabilities.Ports.
+	Forwards []machine.Forward
+	// From, where set, is the committed VM that a VM created with no
+	// CreateOptions.From, or upgraded with no UpgradeOptions.From, is a copy
+	// of, in place of the driver's base: one the embedder found with an
+	// engine on its pool (Instance.Pool), which may be another of the
+	// driver's. The driver must report Capabilities.Commit.
+	From *Instance
 }
 
 // Open is an engine over driver, which was made for pool (an empty
@@ -74,10 +92,6 @@ type CreateOptions struct {
 	From   string
 	CPUs   int
 	Memory uint64
-	// Forwards are served whenever the instance runs, each to a host socket
-	// or to another instance's guest port; the driver must list
-	// Capabilities.Ports.
-	Forwards []machine.Forward
 	// Isolated and Networks strip the instance of what its provider gives a
 	// machine by default, and place it on networks of the caller's
 	// (machine.InstanceSpec); the driver must list Capabilities.Isolation.
@@ -94,10 +108,11 @@ type CreateOptions struct {
 	Cache *machine.CacheVolume
 }
 
-// Create makes a VM: a copy of the committed VM opts.From, or a fresh one
-// from the driver's base.
+// Create makes a VM: a copy of the committed VM opts.From, of the pool, or
+// else of the embedder's From, or else a fresh one from the driver's base. It
+// carries the embedder's Forwards.
 func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, error) {
-	if err := e.checkForwards(opts.Forwards); err != nil {
+	if err := e.checkForwards(e.Forwards); err != nil {
 		return Instance{}, err
 	}
 	if (opts.Isolated || len(opts.Networks) > 0) && !e.Driver.Capabilities().Isolation {
@@ -113,7 +128,7 @@ func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, erro
 		return Instance{}, err
 	}
 	spec := machine.InstanceSpec{
-		Name: opts.Name, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: opts.Forwards,
+		Name: opts.Name, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: e.Forwards,
 		Isolated: opts.Isolated, Networks: opts.Networks, Egress: opts.Egress,
 	}
 	if opts.Data != nil {
@@ -134,16 +149,55 @@ func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, erro
 			return Instance{}, fmt.Errorf("instance %s is %s; stop and commit it to create from it", from.Name, state)
 		}
 		spec.From = &from
+	} else if e.From != nil {
+		from, err := e.embedderFrom()
+		if err != nil {
+			return Instance{}, err
+		}
+		spec.From = from
 	}
 	if spec.Name == "" {
 		spec.Name = fsutil.RandomHex(6)
 	}
-	for _, f := range opts.Forwards {
-		if f.Peer() && f.Instance == spec.Name {
+	for _, f := range e.Forwards {
+		if f.Peer() && f.Instance == spec.Name && !machine.OtherPool(f.Pool, e.Pool) {
 			return Instance{}, fmt.Errorf("port %d forwards to instance %s itself", f.Port, f.Instance)
 		}
 	}
 	return e.Driver.Create(ctx, spec)
+}
+
+// embedderFrom is the embedder's From, refused where the driver cannot copy
+// it. Whether it runs is the driver's to refuse: it may be another pool's,
+// which this engine's driver does not attach to.
+func (e *Engine) embedderFrom() (*Instance, error) {
+	caps := e.Driver.Capabilities()
+	if !caps.Commit {
+		return nil, fmt.Errorf("driver %s cannot create a VM from a committed one: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
+	if err := e.checkPool(e.From.Pool); err != nil {
+		return nil, fmt.Errorf("the committed VM %s: %w", e.From.Name, err)
+	}
+	from := *e.From
+	if from.Pool == "" {
+		from.Pool = e.Pool
+	}
+	return &from, nil
+}
+
+// checkPool refuses a pool, a From's or a Forward's, that is another than
+// the engine's on a driver that reaches no other.
+func (e *Engine) checkPool(pool string) error {
+	if !machine.OtherPool(pool, e.Pool) {
+		return nil
+	}
+	if err := machine.ValidatePool(pool); err != nil {
+		return err
+	}
+	if !e.Driver.Capabilities().AcrossPools {
+		return fmt.Errorf("pool %s is another pool's, and driver %s reaches no other pool's VMs: %w", pool, e.Driver.Name(), machine.ErrUnsupported)
+	}
+	return nil
 }
 
 // Get finds an instance by name, or by its provider's ID or a unique prefix
@@ -210,7 +264,7 @@ type StartOptions struct {
 
 // checkForwards refuses forwards the driver cannot serve or that make no
 // sense: each goes to exactly one of an absolute host socket, or an instance
-// of the pool and a port.
+// and a port, of the pool or of another the driver reaches.
 func (e *Engine) checkForwards(forwards []machine.Forward) error {
 	if len(forwards) == 0 {
 		return nil
@@ -233,10 +287,17 @@ func (e *Engine) checkForwards(forwards []machine.Forward) error {
 			return fmt.Errorf("port %d forwards to port %d of instance %s, and a peer is reached at its agent's port (%d) or its service's (%d) alone: %w", f.Port, f.InstancePort, f.Instance, guest.AgentPort, guest.ServicePort, machine.ErrUnsupported)
 		case !f.Peer() && f.InstancePort != 0:
 			return fmt.Errorf("port %d names a port of no instance", f.Port)
+		case !f.Peer() && f.Pool != "":
+			return fmt.Errorf("port %d names the pool of no instance", f.Port)
 		case !f.Peer() && !filepath.IsAbs(f.Socket):
 			return fmt.Errorf("port %d forwards to %q, which is not an absolute path", f.Port, f.Socket)
 		case ports[f.Port]:
 			return fmt.Errorf("port %d is forwarded twice", f.Port)
+		}
+		if f.Peer() {
+			if err := e.checkPool(f.Pool); err != nil {
+				return fmt.Errorf("port %d forwards to instance %s: %w", f.Port, f.Instance, err)
+			}
 		}
 		ports[f.Port] = true
 	}
@@ -590,8 +651,9 @@ func (e *Engine) Commit(ctx context.Context, inst Instance) (Instance, error) {
 
 // UpgradeOptions names the root an upgrade gives a VM.
 type UpgradeOptions struct {
-	// From names the committed VM the new root is a copy of; empty is a
-	// fresh root from the driver's base. That it is committed is the
+	// From names the committed VM of the pool the new root is a copy of;
+	// empty is a copy of the embedder's Engine.From where it is set, and
+	// else a fresh root from the driver's base. That it is committed is the
 	// caller's to know.
 	From string
 }
@@ -609,6 +671,13 @@ func (e *Engine) Upgrade(ctx context.Context, name string, opts UpgradeOptions) 
 	if opts.From != "" && !e.Driver.Capabilities().Commit {
 		return Instance{}, fmt.Errorf("driver %s cannot give a VM the root of a committed one; upgrade it to a fresh root instead: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
+	var from *Instance
+	if opts.From == "" && e.From != nil {
+		var err error
+		if from, err = e.embedderFrom(); err != nil {
+			return Instance{}, err
+		}
+	}
 	inst, err := e.Get(ctx, name)
 	if err != nil {
 		return Instance{}, err
@@ -616,7 +685,9 @@ func (e *Engine) Upgrade(ctx context.Context, name string, opts UpgradeOptions) 
 	if state := e.State(ctx, inst); state != Stopped {
 		return Instance{}, fmt.Errorf("instance %s is %s; stop it to upgrade it", inst.Name, state)
 	}
-	var from *Instance
+	if from != nil && from.GuestOS != inst.GuestOS {
+		return Instance{}, fmt.Errorf("instance %s is a %s guest, and %s a %s one: a data volume is read by its guest's OS", inst.Name, inst.GuestOS, from.Name, from.GuestOS)
+	}
 	if opts.From != "" {
 		src, err := e.Get(ctx, opts.From)
 		switch {

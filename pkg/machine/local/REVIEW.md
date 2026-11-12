@@ -13,6 +13,13 @@
   returns, after the release (a review found `Kill` returning first), and it
   passes `machine.HostListener` through: anything the shim asserts on a
   machine must reach the hypervisor's.
+- **An unfinished upgrade's error names a target its caller can pass.**
+  `whole()` tells Boot, Start, Commit, and a mismatched Upgrade how to
+  finish, and a target another pool's (`FromPool`) is one only an
+  embedder's `Engine.From` names: no `--from` reaches it. A review found
+  advice that sent a pool's engine looking in its own pool, the second
+  resume path missed after the root's note on finishing an interrupted
+  step.
 - **A peer forward cannot refuse.** The shim's listener has accepted the
   guest's connection before it can know the peer is stopped, so the guest
   connects and reads EOF. Write it that way wherever it is described.
