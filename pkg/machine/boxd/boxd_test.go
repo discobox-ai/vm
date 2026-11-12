@@ -20,36 +20,44 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// FromEnv names a committed VM of the default pool for the real-boxd
-// test to start from. Unset, it starts from a fresh VM of boxd's default
-// image.
+// FromEnv names a committed VM of the pool the real-boxd tests run in,
+// livePool, for them to start from. Unset, they start from a fresh VM of
+// boxd's default image.
 const FromEnv = "DISCO_VM_BOXD_FROM"
 
+// livePool is the pool the tests against boxd itself make their VMs in, so
+// they never list or remove one of someone's own.
+const livePool = "conformance"
+
 // TestConformance runs the conformance suite against boxd itself. It needs an
-// account, so it runs only where BOXD_API_KEY is set.
+// account, so it runs only where BOXD_API_KEY or BOXD_TOKEN is set. A key
+// that issues keys (a `boxd login` session's) runs the issued-key case too;
+// an API key cannot issue, and the suite skips it.
 func TestConformance(t *testing.T) {
 	if os.Getenv(APIKeyEnv) == "" && os.Getenv(TokenEnv) == "" {
 		t.Skipf("set %s to run the conformance suite against boxd", APIKeyEnv)
 	}
-	cfg := machinetest.Config{
+	machinetest.Run(t, envDriver(t, machine.KeyFromEnv("boxd")), machinetest.Config{
+		From:    os.Getenv(FromEnv),
 		Timeout: 5 * time.Minute,
 		// Not /tmp: Ubuntu clears it at boot, and the suite reads its marker
 		// back after one.
 		ScratchDir: "/var/lib",
-	}
-	cfg.From = os.Getenv(FromEnv)
-	machinetest.Run(t, envDriver(t), cfg)
+		Keyed: func(keys machine.KeySource) machine.Driver {
+			return envDriver(t, keys)
+		},
+	})
 }
 
-// envDriver is the driver the command line would make: its key and its
-// configuration from the environment.
-func envDriver(t *testing.T) *Driver {
+// envDriver is the driver the command line would make in livePool: its
+// configuration from the environment, calling boxd with keys.
+func envDriver(t *testing.T, keys machine.KeySource) *Driver {
 	t.Helper()
 	config, err := machine.ConfigFromValues("boxd", machine.ConfigFromEnv("boxd"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := New(machine.Config{Keys: machine.KeyFromEnv("boxd"), DriverConfig: config})
+	d, err := New(machine.Config{Pool: livePool, Keys: keys, DriverConfig: config})
 	if err != nil {
 		t.Fatal(err)
 	}
