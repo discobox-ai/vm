@@ -10,12 +10,12 @@ import (
 // which has no fields yet.
 type Config struct{}
 
-// Definition describes the hcs driver, which takes no configuration.
+// Definition describes the hcs driver, which takes no configuration, no
+// secret, and no base: a Windows VM is installed from media, or made from a
+// committed one, and a fresh VM is refused.
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Windows VMs on Host Compute Service, installed from a retail ISO.",
-		Base: machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv,
-			Description: "None: a Windows VM is installed from media, or made from a committed one, and a fresh VM is refused."},
 	}
 }
 

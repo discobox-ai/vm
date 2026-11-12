@@ -46,7 +46,7 @@ type Config struct {
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Linux VMs as boxd microVMs, in the cloud, from any host.",
-		Base: machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv,
+		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv,
 			Description: "The boxd image a fresh VM is made from; empty is boxd's default image."},
 		ConfigFields: []machine.ConfigField{
 			{Key: "addr", Label: "gRPC Address", Type: machine.ConfigString, Env: AddrEnv, Default: defaultAddr, Advanced: true, Privileged: true,
@@ -56,6 +56,18 @@ func Definition() machine.Definition {
 			{Key: "region", Label: "Region", Type: machine.ConfigString, Env: RegionEnv,
 				Description: "The boxd region the driver's machines and snapshots are in, such as fra or nyc; the driver lists and makes only that region's. Empty is the home endpoint's own region."},
 		},
+		Secrets: []machine.SecretField{{
+			Key: "apiKey", Label: "API Key", Type: machine.ConfigSecret, Env: []string{APIKeyEnv, TokenEnv}, Placeholder: "bxd_...",
+			Description: "A boxd API key (bxd_...), from `boxd auth keys create`, which the driver exchanges for a token at tokenUrl; or a token, which it sends as it is.",
+			Sends: []machine.SecretSend{
+				// An API key goes only to the token exchange (client.token).
+				{Prefix: apiKeyPrefix, Endpoint: "tokenUrl", Protocol: machine.SendHTTPS, Method: "POST", JSONField: "api_key"},
+				// A token is every call's bearer (client.authorize), at the
+				// home endpoint and the region's, which ListRegions names.
+				{Endpoint: "addr", Listed: true, Protocol: machine.SendGRPC, Method: "POST", Path: "/" + serviceName + "/",
+					Header: "authorization", ValuePrefix: "Bearer "},
+			},
+		}},
 	}
 }
 

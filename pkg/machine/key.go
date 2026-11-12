@@ -143,31 +143,35 @@ func (r IssueRequest) Validate() error {
 }
 
 // KeyFromEnv is the source of a driver's key in the environment, for the
-// command line: the first of the variables the driver registered that is
-// set. It is nil, no key, when the driver registered none or none is set.
+// command line: the first of its secret's variables (SecretField.Env) that
+// is set. It is nil, no key, when the driver takes no secret or none is set.
 func KeyFromEnv(driver string) KeySource {
 	registryMu.Lock()
-	vars := registry[driver].KeyEnv
+	secrets := registry[driver].Definition.Secrets
 	registryMu.Unlock()
-	for _, name := range vars {
-		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
-			return StaticKey(Key{Driver: driver, Secret: v})
+	for _, s := range secrets {
+		for _, name := range s.Env {
+			if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+				return StaticKey(Key{Driver: driver, Secret: v})
+			}
 		}
 	}
 	return nil
 }
 
 // WithoutKeys is env, as os.Environ gives it, with every variable a driver
-// reads its key from (KeyFromEnv) left out: the environment of a process the
-// driver starts (a shim, a fake guest), so no key reaches it.
+// reads a secret from (SecretField.Env) left out: the environment of a
+// process the driver starts (a shim, a fake guest), so no key reaches it.
 func WithoutKeys(env []string) []string {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	return slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
 		for _, r := range registry {
-			if slices.Contains(r.KeyEnv, name) {
-				return true
+			for _, s := range r.Definition.Secrets {
+				if slices.Contains(s.Env, name) {
+					return true
+				}
 			}
 		}
 		return false

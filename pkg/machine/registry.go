@@ -12,19 +12,17 @@ import (
 // every driver to list it. It is given a configuration Normalize returned.
 type Factory func(Config) (Driver, error)
 
-// Registration is a driver: how to construct one, the configuration it takes,
-// and where the command line finds its key.
+// Registration is a driver: how to construct one, and the configuration and
+// secrets it takes.
 type Registration struct {
 	// New constructs the driver.
 	New Factory
-	// Definition describes the driver and every field of its configuration
-	// (Config.DriverConfig).
+	// Definition describes the driver, every field of its configuration
+	// (Config.DriverConfig), and its secrets, where the command line finds
+	// them (KeyFromEnv) and where the driver sends them.
 	Definition Definition
 	// Validate checks a configuration the definition's fields allow.
 	Validate Validator
-	// KeyEnv names the environment variables the command line reads the
-	// driver's key from (KeyFromEnv), in order.
-	KeyEnv []string
 }
 
 var (

@@ -132,7 +132,7 @@ type Driver struct {
 var _ machine.Driver = (*Driver)(nil)
 
 // New returns a driver for the daemon its configuration (cfg.DriverConfig)
-// names (HostDaemon), as NewWithDaemon does.
+// names (HostDaemon), reached through cfg.Dial, as NewWithDaemon does.
 func New(cfg machine.Config) (*Driver, error) {
 	config, err := machine.Normalize("docker", cfg.DriverConfig)
 	if err != nil {
@@ -142,7 +142,7 @@ func New(cfg machine.Config) (*Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newDriver(cfg, conf, HostDaemon(conf.Host)), nil
+	return newDriver(cfg, conf, HostDaemon(conf.Host, cfg.Dialer())), nil
 }
 
 // NewWithDaemon returns a driver for the daemon d, for cfg's pool

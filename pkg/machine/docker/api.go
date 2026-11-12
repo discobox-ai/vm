@@ -38,9 +38,9 @@ type Daemon struct {
 
 // HostDaemon is the daemon a host names, as the docker CLI reads one:
 // unix:///var/run/docker.sock or tcp://HOST:PORT without TLS (Config.Host,
-// which decode checks). It dials nothing until a request; another scheme
-// fails each dial.
-func HostDaemon(host string) Daemon {
+// which decode checks), reached through dial (machine.Config.Dialer). It
+// dials nothing until a request; another scheme fails each dial.
+func HostDaemon(host string, dial machine.DialFunc) Daemon {
 	var network, addr string
 	switch {
 	case strings.HasPrefix(host, "unix://"):
@@ -54,8 +54,7 @@ func HostDaemon(host string) Daemon {
 			if network == "" {
 				return nil, errors.New("docker: host: only unix:// and tcp:// (without TLS) are supported")
 			}
-			var d net.Dialer
-			return d.DialContext(ctx, network, addr)
+			return dial(ctx, network, addr)
 		},
 		KeepIdle: true,
 	}

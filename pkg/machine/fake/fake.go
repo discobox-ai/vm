@@ -46,7 +46,6 @@ func init() {
 		},
 		Definition: Definition(),
 		Validate:   Validate,
-		KeyEnv:     []string{KeyEnv},
 	})
 }
 

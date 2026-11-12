@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -37,7 +39,7 @@ func regions() []string { return slices.Sorted(maps.Keys(controlPlanes)) }
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Linux VMs as Archil's Firecracker sandboxes, in the cloud, from any host.",
-		Base: machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Placeholder: "debian:trixie",
+		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Placeholder: "debian:trixie",
 			Description: "The public OCI image a fresh VM runs; empty is Archil's default image."},
 		ConfigFields: []machine.ConfigField{
 			{Key: "region", Label: "Region", Type: machine.ConfigString, Env: RegionEnv, Default: DefaultRegion,
@@ -45,7 +47,30 @@ func Definition() machine.Definition {
 			{Key: "baseUrl", Label: "Base URL", Type: machine.ConfigString, Env: BaseURLEnv, Advanced: true, Privileged: true,
 				Description: "A control plane's URL in place of the region's, for a test; it is sent the key, so it is https, or http to a loopback address."},
 		},
+		Secrets: []machine.SecretField{{
+			Key: "apiKey", Label: "API Key", Type: machine.ConfigSecret, Env: []string{APIKeyEnv}, Placeholder: "key-...",
+			Description: "An Archil API key, from the Archil console.",
+			Sends: []machine.SecretSend{
+				// Every API call's bearer (api.call), at baseUrl, or else
+				// the region's control plane: any of them.
+				{Endpoint: "baseUrl", Hosts: controlPlaneHosts(), Protocol: machine.SendHTTPS, Path: "/api/",
+					Header: "Authorization", ValuePrefix: "Bearer key-", TrimPrefix: "key-"},
+			},
+		}},
 	}
+}
+
+// controlPlaneHosts are the control planes' HOST:PORTs, sorted.
+func controlPlaneHosts() []string {
+	var hosts []string
+	for _, region := range regions() {
+		u, err := url.Parse(controlPlanes[region])
+		if err != nil {
+			panic(err)
+		}
+		hosts = append(hosts, net.JoinHostPort(u.Hostname(), "443"))
+	}
+	return hosts
 }
 
 func decode(config json.RawMessage) (Config, error) {

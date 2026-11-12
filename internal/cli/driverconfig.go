@@ -218,9 +218,9 @@ func (g *globals) installHelp(root *cobra.Command) {
 	})
 }
 
-// writeDriverHelp shows a driver's configuration: its base, and each
-// current field's flag, its key in --driver-config, its environment
-// variable, and its default.
+// writeDriverHelp shows a driver's configuration: its base, or that it
+// takes none, its key's variables, and each current field's flag, its key in
+// --driver-config, its environment variable, and its default.
 func writeDriverHelp(w io.Writer, driver string) error {
 	def, err := machine.DefinitionOf(driver)
 	if err != nil {
@@ -231,10 +231,19 @@ func writeDriverHelp(w io.Writer, driver string) error {
 		fmt.Fprintf(w, ": %s", def.Description)
 	}
 	fmt.Fprintf(w, "\n\nUsage:\n  disco-vm --driver %s [driver flags] COMMAND\n", driver)
-	fmt.Fprintf(w, "\nBase ($%s, what a fresh VM is made from):\n", machine.BaseEnv)
-	fmt.Fprintf(w, "        %s\n", def.Base.Description)
-	if details := fieldDetails(def.Base, ""); details != "" {
-		fmt.Fprintf(w, "        (%s)\n", details)
+	if def.TakesBase() {
+		fmt.Fprintf(w, "\nBase ($%s, what a fresh VM is made from):\n", machine.BaseEnv)
+		fmt.Fprintf(w, "        %s\n", def.Base.Description)
+		if details := fieldDetails(*def.Base, ""); details != "" {
+			fmt.Fprintf(w, "        (%s)\n", details)
+		}
+	} else {
+		fmt.Fprintf(w, "\nThe %s driver takes no base: a fresh VM is refused.\n", driver)
+	}
+	// A secret is listed by where it is read from, never by a value.
+	for _, secret := range def.Secrets {
+		fmt.Fprintf(w, "\nKey (secret; $%s):\n", strings.Join(secret.Env, " or $"))
+		fmt.Fprintf(w, "        %s\n", secret.Description)
 	}
 	fields := def.Current()
 	if len(fields) == 0 {

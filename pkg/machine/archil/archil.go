@@ -34,7 +34,6 @@ func init() {
 		New:        func(cfg machine.Config) (machine.Driver, error) { return New(cfg) },
 		Definition: Definition(),
 		Validate:   Validate,
-		KeyEnv:     []string{APIKeyEnv},
 	})
 }
 
@@ -68,7 +67,7 @@ func New(cfg machine.Config) (*Driver, error) {
 	if pool == "" {
 		pool = machine.DefaultPool
 	}
-	return &Driver{api: newAPI(conf, cfg.Keys), pool: pool, base: cfg.Base}, nil
+	return &Driver{api: newAPI(conf, cfg.Keys, cfg.HTTPTransport()), pool: pool, base: cfg.Base}, nil
 }
 
 func (*Driver) Name() string { return "archil" }

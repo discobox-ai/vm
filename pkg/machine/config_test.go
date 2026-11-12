@@ -27,7 +27,7 @@ func TestEveryDriverDecodesItsDefinition(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if def.Description == "" || def.Base.Description == "" || def.Base.Env != machine.BaseEnv {
+		if def.Description == "" || def.TakesBase() && (def.Base.Description == "" || def.Base.Env != machine.BaseEnv) {
 			t.Errorf("%s has no description, or its base none", name)
 		}
 		zero, defaults := map[string]any{}, map[string]any{}
@@ -79,7 +79,7 @@ func TestPrivileged(t *testing.T) {
 			t.Fatal(err)
 		}
 		var got []string
-		if def.Base.Privileged {
+		if def.TakesBase() && def.Base.Privileged {
 			got = append(got, "base")
 		}
 		for _, f := range def.ConfigFields {
@@ -314,7 +314,35 @@ func TestRegistration(t *testing.T) {
 			Definition: machine.Definition{ConfigFields: []machine.ConfigField{
 				{Key: "old", Type: machine.ConfigString, Retired: true, ReplacedBy: "a"}}}},
 		"a base with a key": {New: newFn, Validate: validate,
-			Definition: machine.Definition{Base: machine.ConfigField{Key: "base"}}},
+			Definition: machine.Definition{Base: &machine.ConfigField{Key: "base"}}},
+		"a secret of another type": {New: newFn, Validate: validate,
+			Definition: machine.Definition{Secrets: []machine.SecretField{{Key: "k", Type: machine.ConfigString, Env: []string{"K"}}}}},
+		"a secret from no variable": {New: newFn, Validate: validate,
+			Definition: machine.Definition{Secrets: []machine.SecretField{{Key: "k", Type: machine.ConfigSecret}}}},
+		"two secrets": {New: newFn, Validate: validate,
+			Definition: machine.Definition{Secrets: []machine.SecretField{
+				{Key: "k", Type: machine.ConfigSecret, Env: []string{"K"}}, {Key: "t", Type: machine.ConfigSecret, Env: []string{"T"}}}}},
+		"a secret with a field's key": {New: newFn, Validate: validate,
+			Definition: machine.Definition{ConfigFields: []machine.ConfigField{{Key: "k", Type: machine.ConfigString}},
+				Secrets: []machine.SecretField{{Key: "k", Type: machine.ConfigSecret, Env: []string{"K"}}}}},
+		"a send in no place": {New: newFn, Validate: validate,
+			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Hosts: []string{"h:443"}})},
+		"a send in two places": {New: newFn, Validate: validate,
+			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Hosts: []string{"h:443"}, Header: "A", JSONField: "k"})},
+		"a send over another protocol": {New: newFn, Validate: validate,
+			Definition: secretSentTo(machine.SecretSend{Protocol: "smtp", Hosts: []string{"h:25"}, Header: "A"})},
+		"a send to no host": {New: newFn, Validate: validate,
+			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Header: "A"})},
+		"a send to a host with no port": {New: newFn, Validate: validate,
+			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Hosts: []string{"h"}, Header: "A"})},
+		"a send to an unknown field": {New: newFn, Validate: validate,
+			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Endpoint: "nope", Header: "A"})},
+		"a send to a field not privileged": {New: newFn, Validate: validate,
+			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Endpoint: "plain", Header: "A"})},
+		"a send to a field with no default and no hosts": {New: newFn, Validate: validate,
+			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Endpoint: "bare", Header: "A"})},
+		"a send to a relative path": {New: newFn, Validate: validate,
+			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Endpoint: "url", Path: "api/", Header: "A"})},
 	} {
 		func() {
 			defer func() {
@@ -325,5 +353,19 @@ func TestRegistration(t *testing.T) {
 			// Each panics before it registers, so a rerun registers none.
 			machine.Register("bad-"+strings.ReplaceAll(name, " ", "-"), r)
 		}()
+	}
+}
+
+// secretSentTo is a definition whose one secret is sent as send, beside
+// fields send can name: url (privileged, with a default), plain (not
+// privileged), and bare (privileged, with no default).
+func secretSentTo(send machine.SecretSend) machine.Definition {
+	return machine.Definition{
+		ConfigFields: []machine.ConfigField{
+			{Key: "url", Type: machine.ConfigString, Privileged: true, Default: "https://h/"},
+			{Key: "plain", Type: machine.ConfigString, Default: "https://h/"},
+			{Key: "bare", Type: machine.ConfigString, Privileged: true},
+		},
+		Secrets: []machine.SecretField{{Key: "k", Type: machine.ConfigSecret, Env: []string{"K"}, Sends: []machine.SecretSend{send}}},
 	}
 }
