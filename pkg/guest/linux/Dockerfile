@@ -2,7 +2,7 @@
 # VZLinuxBootLoader, and hcs will with direct kernel boot.
 #
 # It is discobox's vm-image pipeline (discobox ADR 0062 §6, §8; ADR 0101) with
-# disco-vm's content: a general Debian machine with systemd and nothing else,
+# disco-vm's content: a general Debian machine with systemd and nftables,
 # whose root is the instance's own and writable, and which runs the disco-vm
 # agent a boot hands it in its initrd. No Docker, nothing of discobox's, and no
 # agent baked in: a boot appends the host's, so the protocol ships to both ends
@@ -83,6 +83,7 @@ RUN apt-get update \
         iproute2 \
         kmod \
         linux-image-${TARGETARCH} \
+        nftables \
         systemd \
         systemd-resolved \
         systemd-sysv \
@@ -141,11 +142,16 @@ COPY disco-vm-timesync.service /etc/systemd/system/disco-vm-timesync.service
 COPY disco-vm-timesync.timer /etc/systemd/system/disco-vm-timesync.timer
 COPY fstab /etc/fstab
 # The explicit enable of wait-online is the guarantee: Debian's preset enables
-# it too, and a preset is a third party's switch.
+# it too, and a preset is a third party's switch. nftables.service loads
+# /etc/nftables.conf before network-pre.target on every boot, so a rule set a
+# user of the base saves there loads before the network comes up. A failed load
+# does not hold the network back; a user that needs the fence requires the unit.
+# Debian's own nftables.conf, which this base keeps, admits everything.
 RUN mkdir -p /var/lib/disco-vm \
     && systemctl enable \
         disco-vm-guest.service \
         disco-vm-timesync.timer \
+        nftables.service \
         systemd-networkd.service \
         systemd-networkd-wait-online.service \
         systemd-resolved.service
