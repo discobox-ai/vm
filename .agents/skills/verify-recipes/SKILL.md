@@ -59,6 +59,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   (`$DISCO_VM_BASE` names another), about 6s. `stop dvm-dev` then `commit
   dvm-dev` is a cold boot and a snapshot (~40s), and the machine is deleted;
   `run dvm-dev2 --from dvm-dev` restores it.
+- The suites: `go tool task test:boxd` runs `TestConformance` (pool
+  `conformance`) and `internal/e2e` (pool `e2e`) against boxd itself, each
+  making and removing billable machines; tens of minutes, so far longer than
+  a five-minute sentinel lives.
 
 ## docker
 

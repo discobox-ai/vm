@@ -213,6 +213,24 @@ tasks:
       - go test -count=1 -timeout 30m -v ./pkg/machine/libkrun
       - DISCO_VM_DRIVER=libkrun go test -count=1 -timeout 30m -v ./internal/e2e
 
+  # boxd itself, from any host: machinetest (TestConformance, in pool
+  # conformance; DISCO_VM_BOXD_FROM names a committed VM there to start from)
+  # and internal/e2e (in pool e2e, or DISCO_VM_E2E_POOL's), each from a fresh
+  # VM of boxd's default image (DISCO_VM_E2E_IMAGE names another for e2e).
+  # Both make billable machines, and remove them.
+  test:boxd:
+    desc: Run the boxd conformance suite and internal/e2e against boxd itself (needs BOXD_API_KEY or BOXD_TOKEN)
+    deps:
+      - build
+    preconditions:
+      - sh: '[ -n "${BOXD_API_KEY}${BOXD_TOKEN}" ]'
+        msg: set BOXD_API_KEY (or BOXD_TOKEN) to a key of the boxd account to run VMs in
+    env:
+      DISCO_VM_TEST_BINARY: '{{.ROOT_DIR}}/{{.BINARY}}'
+    cmds:
+      - go test -count=1 -timeout 60m -v -run '^TestConformance$' ./pkg/machine/boxd
+      - DISCO_VM_DRIVER=boxd go test -count=1 -timeout 90m -v ./internal/e2e
+
   # disco-vm has nothing long-running to serve, so the loop only rebuilds.
   dev:
     desc: Rebuild build/disco-vm whenever its source changes
