@@ -21,3 +21,8 @@
   forward), or the server does (a forward to a host socket). A forward to a
   host socket went to the shim unchecked, which dials it with the server's
   privileges.
+- **A sentinel's code crosses only where the server answers in JSON.** A
+  guest operation's error goes through `guest.Relay`, which carries no code,
+  so a sentinel a machine returns there (`machine.ErrStale` from a stale
+  shim) reaches the client as its message alone. Say so wherever a sentinel
+  is promised to the client.
