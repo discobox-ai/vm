@@ -654,6 +654,27 @@ func TestDriverConfig(t *testing.T) {
 		}
 	}
 
+	// A secret is written, never read back: its variables are named, and
+	// its value is nowhere a command prints, nor taken in a configuration.
+	const key = "bxd_written-never-read"
+	keyed := e
+	keyed.extra = append(slices.Clone(unset), "BOXD_API_KEY="+key)
+	for _, args := range [][]string{
+		{"--help=boxd"},
+		{"drivers"},
+		{"--driver", "boxd", "--driver-config", `{"apiKey":"` + key + `"}`, "ls"},
+		{"--driver", "boxd", "--driver-config", `{"region":"New York"}`, "ls"},
+	} {
+		out, _ := keyed.run(args...)
+		if strings.Contains(out, key) {
+			t.Errorf("disco-vm %s printed the key:\n%s", strings.Join(args, " "), out)
+		}
+	}
+	mustContain(t, keyed.ok("--help=boxd"), "Key (secret; $BOXD_API_KEY or $BOXD_TOKEN)")
+	if out, code := keyed.run("--driver", "boxd", "--driver-config", `{"apiKey":"`+key+`"}`, "ls"); code == 0 || !strings.Contains(out, "apiKey is a secret") {
+		t.Errorf("a key in the configuration: exit %d\n%s", code, out)
+	}
+
 	// Only a boot runs the agent, and a started VM boots in its shim: a
 	// missing one fails the start only if the shim was given it.
 	missing := filepath.Join(t.TempDir(), "no-agent")

@@ -38,7 +38,7 @@ type Config struct {
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Linux VMs as Docker containers that boot systemd in a user namespace of their own, on a local or remote daemon.",
-		Base: machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Placeholder: "debian:trixie",
+		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Placeholder: "debian:trixie",
 			Description: "The image a fresh VM is readied from; with none, a fresh VM is refused."},
 		ConfigFields: []machine.ConfigField{
 			{Key: "host", Label: "Docker Host", Type: machine.ConfigString, Env: HostEnv, Default: defaultHost, Privileged: true,

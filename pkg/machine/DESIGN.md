@@ -82,10 +82,11 @@ so the refusals, and the suite's paths that skip a commit, run on every OS.
 What differs between providers is not abstracted (ADR 26-11-11-215): each
 driver takes `Config.DriverConfig`, a JSON object of fields no other driver
 shares. `machine.Register` takes its factory, its `Definition` (a
-description, its base, and a `ConfigField` per field, in the shape of
+description, its base, a `ConfigField` per field, in the shape of
 discobox's `sandbox.ProviderDefinition`, plus `Default`, `Env`,
-`Privileged`, and `Retired`), and its `Validator`, all required.
-`Config.Base` stays common, described per driver by `Definition.Base`.
+`Privileged`, and `Retired`, and its secret), and its `Validator`, all
+required. `Config.Base` stays common, described per driver by
+`Definition.Base`, nil where the driver takes none (hcs; ADR 26-11-12-461).
 
 - **A driver decodes its own type** (`machine.DecodeConfig[T]`, refusing a
   key T lacks) in one `decode` that applies its defaults and checks its
@@ -112,9 +113,32 @@ every call, so one process runs engines with different keys and a key
 replaced where its source reads it is used from the next call (ADR
 26-10-24-562). A driver given no source has no key and never reads the
 environment for one: the command line passes `machine.KeyFromEnv`, which
-reads the variables a driver names at `Register` (archil's `ARCHIL_API_KEY`, boxd's `BOXD_API_KEY`,
-`BOXD_TOKEN`; fake's `DISCO_VM_FAKE_KEY`). A `Key`'s `Secret` is opaque: it
-prints, formats, and logs without it.
+reads the variables its secret names (`SecretField.Env`: archil's
+`ARCHIL_API_KEY`, boxd's `BOXD_API_KEY`, `BOXD_TOKEN`; fake's
+`DISCO_VM_FAKE_KEY`). A `Key`'s `Secret` is opaque: it prints, formats, and
+logs without it.
+
+A driver declares its secret in its definition (`Definition.Secrets`,
+type `secret`; ADR 26-11-12-461), at most one, since `Config.Keys` carries
+one: its variables, and every place it is sent (`SecretSend`: the
+privileged field naming the host, or the hosts; the protocol, method, and
+path; the header or JSON body field), one send per form it takes (boxd's
+`bxd_` API key goes only to the token exchange's body, a token is every
+gRPC call's bearer). `machine.SecretSends` resolves them for a
+configuration, for a proxy that swaps a stand-in for the real key. A secret
+is written, never read back: it is no field of a configuration, which
+refuses its key by name, and no definition, `info`, help, error, or file
+carries its value. Each driver's test drives its real client and checks
+the key arrived where `SecretSends` says and nowhere else.
+
+`Config.Dial` dials every connection a driver makes to its service (boxd's
+gRPC and token exchange, archil's API and process API, a Docker daemon), at
+the service's own address: set, a driver reads no proxy variable, so an
+embedder checks where it connects as it connects, and proxies within its
+dialer if at all. Nil is the process's own way, proxy variables and all. A
+driver takes it as `Config.Dialer()` and `Config.HTTPTransport()`. vz's and
+libkrun's downloads of a base or runtime from a registry do not go through
+it.
 
 `IssueKey` makes the narrowest key the driver can for another host to run the
 pool's machines. An issued key expires (a TTL is required) and cannot

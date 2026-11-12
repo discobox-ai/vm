@@ -33,6 +33,12 @@ const (
 	// key or an already-exchanged JWT.
 	APIKeyEnv = "BOXD_API_KEY" //nolint:gosec // G101: an environment variable's name, not a credential
 	TokenEnv  = "BOXD_TOKEN"
+
+	// apiKeyPrefix starts a boxd API key, which the driver exchanges for a
+	// token; anything else is taken to be a token already.
+	apiKeyPrefix = "bxd_"
+	// serviceName is boxd's gRPC service, every call's path's first part.
+	serviceName = "boxd.api.v1.BoxdApi"
 )
 
 // errNoCredentials names the fix, since Check is where a user meets it first.
@@ -51,11 +57,15 @@ type client struct {
 	// keys is asked for the key on every call, so a key replaced where it
 	// reads is used from the next one.
 	keys machine.KeySource
-	// creds secure every connection, and proxy, when set, dials it
-	// (ALL_PROXY); proxyErr is an ALL_PROXY that could not be used.
+	// creds secure every connection, and connect, when set, dials it: the
+	// embedder's dialer, or else a SOCKS5 ALL_PROXY's; nil is gRPC's own,
+	// which takes HTTPS_PROXY. proxyErr is an ALL_PROXY that could not be
+	// used.
 	creds    credentials.TransportCredentials
-	proxy    func(context.Context, string) (net.Conn, error)
+	connect  func(context.Context, string) (net.Conn, error)
 	proxyErr error
+	// http makes the token exchange (machine.Config.HTTPTransport).
+	http *http.Client
 
 	dialMu sync.Mutex
 	// conns are the endpoints dialed, by address.
@@ -70,17 +80,25 @@ type client struct {
 	expires time.Time
 }
 
-func newClient(cfg Config, keys machine.KeySource) *client {
-	proxy, err := socksDialer()
-	return &client{
-		addr:     cfg.Addr,
-		tokenURL: cfg.TokenURL,
-		region:   cfg.Region,
-		keys:     keys,
+// newClient is a client of the cluster conf names, calling it with
+// cfg.Keys and connecting as cfg says: through cfg.Dial, reading no proxy
+// variable, or, where it is nil, as gRPC and net/http do, with a SOCKS5
+// ALL_PROXY honored too.
+func newClient(conf Config, cfg machine.Config) *client {
+	c := &client{
+		addr:     conf.Addr,
+		tokenURL: conf.TokenURL,
+		region:   conf.Region,
+		keys:     cfg.Keys,
 		creds:    credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}),
-		proxy:    proxy,
-		proxyErr: err,
+		http:     &http.Client{Transport: cfg.HTTPTransport()},
 	}
+	if dial := cfg.Dial; dial != nil {
+		c.connect = func(ctx context.Context, addr string) (net.Conn, error) { return dial(ctx, "tcp", addr) }
+		return c
+	}
+	c.connect, c.proxyErr = socksDialer()
+	return c
 }
 
 // Account is the API at the home endpoint, where account and API key calls
@@ -192,10 +210,11 @@ func (c *client) dial(addr string) (boxdapi.BoxdApiClient, error) {
 	opts = append(opts, debugOptions()...)
 	opts = append(opts, c.authOptions()...)
 	target := addr
-	if c.proxy != nil {
-		// passthrough hands the proxy the host name, as socks5h means:
-		// gRPC's own resolver would look it up here first.
-		opts = append(opts, grpc.WithContextDialer(c.proxy))
+	if c.connect != nil {
+		// passthrough hands the dialer the host name, as socks5h means and
+		// as an embedder's check at dial needs: gRPC's own resolver would
+		// look it up here first.
+		opts = append(opts, grpc.WithContextDialer(c.connect))
 		target = "passthrough:///" + addr
 	}
 	conn, err := grpc.NewClient(target, opts...)
@@ -299,7 +318,7 @@ func (c *client) token(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !strings.HasPrefix(secret, "bxd_") {
+	if !strings.HasPrefix(secret, apiKeyPrefix) {
 		return secret, nil
 	}
 	c.mu.Lock()
@@ -317,7 +336,7 @@ func (c *client) token(ctx context.Context) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	started := time.Now()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.http.Do(req)
 	machine.DebugCall(started, err, "boxd POST %s", c.tokenURL)
 	if err != nil {
 		return "", fmt.Errorf("boxd: exchange API key: %w", err)
@@ -346,9 +365,10 @@ func (c *client) token(ctx context.Context) (string, error) {
 }
 
 // socksDialer honors a SOCKS5 ALL_PROXY (socks5:// or socks5h://), as curl
-// does. Without one, gRPC takes HTTPS_PROXY by itself, through HTTP CONNECT. A
-// proxy that intercepts TLS and does not offer HTTP/2 (ALPN h2) breaks gRPC
-// there, while SOCKS passes the stream through untouched.
+// does, where no embedder's dialer is set. Without one, gRPC takes
+// HTTPS_PROXY by itself, through HTTP CONNECT. A proxy that intercepts TLS
+// and does not offer HTTP/2 (ALPN h2) breaks gRPC there, while SOCKS passes
+// the stream through untouched.
 func socksDialer() (func(context.Context, string) (net.Conn, error), error) {
 	raw := os.Getenv("ALL_PROXY")
 	if raw == "" {
@@ -367,12 +387,12 @@ func socksDialer() (func(context.Context, string) (net.Conn, error), error) {
 	if err != nil {
 		return nil, fmt.Errorf("boxd: ALL_PROXY: %w", err)
 	}
-	dial, ok := socks.(proxy.ContextDialer)
+	viaSocks, ok := socks.(proxy.ContextDialer)
 	if !ok {
 		return nil, errors.New("boxd: ALL_PROXY: the SOCKS5 dialer cannot dial with a context")
 	}
 	return func(ctx context.Context, addr string) (net.Conn, error) {
-		return dial.DialContext(ctx, "tcp", addr)
+		return viaSocks.DialContext(ctx, "tcp", addr)
 	}, nil
 }
 

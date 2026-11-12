@@ -29,6 +29,20 @@
   an endpoint the key or a guest's data reaches, is `Privileged`. A
   validator's error names the field and never its value, and a path is
   checked with `machine.CheckFile` before anything reads it.
+- **A driver sends its key only where its definition says** (ADR
+  26-11-12-461): a new call that carries the key, a new header or body field
+  for it, or a new host, is a `SecretSend` in the definition and a case in
+  the driver's secret test, which drives the real client and compares what
+  arrived with `machine.SecretSends`. A send the definition lacks passes
+  every other test and fails the first time discobox's proxy refuses the
+  stand-in there. A new connection to a service dials through the
+  embedder's dialer where one is set (`Config.Dialer()`,
+  `Config.HTTPTransport()`, or `Config.Dial` handed to gRPC), and then reads
+  no proxy variable; never a bare `net.Dialer` or `http.DefaultClient`
+  regardless of it. A review found a driver that dialed through it for gRPC
+  and through `HTTPS_PROXY` for its token exchange.
+- **A secret is never configuration and never read back**: no field holds
+  one, and nothing printed, logged, returned, or written carries its value.
 - **A field is never removed or renamed**: it is `Retired`, with
   `ReplacedBy` where it has a replacement, and stays accepted for good.
 - **A driver's configuration that scopes what it lists is part of the

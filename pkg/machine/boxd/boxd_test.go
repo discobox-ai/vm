@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"os"
 	"runtime"
 	"slices"
@@ -506,7 +507,7 @@ func fakeKeyed(t *testing.T, home *fakeAPI, pool string, keys machine.KeySource)
 // and through no proxy.
 func fakeIn(t *testing.T, home *fakeAPI, region, pool string, keys machine.KeySource) *Driver {
 	t.Helper()
-	c := &client{addr: home.addr, tokenURL: home.tokenURL, region: region, keys: keys, creds: insecure.NewCredentials()}
+	c := &client{addr: home.addr, tokenURL: home.tokenURL, region: region, keys: keys, creds: insecure.NewCredentials(), http: http.DefaultClient}
 	t.Cleanup(func() {
 		c.dialMu.Lock()
 		defer c.dialMu.Unlock()

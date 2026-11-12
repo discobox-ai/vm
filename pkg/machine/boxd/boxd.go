@@ -47,7 +47,6 @@ func init() {
 		New:        func(cfg machine.Config) (machine.Driver, error) { return New(cfg) },
 		Definition: Definition(),
 		Validate:   Validate,
-		KeyEnv:     []string{APIKeyEnv, TokenEnv},
 	})
 }
 
@@ -89,7 +88,7 @@ func New(cfg machine.Config) (*Driver, error) {
 	if pool == "" {
 		pool = machine.DefaultPool
 	}
-	return &Driver{api: newClient(conf, cfg.Keys), pool: pool, base: cfg.Base}, nil
+	return &Driver{api: newClient(conf, cfg), pool: pool, base: cfg.Base}, nil
 }
 
 func (*Driver) Name() string { return "boxd" }

@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -216,6 +217,45 @@ type Config struct {
 	// the environment for it: the command line reads each field's
 	// ConfigField.Env (ConfigFromEnv). It holds no secret; a key is Keys'.
 	DriverConfig json.RawMessage
+	// Dial opens every connection the driver makes to its provider's
+	// service, and is given the service's own address: boxd's API and
+	// token exchange, Archil's API and process API, a Docker daemon at its
+	// host (unix or tcp). Set, the driver reads no proxy variable
+	// (HTTPS_PROXY, boxd's ALL_PROXY): an embedder that checks where a
+	// driver connects, as it connects, proxies within its dialer if it
+	// proxies at all. Nil is the process's own way, proxy variables and
+	// all. A download a local driver makes of its base or runtime from a
+	// registry is not a service connection and does not go through it, and
+	// a shim is never given it.
+	Dial DialFunc
+}
+
+// DialFunc opens a connection, as net.Dialer.DialContext does.
+type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// Dialer is c.Dial, or a net.Dialer's where it is nil: what a driver
+// dials a service with that has no proxy of its own (a Docker daemon).
+func (c Config) Dialer() DialFunc {
+	if c.Dial != nil {
+		return c.Dial
+	}
+	var d net.Dialer
+	return d.DialContext
+}
+
+// HTTPTransport is the transport a driver calls an HTTP service with: one
+// that dials the service through c.Dial and reads no proxy variable, or,
+// where Dial is nil, http.DefaultTransport's own, which takes HTTPS_PROXY.
+func (c Config) HTTPTransport() *http.Transport {
+	t := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
+	if def, ok := http.DefaultTransport.(*http.Transport); ok {
+		t = def.Clone()
+	}
+	if c.Dial != nil {
+		t.Proxy = nil
+		t.DialContext = c.Dial
+	}
+	return t
 }
 
 // DirEnv overrides DefaultDir.

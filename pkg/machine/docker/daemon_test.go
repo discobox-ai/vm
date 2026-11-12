@@ -170,7 +170,7 @@ func TestDaemonRequests(t *testing.T) {
 	daemons := map[string]func(t *testing.T, fd *fakeDaemon) Daemon{
 		"native": func(t *testing.T, fd *fakeDaemon) Daemon {
 			t.Helper()
-			return HostDaemon("tcp://" + fd.addr)
+			return HostDaemon("tcp://"+fd.addr, machine.Config{}.Dialer())
 		},
 		"guest": func(t *testing.T, fd *fakeDaemon) Daemon {
 			t.Helper()

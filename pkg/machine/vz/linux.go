@@ -30,7 +30,7 @@ type Config struct {
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "macOS VMs installed from an IPSW, and Linux VMs from a guest image, on Virtualization.framework.",
-		Base: machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Default: DefaultLinuxBase, Privileged: true,
+		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Default: DefaultLinuxBase, Privileged: true,
 			Description: "The Linux guest image a fresh VM is made from: a registry reference, or an absolute directory on this Mac whose kernel and root are booted."},
 		ConfigFields: []machine.ConfigField{
 			{Key: "agent", Label: "Agent", Type: machine.ConfigString, Env: AgentEnv, Placeholder: "/path/to/build/linux-arm64/disco-vm", Privileged: true,

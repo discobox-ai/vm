@@ -40,12 +40,12 @@ type api struct {
 	http   *http.Client
 }
 
-func newAPI(cfg Config, keys machine.KeySource) *api {
+func newAPI(cfg Config, keys machine.KeySource, transport *http.Transport) *api {
 	base := cfg.BaseURL
 	if base == "" {
 		base = controlPlanes[cfg.Region]
 	}
-	return &api{base: strings.TrimRight(base, "/"), region: cfg.Region, keys: keys, http: &http.Client{Timeout: 5 * time.Minute}}
+	return &api{base: strings.TrimRight(base, "/"), region: cfg.Region, keys: keys, http: &http.Client{Transport: transport, Timeout: 5 * time.Minute}}
 }
 
 // apiError is an error Archil answered with.

@@ -38,7 +38,7 @@ type Config struct {
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Guests as disco-vm agent processes on this host, each confined to a directory: for tests and CI, on every OS.",
-		Base: machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Default: DefaultBase,
+		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Default: DefaultBase,
 			Description: "A name a fresh VM's empty root is marked with."},
 		ConfigFields: []machine.ConfigField{
 			{Key: "agent", Label: "Agent", Type: machine.ConfigString, Env: AgentEnv, Advanced: true, Privileged: true,
@@ -48,6 +48,12 @@ func Definition() machine.Definition {
 			{Key: "maxRunning", Label: "Max Running", Type: machine.ConfigNumber, Env: MaxRunningEnv, Advanced: true,
 				Description: "Cap how many guests run at once in the root, as vz caps macOS guests; absent is no cap."},
 		},
+		// The key is checked in the process, against the root's records,
+		// and sent nowhere.
+		Secrets: []machine.SecretField{{
+			Key: "key", Label: "Key", Type: machine.ConfigSecret, Env: []string{KeyEnv},
+			Description: "A key the fake driver issued; absent, the caller is the root directory's owner.",
+		}},
 	}
 }
 

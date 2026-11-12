@@ -17,7 +17,8 @@ import (
 )
 
 // The types a ConfigField's value has in a driver's configuration, as JSON
-// spells them. There is no type for a secret: a credential is Config.Keys.
+// spells them. A secret is not one: it is a SecretField, given apart from
+// the configuration (Config.Keys).
 const (
 	ConfigString  = "string"
 	ConfigBoolean = "boolean"
@@ -69,17 +70,35 @@ type ConfigField struct {
 	ReplacedBy string `json:"replacedBy,omitempty"`
 }
 
-// Definition describes a registered driver: what it runs, what it takes as
-// its base, and the fields of its configuration, which are its own and no
-// other driver's.
+// Definition describes a registered driver: what it runs, whether and what
+// it takes as its base, the fields of its configuration, which are its own
+// and no other driver's, and its secrets.
 type Definition struct {
 	Description string `json:"description,omitempty"`
 	// Base describes Config.Base for this driver, as a field: what it
 	// takes, its default, and whether it is Privileged (a host directory
 	// that is booted). Its Key is empty and its Env BaseEnv: it is not
-	// part of the driver's configuration.
-	Base         ConfigField   `json:"base"`
+	// part of the driver's configuration. Nil is a driver that takes no
+	// base (hcs), and refuses a fresh VM.
+	Base         *ConfigField  `json:"base,omitempty"`
 	ConfigFields []ConfigField `json:"configFields,omitempty"`
+	// Secrets are the secrets the driver takes, apart from its
+	// configuration (ADR 26-11-12-461): today at most one, its key, which
+	// Config.Keys carries.
+	Secrets []SecretField `json:"secrets,omitempty"`
+}
+
+// TakesBase reports whether the driver makes a fresh VM from a base
+// (Config.Base); one that does not refuses a fresh VM, whatever it is given.
+func (d Definition) TakesBase() bool { return d.Base != nil }
+
+// Secret is the definition's secret of the key.
+func (d Definition) Secret(key string) (SecretField, bool) {
+	i := slices.IndexFunc(d.Secrets, func(s SecretField) bool { return s.Key == key })
+	if i < 0 {
+		return SecretField{}, false
+	}
+	return d.Secrets[i], true
 }
 
 // Field is the definition's field of the key, retired or not.
@@ -109,7 +128,8 @@ func (d Definition) Keys() []string {
 // check refuses a definition a driver should never register: a field with
 // no key, a key twice, a type that is not one of the three, a retired field
 // whose replacement is missing, retired, of another type, or more
-// privileged than it, or a base described with a key.
+// privileged than it, a base described with a key, or a secret malformed,
+// more than one, or with a field's key.
 func (d Definition) check() error {
 	seen := map[string]bool{}
 	for _, f := range d.ConfigFields {
@@ -143,8 +163,19 @@ func (d Definition) check() error {
 			return fmt.Errorf("retired field %q is not as privileged as its replacement", f.Key)
 		}
 	}
-	if d.Base.Key != "" {
+	if d.Base != nil && d.Base.Key != "" {
 		return errors.New("the base is not a field of the configuration: it has no key")
+	}
+	if len(d.Secrets) > 1 {
+		return errors.New("more than one secret: a driver's secret is its key, which Config.Keys carries")
+	}
+	for _, s := range d.Secrets {
+		if seen[s.Key] {
+			return fmt.Errorf("secret %q is a field's key", s.Key)
+		}
+		if err := s.check(d.ConfigFields); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -217,6 +248,9 @@ func Normalize(driver string, config json.RawMessage) (json.RawMessage, error) {
 	}
 	for _, key := range slices.Sorted(maps.Keys(fields)) {
 		f, ok := def.Field(key)
+		if _, secret := def.Secret(key); secret {
+			return nil, fmt.Errorf("%s: configuration: %s is a secret, given apart from the configuration as the driver's key, never in it", driver, key)
+		}
 		if !ok {
 			return nil, unknownField(driver, key, def)
 		}
