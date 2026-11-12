@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -49,7 +50,7 @@ func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst lo
 	if log == nil {
 		log = io.Discard
 	}
-	ipsw, err := restoreImage(ctx, spec.Media, spec.CacheDir, log)
+	ipsw, err := restoreImage(ctx, d.transport, spec.Media, spec.CacheDir, log)
 	if err != nil {
 		return nil, err
 	}
@@ -138,8 +139,10 @@ func parseOptions(in map[string]string) (options, error) {
 // restoreImage is the IPSW to install: media itself, or for "latest" the
 // newest one this Mac supports, downloaded once into the cache under the name
 // Apple gives it. It is about 20 GB, so a partial download is resumed, and it
-// is renamed into place only when complete.
-func restoreImage(ctx context.Context, media, cacheDir string, log io.Writer) (string, error) {
+// is renamed into place only when complete. Virtualization.framework finds
+// which image is the newest, over its own connection; the driver downloads it
+// through transport, an embedder's dialer where one is set.
+func restoreImage(ctx context.Context, transport http.RoundTripper, media, cacheDir string, log io.Writer) (string, error) {
 	if media != "latest" {
 		if _, err := os.Stat(media); err != nil {
 			return "", fmt.Errorf("vz: restore image: %w", err)
@@ -165,29 +168,9 @@ func restoreImage(ctx context.Context, media, cacheDir string, log io.Writer) (s
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return "", err
 	}
-	partial := dst + ".download"
 	fmt.Fprintf(log, "vz: downloading %s\n", latest)
-	reader, err := vz.FetchLatestSupportedMacOSRestoreImage(ctx, partial)
-	if err != nil {
+	if err := downloadResumable(ctx, transport, latest, dst, log); err != nil {
 		return "", fmt.Errorf("vz: download restore image: %w", err)
-	}
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for done := false; !done; {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-reader.Finished():
-			if err := reader.Err(); err != nil {
-				return "", fmt.Errorf("vz: download restore image: %w", err)
-			}
-			done = true
-		case <-ticker.C:
-			fmt.Fprintf(log, "vz: downloaded %.0f%% (%d MiB)\n", reader.FractionCompleted()*100, reader.Current()>>20)
-		}
-	}
-	if err := os.Rename(partial, dst); err != nil {
-		return "", err
 	}
 	return dst, nil
 }
