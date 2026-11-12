@@ -192,4 +192,30 @@ guest port through the peer's shim's `/dial`.
 are the relay's, `Dial` is `/dial`, `Kill` is `/kill` (a shim from before
 `/kill` is stopped with no grace), and `Done` closes once the shim's process
 has exited. A shim from before `shim.sock` named a loopback address in
-`shim.json` instead, and is reached there until it exits.
+`shim.json` instead, and is reached there, to be stopped, until it exits.
+
+## A shim of another build is stopped, never half used
+
+A shim outlives the engine that started it, an embedder's restart and
+upgrade included, so an engine meets shims of other builds (discobox ADR
+26-11-11-963 §7). Part of a shim lasts, and every build keeps it:
+`shim.json`'s PID, socket (or address), token, and service, and `/status`,
+`/stop`, and `/kill`. The rest, the relay on `/guest` and the streams on
+`/dial`, is versioned: `shim.json` names the shim's `protocol`
+(`shimProtocol`), the `guestProtocol` its relay speaks (`guest.Protocol`),
+and its `build`. A shim from before they were written is protocol 1,
+whatever its build: its `/dial` varies (none before 2026-11-01, the service
+port unmapped before 2026-11-03), so it is never taken for this build's.
+
+- **A shim of this build's protocols** is attached and used as any other.
+- **A shim of another** is attached all the same, so the instance reads as
+  running and is never started twice, committed, or upgraded under it. It is
+  stopped through the part that lasts: `Shutdown` is `/stop`, ordered and
+  then forced off at the caller's deadline, and `Kill` is `/kill`. Every
+  other guest operation and `Dial` return `machine.ErrStale`, naming both
+  builds' protocols. A peer forward to it connects and reads EOF, and the
+  forwarding shim logs why. A stop and a start replace the shim, and the
+  instance boots again on its own disk.
+
+The instance's URL is a loopback TCP port, which lasts, so it is served
+through a shim of any protocol.

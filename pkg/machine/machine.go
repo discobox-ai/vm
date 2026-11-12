@@ -73,6 +73,13 @@ var ErrCapacity = errors.New("machine: the host runs as many guests of this OS a
 // ErrNotRunning reports that an instance has no running machine to attach to.
 var ErrNotRunning = errors.New("machine: the instance is not running")
 
+// ErrStale reports a running instance held by a process of another build
+// that this one cannot reach its guest through: a shim an older (or newer)
+// disco-vm started, which outlived the engine that started it. The instance
+// still runs, still stops, and boots again on its own disk; stopping it and
+// starting it again replaces the process.
+var ErrStale = errors.New("machine: the process that holds the instance is of another disco-vm; stop the instance and start it again to replace it")
+
 // OS is a guest operating system. It uses GOOS spelling, because the guest
 // agent is the disco-vm binary built for that GOOS.
 type OS string
@@ -589,7 +596,10 @@ type Driver interface {
 	// credentials. A guest that shut itself down while nothing watched reads
 	// as not running. The machine watches for its own stop only once Done,
 	// Err, or Kill is called, so attaching to run a command costs nothing
-	// that outlives the call.
+	// that outlives the call. A machine held by a process this build cannot
+	// use is attached all the same, so it reads as running and stops as any
+	// other does (Shutdown without reboot, Kill, Done); its other guest
+	// operations and Dial return ErrStale.
 	Attach(ctx context.Context, inst Instance) (Machine, error)
 	// Commit freezes a stopped VM under its name for copying, and returns it
 	// (ADR 26-11-03-606): its data volume and cache clone are removed, and
