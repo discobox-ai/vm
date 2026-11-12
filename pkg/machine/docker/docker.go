@@ -191,6 +191,9 @@ func (*Driver) Capabilities() machine.Capabilities {
 		Commit:  true,
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
 		Volumes: []machine.Volume{machine.VolumeData, machine.VolumeCache},
+		// The container's address on its network; its URL is a port the
+		// daemon publishes on the host's loopback, never public.
+		URLs: machine.URLCapabilities{Private: machine.URLAlways},
 	}
 }
 
@@ -408,6 +411,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	}
 	if spec.Isolated || len(spec.Networks) > 0 {
 		return machine.Instance{}, fmt.Errorf("docker: isolation: %w", machine.ErrUnsupported)
+	}
+	if err := spec.URLs.Check(d.Capabilities().URLs); err != nil {
+		return machine.Instance{}, fmt.Errorf("docker: %w", err)
 	}
 	if spec.Egress != nil {
 		return machine.Instance{}, fmt.Errorf("docker: egress: %w", machine.ErrUnsupported)

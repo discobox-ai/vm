@@ -58,6 +58,7 @@ a `Capabilities` field, never a faked method:
 | isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no | no | no |
 | egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | `none`: no network device (else a NIC on passt) | none | `none` and `allow`: `network.egress`, default `deny` |
 | private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | none | the URL (a shared loopback) | the URL |
+| URLs (`URLs`: given never, when asked, or always) | none | none | private always on networks (direct); on none the public one, so none with that off; public when asked (the default proxy, its default) | private always; never public (a loopback port) | none | private always (a shared loopback); never public | private and public always (the exposed port) |
 | volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<pool>--<name>--data` |
 | upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
 
@@ -175,6 +176,20 @@ refuses a fence it does not hold. vz holds `none` alone, as an instance with
 no network device, whose only reach is the vsock its spec forwards; its
 read-back is the instance's record, which Boot reads to attach no NIC.
 `Instance.Egress` is the fence the provider reports.
+
+`URLs` at create asks for each of the service's URLs, internal, private and
+public, on or off, strictly or not; unset is the driver's default (ADR
+26-11-12-604; the scopes are ADR 26-11-04-412 §4's). `Capabilities.URLs` is
+each scope's reach (`URLNever`, `URLOptional`, `URLAlways`). A driver honors
+a request where it can; a strict one it cannot meet, a URL it never gives
+asked on or one it always gives asked off, it refuses (`URLRequests.Check`, in
+every driver's Create and the engine's). A reach that depends on the rest of
+the spec is reported as the common case, and the driver's Create refuses what
+it cannot meet (boxd: a strict private URL on no networks, the public one
+off). Internal has no field on `Service`
+yet, so no driver gives one. A URL on the engine's host alone, a loopback
+port, is not public. The provider reports no request on `Instance`:
+`Service` says which URLs an instance has.
 
 ## Two volumes, at fixed paths, and a cache is saved only on request
 

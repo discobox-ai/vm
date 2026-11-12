@@ -51,6 +51,11 @@ type fakeAPI struct {
 	snapshotIDRefused atomic.Bool
 	// proxyErr, when set, is SetProxyPort's answer.
 	proxyErr error
+	// deleteProxyErr, when set, is DeleteProxy's answer: whether boxd
+	// removes a machine's default proxy is not proven.
+	deleteProxyErr error
+	// proxyKept makes DeleteProxy answer and keep the proxy.
+	proxyKept atomic.Bool
 	// syncFails makes the guest's sync exit 1.
 	syncFails atomic.Bool
 	// egressIgnored makes SetVmEgressAllow answer and keep nothing, so
@@ -105,6 +110,8 @@ type fakeVM struct {
 	// botProtection is on for a new machine, as on boxd.
 	proxyPort     uint32
 	botProtection bool
+	// proxyRemoved is set once DeleteProxy removed the default proxy.
+	proxyRemoved bool
 	// isolated is immutable, and networks set at create or by
 	// SetVmNetworks.
 	isolated bool
@@ -418,7 +425,13 @@ func (f *fakeAPI) ListProxies(_ context.Context, req *boxdapi.ListProxiesRequest
 	defer f.mu.Unlock()
 	v, err := f.vm(req.GetVm())
 	if err != nil {
-		return nil, err
+		// boxd's API says `vm` filters the listing, not what it answers for
+		// an ID that is no machine: the fake lists nothing, the answer a
+		// caller can least tell from a machine with no proxies.
+		return &boxdapi.ListProxiesResponse{}, nil
+	}
+	if v.proxyRemoved {
+		return &boxdapi.ListProxiesResponse{}, nil
 	}
 	// boxd's default proxy is not named "default", so neither is this one.
 	p := &boxdapi.ProxyInfo{Name: v.name, VmName: v.name, VmId: v.id, Domain: v.name + ".boxd.test", IsDefault: true, PortMode: "auto", EffectivePort: 8000}
@@ -447,6 +460,23 @@ func (f *fakeAPI) SetProxyPort(_ context.Context, req *boxdapi.SetProxyPortReque
 	}
 	v.proxyPort = uint32(port)
 	return &boxdapi.SetProxyPortResponse{}, nil
+}
+
+func (f *fakeAPI) DeleteProxy(_ context.Context, req *boxdapi.DeleteProxyRequest) (*boxdapi.DeleteProxyResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, err := f.vm(req.GetVm())
+	if err != nil {
+		return nil, err
+	}
+	if f.deleteProxyErr != nil {
+		return nil, f.deleteProxyErr
+	}
+	if v.proxyRemoved || req.GetName() != v.name {
+		return nil, status.Errorf(codes.NotFound, "%s has no proxy %q", v.name, req.GetName())
+	}
+	v.proxyRemoved = !f.proxyKept.Load()
+	return &boxdapi.DeleteProxyResponse{}, nil
 }
 
 func (f *fakeAPI) SetBotProtection(_ context.Context, req *boxdapi.SetBotProtectionRequest) (*boxdapi.SetBotProtectionResponse, error) {

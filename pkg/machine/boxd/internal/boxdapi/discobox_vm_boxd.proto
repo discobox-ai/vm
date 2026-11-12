@@ -49,6 +49,10 @@ service BoxdApi {
   // whose TLS boxd terminates, forwarding HTTP to one port of the machine.
   rpc ListProxies(ListProxiesRequest)       returns (ListProxiesResponse);
   rpc SetProxyPort(SetProxyPortRequest)     returns (SetProxyPortResponse);
+  // Removes a proxy and its domain (docs.boxd.sh/guides/proxies, "Remove a
+  // proxy"). The docs show it on a subdomain proxy; that it takes a
+  // machine's default one too is what TestNoPublicURL checks on boxd.
+  rpc DeleteProxy(DeleteProxyRequest)       returns (DeleteProxyResponse);
   // Bot protection challenges an HTTPS request that would wake a sleeping
   // machine on <machine>.<zone>. On by default.
   rpc SetBotProtection(SetBotProtectionRequest) returns (SetBotProtectionResponse);
@@ -293,6 +297,12 @@ message SetProxyPortRequest {
   string vm   = 4;  // machine id OR name
 }
 message SetProxyPortResponse {}
+
+message DeleteProxyRequest {
+  string name = 1;
+  string vm   = 3;  // machine id OR name
+}
+message DeleteProxyResponse {}
 
 message SetBotProtectionRequest {
   string vm_id   = 1;  // name or id

@@ -845,6 +845,58 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 	})
 
+	// A strict URL request is met or refused: a URL the driver never gives
+	// asked on, or always gives asked off, is refused, and a public URL it
+	// gives when asked, asked off, is not there.
+	t.Run("url-requests", func(t *testing.T) {
+		scopes := []struct {
+			name  string
+			reach machine.URLReach
+			set   func(*machine.URLRequests, machine.URLRequest)
+		}{
+			{"internal", caps.URLs.Internal, func(r *machine.URLRequests, q machine.URLRequest) { r.Internal = q }},
+			{"private", caps.URLs.Private, func(r *machine.URLRequests, q machine.URLRequest) { r.Private = q }},
+			{"public", caps.URLs.Public, func(r *machine.URLRequests, q machine.URLRequest) { r.Public = q }},
+		}
+		for _, scope := range scopes {
+			for _, mode := range []machine.URLMode{machine.URLOn, machine.URLOff} {
+				if (mode == machine.URLOn && scope.reach != machine.URLNever) || (mode == machine.URLOff && scope.reach != machine.URLAlways) {
+					continue
+				}
+				spec := start
+				spec.Name, spec.CPUs, spec.Memory = newName(), cfg.CPUs, cfg.Memory
+				scope.set(&spec.URLs, machine.URLRequest{Mode: mode, Strict: true})
+				inst, err := driver.Create(ctx, spec)
+				if err == nil {
+					_ = driver.Destroy(context.Background(), inst)
+				}
+				if !errors.Is(err, machine.ErrUnsupported) {
+					t.Fatalf("a strict %s URL %s on a driver whose reach is %q: %v, want ErrUnsupported", scope.name, mode, scope.reach, err)
+				}
+			}
+		}
+		if caps.URLs.Public != machine.URLOptional {
+			return
+		}
+		spec := start
+		spec.URLs.Public = machine.URLRequest{Mode: machine.URLOff, Strict: true}
+		inst := create(t, spec)
+		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
+		started, err := driver.Start(startCtx, inst, machine.BootOptions{})
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		t.Cleanup(func() { _ = started.Kill(context.Background()) })
+		service, err := driver.Service(ctx, inst)
+		if err != nil {
+			t.Fatalf("service of a running instance: %v", err)
+		}
+		if service.Listen == "" || service.URL != "" {
+			t.Fatalf("an instance whose public URL is asked off has service %+v, with a URL", service)
+		}
+	})
+
 	// A key the driver issues runs the pool's machines from another
 	// driver, cannot issue a key, and works no more once revoked. A driver
 	// that issues none says so with ErrNoKey or ErrCannotIssue.

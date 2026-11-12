@@ -111,6 +111,9 @@ func (d *Hypervisor) Capabilities() machine.Capabilities {
 		Keys:        machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopePool},
 		Volumes:     []machine.Volume{machine.VolumeData, machine.VolumeCache},
 		MaxRunning:  d.MaxRunning,
+		// Its guests share the host's loopback, so the URL, never public,
+		// is the private one too.
+		URLs: machine.URLCapabilities{Private: machine.URLAlways},
 	}
 	if d.NoCommit {
 		caps.Install, caps.Commit = nil, false

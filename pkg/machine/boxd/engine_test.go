@@ -234,13 +234,17 @@ func TestEngineCommitsAVM(t *testing.T) {
 		t.Fatalf("start of a committed VM: %v, want ErrCommitted", err)
 	}
 
-	from, err := e.Create(ctx, engine.CreateOptions{Name: "again", From: "fresh", CPUs: 4, Memory: 16 << 30})
+	from, err := e.Create(ctx, engine.CreateOptions{Name: "again", From: "fresh", CPUs: 4, Memory: 16 << 30, URLs: machine.URLRequests{Public: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
 	if err != nil {
 		t.Fatalf("create from the committed VM: %v", err)
 	}
 	t.Cleanup(func() { _ = e.Remove(context.Background(), from, true) })
 	if v := machineOf("again"); v.vcpu != 4 || v.memory != 16<<30 {
 		t.Fatalf("the copy's machine = %+v; want it made at 4 CPUs and 16 GiB", v)
+	}
+	// Its public URL asked off, it has no URL, and the engine says why.
+	if _, err := e.URL(ctx, from); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("the URL of a VM whose public URL is asked off: %v, want ErrUnsupported", err)
 	}
 	if err := e.Start(ctx, from, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
 		t.Fatalf("start the copy: %v", err)

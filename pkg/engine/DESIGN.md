@@ -49,7 +49,8 @@ guest. A program the caller copies in reads it, or calls
 `Engine.URL` and `disco-vm url INSTANCE` give the service's URL, always HTTP:
 
 - **The driver's**, where it has one: boxd's `https://<machine>.boxd.sh`,
-  pinned to 7302 at Create and the same across stop and start; Docker's
+  unless its public URL is asked off (below), pinned to 7302 at Create and the
+  same across stop and start; Docker's
   `http://127.0.0.1:N`, a port the daemon publishes at each start.
 - **The shim's** everywhere else: `http://127.0.0.1:N`, a loopback port the
   shim binds at each start and splices, connection by connection, into the
@@ -57,6 +58,23 @@ guest. A program the caller copies in reads it, or calls
   instance's `shim.json`, and there is none while the instance is stopped.
 
 No URL takes a credential, so the service authenticates its callers.
+
+**Each URL is asked for, on or off, strictly or not** (`CreateOptions.URLs`,
+`disco-vm create --url SCOPE=on|off[,strict]`; ADR 26-11-12-604), one
+request for each of internal, private and public. Unset is the driver's
+default. A driver honors a request where it can (boxd withholds its public URL
+when asked off); without `strict` the instance gets what the driver gives
+either way, and with it the driver gives exactly that or the create is
+refused (`machine.ErrUnsupported`). `Capabilities.URLs` says, for each
+scope, whether a driver gives that URL never, when asked, or always, and the
+engine refuses a strict request that reach cannot meet before the driver is
+asked; a driver refuses one that depends on the rest of the spec itself (boxd:
+a strict private URL on no networks, its public one off). A
+loopback URL is never public. `Engine.URL` of an instance with none is
+`machine.ErrUnsupported`. A caller that must not have a public URL asks for
+it off, strictly: whatever the guest's root binds to the service's port
+answers there, so a public URL is an inbound path from the internet that
+neither an egress fence nor the service's own authentication holds.
 
 `Engine.PrivateURL` and `disco-vm url --private INSTANCE` give where the
 instance's peers, other instances of the driver on its networks, reach the
@@ -66,8 +84,9 @@ it is not running, and refused where the driver has none (vz, hcs):
 - **A direct path** to the instance's address, where every port the guest
   listens on is reachable: boxd's `http://<machine>.boxd:7302` for a machine
   on networks, docker's container address on its network.
-- **The URL**, where that is how peers reach it: boxd's on no networks, and
-  fake's, whose guests share the host's loopback.
+- **The URL**, where that is how peers reach it: boxd's on no networks, if it
+  has one, and fake's, whose guests share the host's loopback. A boxd
+  instance on no networks whose public URL is off has neither.
 
 A caller tells a direct path by its differing from the URL.
 

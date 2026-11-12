@@ -72,3 +72,11 @@
   `go test ./...` with cgo, so a darwin test that fails first breaks CI, and
   `task test:vz` always sets the binary, so the author's runs never see it. A
   review found a vz test that did.
+- **A URL's reach that depends on the rest of the spec is refused in the
+  driver's Create, and documented as conditional.** `Capabilities.URLs` is
+  one value a scope, which `URLRequests.Check` reads alone; where a driver can
+  meet a strict request only with some networks or another URL's mode (boxd's
+  private URL is its public one on no networks), its Create refuses the rest,
+  and the capability table and the driver's DESIGN.md say when. Why: the
+  engine passes such a request, so a reach stated as unconditional would
+  promise what the driver then refuses.

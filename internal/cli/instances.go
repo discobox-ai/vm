@@ -30,6 +30,7 @@ type createFlags struct {
 	fromSet  func() bool
 	cpus     int
 	isolated bool
+	urls     []string
 	networks []string
 	egress   []string
 	// data and cacheSize are sizes; data unset is no data volume, and cache
@@ -43,6 +44,7 @@ func (f *createFlags) register(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "vCPUs (default: the driver's)")
 	cmd.Flags().StringVar(&f.memory, "memory", "", "memory, e.g. 8GiB (default: the driver's)")
 	cmd.Flags().BoolVar(&f.isolated, "isolated", false, "strip the machine of what its provider gives one by default (boxd: the in-VM CLI and token, git credentials, integrations, default-network peers), for good")
+	cmd.Flags().StringArrayVar(&f.urls, "url", nil, "ask for one of the service's URLs, SCOPE=on|off[,strict], SCOPE internal, private or public (repeatable; default: the driver's); strict refuses a VM the driver cannot give that, e.g. public=off,strict for no URL the internet reaches")
 	cmd.Flags().StringSliceVar(&f.networks, "network", nil, "a provider network the machine peers on, in place of its default one (repeatable)")
 	// An array, not a slice: a slice reads --egress="" as no entries at all,
 	// which would fence the machine to nothing rather than be refused.
@@ -114,8 +116,12 @@ func (f *createFlags) create(ctx context.Context, e *engine.Engine, name string)
 	if err != nil {
 		return engine.Instance{}, err
 	}
+	urls, err := parseURLRequests(f.urls)
+	if err != nil {
+		return engine.Instance{}, err
+	}
 	return e.Create(ctx, engine.CreateOptions{
-		Name: name, From: f.from, CPUs: f.cpus, Memory: memory, Isolated: f.isolated, Networks: f.networks, Egress: egress,
+		Name: name, From: f.from, CPUs: f.cpus, Memory: memory, Isolated: f.isolated, Networks: f.networks, URLs: urls, Egress: egress,
 		Data: data, Cache: cache,
 	})
 }
@@ -586,4 +592,34 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// parseURLRequests reads --url values, SCOPE=on|off[,strict], one request
+// for each scope at most.
+func parseURLRequests(values []string) (machine.URLRequests, error) {
+	var urls machine.URLRequests
+	seen := map[string]bool{}
+	for _, value := range values {
+		scope, rest, ok := strings.Cut(value, "=")
+		mode, strict, _ := strings.Cut(rest, ",")
+		if !ok || (mode != "on" && mode != "off") || (strict != "" && strict != "strict") {
+			return urls, fmt.Errorf("--url %q: want SCOPE=on|off[,strict]", value)
+		}
+		req := machine.URLRequest{Mode: machine.URLMode(mode), Strict: strict == "strict"}
+		switch scope {
+		case "internal":
+			urls.Internal = req
+		case "private":
+			urls.Private = req
+		case "public":
+			urls.Public = req
+		default:
+			return urls, fmt.Errorf("--url %q: the scope is internal, private or public", value)
+		}
+		if seen[scope] {
+			return urls, fmt.Errorf("--url: %s given twice", scope)
+		}
+		seen[scope] = true
+	}
+	return urls, nil
 }
