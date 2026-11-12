@@ -26,12 +26,22 @@ embedder authenticates the channel; the handler authenticates no one.
   unless `FieldForwards` is listed too.
 - **What the engine checks, the server's side checks again.** The engine
   runs on the client, which is the caller's. A forward to a host socket is
-  refused by the server whatever the list says: only the embedder's hook
-  sets one. A malformed peer forward is refused by the driver, as the
+  refused by the server whatever the list says (`ErrRefused`), and so is
+  a forward that names a pool, and a `From` (`fromPool`) of a pool other
+  than the one its name is found in (`ErrUnsupported`: the client never
+  reports `AcrossPools`): only the embedder's hook sets either, as
+  discobox's server sets a sandbox's one forward to its pool machine and a
+  darwin sandbox's base. A malformed peer forward is refused by the driver, as the
   engine refuses it (`local`'s `checkForwards`).
 - **A hook on every create** (`Options.Create`), after the fields are
   checked and `From` found, before the driver: the embedder forces a fence,
-  a size, or a forward of its own there, or refuses.
+  a size, a forward of its own, or a `From` of another pool there, or
+  refuses. There is no hook on an upgrade, so a client's upgrade with no
+  `From` goes to the driver's base, never the embedder's: no held driver
+  upgrades yet (vz and libkrun attach no data volume, and refuse it). An
+  upgrade hook comes with the first that does (vm#57, vm#61), or a darwin
+  sandbox the hook made from the server's base would be upgraded to the
+  Linux base and refused on its guest OS.
 - **Version.** Every request carries the client's (`Disco-Vm-Version`);
   another than `Options.Version` is refused with a `*VersionError` naming
   both, before the request is routed.

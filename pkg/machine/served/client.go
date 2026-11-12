@@ -91,7 +91,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		Isolated: spec.Isolated, Networks: spec.Networks, Egress: spec.Egress, Data: spec.Data,
 	}
 	if spec.From != nil {
-		req.From = spec.From.Name
+		req.From, req.FromPool = spec.From.Name, spec.From.Pool
 	}
 	var inst machine.Instance
 	return inst, d.call(ctx, http.MethodPost, "/v1/vms", req, &inst)
@@ -165,7 +165,7 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machine.Instance) (machine.Instance, error) {
 	var req upgradeRequest
 	if from != nil {
-		req.From = from.Name
+		req.From, req.FromPool = from.Name, from.Pool
 	}
 	var upgraded machine.Instance
 	return upgraded, d.call(ctx, http.MethodPost, vmPath(inst.Name, "/upgrade"), req, &upgraded)

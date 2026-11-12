@@ -358,8 +358,9 @@ func rawGuest(t *testing.T, dial func(context.Context) (net.Conn, error), name, 
 }
 
 // A client allowed forwards is checked on the server as its engine would
-// check it, and a forward to a host socket is never served; the embedder's
-// hook may set one.
+// check it, and a forward to a host socket or one that names a pool is
+// never served; the embedder's hook may set either, as discobox's server
+// sets a sandbox's one forward to its pool machine.
 func TestForwardsAreCheckedOnTheServer(t *testing.T) {
 	ctx := t.Context()
 	driver := fakeDriver(t, "/nonexistent", t.TempDir(), "p")
@@ -369,7 +370,9 @@ func TestForwardsAreCheckedOnTheServer(t *testing.T) {
 		Allow:   []served.Op{served.OpCapabilities, served.OpCreate, served.OpRemove},
 		Fields:  []served.Field{served.FieldForwards},
 		Create: func(_ context.Context, spec *machine.InstanceSpec) error {
-			spec.Forwards = append(spec.Forwards, machine.Forward{Port: 9001, Socket: hostSocket})
+			spec.Forwards = append(spec.Forwards,
+				machine.Forward{Port: 9001, Socket: hostSocket},
+				machine.Forward{Port: 9002, Pool: "provider", Instance: "pool-a", InstancePort: guest.ServicePort})
 			return nil
 		},
 	})
@@ -378,9 +381,11 @@ func TestForwardsAreCheckedOnTheServer(t *testing.T) {
 		fwd  machine.Forward
 		want error
 	}{
-		"a host socket":       {machine.Forward{Port: 9000, Socket: "/var/run/docker.sock"}, served.ErrRefused},
-		"no target":           {machine.Forward{Port: 9000}, served.ErrRefused},
-		"a peer's other port": {machine.Forward{Port: 9000, Instance: "peer", InstancePort: 22}, machine.ErrUnsupported},
+		"a host socket":           {machine.Forward{Port: 9000, Socket: "/var/run/docker.sock"}, served.ErrRefused},
+		"another pool's instance": {machine.Forward{Port: 9000, Pool: "provider", Instance: "pool-a", InstancePort: guest.ServicePort}, machine.ErrUnsupported},
+		"its own pool, named":     {machine.Forward{Port: 9000, Pool: "p", Instance: "peer", InstancePort: guest.AgentPort}, machine.ErrUnsupported},
+		"no target":               {machine.Forward{Port: 9000}, served.ErrRefused},
+		"a peer's other port":     {machine.Forward{Port: 9000, Instance: "peer", InstancePort: 22}, machine.ErrUnsupported},
 	} {
 		if _, err := c.Create(ctx, machine.InstanceSpec{Name: "fwd", Forwards: []machine.Forward{c2.fwd}}); !errors.Is(err, c2.want) {
 			t.Fatalf("a forward to %s: %v, want %v", name, err, c2.want)
@@ -394,7 +399,55 @@ func TestForwardsAreCheckedOnTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = c.Destroy(context.Background(), inst) })
-	if len(inst.Forwards) != 2 || inst.Forwards[1].Socket != hostSocket {
-		t.Fatalf("created %+v, want the peer forward and the hook's socket", inst.Forwards)
+	if len(inst.Forwards) != 3 || inst.Forwards[1].Socket != hostSocket || inst.Forwards[2].Pool != "provider" {
+		t.Fatalf("created %+v, want the peer forward, and the hook's socket and its forward to another pool", inst.Forwards)
+	}
+}
+
+// A client's From of another pool is refused, even where the served pool has
+// a VM of its name; the embedder's hook may set one, as discobox's server
+// makes a darwin pool's sandboxes from its own base VM, and the client sees
+// where it came from.
+func TestOnlyTheHookReachesAnotherPool(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	server := fakeDriver(t, "/nonexistent", dir, "server")
+	b, err := server.Create(ctx, machine.InstanceSpec{Name: "base"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := server.Commit(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := fakeDriver(t, "/nonexistent", dir, "mine")
+	if _, err := mine.Create(ctx, machine.InstanceSpec{Name: "base"}); err != nil {
+		t.Fatal(err)
+	}
+	dial := serve(t, mine, served.Options{
+		Version: "v1", Allow: served.Ops, Fields: served.Fields,
+		Create: func(_ context.Context, spec *machine.InstanceSpec) error {
+			if spec.From == nil {
+				spec.From = &base
+			}
+			return nil
+		},
+	})
+	c := client(t, dial, "v1")
+	if caps, err := c.Capabilities(), c.Check(ctx); err != nil || caps.AcrossPools {
+		t.Fatalf("a served driver reports AcrossPools %t: %v", caps.AcrossPools, err)
+	}
+	if _, err := c.Create(ctx, machine.InstanceSpec{Name: "copy", From: &base}); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("a client's From of another pool, its name the served pool's too: %v, want ErrUnsupported", err)
+	}
+	inst, err := c.Create(ctx, machine.InstanceSpec{Name: "sandbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.Pool != "mine" || inst.From != "base" || inst.FromPool != "server" {
+		t.Fatalf("a VM the hook made from another pool's: %+v", inst)
+	}
+	if all, err := c.Instances(ctx); err != nil || len(all) != 2 {
+		t.Fatalf("the pool's VMs: %+v, %v; want its base and the sandbox alone", all, err)
 	}
 }

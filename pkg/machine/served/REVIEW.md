@@ -26,3 +26,9 @@
   so a sentinel a machine returns there (`machine.ErrStale` from a stale
   shim) reaches the client as its message alone. Say so wherever a sentinel
   is promised to the client.
+- **A seam type the protocol decodes whole is a field a pool sends.**
+  `createRequest.Forwards` is `[]machine.Forward`, so a field added to
+  `machine.Forward` reaches the driver unless `create` checks it.
+  `Forward.Pool` reached the owner's driver, which takes another pool,
+  until `create` refused it; the same holds for any type the requests
+  embed.
