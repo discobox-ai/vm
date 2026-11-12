@@ -115,10 +115,18 @@ a sparse copy of the blocks in use. `Chains` is false.
    TSI, so the guest reaches the host only through these ports.
 3. Without a fence, passt starts on one end of a socketpair and the launcher
    gets the other as a virtio-net device. passt serves DHCP and DNS from the
-   host's own configuration. A host with no default route gets no lease. If
-   passt exits while the VM runs, the console (the shim's log) says why. With
-   `Egress{}` there is no device and no passt. A non-empty `Allow` is
-   refused at Create.
+   host's own configuration. A host with no default route gets no lease. passt
+   maps no address to the host's loopback and forwards no port
+   (`--map-host-loopback none --no-map-gw --tcp-ports none --udp-ports
+   none`), so a guest reaches no service the host binds to its loopback, and
+   is reached only over vsock (discobox ADR 26-11-11-963 §11). So a host
+   whose resolver is on its loopback (systemd-resolved's `127.0.0.53`) gives
+   the guest no DNS server; one off it is handed to the guest as before.
+   `--dns-forward` to the host's resolver would keep DNS there, and is not
+   used: it is a path to the host's loopback, which that ADR says carries no
+   pool. If passt exits while the VM runs, the console (the shim's log) says
+   why. With `Egress{}` there is no device and no passt. A non-empty `Allow`
+   is refused at Create.
 4. `launch.conf` is written (format in `launch.c`), and the launcher starts.
    It is a child of the shim, forked on a locked thread with
    `PR_SET_PDEATHSIG`, so it dies with the shim. The kernel command line is
