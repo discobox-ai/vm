@@ -1,6 +1,6 @@
 ---
 name: verify-recipes
-description: How to verify a disco-vm change at runtime — the CLI against real boxd, Archil, or a real Docker daemon (run, exec, cp, stop, start, ps, rm, commit, create --from), including from inside a discobox whose boxd credential is a five-minute sentinel. Read before verifying anything that touches the engine, the CLI, or the boxd, archil, or docker driver.
+description: How to verify a disco-vm change at runtime — the CLI against real boxd, Archil, or a real Docker daemon (run, exec, cp, stop, start, ps, rm, commit, create --from), including from inside a discobox whose boxd credential is a stand-in (which needs the egress to swap it where the driver sends it). Read before verifying anything that touches the engine, the CLI, or the boxd, archil, or docker driver.
 ---
 
 # Verifying disco-vm
@@ -40,7 +40,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   (`app.boxd.sh`), so ask for `app.boxd.sh` too; and if the egress does
   not swap a JSON body, every call stops at `exchange API key: 401`
   (`discobox-access audit` shows the POST), and boxd cannot be driven from
-  the box (2026-11-12). Spell commands as the use names them: `ps`, not
+  the box (2026-11-12): don't retry, report boxd itself unverified (⬜ in
+  the proof table). A stand-in that is a token, not a `bxd_` key, goes as
+  the gRPC bearer header instead, which a header swap covers; whether one
+  can be asked for is unchecked. Spell commands as the use names them: `ps`, not
   its alias `ls`, and no `--debug`, or the judge may refuse the run.
   `unset BOXD_API_KEY` first: a box may carry a stale one, and the driver
   reads it before `BOXD_TOKEN`, so every call is a 401. A use that says it
