@@ -59,3 +59,10 @@
   forever. A new setting that narrows what `Instances` returns updates the
   reaping paragraph of `pkg/engine/DESIGN.md` in the same change. A review
   found the region added without it.
+- **A cache keyed by digest replaces only an entry that is broken.**
+  `linuximage.Pull` and `PullAgent` let a boot read an entry another pull
+  has just returned, so a pull that finds a good entry at its key when it is
+  done keeps that one and drops its own. Removing the key unconditionally
+  before the rename deletes a guest image or an agent from under a boot of
+  the same digest; a review found `PullAgent` copied from `Pull` without
+  that check.

@@ -1,7 +1,8 @@
 // Package linuximage is disco-vm's Linux guest image (pkg/guest/linux; ADR
 // 26-10-31-990 §3) as a hypervisor below the seam boots it: the base a fresh
-// VM starts from, pulled per manifest digest into the hypervisor's cache, and
-// what every boot hands the kernel. vz and libkrun share it (ADR
+// VM starts from, pulled per manifest digest into the hypervisor's cache,
+// what every boot hands the kernel, and the published agent an embedder pulls
+// by digest (PullAgent). vz and libkrun share it (ADR
 // 26-11-03-530 §6). It is pure Go, so it builds and is tested on every OS.
 package linuximage
 
@@ -219,17 +220,9 @@ func Pull(ctx context.Context, transport http.RoundTripper, cacheDir, ref, arch 
 		}
 		return "", fmt.Errorf("guest image %s: %w", ref, err)
 	}
-	img, err := desc.Image()
+	img, err := platformImage(desc, "guest image", ref, arch)
 	if err != nil {
-		return "", fmt.Errorf("guest image %s: %w", ref, err)
-	}
-	// A single-platform image is returned whatever platform was asked for.
-	config, err := img.ConfigFile()
-	if err != nil {
-		return "", fmt.Errorf("guest image %s: %w", ref, err)
-	}
-	if config.OS != "linux" || config.Architecture != arch {
-		return "", fmt.Errorf("guest image %s is for %s/%s, and this host boots linux/%s", ref, config.OS, config.Architecture, arch)
+		return "", err
 	}
 	digest, err := img.Digest()
 	if err != nil {
@@ -248,7 +241,7 @@ func Pull(ctx context.Context, transport http.RoundTripper, cacheDir, ref, arch 
 		return "", err
 	}
 	defer os.RemoveAll(tmp)
-	if err := extract(mutate.Extract(img), tmp); err != nil {
+	if err := extract(mutate.Extract(img), tmp, artifacts, 0o644); err != nil {
 		return "", fmt.Errorf("guest image %s: %w", ref, err)
 	}
 	for _, artifact := range need {
@@ -278,9 +271,27 @@ func Pull(ctx context.Context, transport http.RoundTripper, cacheDir, ref, arch 
 	return dir, nil
 }
 
-// extract writes the artifacts a flattened image's tar holds into dir, and
-// nothing else.
-func extract(r io.ReadCloser, dir string) error {
+// platformImage is desc's image for linux/arch, refused, naming what it is,
+// for another platform.
+func platformImage(desc *remote.Descriptor, what, ref, arch string) (v1.Image, error) {
+	img, err := desc.Image()
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", what, ref, err)
+	}
+	// A single-platform image is returned whatever platform was asked for.
+	config, err := img.ConfigFile()
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", what, ref, err)
+	}
+	if config.OS != "linux" || config.Architecture != arch {
+		return nil, fmt.Errorf("%s %s is for %s/%s, and this host boots linux/%s", what, ref, config.OS, config.Architecture, arch)
+	}
+	return img, nil
+}
+
+// extract writes the files of files a flattened image's tar holds into dir,
+// each with mode, and nothing else.
+func extract(r io.ReadCloser, dir string, files []string, mode os.FileMode) error {
 	defer r.Close()
 	tr := tar.NewReader(r)
 	for {
@@ -292,14 +303,14 @@ func extract(r io.ReadCloser, dir string) error {
 			return err
 		}
 		file := path.Clean(strings.TrimPrefix(hdr.Name, "/"))
-		if hdr.Typeflag != tar.TypeReg || !slices.Contains(artifacts, file) {
+		if hdr.Typeflag != tar.TypeReg || !slices.Contains(files, file) {
 			continue
 		}
 		dst := filepath.Join(dir, filepath.FromSlash(file))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
-		out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+		out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
 			return err
 		}

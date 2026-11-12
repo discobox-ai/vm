@@ -1,0 +1,45 @@
+# disco-vm's linux agent, published per module version (discobox ADR
+# 26-11-11-963 §10): every commit a push to main brings, a pseudo-version
+# each, and every v* tag pushes ghcr.io/discobox-ai/disco-vm-agent:<module
+# version> once, pulls it back anonymously by the digest it prints and checks
+# it. An embedder pins that digest beside the module version it requires.
+# Runs of one commit (main and a tag pushed together) take turns, so the
+# second finds the version published and pushes nothing; runs of different
+# commits never wait on or cancel each other. The job body is one Taskfile
+# target.
+name: Linux agent
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-agent-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Every commit since the push's BEFORE is built from its own
+          # worktree.
+          fetch-depth: 0
+      - uses: ./.github/actions/task
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEFORE: ${{ github.event.before }}
+        with:
+          target: release:linux-agent
