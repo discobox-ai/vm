@@ -323,11 +323,26 @@ func (vm *vmMachine) sockets(b bundle, forwards []machine.Forward) error {
 	return nil
 }
 
+// passtArgs is how passt runs for a VM, on the launcher's stream at
+// descriptor 3. It maps no address to the host's loopback, so a service the
+// host binds there is out of the guest's reach, and forwards no port into
+// the guest, which is reached only over vsock (discobox ADR 26-11-11-963
+// §11), with the flags discobox's own libkrun provider gives it (--no-map-gw
+// says again what --map-host-loopback none does). A host resolver on the
+// loopback is then out of reach too, and passt hands the guest no DNS server.
+func passtArgs() []string {
+	return []string{
+		"--fd", "3", "--foreground", "--quiet",
+		"--map-host-loopback", "none", "--no-map-gw",
+		"--tcp-ports", "none", "--udp-ports", "none",
+	}
+}
+
 // startPasst starts passt on one end of a connected Unix stream and returns
-// the other, for the launcher. passt serves the guest DHCP and DNS, and dies
-// with the shim, or when the launcher has exited. Its standard error goes to
-// the console, and so does its exit while the VM runs: the guest's network
-// is gone then, and nothing else would say why.
+// the other, for the launcher. passt serves the guest DHCP and DNS (passtArgs),
+// and dies with the shim, or when the launcher has exited. Its standard error
+// goes to the console, and so does its exit while the VM runs: the guest's
+// network is gone then, and nothing else would say why.
 func (vm *vmMachine) startPasst(rt krunRuntime, console io.Writer) (*os.File, error) {
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -336,7 +351,7 @@ func (vm *vmMachine) startPasst(rt krunRuntime, console io.Writer) (*os.File, er
 	ours, theirs := os.NewFile(uintptr(fds[0]), "passt"), os.NewFile(uintptr(fds[1]), "launcher")
 	defer ours.Close()
 	// Not bound to a context: passt lives as long as the VM, not the boot.
-	cmd := exec.CommandContext(context.Background(), rt.path(passtName), "--fd", "3", "--foreground", "--quiet") //nolint:gosec // G204: the runtime's passt
+	cmd := exec.CommandContext(context.Background(), rt.path(passtName), passtArgs()...) //nolint:gosec // G204: the runtime's passt
 	cmd.ExtraFiles = []*os.File{ours}
 	out := &tailBuffer{tee: console}
 	cmd.Stderr = out
