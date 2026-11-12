@@ -46,7 +46,10 @@ driver holds it, and outlives the client.
 HTTP/1.1, a new stream per call from the client's dialer, nothing kept
 between calls, as the agent's protocol is (`pkg/guest`). Errors carry a
 code that names a sentinel (`machine.ErrNotFound`, `ErrRefused`, ...), so
-`errors.Is` answers the same on both sides. A guest operation's refusal
+`errors.Is` answers the same on both sides; a sentinel the seam gains gets a
+code and a status with it. `machine.ErrStale`'s is `stale`: a VM whose shim
+is of another protocol refuses `dial` with it, and its guest operations
+with its message alone, as every guest operation's error crosses. A guest operation's refusal
 travels in the agent's protocol, which carries no code, so the client
 refuses one the list does not allow before it asks, with `ErrRefused`, and
 the server refuses it whatever the client does. A VM's guest operations upgrade

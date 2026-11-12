@@ -239,6 +239,7 @@ var sentinels = []struct {
 	{"committed", machine.ErrCommitted},
 	{"capacity", machine.ErrCapacity},
 	{"not-running", machine.ErrNotRunning},
+	{"stale", machine.ErrStale},
 	{"unsupported", machine.ErrUnsupported},
 	{"not-implemented", machine.ErrNotImplemented},
 	{"no-key", machine.ErrNoKey},
