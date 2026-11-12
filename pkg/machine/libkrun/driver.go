@@ -78,6 +78,7 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		Commit:            true,
 		SharedDirectories: true,
 		Ports:             true,
+		AcrossPools:       true,
 		Agent:             true,
 		Keys:              machine.KeyCapabilities{Mode: machine.KeysNone},
 		Egress:            []machine.EgressFence{machine.EgressNone},

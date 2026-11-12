@@ -31,10 +31,12 @@ const (
 )
 
 // upgradeTarget is the root an upgrade gives a VM: a copy of the committed
-// VM FromID, or a fresh one from the base where FromID is empty.
+// VM FromID, or a fresh one from the base where FromID is empty. FromPool
+// is From's pool where it is not the VM's own.
 type upgradeTarget struct {
-	From   string `json:"from,omitempty"`
-	FromID string `json:"fromID,omitempty"`
+	From     string `json:"from,omitempty"`
+	FromPool string `json:"fromPool,omitempty"`
+	FromID   string `json:"fromID,omitempty"`
 }
 
 // whole refuses a VM caught between two roots by an interrupted upgrade.
@@ -42,15 +44,21 @@ func (rec instanceRecord) whole() error {
 	if rec.Upgrading == nil {
 		return nil
 	}
-	return fmt.Errorf("instance %s: an upgrade of it is unfinished; run upgrade again%s to finish it, or remove it", rec.Name, rec.Upgrading.flag())
+	return fmt.Errorf("instance %s: an upgrade of it is unfinished; %s to finish it, or remove it", rec.Name, rec.Upgrading.again())
 }
 
-// flag is how the command line names the target, for an error.
-func (t upgradeTarget) flag() string {
-	if t.From == "" {
-		return ""
+// again is how a caller names the target again, for an error: on the
+// command line, or, for another pool's committed VM, which only an
+// embedder's Engine.From names, as that engine does.
+func (t upgradeTarget) again() string {
+	switch {
+	case t.FromPool != "":
+		return fmt.Sprintf("upgrade it again to %s of pool %s (as its embedder's engine does, with no --from)", t.From, t.FromPool)
+	case t.From == "":
+		return "run upgrade again"
+	default:
+		return "run upgrade again --from " + t.From
 	}
-	return " --from " + t.From
 }
 
 // upgradeSpec is the hypervisor's view of the VM's disk in dir (nextDir or
@@ -84,13 +92,23 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 	if shim, err := d.openShim(rec.ID); err == nil && shim.status(ctx) == nil {
 		return machine.Instance{}, fmt.Errorf("instance %s is running; stop it to upgrade it", rec.Name)
 	}
-	fromName := ""
+	var asked upgradeTarget
 	if from != nil {
-		fromName = from.Name
+		asked.From = from.Name
+		if machine.OtherPool(from.Pool, d.pool) {
+			asked.FromPool = from.Pool
+		}
+		issued, err := d.caller(ctx)
+		if err != nil {
+			return machine.Instance{}, err
+		}
+		if err := d.acrossPools(issued, from.Pool); err != nil {
+			return machine.Instance{}, err
+		}
 	}
 	var target upgradeTarget
 	switch {
-	case rec.Upgrading != nil && rec.Upgrading.From == fromName:
+	case rec.Upgrading != nil && rec.Upgrading.From == asked.From && rec.Upgrading.FromPool == asked.FromPool:
 		// Finishing an upgrade: the committed VM it is from is read only if
 		// its new disk is still to be made, so one removed since does not
 		// keep it from finishing.
@@ -104,10 +122,7 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 			return machine.Instance{}, fmt.Errorf("instance %s is a %s guest, and %s's base is %s: its data volume is %s's", rec.Name, rec.GuestOS, d.hv.Name(), guestOS, rec.GuestOS)
 		}
 	default:
-		src, err := d.readPool(from.ID)
-		if errors.Is(err, machine.ErrNotFound) || (err == nil && src.Name != from.Name) {
-			err = fmt.Errorf("instance %s: %w", from.Name, machine.ErrNotFound)
-		}
+		src, err := d.readFrom(*from)
 		if err != nil {
 			return machine.Instance{}, err
 		}
@@ -120,7 +135,7 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 		if src.GuestOS != rec.GuestOS {
 			return machine.Instance{}, fmt.Errorf("instance %s is a %s guest, and %s a %s one: its data volume is %s's", rec.Name, rec.GuestOS, src.Name, src.GuestOS, rec.GuestOS)
 		}
-		target = upgradeTarget{From: src.Name, FromID: src.ID}
+		target = upgradeTarget{From: src.Name, FromPool: asked.FromPool, FromID: src.ID}
 	}
 	if rec.Upgrading != nil && *rec.Upgrading != target {
 		// Until the new disk is whole the old one and its volumes are
@@ -140,7 +155,7 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 	if err := d.upgrade(ctx, rec, target); err != nil {
 		return machine.Instance{}, fmt.Errorf("upgrade %s: %w", rec.Name, err)
 	}
-	rec.From, rec.FromID, rec.Upgrading = target.From, target.FromID, nil
+	rec.From, rec.FromPool, rec.FromID, rec.Upgrading = target.From, target.FromPool, target.FromID, nil
 	if err := d.writeRecord(rec); err != nil {
 		return machine.Instance{}, err
 	}

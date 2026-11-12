@@ -2,6 +2,7 @@ package local
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -141,9 +142,21 @@ func listenControl(ctx context.Context, dir string) (net.Listener, string, func(
 // its URL, and its forwards, and return when the machine stops. Canceling ctx
 // (a signal) shuts the guest down in order first.
 func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
-	rec, err := d.readPool(id)
+	rec, err := d.readRecord(id)
 	if err != nil {
 		return err
+	}
+	if rec.Pool != d.pool {
+		// A shim command an embedder names carries no pool, and it runs
+		// the VMs of every pool it makes (its Engine.From and Forwards
+		// reach across them): the record says which is the VM's, to the
+		// owner. A key the driver issued is its pool's alone.
+		if issued, err := d.caller(ctx); err != nil || issued != nil {
+			return fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
+		}
+		if d, err = d.InPool(rec.Pool); err != nil {
+			return err
+		}
 	}
 	if err := d.checkShimConfig(id); err != nil {
 		return err
@@ -398,7 +411,7 @@ func (d *Driver) dialForward(ctx context.Context, f machine.Forward) (net.Conn, 
 		var dialer net.Dialer
 		return dialer.DialContext(ctx, "unix", f.Socket)
 	}
-	peer, err := d.Instance(ctx, f.Instance)
+	peer, err := d.instanceIn(cmp.Or(f.Pool, d.pool), f.Instance)
 	if err != nil {
 		return nil, err
 	}

@@ -55,6 +55,7 @@ func (d *Driver) instance(vm *boxdapi.GetVmResponse) machine.Instance {
 	return machine.Instance{
 		ID:       vm.GetVmId(),
 		Name:     name,
+		Pool:     d.pool,
 		GuestOS:  machine.Linux,
 		CPUs:     int(vm.GetVcpu()),
 		Memory:   vm.GetMemoryBytes(),
@@ -73,6 +74,7 @@ func (d *Driver) committed(snap *boxdapi.SnapshotInfo) machine.Instance {
 	return machine.Instance{
 		ID:      snap.GetSnapshotId(),
 		Name:    name,
+		Pool:    d.pool,
 		GuestOS: machine.Linux,
 		CPUs:    int(snap.GetVcpu()),
 		Memory:  snap.GetMemoryBytes(),

@@ -135,7 +135,7 @@ credential only has to outlive the command it was given to. Inside a discobox,
 whose `discobox-access run` hands out a sentinel that lives five minutes, that
 is what makes an instance usable past its `run`. A single command longer than
 that still outlives its sentinel. `ls` shows an instance boxd cannot be asked
-about as `unknown`, and an engine `CreateOptions.Forwards` is refused:
+about as `unknown`, and an engine's `Forwards` (`Engine.Forwards`) are refused:
 nothing would hold the forwards' listeners. A shim an older disco-vm started for an instance is ended
 the next time the instance is started, stopped or removed: it is asked for its
 status with its token first, so a reused PID is never signaled, and the

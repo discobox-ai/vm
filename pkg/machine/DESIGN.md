@@ -276,11 +276,31 @@ port only before its VM starts (ADR 26-11-03-247):
   connection is closed at once (the shim has already accepted it, so the
   guest connects and reads EOF), and a peer that starts again is followed;
   the peer sees the connection come from the host. A NIC-less guest's way
-  to its peer outlives the caller's process, as the shims do. A relay that
+  to its peer outlives the caller's process, as the shims do. The peer may
+  be another pool's ([below](#a-vm-reaches-another-pool-only-as-its-embedder-says)). A relay that
   changes after Create, or carries a policy per connection, is the caller's,
   built from `Dial` and a `Socket` forward. On fake every guest port but the
   agent's is the host's loopback, so a peer forward there proves the plumbing
   through the agent's port.
+
+## A VM reaches another pool only as its embedder says
+
+A pool's VMs are its own (`Instance.Pool`), and a driver lists and names
+only its pool's. A driver that keeps every pool's VMs where each pool's
+driver reaches them, one root, lists `Capabilities.AcrossPools` (hcs, vz,
+libkrun, fake), and two things there may name a VM of another pool
+(discobox's ADR 26-11-11-963 §§5, 9): `InstanceSpec.From`, a committed VM
+another pool's driver found (its `Pool`), and a peer `Forward`'s `Pool`. A
+VM made so reports `Instance.FromPool`, and its forwards as given; an
+upgrade's `from` may be another pool's the same way. Neither is a pool's
+own request: the engine takes both from its embedder alone
+([pkg/engine](../engine/DESIGN.md#a-pool-scopes-everything-and-is-in-every-name)),
+and a local driver called with a key it issued, one pool's, refuses both
+with `ErrUnauthorized`. boxd, docker, and archil make each pool's names
+apart in their provider and refuse both with `ErrUnsupported`; boxd peers
+a sandbox on its pool's network instead. On hcs, whose disks chain, a VM
+of any pool created from a committed VM keeps it from removal
+(`ErrInUse`), as one of its own pool does.
 
 ## A window is per boot, and lives with the VM
 

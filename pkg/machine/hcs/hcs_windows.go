@@ -45,13 +45,14 @@ func (*Hypervisor) Name() string { return "hcs" }
 // (View).
 func (*Hypervisor) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
-		GuestOS: []machine.OS{machine.Windows},
-		Display: true,
-		Ports:   true,
-		Agent:   true,
-		Install: []machine.OS{machine.Windows},
-		Commit:  true,
-		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
+		GuestOS:     []machine.OS{machine.Windows},
+		Display:     true,
+		Ports:       true,
+		AcrossPools: true,
+		Agent:       true,
+		Install:     []machine.OS{machine.Windows},
+		Commit:      true,
+		Keys:        machine.KeyCapabilities{Mode: machine.KeysNone},
 	}
 }
 

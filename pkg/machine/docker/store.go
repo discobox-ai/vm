@@ -50,7 +50,7 @@ func (d *Driver) committed(ctx context.Context, name string) (machine.Instance, 
 
 // committedOf is a committed VM as its Docker image's labels describe it.
 func committedOf(id, name string, labels map[string]string, created time.Time) machine.Instance {
-	inst := machine.Instance{ID: id, Name: name, From: labels[labelFrom], GuestOS: machine.Linux, Created: created.UTC()}
+	inst := machine.Instance{ID: id, Name: name, Pool: labels[labelPool], From: labels[labelFrom], GuestOS: machine.Linux, Created: created.UTC()}
 	inst.CPUs, _ = strconv.Atoi(labels[labelCPUs])
 	inst.Memory, _ = strconv.ParseUint(labels[labelMemory], 10, 64)
 	return inst
@@ -170,6 +170,7 @@ func (d *Driver) instance(c containerInfo) machine.Instance {
 	inst := machine.Instance{
 		ID:      c.ID,
 		Name:    strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(c.Name, "/"), machine.ResourcePrefix(namePrefix, d.pool)), upgradeSuffix),
+		Pool:    d.pool,
 		From:    labels[labelFrom],
 		GuestOS: machine.Linux,
 	}

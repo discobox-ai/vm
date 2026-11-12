@@ -142,6 +142,9 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 	}
 	fromName := ""
 	if from != nil {
+		if machine.OtherPool(from.Pool, d.pool) {
+			return machine.Instance{}, fmt.Errorf("docker: a root from another pool's VM (%s): %w", from.Pool, machine.ErrUnsupported)
+		}
 		if from.GuestOS != "" && from.GuestOS != machine.Linux {
 			return machine.Instance{}, fmt.Errorf("docker: VM %s is a linux guest, and %s a %s one", inst.Name, from.Name, from.GuestOS)
 		}

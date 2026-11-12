@@ -74,6 +74,10 @@ type Config struct {
 	// provider with the key keys answers. A driver whose Capabilities.Keys
 	// issues needs it.
 	Keyed func(keys machine.KeySource) machine.Driver
+	// Pool is the driver again, as its owner, for another pool of the
+	// same provider (root). A driver that lists Capabilities.AcrossPools
+	// needs it.
+	Pool func(pool string) machine.Driver
 }
 
 // Run runs the suite. The driver is one pool's, and the suite makes and
@@ -157,7 +161,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 				_ = driver.Destroy(context.Background(), inst)
 			}
 		})
-		if inst.Name != spec.Name || inst.ID == "" {
+		if inst.Name != spec.Name || inst.ID == "" || inst.Pool == "" {
 			t.Fatalf("created %+v for name %s", inst, spec.Name)
 		}
 		if spec.From != nil && inst.GuestOS != spec.From.GuestOS {
@@ -624,6 +628,177 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		start(t, peer)
 		if got := ask(t); !strings.Contains(got, proof) {
 			t.Fatalf("the forward did not follow its peer once it started again; the guest read %q", got)
+		}
+	})
+
+	// A driver that lists AcrossPools creates a VM from a committed VM of
+	// another pool, and forwards a guest's connections to an instance of
+	// another pool, which its owner names and a key it issued, one pool's,
+	// does not; a driver that does not refuses both.
+	t.Run("across-pools", func(t *testing.T) {
+		other := "conformance-" + run
+		if !caps.AcrossPools {
+			if caps.Commit {
+				from := committed
+				from.Pool = other
+				spec := machine.InstanceSpec{Name: fmt.Sprintf("conformance-%s-across", run), From: &from}
+				if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+					if err == nil {
+						_ = driver.Destroy(context.Background(), inst)
+					}
+					t.Fatalf("a VM from another pool's committed VM, on a driver that does not list AcrossPools: %v, want ErrUnsupported", err)
+				}
+			}
+			spec := copied
+			spec.Name = fmt.Sprintf("conformance-%s-across", run)
+			spec.Forwards = []machine.Forward{{Port: 7402, Pool: other, Instance: "peer", InstancePort: guest.AgentPort}}
+			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+				if err == nil {
+					_ = driver.Destroy(context.Background(), inst)
+				}
+				t.Fatalf("a forward to another pool's instance, on a driver that does not list AcrossPools: %v, want ErrUnsupported", err)
+			}
+			if caps.Commit && caps.Attaches(machine.VolumeData) {
+				spec := copied
+				spec.Data = &machine.DataVolume{}
+				inst := create(t, spec)
+				from := committed
+				from.Pool = other
+				if _, err := driver.Upgrade(ctx, inst, &from); !errors.Is(err, machine.ErrUnsupported) {
+					t.Fatalf("an upgrade to another pool's committed VM, on a driver that does not list AcrossPools: %v, want ErrUnsupported", err)
+				}
+			}
+			t.Skip("the driver reaches no other pool")
+		}
+		if cfg.Pool == nil {
+			t.Fatal("the driver lists AcrossPools, and Config.Pool is nil")
+		}
+		if !caps.Commit {
+			t.Skip("the driver commits nothing to copy across pools")
+		}
+		od := cfg.Pool(other)
+		// The other pool's VM, a copy of this pool's committed VM, with a
+		// proof of its own, committed there: a VM of this pool is created
+		// from it, and forwards to a copy of it that runs.
+		src, err := od.Create(ctx, machine.InstanceSpec{Name: "source", From: &committed, CPUs: cfg.CPUs, Memory: cfg.Memory})
+		if err != nil {
+			t.Fatalf("a VM of pool %s from this pool's committed VM: %v", other, err)
+		}
+		t.Cleanup(func() { _ = od.Destroy(context.Background(), src) })
+		if src.Pool != other || src.From != committed.Name || src.FromPool != committed.Pool {
+			t.Fatalf("a VM of pool %s from %+v is %+v", other, committed, src)
+		}
+		if _, err := driver.Instance(ctx, "source"); !errors.Is(err, machine.ErrNotFound) {
+			t.Fatalf("this pool finds pool %s's VM: %v, want ErrNotFound", other, err)
+		}
+		proof := randomHex(8)
+		bootCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		sm, err := od.Boot(bootCtx, src, machine.BootOptions{})
+		cancel()
+		if err != nil {
+			t.Fatalf("boot %s of pool %s: %v", src.Name, other, err)
+		}
+		t.Cleanup(func() { _ = sm.Kill(context.Background()) })
+		if err := sm.CopyTo(ctx, marker, tarOf(t, "pool.txt", proof)); err != nil {
+			t.Fatal(err)
+		}
+		shutdown(t, sm)
+		from, err := od.Commit(ctx, src)
+		if err != nil {
+			t.Fatalf("commit %s of pool %s: %v", src.Name, other, err)
+		}
+		if from.Pool != other {
+			t.Fatalf("pool %s committed %+v", other, from)
+		}
+		if cfg.Keyed != nil && caps.Keys.Mode == machine.KeysIssue {
+			key, err := driver.IssueKey(ctx, machine.IssueRequest{Name: "conformance-" + run + "-pools", TTL: time.Hour})
+			if err != nil {
+				t.Fatalf("issue: %v", err)
+			}
+			t.Cleanup(func() { _ = driver.RevokeKey(context.Background(), key) })
+			keyed := cfg.Keyed(machine.StaticKey(key))
+			spec := machine.InstanceSpec{Name: fmt.Sprintf("conformance-%s-keyed", run), From: &from}
+			if inst, err := keyed.Create(ctx, spec); !errors.Is(err, machine.ErrUnauthorized) {
+				if err == nil {
+					_ = driver.Destroy(context.Background(), inst)
+				}
+				t.Fatalf("a key the driver issued made a VM from pool %s's: %v, want ErrUnauthorized", other, err)
+			}
+			spec = copied
+			spec.Name = fmt.Sprintf("conformance-%s-keyed", run)
+			spec.Forwards = []machine.Forward{{Port: 7402, Pool: other, Instance: "peer", InstancePort: guest.AgentPort}}
+			if inst, err := keyed.Create(ctx, spec); !errors.Is(err, machine.ErrUnauthorized) {
+				if err == nil {
+					_ = driver.Destroy(context.Background(), inst)
+				}
+				t.Fatalf("a key the driver issued forwarded to pool %s: %v, want ErrUnauthorized", other, err)
+			}
+			if caps.Attaches(machine.VolumeData) {
+				spec := copied
+				spec.Data = &machine.DataVolume{}
+				inst := create(t, spec)
+				if _, err := keyed.Upgrade(ctx, inst, &from); !errors.Is(err, machine.ErrUnauthorized) {
+					t.Fatalf("a key the driver issued upgraded a VM to pool %s's: %v, want ErrUnauthorized", other, err)
+				}
+			}
+		}
+		if caps.Attaches(machine.VolumeData) {
+			spec := copied
+			spec.Data = &machine.DataVolume{}
+			inst := create(t, spec)
+			upgraded, err := driver.Upgrade(ctx, inst, &from)
+			if err != nil || upgraded.From != from.Name || upgraded.FromPool != other {
+				t.Fatalf("an upgrade to pool %s's committed VM: %+v, %v", other, upgraded, err)
+			}
+		}
+		spec := machine.InstanceSpec{From: &from}
+		var peer machine.Instance
+		if caps.Ports && cfg.GuestAgent != "" {
+			peer, err = od.Create(ctx, machine.InstanceSpec{Name: "peer", From: &from, CPUs: cfg.CPUs, Memory: cfg.Memory})
+			if err != nil {
+				t.Fatalf("a peer of pool %s: %v", other, err)
+			}
+			t.Cleanup(func() { _ = od.Destroy(context.Background(), peer) })
+			spec.Forwards = []machine.Forward{{Port: 7402, Pool: other, Instance: peer.Name, InstancePort: guest.AgentPort}}
+		}
+		inst := create(t, spec)
+		if inst.From != from.Name || inst.FromPool != other || inst.Pool == other {
+			t.Fatalf("a VM from pool %s's %+v is %+v", other, from, inst)
+		}
+		if found, err := driver.Instance(ctx, inst.Name); err != nil || found.FromPool != other || len(found.Forwards) != len(spec.Forwards) || len(spec.Forwards) == 1 && found.Forwards[0] != spec.Forwards[0] {
+			t.Fatalf("a VM from pool %s's, forwarding %+v, is found %+v: %v", other, spec.Forwards, found, err)
+		}
+		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		m, err := driver.Start(startCtx, inst, machine.BootOptions{})
+		cancel()
+		if err != nil {
+			t.Fatalf("start %s: %v", inst.Name, err)
+		}
+		t.Cleanup(func() { _ = m.Kill(context.Background()) })
+		if got := readMarker(t, m, marker+"/pool.txt"); got != proof {
+			t.Fatalf("a VM from pool %s's committed VM reads %q, want its proof", other, got)
+		}
+		if len(spec.Forwards) == 0 {
+			t.Skip("the driver reaches no guest port, or no GuestAgent to dial the host from inside the guest")
+		}
+		startCtx, cancel = context.WithTimeout(ctx, cfg.Timeout)
+		pm, err := od.Start(startCtx, peer, machine.BootOptions{})
+		cancel()
+		if err != nil {
+			t.Fatalf("start %s of pool %s: %v", peer.Name, other, err)
+		}
+		t.Cleanup(func() { _ = pm.Kill(context.Background()) })
+		request := "GET /v1/files?path=" + marker + "/pool.txt HTTP/1.0\r\nHost: guest\r\n\r\n"
+		argv := []string{"/bin/sh", "-c", `printf "$1" | "$0" dial-host 7402`, cfg.GuestAgent, strings.ReplaceAll(request, "\r\n", `\r\n`)}
+		if guestOS == machine.Windows {
+			argv = []string{"powershell", "-NoProfile", "-Command", "\"" + strings.ReplaceAll(request, "\r\n", "`r`n") + "\" | & '" + cfg.GuestAgent + "' dial-host 7402"}
+		}
+		var out bytes.Buffer
+		if _, err := machine.Run(ctx, m, machine.ExecRequest{Argv: argv}, nil, &out, &out); err != nil {
+			t.Fatalf("dial-host through the forward: %v\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), proof) {
+			t.Fatalf("pool %s's peer did not answer through the forward with its file; the guest read %q", other, out.String())
 		}
 	})
 

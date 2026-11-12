@@ -102,14 +102,15 @@ func (*Hypervisor) Name() string { return "fake" }
 
 func (d *Hypervisor) Capabilities() machine.Capabilities {
 	caps := machine.Capabilities{
-		GuestOS:    []machine.OS{machine.OS(runtime.GOOS)},
-		Ports:      true,
-		Agent:      true,
-		Install:    []machine.OS{machine.OS(runtime.GOOS)},
-		Commit:     true,
-		Keys:       machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopePool},
-		Volumes:    []machine.Volume{machine.VolumeData, machine.VolumeCache},
-		MaxRunning: d.MaxRunning,
+		GuestOS:     []machine.OS{machine.OS(runtime.GOOS)},
+		Ports:       true,
+		AcrossPools: true,
+		Agent:       true,
+		Install:     []machine.OS{machine.OS(runtime.GOOS)},
+		Commit:      true,
+		Keys:        machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopePool},
+		Volumes:     []machine.Volume{machine.VolumeData, machine.VolumeCache},
+		MaxRunning:  d.MaxRunning,
 	}
 	if d.NoCommit {
 		caps.Install, caps.Commit = nil, false

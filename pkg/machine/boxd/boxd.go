@@ -179,6 +179,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if len(spec.Forwards) > 0 {
 		return machine.Instance{}, fmt.Errorf("boxd: forwards: %w", machine.ErrUnsupported)
 	}
+	if spec.From != nil && machine.OtherPool(spec.From.Pool, d.pool) {
+		return machine.Instance{}, fmt.Errorf("boxd: a VM from another pool's (%s): %w", spec.From.Pool, machine.ErrUnsupported)
+	}
 	if spec.Data != nil || spec.Cache != nil {
 		return machine.Instance{}, fmt.Errorf("boxd: a data or cache volume: %w", machine.ErrUnsupported)
 	}

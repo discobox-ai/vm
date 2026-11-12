@@ -48,7 +48,8 @@ func TestForward(t *testing.T) {
 		fromGuest <- string(data)
 	}()
 
-	inst, err := e.Create(ctx, engine.CreateOptions{From: "app", Name: "fw", Forwards: []machine.Forward{{Port: 7401, Socket: socket}}})
+	e.Forwards = []machine.Forward{{Port: 7401, Socket: socket}}
+	inst, err := e.Create(ctx, engine.CreateOptions{From: "app", Name: "fw"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -68,8 +68,15 @@ func TestConformance(t *testing.T) {
 				return driver
 			}
 			machinetest.Run(t, newDriver(nil), machinetest.Config{
-				Install:    from.install,
-				Timeout:    30 * time.Second,
+				Install: from.install,
+				Timeout: 30 * time.Second,
+				Pool: func(pool string) machine.Driver {
+					d, err := newDriver(nil).(*local.Driver).InPool(pool)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return d
+				},
 				ScratchDir: "/scratch",
 				GuestAgent: agent,
 				Keyed:      newDriver,

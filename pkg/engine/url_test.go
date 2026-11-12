@@ -115,29 +115,43 @@ func serviceAddress(ctx context.Context, t *testing.T, e *engine.Engine, inst en
 // disco-vm, which it returns, with an image tagged app.
 func fakeEngine(t *testing.T) (*engine.Engine, string) {
 	t.Helper()
-	ctx := context.Background()
+	open, binary := fakeRoot(t)
+	e := open(machine.DefaultPool)
+	if _, err := e.Install(context.Background(), "app", engine.InstallOptions{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	return e, binary
+}
+
+// fakeRoot is a fake driver's root whose shims are a disco-vm built for this
+// test, as a program that embeds the engine names its own (ShimCommand), and
+// opens an engine on any pool of it.
+func fakeRoot(t *testing.T) (func(pool string) *engine.Engine, string) {
+	t.Helper()
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "disco-vm")
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	if out, err := exec.CommandContext(ctx, "go", "build", "-o", binary, "../../cmd/disco-vm").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "../../cmd/disco-vm").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	root := filepath.Join(dir, "root")
-	driver, err := local.New(machine.Config{
-		Dir:         root,
-		ShimCommand: []string{binary, "--root", root, "--driver", "fake", "shim"},
-	}, &fake.Hypervisor{Agent: binary})
-	if err != nil {
-		t.Fatal(err)
+	open := func(pool string) *engine.Engine {
+		t.Helper()
+		driver, err := local.New(machine.Config{
+			Dir:         root,
+			Pool:        pool,
+			ShimCommand: []string{binary, "--root", root, "--driver", "fake", "shim"},
+		}, &fake.Hypervisor{Agent: binary})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, err := engine.Open(driver, pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
 	}
-	e, err := engine.Open(driver, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.Install(ctx, "app", engine.InstallOptions{}); err != nil {
-		t.Fatalf("install: %v", err)
-	}
-	return e, binary
+	return open, binary
 }

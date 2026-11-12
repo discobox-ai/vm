@@ -1,6 +1,7 @@
 package local
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,6 +54,17 @@ func New(cfg machine.Config, hv Hypervisor) (*Driver, error) {
 	return &Driver{hv: hv, dir: dir, pool: pool, shim: cfg.ShimCommand, keys: cfg.Keys, config: cfg.DriverConfig}, nil
 }
 
+// InPool is the driver again, for another pool of its root: the same
+// hypervisor, directory, shim, configuration, and key.
+func (d *Driver) InPool(pool string) (*Driver, error) {
+	if err := machine.ValidatePool(pool); err != nil {
+		return nil, err
+	}
+	again := *d
+	again.pool = pool
+	return &again, nil
+}
+
 // Hypervisor is the hypervisor the driver keeps state for.
 func (d *Driver) Hypervisor() Hypervisor { return d.hv }
 
@@ -94,17 +106,20 @@ const (
 func (d *Driver) instancesDir() string         { return filepath.Join(d.dir, "instances") }
 func (d *Driver) instanceDir(id string) string { return filepath.Join(d.instancesDir(), id) }
 func (d *Driver) machineDir(id string) string  { return filepath.Join(d.instanceDir(id), machineDir) }
-func (d *Driver) namesDir() string             { return filepath.Join(d.instancesDir(), ".names", d.pool) }
-func (d *Driver) fromFile(id string) string    { return filepath.Join(d.instanceDir(id), fromName) }
-func (d *Driver) recordFile(id string) string  { return filepath.Join(d.instanceDir(id), instanceFile) }
+func (d *Driver) namesDir() string             { return d.poolNamesDir(d.pool) }
+func (d *Driver) poolNamesDir(pool string) string {
+	return filepath.Join(d.instancesDir(), ".names", pool)
+}
+func (d *Driver) fromFile(id string) string   { return filepath.Join(d.instanceDir(id), fromName) }
+func (d *Driver) recordFile(id string) string { return filepath.Join(d.instanceDir(id), instanceFile) }
 func (d *Driver) writeRecord(rec instanceRecord) error {
 	return fsutil.WriteJSON(d.recordFile(rec.ID), rec)
 }
 
 // instanceRecord is a VM's instance.json.
 type instanceRecord struct {
+	// Instance carries its pool (Instance.Pool), which is the record's.
 	machine.Instance
-	Pool string `json:"pool"`
 	// FromID is the ID of the committed VM this one was created from, by
 	// which a chain is walked: the driver's own, since a name is reused
 	// once its VM is removed.
@@ -165,6 +180,33 @@ func (d *Driver) readPool(id string) (instanceRecord, error) {
 		err = fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
 	}
 	return rec, err
+}
+
+// readFrom reads the committed VM from by its ID: of the driver's pool, or
+// of the pool from names (machine.Capabilities.AcrossPools), its name from's.
+func (d *Driver) readFrom(from machine.Instance) (instanceRecord, error) {
+	rec, err := d.readRecord(from.ID)
+	if err == nil && (rec.Pool != cmp.Or(from.Pool, d.pool) || rec.Name != from.Name) {
+		err = fmt.Errorf("instance %s: %w", from.Name, machine.ErrNotFound)
+	}
+	return rec, err
+}
+
+// acrossPools refuses another pool, a From's or a Forward's (pool not
+// empty and not the driver's), to a caller with a key the driver issued:
+// that key is the driver's pool's alone. The owner, the program that embeds
+// the engine, names any pool of the root.
+func (d *Driver) acrossPools(issued *keyRecord, pool string) error {
+	if !machine.OtherPool(pool, d.pool) {
+		return nil
+	}
+	if !d.hv.Capabilities().AcrossPools {
+		return fmt.Errorf("%s reaches no other pool's VMs (%s): %w", d.hv.Name(), pool, machine.ErrUnsupported)
+	}
+	if issued != nil {
+		return fmt.Errorf("%s: key %s is pool %s's, and reaches no VM of pool %s: %w", d.hv.Name(), issued.ID, d.pool, pool, machine.ErrUnauthorized)
+	}
+	return machine.ValidatePool(pool)
 }
 
 // readInstance reads a VM of the driver's pool by its ID.
@@ -265,7 +307,8 @@ func (d *Driver) claim(name, id string) error {
 // Create copies the committed VM spec.From, or makes a fresh VM from the
 // hypervisor's base.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
-	if err := d.authorize(ctx); err != nil {
+	issued, err := d.caller(ctx)
+	if err != nil {
 		return machine.Instance{}, err
 	}
 	if err := machine.ValidateName(spec.Name); err != nil {
@@ -274,8 +317,20 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if len(spec.Forwards) > 0 && !d.hv.Capabilities().Ports {
 		return machine.Instance{}, fmt.Errorf("%s cannot forward a guest's connections: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
-	if err := checkForwards(spec.Name, spec.Forwards); err != nil {
+	if err := checkForwards(spec.Name, d.pool, spec.Forwards); err != nil {
 		return machine.Instance{}, err
+	}
+	if spec.From != nil {
+		if err := d.acrossPools(issued, spec.From.Pool); err != nil {
+			return machine.Instance{}, err
+		}
+	}
+	for _, f := range spec.Forwards {
+		if f.Peer() {
+			if err := d.acrossPools(issued, f.Pool); err != nil {
+				return machine.Instance{}, err
+			}
+		}
 	}
 	if spec.Isolated || len(spec.Networks) > 0 {
 		return machine.Instance{}, fmt.Errorf("%s: isolation: %w", d.hv.Name(), machine.ErrUnsupported)
@@ -300,10 +355,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		}
 		rec.GuestOS = guestOS
 	} else {
-		from, err := d.readPool(spec.From.ID)
-		if err == nil && from.Name != spec.From.Name {
-			err = fmt.Errorf("instance %s: %w", spec.From.Name, machine.ErrNotFound)
-		}
+		from, err := d.readFrom(*spec.From)
 		if err != nil {
 			return machine.Instance{}, err
 		}
@@ -311,6 +363,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 			return machine.Instance{}, fmt.Errorf("instance %s is running; stop and commit it to create from it", from.Name)
 		}
 		rec.GuestOS, rec.From, rec.FromID = from.GuestOS, from.Name, from.ID
+		if from.Pool != d.pool {
+			rec.FromPool = from.Pool
+		}
 	}
 	if spec.Data != nil {
 		rec.Data = &machine.DataVolume{Bytes: spec.Data.Bytes}
@@ -323,7 +378,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	// record is written. A removal and a create in the same instant may
 	// both pass, as two cache saves may: nothing takes a lock.
 	var chain []Layer
-	err := os.MkdirAll(d.instanceDir(rec.ID), 0o755)
+	err = os.MkdirAll(d.instanceDir(rec.ID), 0o755)
 	if err == nil && rec.FromID != "" {
 		err = os.WriteFile(d.fromFile(rec.ID), []byte(rec.FromID), 0o600)
 		if err == nil {
@@ -452,21 +507,27 @@ func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, e
 	if err := d.authorize(ctx); err != nil {
 		return machine.Instance{}, err
 	}
-	if err := machine.ValidateName(name); err != nil {
+	return d.instanceIn(d.pool, name)
+}
+
+// instanceIn is pool's VM of a name, committed or not, or ErrNotFound: the
+// driver's own pool's, or, for a forward the owner set, another's.
+func (d *Driver) instanceIn(pool, name string) (machine.Instance, error) {
+	if machine.ValidateName(name) != nil || machine.ValidatePool(pool) != nil {
 		return machine.Instance{}, fmt.Errorf("instance %q: %w", name, machine.ErrNotFound)
 	}
-	id, err := os.ReadFile(filepath.Join(d.namesDir(), name))
+	id, err := os.ReadFile(filepath.Join(d.poolNamesDir(pool), name))
 	if errors.Is(err, fs.ErrNotExist) {
 		return machine.Instance{}, fmt.Errorf("instance %q: %w", name, machine.ErrNotFound)
 	}
 	if err != nil {
 		return machine.Instance{}, err
 	}
-	inst, err := d.readInstance(strings.TrimSpace(string(id)))
-	if err == nil && inst.Name != name {
+	rec, err := d.readRecord(strings.TrimSpace(string(id)))
+	if err == nil && (rec.Pool != pool || rec.Name != name) {
 		err = fmt.Errorf("instance %q: %w", name, machine.ErrNotFound)
 	}
-	return inst, err
+	return rec.Instance, err
 }
 
 func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
@@ -728,7 +789,7 @@ func short(id string) string {
 // The engine checks the same before it asks, but a driver may be called
 // without one (a served driver's server, pkg/machine/served), so it refuses
 // them itself.
-func checkForwards(name string, forwards []machine.Forward) error {
+func checkForwards(name, pool string, forwards []machine.Forward) error {
 	ports := map[uint32]bool{}
 	for _, f := range forwards {
 		switch {
@@ -738,8 +799,12 @@ func checkForwards(name string, forwards []machine.Forward) error {
 			return fmt.Errorf("port %d forwards to both a socket and instance %s", f.Port, f.Instance)
 		case f.Peer() && machine.ValidateName(f.Instance) != nil:
 			return fmt.Errorf("port %d forwards to %q, which is not an instance name", f.Port, f.Instance)
-		case f.Peer() && f.Instance == name:
+		case f.Peer() && machine.ValidatePool(cmp.Or(f.Pool, pool)) != nil:
+			return fmt.Errorf("port %d forwards to instance %s of %q, which is not a pool name", f.Port, f.Instance, f.Pool)
+		case f.Peer() && f.Instance == name && !machine.OtherPool(f.Pool, pool):
 			return fmt.Errorf("port %d forwards to the instance itself", f.Port)
+		case !f.Peer() && f.Pool != "":
+			return fmt.Errorf("port %d names the pool of no instance", f.Port)
 		case f.Peer() && !guest.DialablePort(f.InstancePort):
 			return fmt.Errorf("port %d forwards to port %d of instance %s, and a peer is reached at its agent's port or its service's alone: %w", f.Port, f.InstancePort, f.Instance, machine.ErrUnsupported)
 		case !f.Peer() && f.InstancePort != 0:

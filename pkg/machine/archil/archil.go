@@ -201,6 +201,8 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	switch {
 	case len(spec.Forwards) > 0:
 		return machine.Instance{}, fmt.Errorf("archil: forwards: %w", machine.ErrUnsupported)
+	case spec.From != nil && machine.OtherPool(spec.From.Pool, d.pool):
+		return machine.Instance{}, fmt.Errorf("archil: a VM from another pool's (%s): %w", spec.From.Pool, machine.ErrUnsupported)
 	case spec.Isolated || len(spec.Networks) > 0:
 		return machine.Instance{}, fmt.Errorf("archil: isolation: %w", machine.ErrUnsupported)
 	case spec.Cache != nil:
@@ -391,6 +393,9 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 	}
 	var src *sandbox
 	if from != nil {
+		if machine.OtherPool(from.Pool, d.pool) {
+			return machine.Instance{}, fmt.Errorf("archil: a root from another pool's VM (%s): %w", from.Pool, machine.ErrUnsupported)
+		}
 		if from.Name == inst.Name {
 			return machine.Instance{}, fmt.Errorf("archil: %s can't be upgraded from itself", inst.Name)
 		}
@@ -466,7 +471,7 @@ func (d *Driver) baseName() string {
 // sandbox a fork came from, so From is empty.
 func (d *Driver) instance(name string, sb sandbox, data bool) machine.Instance {
 	inst := machine.Instance{
-		ID: sb.ID, Name: name, GuestOS: machine.Linux,
+		ID: sb.ID, Name: name, Pool: d.pool, GuestOS: machine.Linux,
 		CPUs: sb.VCPUs, Memory: sb.MemoryMiB << 20, Created: sb.Created,
 	}
 	if data {
@@ -522,7 +527,7 @@ func (d *Driver) instances(ctx context.Context, name string) ([]machine.Instance
 	for n, dk := range data {
 		if !has[n] {
 			out = append(out, machine.Instance{
-				ID: dk.ID, Name: n, GuestOS: machine.Linux, Created: dk.Created,
+				ID: dk.ID, Name: n, Pool: d.pool, GuestOS: machine.Linux, Created: dk.Created,
 				Egress: &machine.Egress{}, Data: &machine.DataVolume{},
 			})
 		}

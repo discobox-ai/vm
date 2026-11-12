@@ -70,6 +70,13 @@ func TestConformance(t *testing.T) {
 		Memory:     4 << 30,
 		Timeout:    10 * time.Minute,
 		ScratchDir: `C:\disco-vm-conformance`,
+		Pool: func(pool string) machine.Driver {
+			d, err := driver.InPool(pool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return d
+		},
 	})
 }
 
