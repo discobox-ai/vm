@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,8 @@ const BaseEnv = "DISCO_VM_VZ_BASE"
 // LinuxBaseEnv is the base the Linux suite's fresh VMs start from
 // (machine.Config.Base): a guest image's reference, a directory holding one's
 // artifacts, or "default" for DefaultLinuxBase. Without it the Linux suite
-// skips. Its agent is $DISCO_VM_AGENT.
+// skips, and the macOS suite's fresh VM starts from DefaultLinuxBase. Its
+// agent is $DISCO_VM_AGENT.
 const LinuxBaseEnv = "DISCO_VM_VZ_LINUX_BASE"
 
 // TestConformance is the vz driver's definition of done. It creates VMs, so
@@ -48,8 +50,12 @@ func TestConformance(t *testing.T) {
 	}
 	dir := machine.DefaultDir()
 	config, conf := envConfig(t)
+	// The suite's fresh VM is a Linux guest from the Linux suite's base,
+	// where one is named; otherwise DefaultLinuxBase.
+	linuxBase, _ := linuxBaseFromEnv(t)
 	cfg := machine.Config{
 		Dir:          dir,
+		Base:         linuxBase,
 		ShimCommand:  []string{binary, "--root", dir, "--driver", "vz", "--driver-config", string(config), "shim"},
 		DriverConfig: config,
 	}
@@ -63,6 +69,7 @@ func TestConformance(t *testing.T) {
 		Memory:     8 << 30,
 		Timeout:    10 * time.Minute,
 		ScratchDir: "/Users/Shared",
+		GuestAgent: agentPath,
 		Pool: func(pool string) machine.Driver {
 			d, err := driver.InPool(pool)
 			if err != nil {
@@ -148,17 +155,9 @@ func TestLinuxBesideMacOS(t *testing.T) {
 // their fresh VMs start from, or skips.
 func linuxDriver(t *testing.T) *local.Driver {
 	t.Helper()
-	ref := os.Getenv(LinuxBaseEnv)
-	if ref == "" {
+	ref, ok := linuxBaseFromEnv(t)
+	if !ok {
 		t.Skipf("$%s names no Linux base", LinuxBaseEnv)
-	}
-	if ref == "default" {
-		ref = ""
-	}
-	// Checked here, though the driver parses it only when it makes a
-	// fresh VM, so a bad base fails the test before it boots anything.
-	if _, err := parseLinuxBase(ref); err != nil {
-		t.Fatal(err)
 	}
 	config, conf := envConfig(t)
 	if conf.Agent == "" {
@@ -180,6 +179,25 @@ func linuxDriver(t *testing.T) *local.Driver {
 		t.Fatal(err)
 	}
 	return driver
+}
+
+// linuxBaseFromEnv is the base $DISCO_VM_VZ_LINUX_BASE names, as
+// Hypervisor.base holds it ("default" is empty), and whether it names one.
+// It is checked here, though the driver parses it only when it makes a fresh
+// VM, so a bad base fails the test before it boots anything.
+func linuxBaseFromEnv(t *testing.T) (string, bool) {
+	t.Helper()
+	ref := os.Getenv(LinuxBaseEnv)
+	if ref == "" {
+		return "", false
+	}
+	if ref == "default" {
+		ref = ""
+	}
+	if _, err := parseLinuxBase(ref); err != nil {
+		t.Fatal(err)
+	}
+	return ref, true
 }
 
 // envConfig is the vz configuration the command line would read from the
@@ -247,4 +265,153 @@ func TestParseOptions(t *testing.T) {
 	if _, err := parseOptions(map[string]string{"user": "dev"}); err == nil {
 		t.Fatal("an unknown option was accepted")
 	}
+}
+
+// TestNoRouteOffTheMachine is issue #5's proof, on each OS whose base is
+// named: an instance fenced to nothing has no network device and no route
+// off the machine, yet its agent is reached over vsock (exec, and Dial
+// through the shim of an attached machine), and a Forward takes it to a
+// peer, itself fenced, which answers with a file only it holds.
+func TestNoRouteOffTheMachine(t *testing.T) {
+	linuxBase, linux := linuxBaseFromEnv(t)
+	if !linux && os.Getenv(BaseEnv) == "" {
+		t.Skipf("neither $%s nor $%s names a base", BaseEnv, LinuxBaseEnv)
+	}
+	binary := os.Getenv("DISCO_VM_TEST_BINARY")
+	if binary == "" {
+		t.Fatal("$DISCO_VM_TEST_BINARY names no signed disco-vm to run each started instance's shim")
+	}
+	config, conf := envConfig(t)
+	dir := machine.DefaultDir()
+	cfg := machine.Config{
+		Dir:          dir,
+		Base:         linuxBase,
+		ShimCommand:  []string{binary, "--root", dir, "--driver", "vz", "--driver-config", string(config), "shim"},
+		DriverConfig: config,
+	}
+	driver, err := local.New(cfg, newHypervisor(cfg, conf))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("darwin", func(t *testing.T) {
+		name := os.Getenv(BaseEnv)
+		if name == "" {
+			t.Skipf("$%s names no committed macOS VM", BaseEnv)
+		}
+		from, err := driver.Instance(t.Context(), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		noRoute(t, driver, machine.InstanceSpec{From: &from}, agentPath, "/Users/Shared",
+			// Every macOS guest has the Apple silicon peripheral interfaces
+			// (anpi0 and its en2) and the system's utun tunnels: none may be
+			// active or hold an address beyond link-local, nothing off the
+			// machine is routed, and neither family reaches it.
+			`set -e
+for i in $(ifconfig -l); do
+  [ "$i" = lo0 ] && continue
+  if ifconfig "$i" | grep -q "status: active"; then echo "link $i is active"; exit 1; fi
+  if ifconfig "$i" | grep -q "inet "; then echo "link $i has an IPv4 address"; exit 1; fi
+  if ifconfig "$i" | awk '$1 == "inet6" { print $2 }' | grep -qv '^fe80:'; then echo "link $i has an IPv6 address beyond link-local"; exit 1; fi
+done
+if route -n get 1.1.1.1 2>/dev/null | grep -q interface:; then echo "route to 1.1.1.1"; exit 1; fi
+if nc -z -G 5 1.1.1.1 443 2>/dev/null; then echo "reached 1.1.1.1:443"; exit 1; fi
+if nc -6 -z -G 5 2606:4700:4700::1111 443 2>/dev/null; then echo "reached [2606:4700:4700::1111]:443"; exit 1; fi
+ifconfig -l -u`)
+	})
+	t.Run("linux", func(t *testing.T) {
+		if !linux {
+			t.Skipf("$%s names no Linux base", LinuxBaseEnv)
+		}
+		if conf.Agent == "" {
+			t.Fatalf("$%s names no linux/arm64 disco-vm to boot the guest with", AgentEnv)
+		}
+		noRoute(t, driver, machine.InstanceSpec{}, "/run/disco-vm/disco-vm", "/var/tmp",
+			// Only loopback, and no route but its own.
+			`set -e
+links=$(ls /sys/class/net)
+[ "$links" = lo ] || { echo "links $links"; exit 1; }
+[ "$(tail -n +2 /proc/net/route)" = "" ] || { echo "routes:"; cat /proc/net/route; exit 1; }
+echo "$links"`)
+	})
+}
+
+// noRoute starts a fenced peer holding a file, then a fenced instance with a
+// Forward to it, both from spec, and checks the instance from the host and
+// from inside: script, run in it by /bin/sh, fails where it finds a route
+// off the machine.
+func noRoute(t *testing.T, driver *local.Driver, spec machine.InstanceSpec, agent, scratch, script string) {
+	t.Helper()
+	ctx := t.Context()
+	run := randomName()
+	start := func(spec machine.InstanceSpec) (machine.Instance, machine.Machine) {
+		t.Helper()
+		spec.Egress = &machine.Egress{}
+		inst, err := driver.Create(ctx, spec)
+		if err != nil {
+			t.Fatalf("create %s: %v", spec.Name, err)
+		}
+		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+		startCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		m, err := driver.Start(startCtx, inst, machine.BootOptions{})
+		if err != nil {
+			t.Fatalf("start %s: %v", spec.Name, err)
+		}
+		t.Cleanup(func() { _ = m.Kill(context.Background()) })
+		return inst, m
+	}
+	exec := func(m machine.Machine, argv ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: argv}, nil, &out, &out)
+		if err != nil || code != 0 {
+			t.Fatalf("%q: exit %d, %v\n%s", argv, code, err, out.String())
+		}
+		return out.String()
+	}
+
+	peerSpec := spec
+	peerSpec.Name = "noroute-peer-" + run
+	peer, pm := start(peerSpec)
+	proof := "proof-" + run
+	exec(pm, "/bin/sh", "-c", `printf %s "$1" > "$0"/noroute.txt && sync`, scratch, proof)
+
+	spec.Name = "noroute-" + run
+	spec.Forwards = []machine.Forward{{Port: 7402, Instance: peer.Name, InstancePort: guest.AgentPort}}
+	inst, m := start(spec)
+	got, err := driver.Instance(ctx, inst.Name)
+	if err != nil || got.Egress == nil || len(got.Egress.Allow) != 0 {
+		t.Fatalf("the instance reports its fence as %+v: %v", got.Egress, err)
+	}
+
+	t.Logf("links up: %s", strings.TrimSpace(exec(m, "/bin/sh", "-c", script)))
+
+	attached, err := driver.Attach(ctx, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := attached.Dial(ctx, guest.AgentPort)
+	if err != nil {
+		t.Fatalf("dial the agent through the shim: %v", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(time.Minute))
+	if _, err := io.WriteString(conn, "GET /v1/health HTTP/1.0\r\nHost: guest\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	answer, _ := io.ReadAll(conn)
+	_ = conn.Close()
+	if !strings.Contains(string(answer), " 200 ") {
+		t.Fatalf("the agent's port through the shim answered %q", answer)
+	}
+
+	request := `GET /v1/files?path=` + scratch + `/noroute.txt HTTP/1.0\r\nHost: guest\r\n\r\n`
+	if out := exec(m, "/bin/sh", "-c", `printf "$1" | "$0" dial-host 7402`, agent, request); !strings.Contains(out, proof) {
+		t.Fatalf("the peer did not answer through the forward with its file; the guest read %q", out)
+	}
+}
+
+// randomName is a suffix no other run's instances share.
+func randomName() string {
+	return strconv.FormatInt(time.Now().UnixNano()%1e9, 36)
 }
