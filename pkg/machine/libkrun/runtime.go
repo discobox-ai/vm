@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path"
@@ -187,7 +188,9 @@ func (h *Hypervisor) cachedRuntime() (string, bool, error) {
 // complete, or DefaultRuntime in cacheDir. Prepare passes pull, which asks
 // the registry for DefaultRuntime (a tag, until it is pinned by digest);
 // Boot does not, and uses the cached one, pulling only if it was removed
-// behind the driver's back, so a start needs no network.
+// behind the driver's back, so a start needs no network. That pull is in
+// the shim, which is never given machine.Config.Dial, so it alone dials
+// the process's own way.
 func (h *Hypervisor) runtime(ctx context.Context, cacheDir string, pull bool) (krunRuntime, error) {
 	if h.runtimeDir != "" {
 		if !filepath.IsAbs(h.runtimeDir) {
@@ -204,7 +207,7 @@ func (h *Hypervisor) runtime(ctx context.Context, cacheDir string, pull bool) (k
 	dir, ok := cachedRuntimeOf(cacheDir, DefaultRuntime)
 	if pull || !ok {
 		var err error
-		if dir, err = pullRuntime(ctx, cacheDir, DefaultRuntime); err != nil {
+		if dir, err = pullRuntime(ctx, h.transport, cacheDir, DefaultRuntime); err != nil {
 			return "", err
 		}
 	}
@@ -266,8 +269,9 @@ func cachedRuntimeOf(cacheDir, ref string) (string, bool) {
 // has is used with no network; a tag is asked of the registry, and its newest
 // pull is used when the registry cannot be reached. An image for another
 // platform, one lacking a runtime file, or one whose launcher does not run
-// is refused, naming it, and never renamed into place.
-func pullRuntime(ctx context.Context, cacheDir, ref string) (string, error) {
+// is refused, naming it, and never renamed into place. The registry is
+// called through transport.
+func pullRuntime(ctx context.Context, transport http.RoundTripper, cacheDir, ref string) (string, error) {
 	r, err := name.ParseReference(ref)
 	if err != nil {
 		return "", fmt.Errorf("libkrun: runtime %q: %w", ref, err)
@@ -278,7 +282,7 @@ func pullRuntime(ctx context.Context, cacheDir, ref string) (string, error) {
 		}
 	}
 	platform := v1.Platform{OS: "linux", Architecture: runtime.GOARCH}
-	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithPlatform(platform), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithTransport(transport), remote.WithPlatform(platform), remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	if err != nil {
 		if dir, ok := cachedRuntimeOf(cacheDir, ref); ok {
 			return dir, nil

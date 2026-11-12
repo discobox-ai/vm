@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -33,9 +34,9 @@ const (
 // directory; its kernel and initrd cloned; its root cloned as the VM's own
 // disk and grown, sparse, to the disk ceiling, which the guest's filesystem
 // grows into at boot; and an identity of its own.
-func prepareLinux(ctx context.Context, inst local.InstanceSpec, base linuximage.Image) error {
+func prepareLinux(ctx context.Context, transport http.RoundTripper, inst local.InstanceSpec, base linuximage.Image) error {
 	const ceiling = int64(linuxDisk)
-	src, err := base.Artifacts(ctx, inst.CacheDir, runtime.GOARCH)
+	src, err := base.Artifacts(ctx, transport, inst.CacheDir, runtime.GOARCH)
 	if err != nil {
 		return fmt.Errorf("vz: %w", err)
 	}

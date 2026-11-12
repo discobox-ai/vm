@@ -73,12 +73,14 @@ func realDriver(t *testing.T) *local.Driver {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	h := &Hypervisor{base: base, runtimeDir: conf.Runtime, agent: conf.Agent}
-	driver, err := local.New(machine.Config{
+	cfg := machine.Config{
 		Dir:          dir,
+		Base:         base,
 		ShimCommand:  []string{binary, "--root", dir, "--driver", "libkrun", "--driver-config", string(config), "shim"},
 		DriverConfig: config,
-	}, h)
+	}
+	h := newHypervisor(cfg, conf)
+	driver, err := local.New(cfg, h)
 	if err != nil {
 		t.Fatal(err)
 	}

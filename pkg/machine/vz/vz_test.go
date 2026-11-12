@@ -48,11 +48,12 @@ func TestConformance(t *testing.T) {
 	}
 	dir := machine.DefaultDir()
 	config, conf := envConfig(t)
-	driver, err := local.New(machine.Config{
+	cfg := machine.Config{
 		Dir:          dir,
 		ShimCommand:  []string{binary, "--root", dir, "--driver", "vz", "--driver-config", string(config), "shim"},
 		DriverConfig: config,
-	}, &Hypervisor{agent: conf.Agent})
+	}
+	driver, err := local.New(cfg, newHypervisor(cfg, conf))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,11 +155,13 @@ func linuxDriver(t *testing.T) *local.Driver {
 		t.Fatal("$DISCO_VM_TEST_BINARY names no signed disco-vm to run each started instance's shim")
 	}
 	dir := machine.DefaultDir()
-	driver, err := local.New(machine.Config{
+	cfg := machine.Config{
 		Dir:          dir,
+		Base:         ref,
 		ShimCommand:  []string{binary, "--root", dir, "--driver", "vz", "--driver-config", string(config), "shim"},
 		DriverConfig: config,
-	}, &Hypervisor{base: ref, agent: conf.Agent})
+	}
+	driver, err := local.New(cfg, newHypervisor(cfg, conf))
 	if err != nil {
 		t.Fatal(err)
 	}

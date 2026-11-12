@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/crane"
@@ -17,6 +21,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // The artifacts vz and libkrun boot.
@@ -97,7 +103,7 @@ func TestPull(t *testing.T) {
 	ctx := context.Background()
 	cache := t.TempDir()
 	ref, server := pushGuest(t, guestFiles(), "arm64", "guest")
-	dir, err := Pull(ctx, cache, ref, "arm64", vzNeed...)
+	dir, err := Pull(ctx, http.DefaultTransport, cache, ref, "arm64", vzNeed...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,17 +115,17 @@ func TestPull(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "etc")); err == nil {
 		t.Fatal("pulled a file that is not an artifact")
 	}
-	again, err := Pull(ctx, cache, ref, "arm64", vzNeed...)
+	again, err := Pull(ctx, http.DefaultTransport, cache, ref, "arm64", vzNeed...)
 	if err != nil || again != dir {
 		t.Fatalf("a second pull of the same image: %s, %v; want %s", again, err, dir)
 	}
-	if _, err := Pull(ctx, cache, ref, "amd64", vzNeed...); err == nil || !strings.Contains(err.Error(), "linux/arm64, and this host boots linux/amd64") {
+	if _, err := Pull(ctx, http.DefaultTransport, cache, ref, "amd64", vzNeed...); err == nil || !strings.Contains(err.Error(), "linux/arm64, and this host boots linux/amd64") {
 		t.Fatalf("an arm64 image pulled for amd64: %v", err)
 	}
 	partial := guestFiles()
 	delete(partial, Initrd)
 	partialRef, _ := pushGuest(t, partial, "arm64", "partial")
-	if _, err := Pull(ctx, cache, partialRef, "arm64", vzNeed...); err == nil || !strings.Contains(err.Error(), "no initrd.img") {
+	if _, err := Pull(ctx, http.DefaultTransport, cache, partialRef, "arm64", vzNeed...); err == nil || !strings.Contains(err.Error(), "no initrd.img") {
 		t.Fatalf("an image with no initrd: %v", err)
 	}
 
@@ -132,11 +138,35 @@ func TestPull(t *testing.T) {
 		t.Fatal(err)
 	}
 	server.Close()
-	if got, err := pinned.Artifacts(ctx, cache, "arm64"); err != nil || got != dir {
+	if got, err := pinned.Artifacts(ctx, http.DefaultTransport, cache, "arm64"); err != nil || got != dir {
 		t.Fatalf("a base pinned to the cached digest, with no registry: %s, %v", got, err)
 	}
-	if got, err := Pull(ctx, cache, ref, "arm64", vzNeed...); err != nil || got != dir {
+	if got, err := Pull(ctx, http.DefaultTransport, cache, ref, "arm64", vzNeed...); err != nil || got != dir {
 		t.Fatalf("a tag with no registry, from its last pull: %s, %v", got, err)
+	}
+}
+
+// A pull calls the registry through the transport it is given, so with the
+// driver's Config.HTTPTransport it dials through an embedder's Config.Dial.
+func TestPullDialsThroughConfigDial(t *testing.T) {
+	ref, server := pushGuest(t, guestFiles(), "arm64", "guest")
+	var mu sync.Mutex
+	var dialed []string
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		mu.Lock()
+		dialed = append(dialed, addr)
+		mu.Unlock()
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+	transport := machine.Config{Dial: dial}.HTTPTransport()
+	if _, err := Pull(t.Context(), transport, t.TempDir(), ref, "arm64", vzNeed...); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(dialed, server.Listener.Addr().String()) {
+		t.Fatalf("the pull from %s dialed %v through Config.Dial", server.Listener.Addr(), dialed)
 	}
 }
 
@@ -148,7 +178,7 @@ func TestPullKrunKernel(t *testing.T) {
 	files := guestFiles()
 	files[KrunKernel] = []byte("krun kernel")
 	ref, _ := pushGuest(t, files, "amd64", "guest")
-	dir, err := Pull(ctx, cache, ref, "amd64", krunNeed...)
+	dir, err := Pull(ctx, http.DefaultTransport, cache, ref, "amd64", krunNeed...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +186,7 @@ func TestPullKrunKernel(t *testing.T) {
 		t.Fatalf("pulled krun/vmlinux: %q, %v", data, err)
 	}
 	plainRef, _ := pushGuest(t, guestFiles(), "amd64", "plain")
-	if _, err := Pull(ctx, cache, plainRef, "amd64", krunNeed...); err == nil || !strings.Contains(err.Error(), "no krun/vmlinux") {
+	if _, err := Pull(ctx, http.DefaultTransport, cache, plainRef, "amd64", krunNeed...); err == nil || !strings.Contains(err.Error(), "no krun/vmlinux") {
 		t.Fatalf("an image with no libkrun kernel: %v", err)
 	}
 	if _, err := Parse(t.TempDir(), krunNeed...); err == nil || !strings.Contains(err.Error(), "no krun/vmlinux") {
@@ -166,7 +196,7 @@ func TestPullKrunKernel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := img.Artifacts(ctx, cache, "amd64"); err != nil || got != dir {
+	if got, err := img.Artifacts(ctx, http.DefaultTransport, cache, "amd64"); err != nil || got != dir {
 		t.Fatalf("a directory base: %s, %v", got, err)
 	}
 }

@@ -5,6 +5,7 @@ package libkrun
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/discobox-ai/vm/pkg/guest"
@@ -22,7 +23,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			h := &Hypervisor{base: cfg.Base, runtimeDir: conf.Runtime, agent: conf.Agent}
+			h := newHypervisor(cfg, conf)
 			d, err := local.New(cfg, h)
 			if err != nil {
 				return nil, err
@@ -47,9 +48,19 @@ type Hypervisor struct {
 	// agent is the disco-vm a boot hands the guest (Config.Agent), or empty
 	// for the running one.
 	agent string
+	// transport calls a registry for the base and the runtime
+	// (machine.Config.HTTPTransport): through an embedder's dialer, where
+	// one is set.
+	transport http.RoundTripper
 	// cacheDir is the driver's cache (cache/libkrun), where Check looks for
 	// a pulled runtime. Prepare and Boot are given it in their InstanceSpec.
 	cacheDir string
+}
+
+// newHypervisor is the Hypervisor cfg and its decoded driver configuration
+// describe, its cache directory left for local.New's driver to give it.
+func newHypervisor(cfg machine.Config, conf Config) *Hypervisor {
+	return &Hypervisor{base: cfg.Base, runtimeDir: conf.Runtime, agent: conf.Agent, transport: cfg.HTTPTransport()}
 }
 
 var _ local.Hypervisor = (*Hypervisor)(nil)
