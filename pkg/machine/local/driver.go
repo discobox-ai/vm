@@ -274,13 +274,8 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if len(spec.Forwards) > 0 && !d.hv.Capabilities().Ports {
 		return machine.Instance{}, fmt.Errorf("%s cannot forward a guest's connections: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
-	for _, f := range spec.Forwards {
-		if f.Peer() && f.Instance == spec.Name {
-			return machine.Instance{}, fmt.Errorf("port %d forwards to the instance itself", f.Port)
-		}
-		if f.Peer() && !guest.DialablePort(f.InstancePort) {
-			return machine.Instance{}, fmt.Errorf("port %d forwards to port %d of instance %s, and a peer is reached at its agent's port or its service's alone: %w", f.Port, f.InstancePort, f.Instance, machine.ErrUnsupported)
-		}
+	if err := checkForwards(spec.Name, spec.Forwards); err != nil {
+		return machine.Instance{}, err
 	}
 	if spec.Isolated || len(spec.Networks) > 0 {
 		return machine.Instance{}, fmt.Errorf("%s: isolation: %w", d.hv.Name(), machine.ErrUnsupported)
@@ -725,4 +720,36 @@ func short(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+// checkForwards refuses forwards of the VM name that make no sense: each
+// goes to exactly one of an absolute host socket, or another instance of the
+// pool and its agent's or service's port, and no port is forwarded twice.
+// The engine checks the same before it asks, but a driver may be called
+// without one (a served driver's server, pkg/machine/served), so it refuses
+// them itself.
+func checkForwards(name string, forwards []machine.Forward) error {
+	ports := map[uint32]bool{}
+	for _, f := range forwards {
+		switch {
+		case f.Port == 0:
+			return errors.New("a forward needs a port")
+		case f.Socket != "" && f.Peer():
+			return fmt.Errorf("port %d forwards to both a socket and instance %s", f.Port, f.Instance)
+		case f.Peer() && machine.ValidateName(f.Instance) != nil:
+			return fmt.Errorf("port %d forwards to %q, which is not an instance name", f.Port, f.Instance)
+		case f.Peer() && f.Instance == name:
+			return fmt.Errorf("port %d forwards to the instance itself", f.Port)
+		case f.Peer() && !guest.DialablePort(f.InstancePort):
+			return fmt.Errorf("port %d forwards to port %d of instance %s, and a peer is reached at its agent's port or its service's alone: %w", f.Port, f.InstancePort, f.Instance, machine.ErrUnsupported)
+		case !f.Peer() && f.InstancePort != 0:
+			return fmt.Errorf("port %d names a port of no instance", f.Port)
+		case !f.Peer() && !filepath.IsAbs(f.Socket):
+			return fmt.Errorf("port %d forwards to %q, which is not an absolute path", f.Port, f.Socket)
+		case ports[f.Port]:
+			return fmt.Errorf("port %d is forwarded twice", f.Port)
+		}
+		ports[f.Port] = true
+	}
+	return nil
 }

@@ -279,3 +279,40 @@ func TestViewInstallFindsAnInstallInProgress(t *testing.T) {
 		t.Fatalf("view an install that has finished: %v", err)
 	}
 }
+
+// Create refuses a malformed forward itself, as the engine does before it
+// asks, since a served driver's server calls it with what a client sent;
+// nothing is made.
+func TestCreateRefusesMalformedForwards(t *testing.T) {
+	ctx := context.Background()
+	d, err := local.New(machine.Config{Dir: t.TempDir()}, &fake.Hypervisor{BaseName: "stock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(t.TempDir(), "host.sock")
+	for name, forwards := range map[string][]machine.Forward{
+		"no port":                  {{Instance: "peer", InstancePort: 7300}},
+		"a socket and an instance": {{Port: 9000, Socket: sock, Instance: "peer", InstancePort: 7300}},
+		"not an instance name":     {{Port: 9000, Instance: "Peer!", InstancePort: 7300}},
+		"itself":                   {{Port: 9000, Instance: "vm", InstancePort: 7300}},
+		"a peer's port 22":         {{Port: 9000, Instance: "peer", InstancePort: 22}},
+		"a port of no instance":    {{Port: 9000, Socket: sock, InstancePort: 7300}},
+		"a relative socket":        {{Port: 9000, Socket: "host.sock"}},
+		"no target":                {{Port: 9000}},
+		"a port twice":             {{Port: 9000, Socket: sock}, {Port: 9000, Instance: "peer", InstancePort: 7300}},
+	} {
+		if _, err := d.Create(ctx, machine.InstanceSpec{Name: "vm", Forwards: forwards}); err == nil {
+			t.Fatalf("a forward with %s was taken", name)
+		}
+	}
+	if all, err := d.Instances(ctx); err != nil || len(all) != 0 {
+		t.Fatalf("after the refusals: %v, %v, want nothing made", all, err)
+	}
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "vm", Forwards: []machine.Forward{
+		{Port: 9000, Socket: sock}, {Port: 9001, Instance: "peer", InstancePort: 7302},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = d.Destroy(ctx, inst)
+}
