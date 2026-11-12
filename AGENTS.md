@@ -76,6 +76,7 @@ go tool task verify     # fmt, go.mod, generated and managed files are current
 go tool task ci         # everything CI runs: verify, check, test
 go tool task test:vz    # vz conformance on a Mac (DISCO_VM_VZ_BASE)
 go tool task test:libkrun  # libkrun conformance and e2e on Linux amd64 with KVM
+go tool task test:boxd     # boxd conformance and e2e against boxd itself (BOXD_API_KEY)
 go tool task test:e2e:vz
 ```
 

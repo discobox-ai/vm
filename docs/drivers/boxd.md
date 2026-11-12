@@ -7,10 +7,13 @@ operations (`machine.Guest`) are command lines over boxd's Exec stream (ADR
 **Done means:**
 
 1. `machinetest.Run` passes against boxd itself: `TestConformance` with
-   `BOXD_API_KEY` set, starting from boxd's default image.
+   `BOXD_API_KEY` set, starting from boxd's default image, in pool
+   `conformance`.
 2. `internal/e2e` passes with `DISCO_VM_DRIVER=boxd`.
 3. A fresh VM of boxd's default image is shaped through `exec`, stopped, and
    committed, and a VM created from the committed one runs.
+
+`go tool task test:boxd` runs 1 and 2, from any host with a key.
 
 Status: on 2026-10-07, with an agent in the guest, `TestConformance` passed
 against boxd. On 2026-10-15 and 16, with no agent (ADR 0001), the CLI built
@@ -19,10 +22,14 @@ and ran images through `run`, `exec` (`-t` included), `cp`, `stop`, `start`,
 then with `disco-vm build`, which is gone (ADR 26-10-23-410), and the
 default image ran and was snapshotted with no build. `TestConformance` has
 not been run against boxd since, because a discobox's five-minute credential
-does not outlive it. Criterion 2 waits on a layout for
-`DISCO_VM_DRIVER=boxd` in `internal/e2e`.
-Since ADR 26-11-03-606 (images, tags, and bases give way to committed VMs)
-the driver has run against the fake API only.
+does not outlive it. Since ADR 26-11-03-606 (images, tags, and bases give
+way to committed VMs) the driver has run against the fake API only.
+`TestConformance` makes its VMs in pool `conformance`, so it never lists or
+removes one of someone's own, and runs the issued-key case with a key that
+issues (a `boxd login` session's). `internal/e2e` has a layout for
+`DISCO_VM_DRIVER=boxd` (2026-11-12): `e2e-base` is a fresh VM of boxd's
+default image, or the one `DISCO_VM_E2E_IMAGE` names, committed, and the
+suite writes under `/srv`. Neither has run against boxd itself yet.
 `TestConformanceFakeAPI` runs the same suite in CI against an in-process fake
 of boxd's API (`fakeapi_test.go`), whose "machines" are directory roots: its
 Exec reads back the driver's command lines and runs them on the host.
@@ -360,8 +367,6 @@ tries again.
 
 ## Not done
 
-- `internal/e2e` hard-codes `DISCO_VM_DRIVER=fake`, so criterion 2 needs it to
-  take the driver from the environment first.
 - No shared directories, and no display. boxd's `DesktopTunnel` is an xpra
   stream, which could back `Display` later.
 - `MaxRunning` is unset. The org's machine quota (50 by default, 2 for a new
