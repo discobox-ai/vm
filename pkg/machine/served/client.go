@@ -313,8 +313,7 @@ type remoteMachine struct {
 }
 
 // allow refuses an operation the server does not allow before it is
-// asked, so the refusal is ErrRefused here too: a guest operation's travels
-// in the agent's protocol, which carries no code. The server refuses it
+// asked, so the refusal is ErrRefused here too. The server refuses it
 // whatever the client does.
 func (m *remoteMachine) allow(op Op) error {
 	if !slices.Contains(m.d.info.Allow, op) {

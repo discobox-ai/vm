@@ -367,3 +367,10 @@ What warming left behind is upgraded, not used:
 
 Fast clones may come back once every driver's snapshots are proven
 (the ADR's Deferred section), with a design of their own.
+
+## Sentinels on the wire
+
+`ErrorCode` and `ErrorSentinel` own the stable code mapping for machine
+sentinels. Both served's JSON errors and guest's error response headers use
+it, so `errors.Is` survives either transport. Transport-specific errors stay
+with their transport; an unknown code has no machine sentinel.

@@ -21,11 +21,11 @@
   forward), or the server does (a forward to a host socket). A forward to a
   host socket went to the shim unchecked, which dials it with the server's
   privileges.
-- **A sentinel's code crosses only where the server answers in JSON.** A
-  guest operation's error goes through `guest.Relay`, which carries no code,
-  so a sentinel a machine returns there (`machine.ErrStale` from a stale
-  shim) reaches the client as its message alone. Say so wherever a sentinel
-  is promised to the client.
+- **Machine sentinel codes are shared with the guest relay.** Add them in
+  `machine.ErrorCode` / `ErrorSentinel`, so JSON refusals and guest
+  operations preserve the same `errors.Is` identity. Served-only refusals
+  stay in this package. Exec refuses before upgrading; errors after headers
+  or frames start cannot acquire a response header.
 - **A seam type the protocol decodes whole is a field a pool sends.**
   `createRequest.Forwards` is `[]machine.Forward`, so a field added to
   `machine.Forward` reaches the driver unless `create` checks it.

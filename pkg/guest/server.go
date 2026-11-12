@@ -328,5 +328,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
+	if code := machine.ErrorCode(err); code != "" {
+		w.Header().Set(errorCodeHeader, code)
+	}
 	http.Error(w, err.Error(), status)
 }

@@ -58,10 +58,11 @@ between calls, as the agent's protocol is (`pkg/guest`). Errors carry a
 code that names a sentinel (`machine.ErrNotFound`, `ErrRefused`, ...), so
 `errors.Is` answers the same on both sides; a sentinel the seam gains gets a
 code and a status with it. `machine.ErrStale`'s is `stale`: a VM whose shim
-is of another protocol refuses `dial` with it, and its guest operations
-with its message alone, as every guest operation's error crosses. A guest operation's refusal
-travels in the agent's protocol, which carries no code, so the client
-refuses one the list does not allow before it asks, with `ErrRefused`, and
+is of another protocol refuses `dial` and guest operations with it. Machine
+sentinel codes are shared through `machine.ErrorCode` and `ErrorSentinel`.
+Guest operations carry them in the `Disco-Vm-Error-Code` response header,
+which older clients ignore. The client refuses an operation the list does
+not allow before it asks, with `ErrRefused`, and
 the server refuses it whatever the client does. A VM's guest operations upgrade
 their connection to the agent's protocol, answered by `guest.Relay` over the
 attached machine, with each request checked against the list (exec, copy,

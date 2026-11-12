@@ -13,11 +13,20 @@ import (
 // Every sentinel crosses the stream by its own code and a status of its
 // own wherever the server answers in JSON, so errors.Is answers there on the
 // client as on the server: dial's refusal of a VM whose shim is of another
-// protocol (machine.ErrStale) included. A guest operation's error crosses
-// the relay as its message alone (#98).
+// protocol (machine.ErrStale) included.
 func TestSentinelsCrossByCode(t *testing.T) {
 	seen := map[string]bool{}
-	for _, s := range sentinels {
+	all := append([]struct {
+		code string
+		err  error
+	}{}, sentinels...)
+	for _, err := range []error{machine.ErrNotFound, machine.ErrExists, machine.ErrInUse, machine.ErrCommitted, machine.ErrCapacity, machine.ErrNotRunning, machine.ErrStale, machine.ErrUnsupported, machine.ErrNotImplemented, machine.ErrNoKey} {
+		all = append(all, struct {
+			code string
+			err  error
+		}{machine.ErrorCode(err), err})
+	}
+	for _, s := range all {
 		if seen[s.code] {
 			t.Fatalf("code %q names two sentinels", s.code)
 		}
