@@ -22,6 +22,7 @@ import (
 	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/internal/netutil"
 	"github.com/discobox-ai/vm/internal/proc"
+	"github.com/discobox-ai/vm/internal/version"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
@@ -36,6 +37,18 @@ const (
 	// shimConfigName is the driver configuration a shim is started with
 	// (writeShimConfig), readable by its owner alone.
 	shimConfigName = "driver-config.json"
+	// shimProtocol is the version of what a caller asks of a shim beyond the
+	// part that lasts (shimState): its relay on /guest, which also speaks
+	// guest.Protocol, and its streams on /dial. It moves whenever a change
+	// to them means an engine and a shim of different builds cannot work
+	// together. A shim outlives the engine that started it, an embedder's
+	// restart included (discobox ADR 26-11-11-963 §7), so an engine meets shims of
+	// other builds, and attaches one of another protocol only to stop it
+	// (staleMachine). 1 is every shim from before shim.json named its
+	// protocol, whose /dial varies by build (none before 2026-11-01, any
+	// port with the service's unmapped before 2026-11-03), so none of them
+	// is used beyond the part that lasts.
+	shimProtocol = 2
 	// maxSocketPath is the longest path a Unix socket may have on every host
 	// a shim runs on: macOS's sun_path holds 104 bytes, Linux's 108.
 	maxSocketPath = 103
@@ -44,6 +57,10 @@ const (
 // shimState is how other processes find a running instance's shim. It exists
 // only while the shim is serving, and is private to the owner, as is the
 // socket it names; the token is a second check on top.
+//
+// Its PID, socket (or address), token, and service, and the control API's
+// /status, /stop, and /kill, last: every shim of every build keeps them, so
+// any engine finds, stops, and kills any shim. The rest is shimProtocol's.
 type shimState struct {
 	PID int `json:"pid"`
 	// Socket is the owner-only Unix socket the control API is served on:
@@ -57,6 +74,28 @@ type shimState struct {
 	// Service is the loopback address where the shim serves the instance's
 	// service, with no token: the service authenticates its callers.
 	Service string `json:"service,omitempty"`
+	// Protocol is the shim's shimProtocol, and GuestProtocol the
+	// guest.Protocol its relay speaks. A shim from before they were
+	// written is protocol 1, and its relay speaks guest protocol 1.
+	Protocol      int `json:"protocol,omitempty"`
+	GuestProtocol int `json:"guestProtocol,omitempty"`
+	// Build is the shim's build (internal/version), to name it in an error.
+	Build string `json:"build,omitempty"`
+}
+
+// usable refuses a shim that speaks another protocol than this build, naming
+// both, with machine.ErrStale.
+func (s shimState) usable() error {
+	protocol, guestProtocol := max(s.Protocol, 1), max(s.GuestProtocol, 1)
+	if protocol == shimProtocol && guestProtocol == guest.Protocol {
+		return nil
+	}
+	build := s.Build
+	if build == "" {
+		build = "unknown"
+	}
+	return fmt.Errorf("its shim (build %s) speaks shim protocol %d and guest protocol %d, and this build (%s) speaks %d and %d: %w",
+		build, protocol, guestProtocol, version.String(), shimProtocol, guest.Protocol, machine.ErrStale)
 }
 
 // dial connects to the shim's control API.
@@ -367,7 +406,11 @@ func (d *Driver) dialForward(ctx context.Context, f machine.Forward) (net.Conn, 
 	if err != nil {
 		return nil, fmt.Errorf("instance %s: %w", peer.Name, machine.ErrNotRunning)
 	}
-	return shim.dial(ctx, f.InstancePort)
+	conn, err := shim.dial(ctx, f.InstancePort)
+	if err != nil {
+		return nil, fmt.Errorf("instance %s: %w", peer.Name, err)
+	}
+	return conn, nil
 }
 
 // serveControl serves a shim's control API on listener, the Unix socket at
@@ -375,7 +418,10 @@ func (d *Driver) dialForward(ctx context.Context, f machine.Forward) (net.Conn, 
 // address of the instance's service, if it serves one. The returned func
 // unpublishes and stops it.
 func serveControl(listener net.Listener, socket string, mux *http.ServeMux, statePath, service string) (shimState, func(), error) {
-	state := shimState{PID: os.Getpid(), Socket: socket, Token: fsutil.RandomHex(16), Service: service}
+	state := shimState{
+		PID: os.Getpid(), Socket: socket, Token: fsutil.RandomHex(16), Service: service,
+		Protocol: shimProtocol, GuestProtocol: guest.Protocol, Build: version.String(),
+	}
 	server := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Authorization") != "Bearer "+state.Token {
@@ -587,10 +633,13 @@ func tail(path string) string {
 type shimClient struct {
 	state shimState
 	http  *http.Client
+	// stale is why the shim cannot be used beyond the part of it that
+	// lasts (shimState.usable), or nil.
+	stale error
 }
 
-// openShim finds a running instance's shim. It fails when the instance is not
-// running.
+// openShim finds a running instance's shim, of any build. It fails when the
+// instance is not running.
 func (d *Driver) openShim(id string) (*shimClient, error) {
 	statePath := filepath.Join(d.instanceDir(id), shimStateName)
 	var state shimState
@@ -607,7 +656,7 @@ func (d *Driver) openShim(id string) (*shimClient, error) {
 		DialContext:       func(ctx context.Context, _, _ string) (net.Conn, error) { return state.dial(ctx) },
 		DisableKeepAlives: true,
 	}
-	return &shimClient{state: state, http: &http.Client{Transport: transport}}, nil
+	return &shimClient{state: state, http: &http.Client{Transport: transport}, stale: state.usable()}, nil
 }
 
 func (c *shimClient) do(ctx context.Context, method, path string) (*http.Response, error) {
@@ -688,8 +737,11 @@ func (c *shimClient) dial(ctx context.Context, port uint32) (net.Conn, error) {
 }
 
 // upgrade asks the shim to upgrade a connection to one of its streams, and
-// returns the connection once it has.
+// returns the connection once it has. A stale shim's streams are refused.
 func (c *shimClient) upgrade(ctx context.Context, path, token string) (net.Conn, error) {
+	if c.stale != nil {
+		return nil, c.stale
+	}
 	conn, err := c.state.dial(ctx)
 	if err != nil {
 		return nil, err

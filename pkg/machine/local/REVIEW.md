@@ -21,3 +21,9 @@
   calls it with what a pool sent, and the engine's checks ran on the pool's
   side; a forward the driver took on trust is dialed by the shim with the
   owner's privileges.
+- **A shim's protocol moves with what it serves.** A change a shim of
+  another build would misread, to `/guest` or `/dial` or what they carry,
+  raises `shimProtocol`; a change to `guest.Protocol` reaches the relay by
+  itself. The part of a shim that lasts (`shimState`'s PID, socket, address,
+  token, and service, and `/status`, `/stop`, and `/kill`) never changes, or
+  an engine could not stop a shim of another build.
