@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
+	"github.com/discobox-ai/vm/internal/netutil"
 	"github.com/discobox-ai/vm/internal/proc"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -192,7 +193,7 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 			_ = conn.Close()
 			return
 		}
-		relay.hand(&bufConn{Conn: conn, r: rw.Reader})
+		relay.hand(&netutil.BufConn{Conn: conn, R: rw.Reader})
 	})
 	// Other processes reach the agent's port and the service's here
 	// (guest.DialablePort): the connection, once upgraded, is spliced into
@@ -230,7 +231,7 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 			_ = upstream.Close()
 			return
 		}
-		go spliceHalves(&bufConn{Conn: conn, r: rw.Reader}, upstream)
+		go netutil.Splice(&netutil.BufConn{Conn: conn, R: rw.Reader}, upstream)
 	})
 	statePath := filepath.Join(d.instanceDir(id), shimStateName)
 	state, closeControl, err := serveControl(listener, socket, mux, statePath, serviceListener.Addr().String())
@@ -296,7 +297,7 @@ func serveService(l net.Listener, m machine.Machine, port uint32) {
 				_ = conn.Close()
 				return
 			}
-			spliceHalves(conn, upstream)
+			netutil.Splice(conn, upstream)
 		}()
 	}
 }
@@ -342,7 +343,7 @@ func (d *Driver) serveForwards(m machine.Machine, forwards []machine.Forward) (f
 						_ = conn.Close()
 						return
 					}
-					spliceHalves(conn, upstream)
+					netutil.Splice(conn, upstream)
 				}()
 			}
 		}(l, f)
@@ -396,45 +397,6 @@ func serveControl(listener net.Listener, socket string, mux *http.ServeMux, stat
 		defer cancel()
 		_ = server.Shutdown(ctx)
 	}, nil
-}
-
-// spliceHalves copies both ways and passes each end's EOF on as a half-close,
-// so one side can finish sending and still read the answer. It closes both
-// once both directions are done. An end that cannot half-close is closed.
-func spliceHalves(a, b net.Conn) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-	copyHalf := func(dst, src net.Conn) {
-		defer wg.Done()
-		_, _ = io.Copy(dst, src)
-		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		} else {
-			_ = dst.Close()
-		}
-	}
-	go copyHalf(a, b)
-	go copyHalf(b, a)
-	wg.Wait()
-	_ = a.Close()
-	_ = b.Close()
-}
-
-// bufConn is a hijacked connection whose first bytes may already be buffered.
-type bufConn struct {
-	net.Conn
-	r *bufio.Reader
-}
-
-func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
-
-// CloseWrite half-closes the connection underneath, so a splice through it
-// passes an EOF on; one that cannot is closed.
-func (c *bufConn) CloseWrite() error {
-	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
-		return cw.CloseWrite()
-	}
-	return c.Close()
 }
 
 // ShimMain is the body of a shim, given the arguments Start appends to the
@@ -748,7 +710,7 @@ func (c *shimClient) upgrade(ctx context.Context, path, token string) (net.Conn,
 		return nil, err
 	}
 	reader := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(reader, req) //nolint:bodyclose // on 101 the body is the upgraded conn, returned as bufConn; otherwise conn is closed
+	resp, err := http.ReadResponse(reader, req) //nolint:bodyclose // on 101 the body is the upgraded conn, returned as netutil.BufConn; otherwise conn is closed
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -760,7 +722,7 @@ func (c *shimClient) upgrade(ctx context.Context, path, token string) (net.Conn,
 		return nil, fmt.Errorf("shim: %s: %s", what, strings.TrimSpace(string(msg)))
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &bufConn{Conn: conn, r: reader}, nil
+	return &netutil.BufConn{Conn: conn, R: reader}, nil
 }
 
 const (
