@@ -43,9 +43,19 @@ whose final `FROM scratch` stage is the artifact set `vmlinux`
 and `linux/amd64` (hcs; an Intel Mac). It is discobox's `vm-image` pipeline
 with disco-vm's content:
 
-- **A general Debian machine** with systemd and nothing else: no Docker,
-  nothing of discobox's. A caller shapes it through exec and copy, as
+- **A general Debian machine** with systemd, nftables, and nothing else: no
+  Docker, nothing of discobox's. A caller shapes it through exec and copy, as
   discobox applies its pool-agent bundle (discobox ADR 26-10-23-551).
+- **nftables**, so a caller can fence the guest's network before it comes
+  up (discobox ADR 26-11-11-963 §6): the `nft` tool, the kernel's nf_tables
+  with connection tracking (a module of Debian's kernel, built into
+  libkrun's), and Debian's `nftables.service` enabled, which loads
+  `/etc/nftables.conf` before `network-pre.target` on every boot. The image
+  keeps Debian's own `nftables.conf`, which admits everything; a caller
+  saves its rule set there. The unit only wants `network-pre.target`, so a
+  rule set that fails to load leaves the network up with no fence: a caller
+  reads it back, and orders what depends on it after `nftables.service` with
+  a `Requires=` of its own (discobox ADR 26-10-31-206 §1).
 - **No agent baked in.** A boot appends the host's agent to the initrd. The
   init-bottom hook `disco-vm-agent` moves it to `/run/disco-vm`, a tmpfs of
   its own because initramfs-tools mounts `/run` noexec and the root keeps
@@ -68,8 +78,8 @@ with disco-vm's content:
 needs no loop device or privilege), extracting the amd64 ELF from its
 bzImage and decompressing an arm64 Image only where Debian ships one
 compressed. `verify` then checks the kernel's form, the root's label, units,
-and fstab, and the initrd's hook and tools, so a broken image fails its build
-rather than booting to a blank console. `go tool task build:linux-guest`
+fstab, and nftables, and the initrd's hook and tools, so a broken image fails
+its build rather than booting to a blank console. `go tool task build:linux-guest`
 builds it for this host (CI builds amd64 on every change), and a `linux/vN`
 tag publishes both architectures as `ghcr.io/discobox-ai/disco-vm-linux:vN`
 (`release:linux-guest`), whose digest is pinned in `vz.DefaultLinuxBase` by
