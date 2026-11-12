@@ -122,6 +122,60 @@ tasks:
       - docker buildx build --platform linux/amd64 --build-arg RUNTIME_VERSION={{.VERSION}} --tag {{.IMAGE}} --push --metadata-file build/krun-runtime.metadata.json pkg/machine/libkrun/runtime
       - 'echo "pin libkrun.DefaultRuntime to {{.IMAGE}}@$(sed -n ''s/.*"containerimage.digest": *"\([^"]*\)".*/\1/p'' build/krun-runtime.metadata.json)"'
 
+  # disco-vm's linux agent, published per module version (discobox ADR
+  # 26-11-11-963 §10): the static linux disco-vm for amd64 and arm64, built
+  # from SRC with the module version as its version, one scratch image per
+  # platform (pkg/guest/agentimage) under one index tagged with that version,
+  # which an embedder pins by digest and pulls with linuximage.PullAgent. The
+  # images only copy, so arm64 needs no emulation; the builder is on the
+  # host's network, so a registry on localhost takes a push.
+  push:linux-agent:
+    desc: Push the linux agent of MODULE_VERSION, built from SRC (this checkout unless set), as REPOSITORY:MODULE_VERSION (ghcr.io/discobox-ai/disco-vm-agent unless set), then check it by its digest
+    requires:
+      vars: [MODULE_VERSION]
+    vars:
+      SRC: '{{.SRC | default "."}}'
+      REPOSITORY: '{{.REPOSITORY | default "ghcr.io/discobox-ai/disco-vm-agent"}}'
+    cmds:
+      - for: [amd64, arm64]
+        cmd: CGO_ENABLED=0 GOOS=linux GOARCH={{.ITEM}} go -C {{.SRC}} build -ldflags '-X github.com/discobox-ai/vm/internal/version.Version={{.MODULE_VERSION}}' -o {{.ROOT_DIR}}/build/linux-agent-image/linux-{{.ITEM}}/disco-vm {{.MAIN}}
+      - docker buildx inspect disco-vm-agent >/dev/null 2>&1 || docker buildx create --name disco-vm-agent --driver docker-container --driver-opt network=host
+      - docker buildx build --builder disco-vm-agent --platform linux/amd64,linux/arm64 --file pkg/guest/agentimage/Dockerfile --tag {{.REPOSITORY}}:{{.MODULE_VERSION}} --push --metadata-file build/linux-agent-image.metadata.json build/linux-agent-image
+      - |
+        digest=$(sed -n 's/.*"containerimage.digest": *"\([^"]*\)".*/\1/p' build/linux-agent-image.metadata.json)
+        go tool task check:linux-agent IMAGE={{.REPOSITORY}}@$digest MODULE_VERSION={{.MODULE_VERSION}}
+
+  # With no registry credentials, as an embedder pulls it: a package only the
+  # release can read fails here.
+  check:linux-agent:
+    desc: Pull the linux agent IMAGE names by digest, anonymously, for amd64 and arm64, and run this host's to check it is MODULE_VERSION (TestPullPublishedAgent)
+    requires:
+      vars: [IMAGE, MODULE_VERSION]
+    cmds:
+      - |
+        config=$(mktemp -d)
+        trap 'rm -rf "$config"' EXIT
+        DOCKER_CONFIG=$config DISCO_VM_AGENT_IMAGE={{.IMAGE}} DISCO_VM_AGENT_VERSION={{.MODULE_VERSION}} go test -count=1 -run '^TestPullPublishedAgent$' -v ./pkg/machine/linuximage
+        echo "the linux agent of {{.MODULE_VERSION}} is {{.IMAGE}}"
+
+  test:linux-agent:
+    desc: Push the linux agent of this checkout to a registry on localhost and check it by its digest, as a release does (Docker)
+    vars:
+      PORT: '{{.PORT | default "5055"}}'
+    cmds:
+      - docker run -d --rm --name disco-vm-agent-registry -p 127.0.0.1:{{.PORT}}:5000 docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+      - defer: docker rm -f disco-vm-agent-registry
+      - task: push:linux-agent
+        vars:
+          REPOSITORY: localhost:{{.PORT}}/disco-vm-agent
+          MODULE_VERSION: '{{.VERSION}}'
+
+  release:linux-agent:
+    desc: Publish the linux agent of every commit since BEFORE (or of HEAD) to ghcr.io/discobox-ai/disco-vm-agent, each as its module version (CI, on a push to main or a v* tag; needs GITHUB_TOKEN and GITHUB_ACTOR)
+    cmds:
+      - printenv GITHUB_TOKEN | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - scripts/release-linux-agent.sh "{{.BEFORE}}"
+
   # A GitHub-hosted Linux runner has /dev/kvm, but only root may open it, and
   # restricts user namespaces.
   ci:kvm:
