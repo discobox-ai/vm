@@ -157,6 +157,97 @@ type Capabilities struct {
 	// (InstanceSpec.Data, InstanceSpec.Cache), mounted at VolumePath. Empty
 	// is none.
 	Volumes []Volume `json:"volumes,omitempty"`
+	// URLs is which of a service's URLs the driver gives an instance: never,
+	// when asked (it can give one and withhold one), or always
+	// (InstanceSpec.URLs).
+	URLs URLCapabilities `json:"urls"`
+}
+
+// URLReach is whether a driver gives an instance one of its service's URLs
+// (Capabilities.URLs).
+type URLReach string
+
+const (
+	// URLNever is a URL the driver gives no instance.
+	URLNever URLReach = ""
+	// URLOptional is a URL the driver gives an instance or withholds, as
+	// the instance's URLRequest says.
+	URLOptional URLReach = "optional"
+	// URLAlways is a URL every instance of the driver has.
+	URLAlways URLReach = "always"
+)
+
+// URLCapabilities is a driver's URLReach for each of a service's URLs, by
+// who reaches it (ADR 26-11-12-604; ADR 26-11-04-412 §4):
+//
+//   - Internal: the caller managing the pool, alone. No driver reports one
+//     yet (machine.Service has no field for it).
+//   - Private: the instance's peers, at Service.PrivateURL.
+//   - Public: anyone on the internet, at Service.URL. A URL on the engine's
+//     host alone, a loopback port, is not one: a local driver's or docker's
+//     Service.URL is never public.
+type URLCapabilities struct {
+	Internal URLReach `json:"internal,omitempty"`
+	Private  URLReach `json:"private,omitempty"`
+	Public   URLReach `json:"public,omitempty"`
+}
+
+// URLMode is what a caller asks of one of a service's URLs.
+type URLMode string
+
+const (
+	// URLDefault is the driver's default.
+	URLDefault URLMode = ""
+	// URLOn asks for the URL.
+	URLOn URLMode = "on"
+	// URLOff asks for none.
+	URLOff URLMode = "off"
+)
+
+// URLRequest is what a caller asks of one of a service's URLs. The driver
+// honors Mode where it can. Without Strict, where it cannot, the instance
+// gets what the driver gives, either way; with it, the driver gives exactly
+// what Mode asks or refuses the create with ErrUnsupported. Strict needs a
+// Mode.
+type URLRequest struct {
+	Mode   URLMode
+	Strict bool
+}
+
+// URLRequests is a URLRequest for each of a service's URLs, as
+// URLCapabilities names them. The zero value is the driver's default for
+// every one.
+type URLRequests struct {
+	Internal, Private, Public URLRequest
+}
+
+// Check refuses, with ErrUnsupported, a strict request the capabilities
+// cannot meet: a URL the driver never gives asked on, or one it always gives
+// asked off. A mode it does not know, or Strict with no mode, is an error.
+func (r URLRequests) Check(caps URLCapabilities) error {
+	for _, c := range []struct {
+		name  string
+		req   URLRequest
+		reach URLReach
+	}{{"internal", r.Internal, caps.Internal}, {"private", r.Private, caps.Private}, {"public", r.Public, caps.Public}} {
+		switch c.req.Mode {
+		case URLDefault:
+			if c.req.Strict {
+				return fmt.Errorf("a strict %s URL request needs on or off", c.name)
+			}
+		case URLOn:
+			if c.req.Strict && c.reach == URLNever {
+				return fmt.Errorf("the driver gives no instance its %s URL: %w", c.name, ErrUnsupported)
+			}
+		case URLOff:
+			if c.req.Strict && c.reach == URLAlways {
+				return fmt.Errorf("the driver gives every instance its %s URL: %w", c.name, ErrUnsupported)
+			}
+		default:
+			return fmt.Errorf("a %s URL request of %q, not on or off", c.name, c.req.Mode)
+		}
+	}
+	return nil
 }
 
 // Attaches reports whether the driver attaches the volume v.
@@ -439,6 +530,12 @@ type InstanceSpec struct {
 	// of its default one. A driver that does not list
 	// Capabilities.Isolation refuses them.
 	Networks []string
+	// URLs asks for each of the service's URLs, or for none; the zero value
+	// is the driver's default for each. A public URL is an inbound path from
+	// the internet to the guest that its egress fence never sees, answered by
+	// whatever the guest's root binds to the service's port, so a caller
+	// that must not have one asks for it off, strictly (ADR 26-11-12-604).
+	URLs URLRequests
 	// Egress fences what the machine reaches beyond its networks, in place
 	// before Create returns and across stop and start; nil is the
 	// provider's default. It is the spec's, never a committed VM's. A driver that
@@ -558,7 +655,8 @@ type Service struct {
 	// URL is where any process reaches the service over HTTP with no
 	// credential of the driver's: boxd's https://<machine>.boxd.sh, a port
 	// the Docker daemon publishes on the host's loopback, a loopback port a
-	// local driver's shim serves.
+	// local driver's shim serves. It is empty for an instance whose public
+	// URL was asked off, on a driver that can withhold it.
 	URL string
 	// PrivateURL is where the instance's peers, other instances of the
 	// driver on its networks, reach the service: a direct path,

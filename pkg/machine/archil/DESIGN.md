@@ -66,4 +66,7 @@ the guest and nothing on the host:
   attaches to every VM, wakes none. A guest that powers itself off halts its VM, which
   Archil goes on reporting `running`: unsupported, as on boxd.
 - **The URL** is the hostname Archil gives the exposed port 7302, the same
-  across stop and start, and the private URL is the URL.
+  across stop and start, and the private URL is the URL. It is public and
+  the only path to a sandbox, so every VM has both (`Capabilities.URLs`:
+  always), and Create refuses a strict request for either off (ADR
+  26-11-12-604).

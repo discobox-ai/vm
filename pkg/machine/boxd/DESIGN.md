@@ -41,14 +41,21 @@ machines and snapshots (the root
   command runs in a booted system. boxd authenticates every stream. An image
   installed before this carries an agent that nothing reaches; it does no
   harm.
-- **The URL is the machine's default proxy.** Create pins the default proxy
-  at `<machine>.boxd.sh` to 7302 and turns off bot protection, which would
-  put a browser challenge in front of a request that wakes the machine.
-  Pinning it also stops the proxy forwarding to whichever common port the
-  guest listens on (80, 443, 8080, 8000, 3000, 5000, 5173). The private URL
-  of a machine on networks is `http://<machine>.boxd:7302`, its name on
-  boxd's internal DNS, where its peers reach every port directly; on none it
-  is the URL (ADR 26-10-29-129).
+- **The URL is the machine's default proxy, unless its public URL is asked
+  off.** By default, and asked on, Create pins the default proxy at
+  `<machine>.boxd.sh` to 7302 and turns off bot protection, which would put
+  a browser challenge in front of a request that wakes the machine. Pinning
+  it also stops the proxy forwarding to whichever common port the guest
+  listens on (80, 443, 8080, 8000, 3000, 5000, 5173). Asked off, strictly or
+  not, Create removes every proxy boxd gave the machine (`DeleteProxy`) and
+  reads back that none is left, or destroys the machine and fails; it has no
+  URL (`Capabilities.URLs`: public when asked, private always; ADR
+  26-11-12-604). A strict private URL on no networks with the public one off
+  is refused: peers reach such a machine at nothing. An isolated
+  machine has no in-VM CLI to make a proxy again. The private URL of a
+  machine on networks is `http://<machine>.boxd:7302`, its name on boxd's
+  internal DNS, where its peers reach every port directly; on none it is the
+  URL, if it has one (ADR 26-10-29-129).
 - **A machine's power is boxd's** (ADR 26-10-15-833). Its state is `GetVm`'s
   status. An orderly shutdown runs `sync` in the guest, since boxd does not
   say whether `StopVm` cuts the power, then `StopVm`; a reboot is `RebootVm`,

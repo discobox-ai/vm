@@ -80,6 +80,9 @@ func (*Driver) Capabilities() machine.Capabilities {
 		Volumes: []machine.Volume{machine.VolumeData},
 		// A committed VM is its stopped sandbox, and a copy a fork of it.
 		Commit: true,
+		// Archil reaches a sandbox only at its exposed port's hostname,
+		// public, which is its private URL too.
+		URLs: machine.URLCapabilities{Private: machine.URLAlways, Public: machine.URLAlways},
 	}
 }
 
@@ -207,6 +210,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("archil: isolation: %w", machine.ErrUnsupported)
 	case spec.Cache != nil:
 		return machine.Instance{}, fmt.Errorf("archil: a cache volume: %w", machine.ErrUnsupported)
+	}
+	if err := spec.URLs.Check(d.Capabilities().URLs); err != nil {
+		return machine.Instance{}, fmt.Errorf("archil: %w", err)
 	}
 	// A data disk of the name with no sandbox is a VM caught mid-upgrade,
 	// or one a Destroy stopped before its last step: listed, so the name is

@@ -100,6 +100,10 @@ func (*Driver) Capabilities() machine.Capabilities {
 		Keys:      keyCapabilities,
 		Isolation: true,
 		Egress:    []machine.EgressFence{machine.EgressNone, machine.EgressAllow},
+		// The default proxy, removed for a VM whose public URL is asked
+		// off; the private URL is the direct one on networks, else the
+		// public one.
+		URLs: machine.URLCapabilities{Private: machine.URLAlways, Public: machine.URLOptional},
 	}
 }
 
@@ -166,8 +170,9 @@ func (d *Driver) baseImage(ctx context.Context, api boxdapi.BoxdApiClient) (stri
 
 // Create makes the VM's machine: restored from the committed VM's snapshot,
 // or made fresh from the driver's image, at the size it asks for, fenced as
-// it asks the moment boxd answers, with its proxy pinned to the service
-// port; then powered off in order, so its first boot is a cold boot.
+// it asks the moment boxd answers, with its default proxy pinned to the
+// service port, or every proxy removed if its public URL is asked off; then
+// powered off in order, so its first boot is a cold boot.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	if err := machine.ValidateName(spec.Name); err != nil {
 		return machine.Instance{}, err
@@ -181,6 +186,13 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	}
 	if spec.From != nil && machine.OtherPool(spec.From.Pool, d.pool) {
 		return machine.Instance{}, fmt.Errorf("boxd: a VM from another pool's (%s): %w", spec.From.Pool, machine.ErrUnsupported)
+	}
+	if err := spec.URLs.Check(d.Capabilities().URLs); err != nil {
+		return machine.Instance{}, fmt.Errorf("boxd: %w", err)
+	}
+	if spec.URLs.Private == (machine.URLRequest{Mode: machine.URLOn, Strict: true}) && len(spec.Networks) == 0 && spec.URLs.Public.Mode == machine.URLOff {
+		// Peers reach a machine on no networks at its public URL alone.
+		return machine.Instance{}, fmt.Errorf("boxd: a private URL on no networks, with the public URL off: %w", machine.ErrUnsupported)
 	}
 	if spec.Data != nil || spec.Cache != nil {
 		return machine.Instance{}, fmt.Errorf("boxd: a data or cache volume: %w", machine.ErrUnsupported)
@@ -260,7 +272,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if err == nil {
 		_, err = waitVM(ctx, api, vm, "running")
 	}
-	if err == nil {
+	if err == nil && spec.URLs.Public.Mode == machine.URLOff {
+		err = dropProxies(ctx, api, vm)
+	} else if err == nil {
 		_, err = pinProxy(ctx, api, vm, guest.ServicePort)
 	}
 	if err == nil {

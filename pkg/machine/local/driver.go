@@ -340,6 +340,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if spec.Isolated || len(spec.Networks) > 0 {
 		return machine.Instance{}, fmt.Errorf("%s: isolation: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
+	if err := spec.URLs.Check(d.hv.Capabilities().URLs); err != nil {
+		return machine.Instance{}, fmt.Errorf("%s: %w", d.hv.Name(), err)
+	}
 	if spec.From != nil && !d.hv.Capabilities().Commit {
 		return machine.Instance{}, fmt.Errorf("%s cannot create a VM from another: %w", d.hv.Name(), machine.ErrUnsupported)
 	}

@@ -54,6 +54,7 @@ const (
 	BoxdApi_ResizeVm_FullMethodName                = "/boxd.api.v1.BoxdApi/ResizeVm"
 	BoxdApi_ListProxies_FullMethodName             = "/boxd.api.v1.BoxdApi/ListProxies"
 	BoxdApi_SetProxyPort_FullMethodName            = "/boxd.api.v1.BoxdApi/SetProxyPort"
+	BoxdApi_DeleteProxy_FullMethodName             = "/boxd.api.v1.BoxdApi/DeleteProxy"
 	BoxdApi_SetBotProtection_FullMethodName        = "/boxd.api.v1.BoxdApi/SetBotProtection"
 	BoxdApi_SetVmNetworks_FullMethodName           = "/boxd.api.v1.BoxdApi/SetVmNetworks"
 	BoxdApi_SetVmEgressAllow_FullMethodName        = "/boxd.api.v1.BoxdApi/SetVmEgressAllow"
@@ -101,6 +102,10 @@ type BoxdApiClient interface {
 	// whose TLS boxd terminates, forwarding HTTP to one port of the machine.
 	ListProxies(ctx context.Context, in *ListProxiesRequest, opts ...grpc.CallOption) (*ListProxiesResponse, error)
 	SetProxyPort(ctx context.Context, in *SetProxyPortRequest, opts ...grpc.CallOption) (*SetProxyPortResponse, error)
+	// Removes a proxy and its domain (docs.boxd.sh/guides/proxies, "Remove a
+	// proxy"). The docs show it on a subdomain proxy; that it takes a
+	// machine's default one too is what TestNoPublicURL checks on boxd.
+	DeleteProxy(ctx context.Context, in *DeleteProxyRequest, opts ...grpc.CallOption) (*DeleteProxyResponse, error)
 	// Bot protection challenges an HTTPS request that would wake a sleeping
 	// machine on <machine>.<zone>. On by default.
 	SetBotProtection(ctx context.Context, in *SetBotProtectionRequest, opts ...grpc.CallOption) (*SetBotProtectionResponse, error)
@@ -369,6 +374,16 @@ func (c *boxdApiClient) SetProxyPort(ctx context.Context, in *SetProxyPortReques
 	return out, nil
 }
 
+func (c *boxdApiClient) DeleteProxy(ctx context.Context, in *DeleteProxyRequest, opts ...grpc.CallOption) (*DeleteProxyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteProxyResponse)
+	err := c.cc.Invoke(ctx, BoxdApi_DeleteProxy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *boxdApiClient) SetBotProtection(ctx context.Context, in *SetBotProtectionRequest, opts ...grpc.CallOption) (*SetBotProtectionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetBotProtectionResponse)
@@ -477,6 +492,10 @@ type BoxdApiServer interface {
 	// whose TLS boxd terminates, forwarding HTTP to one port of the machine.
 	ListProxies(context.Context, *ListProxiesRequest) (*ListProxiesResponse, error)
 	SetProxyPort(context.Context, *SetProxyPortRequest) (*SetProxyPortResponse, error)
+	// Removes a proxy and its domain (docs.boxd.sh/guides/proxies, "Remove a
+	// proxy"). The docs show it on a subdomain proxy; that it takes a
+	// machine's default one too is what TestNoPublicURL checks on boxd.
+	DeleteProxy(context.Context, *DeleteProxyRequest) (*DeleteProxyResponse, error)
 	// Bot protection challenges an HTTPS request that would wake a sleeping
 	// machine on <machine>.<zone>. On by default.
 	SetBotProtection(context.Context, *SetBotProtectionRequest) (*SetBotProtectionResponse, error)
@@ -580,6 +599,9 @@ func (UnimplementedBoxdApiServer) ListProxies(context.Context, *ListProxiesReque
 }
 func (UnimplementedBoxdApiServer) SetProxyPort(context.Context, *SetProxyPortRequest) (*SetProxyPortResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetProxyPort not implemented")
+}
+func (UnimplementedBoxdApiServer) DeleteProxy(context.Context, *DeleteProxyRequest) (*DeleteProxyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteProxy not implemented")
 }
 func (UnimplementedBoxdApiServer) SetBotProtection(context.Context, *SetBotProtectionRequest) (*SetBotProtectionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetBotProtection not implemented")
@@ -1026,6 +1048,24 @@ func _BoxdApi_SetProxyPort_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BoxdApi_DeleteProxy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteProxyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BoxdApiServer).DeleteProxy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BoxdApi_DeleteProxy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BoxdApiServer).DeleteProxy(ctx, req.(*DeleteProxyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _BoxdApi_SetBotProtection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetBotProtectionRequest)
 	if err := dec(in); err != nil {
@@ -1246,6 +1286,10 @@ var BoxdApi_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetProxyPort",
 			Handler:    _BoxdApi_SetProxyPort_Handler,
+		},
+		{
+			MethodName: "DeleteProxy",
+			Handler:    _BoxdApi_DeleteProxy_Handler,
 		},
 		{
 			MethodName: "SetBotProtection",

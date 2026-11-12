@@ -50,7 +50,7 @@ Archil pauses it.
 | `Machine.Done` | polled every 2s once asked: stopped or exited is a power-off, failed or deleted an error. |
 | `Machine.Kill`, `Shutdown` | Archil's stop. A reboot is refused. |
 | guest operations | a process each: exec with the request's directory, variables, and terminal, `runuser -u` for another account (an image without util-linux, such as Alpine, fails `exec -u`); `cp` as tar, GNU's or BusyBox's, a copy out tarring to `/var/tmp` (so it needs that much free space in the guest, and streams nothing until tar is done) and writing `R` once that worked, then the tar in 512 KiB chunks the host asks for, read with `dd`, since Archil drops output that outruns its connection (an exec that loses output fails); `info` as `uname -m; hostname`. |
-| `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `https://<hostname Archil gives port 7302>`, the same across stop and start, and the private URL is the URL. |
+| `Service` | listen on `tcp:0.0.0.0:7302`; the URL is `https://<hostname Archil gives port 7302>`, the same across stop and start, and the private URL is the URL. It is public and the only path, so every VM has both, and `Create` refuses a strict request for either off (`ErrUnsupported`; ADR 26-11-12-604). |
 | volumes | `data`: the disk `dvm-<pool>--<name>--data` at `/.discobox/data`, made at Create (a data disk of the name with no sandbox is a VM mid-upgrade, so Create of that name is `ErrExists`) and deleted at Commit and Destroy. No `cache` (ADR 26-11-02-180). |
 | egress | `network.egress` `{default: deny, allow: [...]}`, set at create (fresh) or right after the fork (`From`), and read back. |
 | keys | none: an Archil token never expires and reaches the whole account (`ErrCannotIssue`). |

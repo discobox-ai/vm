@@ -97,6 +97,10 @@ type CreateOptions struct {
 	// (machine.InstanceSpec); the driver must list Capabilities.Isolation.
 	Isolated bool
 	Networks []string
+	// URLs asks for each of the service's URLs, on or off, strictly or not
+	// (machine.InstanceSpec.URLs); the zero value is the driver's default. A
+	// strict request the driver cannot meet (Capabilities.URLs) is refused.
+	URLs machine.URLRequests
 	// Egress fences what the instance reaches beyond its networks, from
 	// before Create returns (machine.InstanceSpec); nil is the provider's
 	// default. The driver must hold the fence (Capabilities.Fences).
@@ -118,6 +122,9 @@ func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, erro
 	if (opts.Isolated || len(opts.Networks) > 0) && !e.Driver.Capabilities().Isolation {
 		return Instance{}, fmt.Errorf("driver %s cannot isolate an instance or place it on networks: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
+	if err := opts.URLs.Check(e.Driver.Capabilities().URLs); err != nil {
+		return Instance{}, fmt.Errorf("driver %s: %w", e.Driver.Name(), err)
+	}
 	if !e.Driver.Capabilities().Fences(opts.Egress) {
 		if len(opts.Egress.Allow) == 0 {
 			return Instance{}, fmt.Errorf("driver %s cannot fence an instance to nothing beyond its networks: %w", e.Driver.Name(), machine.ErrUnsupported)
@@ -129,7 +136,7 @@ func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, erro
 	}
 	spec := machine.InstanceSpec{
 		Name: opts.Name, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: e.Forwards,
-		Isolated: opts.Isolated, Networks: opts.Networks, Egress: opts.Egress,
+		Isolated: opts.Isolated, Networks: opts.Networks, URLs: opts.URLs, Egress: opts.Egress,
 	}
 	if opts.Data != nil {
 		spec.Data = &machine.DataVolume{Bytes: opts.Data.Bytes}
@@ -442,7 +449,8 @@ func (e *Engine) Dial(ctx context.Context, inst Instance, port uint32) (net.Conn
 // HTTPS URL, the same across stop and start, or a loopback port the Docker
 // daemon publishes or the instance's shim serves while it runs, a new one at
 // every start. None needs a credential, so the service authenticates its
-// callers.
+// callers. It is refused for an instance whose public URL was asked off, on a
+// driver that withholds it.
 func (e *Engine) URL(ctx context.Context, inst Instance) (string, error) {
 	service, err := e.Driver.Service(ctx, inst)
 	if errors.Is(err, machine.ErrNotRunning) {
@@ -452,6 +460,9 @@ func (e *Engine) URL(ctx context.Context, inst Instance) (string, error) {
 		return "", err
 	}
 	if service.URL == "" {
+		if e.Driver.Capabilities().URLs.Public == machine.URLOptional {
+			return "", fmt.Errorf("instance %s has no URL: the %s driver's is public, and gives none to an instance whose public URL is asked off: %w", inst.Name, e.Driver.Name(), machine.ErrUnsupported)
+		}
 		return "", fmt.Errorf("instance %s: the %s driver gave its service no URL", inst.Name, e.Driver.Name())
 	}
 	return service.URL, nil

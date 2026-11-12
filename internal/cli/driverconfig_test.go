@@ -56,3 +56,17 @@ func TestRetiredFieldOnTheCommandLine(t *testing.T) {
 		})
 	}
 }
+
+// --url reads SCOPE=on|off[,strict], once a scope, and refuses anything else.
+func TestParseURLRequests(t *testing.T) {
+	got, err := parseURLRequests([]string{"public=off,strict", "private=on"})
+	want := machine.URLRequests{Public: machine.URLRequest{Mode: machine.URLOff, Strict: true}, Private: machine.URLRequest{Mode: machine.URLOn}}
+	if err != nil || got != want {
+		t.Fatalf("parse = %+v, %v; want %+v", got, err, want)
+	}
+	for _, bad := range [][]string{{"public"}, {"public=yes"}, {"public=off,lax"}, {"edge=on"}, {"public=on", "public=off"}} {
+		if _, err := parseURLRequests(bad); err == nil {
+			t.Errorf("parse %q succeeded", bad)
+		}
+	}
+}
