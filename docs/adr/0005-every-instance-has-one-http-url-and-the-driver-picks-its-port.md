@@ -1,6 +1,7 @@
 # 0005 — Every instance has one HTTP URL, and the driver picks where its service listens
 
-- **Status**: Proposed
+- **Status**: Proposed (that every instance has one HTTP URL superseded by
+  26-11-12-604)
 - **Date**: 2026-10-15
 
 ## Context
