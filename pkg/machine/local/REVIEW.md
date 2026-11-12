@@ -16,3 +16,8 @@
 - **A peer forward cannot refuse.** The shim's listener has accepted the
   guest's connection before it can know the peer is stopped, so the guest
   connects and reads EOF. Write it that way wherever it is described.
+- **Create refuses a malformed forward itself (`checkForwards`), whatever
+  the engine checked.** A served driver's server (`pkg/machine/served`)
+  calls it with what a pool sent, and the engine's checks ran on the pool's
+  side; a forward the driver took on trust is dialed by the shim with the
+  owner's privileges.
