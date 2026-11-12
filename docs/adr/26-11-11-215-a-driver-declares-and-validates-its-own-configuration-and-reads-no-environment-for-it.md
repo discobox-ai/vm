@@ -3,7 +3,10 @@
 - **Status**: Accepted (supersedes in part 26-10-31-990 §2, its agent
   `$DISCO_VM_AGENT` read by the driver; 26-11-03-530, its runtime
   `$DISCO_VM_KRUN_RUNTIME` read by the driver; and 26-11-04-412 §3, native
-  Docker's environment-based constructor)
+  Docker's environment-based constructor; §7's definition with no type for
+  a secret, §2's `KeyEnv`, §1's base described by every definition, and
+  §4's proxy variables read under an embedder's dialer, superseded by
+  [26-11-12-461](26-11-12-461-a-drivers-definition-declares-its-secret-where-it-is-sent-and-whether-it-takes-a-base-and-an-embedder-dials-its-connections.md))
 - **Date**: 2026-11-11
 
 Accepted by the owner by merging vm#72, 2026-11-11.
