@@ -41,6 +41,13 @@
   no proxy variable; never a bare `net.Dialer` or `http.DefaultClient`
   regardless of it. A review found a driver that dialed through it for gRPC
   and through `HTTPS_PROXY` for its token exchange.
+- **A test that a dial skips the proxy reads the transport, not a proxy
+  variable**: assert `Proxy == nil` on what `Config.HTTPTransport()` returns.
+  A dial recorded against an `httptest` server proves the embedder's dialer
+  was used, not that the proxy was skipped, and setting `HTTP_PROXY` around
+  it proves nothing: Go never proxies a loopback host and reads the variables
+  once per process. A review found a test whose proxy variable could fail
+  nothing.
 - **A local driver's `Hypervisor` is made by its `newHypervisor`**, from
   `machine.Config` and the decoded configuration, in `New` and in every
   test. A field `New` sets from the config (the registry transport) and a

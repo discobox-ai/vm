@@ -40,9 +40,9 @@ type Hypervisor struct {
 	// agent is the disco-vm built for linux that a Linux guest's boot hands
 	// it (Config.Agent).
 	agent string
-	// transport calls a registry for the Linux base
-	// (machine.Config.HTTPTransport): through an embedder's dialer, where
-	// one is set.
+	// transport calls a registry for the Linux base and downloads the
+	// macOS restore image (machine.Config.HTTPTransport): through an
+	// embedder's dialer, where one is set.
 	transport http.RoundTripper
 }
 

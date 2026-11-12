@@ -139,15 +139,17 @@ the key arrived where `SecretSends` says and nowhere else.
 
 `Config.Dial` dials every connection a driver makes to its service (boxd's
 gRPC and token exchange, archil's API and process API, a Docker daemon, the
-registry vz and libkrun pull a base or runtime from), at the service's own
+registry vz and libkrun pull a base or runtime from, the host vz downloads
+macOS media from), at the service's own
 address: set, a driver reads no proxy variable, so an embedder checks where
 it connects as it connects, and proxies within its dialer if at all. Nil is
 the process's own way, proxy variables and all. A driver takes it as
 `Config.Dialer()` and `Config.HTTPTransport()`, and hands the transport to
 `linuximage.Pull`. A shim is never given it, so libkrun's boot re-pulling a
-runtime removed from the cache dials the process's own way. vz's macOS media
-download (install's `latest`) does not go through it yet: the vz library
-fetches it with `http.DefaultClient`.
+runtime removed from the cache dials the process's own way. Which macOS
+media is the latest (install's `latest`) is Virtualization.framework's own
+lookup, out of any dialer's reach; vz downloads what it names itself, through
+the transport.
 
 `IssueKey` makes the narrowest key the driver can for another host to run the
 pool's machines. An issued key expires (a TTL is required) and cannot
