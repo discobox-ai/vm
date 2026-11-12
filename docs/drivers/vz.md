@@ -25,6 +25,10 @@ since a VM dies with the process that made it (ADR 26-10-23-417).
    (`default`, a guest image's reference, or a directory) runs
    `TestConformanceLinux`, and with `DISCO_VM_VZ_BASE` too,
    `TestLinuxBesideMacOS`.
+5. A guest fenced to nothing has no route off the machine on either OS, and
+   is reached only over vsock and its `Forwards` (issue #5):
+   `TestNoRouteOffTheMachine`, in `go tool task test:vz`, runs on each OS
+   whose base is named.
 
 Where each stands is in the proof table in [DESIGN.md](../../DESIGN.md).
 
@@ -231,7 +235,16 @@ guests has none and is macOS.
   tagged virtiofs shares. Once the agent answers, a Linux guest whose
   `guest.Protocol` is not this host's is killed and refused.
 - **No network device** is `Egress{}`: Create records the fence and Boot
-  attaches no NIC, to a Linux or a macOS guest.
+  attaches no NIC, to a Linux or a macOS guest. A Linux guest then has `lo`
+  alone. A macOS guest still lists Apple silicon's peripheral interfaces
+  (`anpi0` and its `en2`) and the system's `utun` tunnels, none of them
+  active or holding an address beyond link-local, and nothing off the machine
+  is routed: there is no route to `1.1.1.1`, and neither IPv4 nor IPv6
+  reaches out (measured 2026-11-12, macOS 27.0 guest). Its agent, a
+  `Dial` through `shim.sock`, and a `Forward` to a peer all go over vsock.
+- **No warm stage** is saved or resumed: warm stages were removed (ADR
+  26-10-15-851), and every clone boots cold, so there is no saved state whose
+  devices have to match a fenced boot.
 - **Not counted** against the two macOS guests: `MaxRunning` names darwin
   alone. A Linux guest's size is 2 vCPUs and 2 GiB unless asked.
 

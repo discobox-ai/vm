@@ -66,3 +66,9 @@
   before the rename deletes a guest image or an agent from under a boot of
   the same digest; a review found `PullAgent` copied from `Pull` without
   that check.
+- **A real-hypervisor test skips before it requires anything.** Its first
+  check is the variable naming its base or image; only once one is named may
+  it fail for a missing `DISCO_VM_TEST_BINARY` or agent. CI's macos job runs
+  `go test ./...` with cgo, so a darwin test that fails first breaks CI, and
+  `task test:vz` always sets the binary, so the author's runs never see it. A
+  review found a vz test that did.
