@@ -135,7 +135,7 @@ func TestASecretIsNeverConfiguration(t *testing.T) {
 // none, the process's proxy variables stand.
 func TestAnEmbeddersDialerReadsNoProxy(t *testing.T) {
 	t.Setenv("HTTPS_PROXY", "http://proxy.example:3128")
-	req, err := http.NewRequest(http.MethodGet, "https://control.example/api/", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://control.example/api/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,11 @@ func TestAnEmbeddersDialerReadsNoProxy(t *testing.T) {
 			t.Fatalf("with a dialer, the request is proxied to %s", u)
 		}
 	}
-	if _, err := (&http.Client{Transport: tr}).Do(req); err == nil || dialed != "control.example:443" {
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	if err == nil || dialed != "control.example:443" {
 		t.Fatalf("dialed %q (%v), want the service's own address", dialed, err)
 	}
 }
