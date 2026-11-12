@@ -166,6 +166,20 @@ here for real, booting a VM in about two seconds:
   with a request the guest answers and then closes (HTTP/1.0), not one that
   waits for EOF.
 
+## A served driver (`pkg/machine/served`, no CLI)
+
+It is a library surface: drive it from a program of its own outside the
+tree (a scratch module with `replace github.com/discobox-ai/vm =>
+/workspace/vm`, built with `GOFLAGS=-mod=mod`) that imports
+`pkg/machine/drivers`, makes the libkrun driver for one pool with
+`machine.New` (its `ShimCommand` is `build/disco-vm --root R --pool P
+--driver libkrun --driver-config '{"agent":...,"runtime":...}' shim`, the
+same configuration the driver has), serves it with `served.Handler` on a
+Unix socket, and opens an engine on `served.New` over that socket. Drive
+create, start, exec, cp, dial, stop, commit, create from it, rm; probe a
+client of another version, a field off the list, the hook's refusal, and a
+VM of another pool on the same root by name and by ID.
+
 ## Flows worth driving
 
 - `run`, then `exec` and `cp` **more than five minutes later** (`sleep 330`):
