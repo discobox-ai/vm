@@ -3,9 +3,12 @@
 The driver seam: `machine.Driver` and the guest's operations,
 `machine.Guest`. Each hypervisor is a package below it, selected by build tags
 (`drivers`), and `machinetest` is the conformance suite every driver passes.
-archil, boxd, docker, and local have their own design notes:
-[archil/DESIGN.md](archil/DESIGN.md), [boxd/DESIGN.md](boxd/DESIGN.md), [docker/DESIGN.md](docker/DESIGN.md), and
-[local/DESIGN.md](local/DESIGN.md).
+archil, boxd, docker, local, and served have their own design notes:
+[archil/DESIGN.md](archil/DESIGN.md), [boxd/DESIGN.md](boxd/DESIGN.md), [docker/DESIGN.md](docker/DESIGN.md),
+[local/DESIGN.md](local/DESIGN.md), and [served/DESIGN.md](served/DESIGN.md):
+a driver an embedder serves over a stream, whose client reports the served
+driver's capabilities narrowed to the embedder's allow-list, and so has no
+column below.
 
 ## The driver contract is the intersection, and differences are reported
 

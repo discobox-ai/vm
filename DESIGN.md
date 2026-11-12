@@ -12,7 +12,9 @@ It is used two ways:
 
 - **Standalone:** `disco-vm install | run | exec | cp | stop | commit | upgrade | rm ...`.
 - **As a discobox sandbox provider:** discobox embeds `pkg/engine` as a
-  library.
+  library, and serves a driver it holds to a pool agent, which opens an
+  engine on the served driver's client
+  ([pkg/machine/served](pkg/machine/served/DESIGN.md)).
 
 ## The stack
 
@@ -51,7 +53,9 @@ Each package's `DESIGN.md` holds the decisions it owns:
   ports, windows, and cold clones. Its drivers:
   [archil](pkg/machine/archil/DESIGN.md), [boxd](pkg/machine/boxd/DESIGN.md) and [docker](pkg/machine/docker/DESIGN.md),
   and [local](pkg/machine/local/DESIGN.md), the store and shim of hcs, vz,
-  and fake.
+  and fake; and [served](pkg/machine/served/DESIGN.md), a driver an
+  embedder serves over a stream under its allow-list and version, and the
+  driver that is its client.
 - [pkg/guest](pkg/guest/DESIGN.md): the agent protocol, HTTP between host and
   agent.
 - [pkg/engine](pkg/engine/DESIGN.md): who holds a running VM, the service URL,
@@ -208,6 +212,7 @@ answer took.
 | a driver's own configuration (ADR 26-11-11-215): a definition per driver that its decoder agrees with, its defaults applied, unknown fields and bad values refused before construction with no value quoted, privileged fields held to a list, retired keys, `--help=DRIVER`, flags over variables or a whole `--driver-config` (1 MiB, a warning for a variable it ignores), `info`'s configuration in effect, and the shim given its configuration in an owner-only file, refused one made from another | ✅ `pkg/machine` TestEveryDriverDecodesItsDefinition, TestPrivileged, TestNoErrorQuotesAValue, TestRegistration; `pkg/machine/local` TestShimSocket (the file, its mode, a shim of another configuration refused); `internal/e2e` TestDriverConfig, including a shim refused a configured agent that is missing, and its `/proc` command line holding the file's path alone (2026-11-11) | ⬜ vet only | ⬜ no-cgo vet only; the cgo files that take the agent from the configuration reviewed by hand | ✅ validation by unit; ⬜ boxd itself | ✅ validation by unit; ⬜ a daemon since | ✅ validation by unit; ⬜ Archil itself | ✅ validation by unit; ⬜ KVM since |
 | a driver's secret, where it is sent, whether it takes a base, and an embedder's dialer (ADR 26-11-12-461): each driver's secret and base held to a list, a secret refused in a configuration by name and its value in no output, sends resolved for a configuration, the key arriving where they say and nowhere else, and every service connection through the dialer, which can refuse it | ✅ `pkg/machine` TestSecrets, TestSecretSends, TestASecretIsNeverConfiguration, TestRegistration; `internal/e2e` TestDriverConfig (`--help=boxd`, `drivers`, a refused configuration, none printing a set `BOXD_API_KEY`) | ⬜ vet only (no secret, no base) | n/a (no secret) | ✅ fake API (`TestTheKeyGoesWhereTheDefinitionSays`: an API key in the token exchange's JSON body alone, a token as the gRPC bearer at the home and region endpoints; `TestTheDialerCanRefuse`); ⬜ boxd itself | ✅ unit (`TestTheDialerReachesTheDaemon`, tcp and unix); n/a (no secret) | ✅ unit, a stand-in server (`TestTheKeyGoesWhereTheDefinitionSays`, `TestTheDialerCanRefuse`); ⬜ Archil itself | n/a (no secret, no service) |
 | a region per driver, its configuration's `region` (ADR 26-11-11-215): a driver makes and lists its VMs in its region alone | n/a (no region) | n/a | n/a | ✅ fake API (`TestConformanceFakeAPI` with no region and in `nyc`, at an endpoint of its own that refuses account calls; `TestRegionsKeepPoolsApart`: another region lists none of a pool's VMs or committed VMs, and takes their names, and keys stay the home endpoint's; `TestRegionRefused`: an unknown region, one not enabled, and an endpoint that does not answer fail Check); ⬜ boxd itself in a non-default region (`TestConformance` with `BOXD_REGION`) | n/a | ✅ unit (`TestRegionPicksTheControlPlane`: the region, or the default, picks the control plane, and `baseUrl` wins); ⬜ Archil itself in another region | n/a |
+| a driver served over a stream (`pkg/machine/served`; discobox ADR 26-11-11-963 §3): the client passes `machinetest` with everything allowed, every call across the stream; a call, a create field, a guest operation (by the client, and by the server to a client that asks anyway), and a dial the allow-list does not list refused (`ErrRefused`), and capabilities narrowed to it; a forward to a host socket refused by the server, the embedder's hook alone setting one, and a malformed peer forward by the driver; a client of another version refused naming both, on every route; the embedder's create hook changing and refusing a spec; another pool's VMs neither listed, found, removed, nor created from, by name or by ID (`TestConformance`, `TestAllowListRefuses`, `TestVersionMismatchIsRefused`, `TestCreateHook`, `TestScope`, `TestForwardsAreCheckedOnTheServer`) | ✅ served over the fake, on a loopback listener | ⬜ | ⬜ | n/a (served only where held) | n/a | n/a | ✅ by hand (2026-11-12): a program embedding the engine served libkrun for one pool on a Unix socket under an allow-list, a hook forcing no network device, and a version; an engine on the client made, started (2.1 s), exec'd in (only `lo`), copied into and out of, dialed (7300 answered, 22 refused), stopped, committed, made a VM from the commit that read the copied file, and removed real KVM VMs; a client of another version, a forward, a data volume, an install, and 4 GiB over the hook's bound refused; another pool's VM on the same root neither listed nor found, by name or by ID; a client's machine done once the server stopped it |
 
 A platform driver is done when `machinetest.Run` passes against it on real
 hardware and `internal/e2e` passes with `DISCO_VM_DRIVER` set to it. See
