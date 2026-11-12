@@ -35,7 +35,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   `discobox-access` for `BOXD_TOKEN` (host `boxd.sh`) with a use naming
   disco-vm and boxd broadly, and run every command as
   `discobox-access run --use <id> -- disco-vm ...`. Each run gets a sentinel
-  that lives five minutes. Spell commands as the use names them: `ps`, not
+  that lives five minutes. A stand-in that starts `bxd_` is an API key,
+  which the driver sends only in the JSON body of a POST to `tokenUrl`
+  (`app.boxd.sh`), so ask for `app.boxd.sh` too; and if the egress does
+  not swap a JSON body, every call stops at `exchange API key: 401`
+  (`discobox-access audit` shows the POST), and boxd cannot be driven from
+  the box (2026-11-12). Spell commands as the use names them: `ps`, not
   its alias `ls`, and no `--debug`, or the judge may refuse the run.
   `unset BOXD_API_KEY` first: a box may carry a stale one, and the driver
   reads it before `BOXD_TOKEN`, so every call is a 401. A use that says it
