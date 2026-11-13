@@ -42,7 +42,7 @@ const (
 )
 
 // errNoCredentials names the fix, since Check is where a user meets it first.
-var errNoCredentials = fmt.Errorf("boxd: no credentials: set %s to an API key from `boxd auth keys create disco-vm`", APIKeyEnv)
+var errNoCredentials = fmt.Errorf("boxd: no credentials: set %s to an API key from `boxd auth keys create disco-vm`, or, on a boxd machine that is not isolated, turn on inMachine (%s)", APIKeyEnv, InMachineEnv)
 
 // client is boxd's API, dialed lazily: the home endpoint (addr), which
 // answers account and API key calls and lists the regions, and the region's
@@ -55,8 +55,10 @@ type client struct {
 	// in; empty is the home endpoint's own.
 	region string
 	// keys is asked for the key on every call, so a key replaced where it
-	// reads is used from the next one.
+	// reads is used from the next one. With none, vm, the in-machine token,
+	// is the credential where the configuration's inMachine asks for it.
 	keys machine.KeySource
+	vm   *vmToken
 	// creds secure every connection, and connect, when set, dials it: the
 	// embedder's dialer, or else a SOCKS5 ALL_PROXY's; nil is gRPC's own,
 	// which takes HTTPS_PROXY. proxyErr is an ALL_PROXY that could not be
@@ -81,7 +83,8 @@ type client struct {
 }
 
 // newClient is a client of the cluster conf names, calling it with
-// cfg.Keys and connecting as cfg says: through cfg.Dial, reading no proxy
+// cfg.Keys, or, where that is nil and conf.InMachine is set, the machine's
+// in-machine token, and connecting as cfg says: through cfg.Dial, reading no proxy
 // variable, or, where it is nil, as gRPC and net/http do, with a SOCKS5
 // ALL_PROXY honored too.
 func newClient(conf Config, cfg machine.Config) *client {
@@ -92,6 +95,9 @@ func newClient(conf Config, cfg machine.Config) *client {
 		keys:     cfg.Keys,
 		creds:    credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}),
 		http:     &http.Client{Transport: cfg.HTTPTransport()},
+	}
+	if c.keys == nil && conf.InMachine {
+		c.vm = newVMToken(cfg)
 	}
 	if dial := cfg.Dial; dial != nil {
 		c.connect = func(ctx context.Context, addr string) (net.Conn, error) { return dial(ctx, "tcp", addr) }
@@ -267,7 +273,8 @@ func (c *client) authorize(ctx context.Context) (context.Context, error) {
 
 // refused marks boxd's Unauthenticated answer as machine.ErrUnauthorized,
 // keeping its status, and drops the JWT it was sent with, so the next call
-// exchanges the key again rather than resend a JWT boxd no longer takes.
+// exchanges the key, or mints an in-machine token, again rather than resend
+// a JWT boxd no longer takes.
 func (c *client) refused(err error) error {
 	if status.Code(err) != codes.Unauthenticated {
 		return err
@@ -275,6 +282,9 @@ func (c *client) refused(err error) error {
 	c.mu.Lock()
 	c.jwt = ""
 	c.mu.Unlock()
+	if c.vm != nil {
+		c.vm.drop()
+	}
 	return fmt.Errorf("%w: %w", err, machine.ErrUnauthorized)
 }
 
@@ -312,8 +322,12 @@ func (c *client) secret(ctx context.Context) (string, error) {
 
 // token is the bearer for the next call. An API key (bxd_...) is exchanged for
 // a JWT that lives an hour, again whenever the key changes; anything else is
-// taken to be a JWT already.
+// taken to be a JWT already. With no key source and inMachine, it is the
+// machine's in-machine token.
 func (c *client) token(ctx context.Context) (string, error) {
+	if c.vm != nil {
+		return c.vm.get(ctx)
+	}
 	secret, err := c.secret(ctx)
 	if err != nil {
 		return "", err

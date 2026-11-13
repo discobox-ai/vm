@@ -16,6 +16,8 @@ const (
 	TokenURLEnv = "BOXD_TOKEN_URL" //nolint:gosec // G101: an environment variable's name, not a credential
 	// RegionEnv is where the command line reads Config.Region from.
 	RegionEnv = "BOXD_REGION"
+	// InMachineEnv is where the command line reads Config.InMachine from.
+	InMachineEnv = "BOXD_IN_MACHINE"
 
 	defaultAddr     = "boxd.sh:9443"
 	defaultTokenURL = "https://app.boxd.sh/api/v1/auth/token" //nolint:gosec // G101: an endpoint URL, not a credential
@@ -40,6 +42,11 @@ type Config struct {
 	// does not list, or one the key's org has not enabled, fails Check and
 	// every such call: the list is boxd's, and is read only once it is used.
 	Region string `json:"region,omitempty"`
+	// InMachine, with no key (machine.Config.Keys nil), authenticates as
+	// the boxd machine the driver runs on: its owner's token, which the
+	// machine's metadata adapter mints. A key, when given, is used instead.
+	// It is privileged: it acts as the host machine's owner.
+	InMachine bool `json:"inMachine,omitempty"`
 }
 
 // Definition describes the boxd driver and its configuration.
@@ -55,6 +62,8 @@ func Definition() machine.Definition {
 				Description: "Where the cluster exchanges an API key for a token; it is sent the key, so it is https, or http to a loopback address."},
 			{Key: "region", Label: "Region", Type: machine.ConfigString, Env: RegionEnv,
 				Description: "The boxd region the driver's machines and snapshots are in, such as fra or nyc; the driver lists and makes only that region's. Empty is the home endpoint's own region."},
+			{Key: "inMachine", Label: "In-Machine Auth", Type: machine.ConfigBoolean, Env: InMachineEnv, Default: "false", Privileged: true,
+				Description: "With no API key, authenticate as the boxd machine the driver runs on: the token its metadata adapter (port 9002 on the default gateway) mints for the machine's owner, which reaches every machine of the owner's in the org. A machine that is isolated has no adapter. An API key, when given, is used instead."},
 		},
 		Secrets: []machine.SecretField{{
 			Key: "apiKey", Label: "API Key", Type: machine.ConfigSecret, Env: []string{APIKeyEnv, TokenEnv}, Placeholder: "bxd_...",

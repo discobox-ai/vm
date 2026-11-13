@@ -79,6 +79,27 @@ machines and snapshots (the root
   `machine.Config.Keys` answers, asked on every call; an API key (`bxd_`) is
   exchanged for a JWT, again whenever the key changes, and anything else is
   sent as a JWT.
+- **With `inMachine` and no key, a boxd machine's own token is the
+  credential** (discobox-ai/discobox#1090). The configuration's `inMachine`
+  set and `machine.Config.Keys` nil, the driver asks boxd's in-machine
+  metadata adapter, `GET http://<gateway>:9002/v1/auth/token` on the default
+  gateway (`/proc/net/route`), which mints a JWT of the machine's owner,
+  fenced to its org, that lives 15 minutes. It is a field of the
+  configuration, not inferred from boxd's environment variables, which an
+  embedder's process may not have and a driver does not read; and it is
+  privileged, since it acts as the host machine's owner. Unset, no key is
+  `errNoCredentials` as before, and the gateway is sent nothing. The
+  token is kept until a minute before its `expires_at` and dropped when boxd
+  answers `Unauthenticated`. The adapter is dialed through
+  `machine.Config.Dial` and never a proxy: it knows the machine by where the
+  request comes from. Its `api_url` is not read; the configuration's `addr`
+  is where calls go. An isolated machine has no adapter, and one that does
+  not answer is `errNoCredentials`. On a private machine the token reaches
+  what the owner's `member` key does in the org: every machine of the
+  owner's, other pools' included, and the org's env values, but no key
+  management (`ErrCannotIssue`). A shared machine's token is `org`-scoped,
+  which has no `Whoami`, snapshots or egress fence, so a pool cannot run on
+  one. A configured key is used as before, and the adapter never asked.
 - **An issued key is a `member` API key** named `dvm-<pool>--<name>`,
   fenced to the engine's key's org (boxd resolves an empty org to it), with
   boxd's expiry. It reaches all its maker's machines in that org: scope
@@ -104,10 +125,10 @@ machines and snapshots (the root
   `Instance.Egress` is `egress_allow`, nil for none.
 - **The key's errors are the caller's.** The bearer is added by client
   interceptors, not gRPC per-RPC credentials, whose errors gRPC flattens: a
-  missing key is `errNoCredentials`, and a key the exchange or a call
+  missing key, with no adapter to ask, is `errNoCredentials`, and a key the exchange or a call
   refuses (`Unauthenticated`, at a call's start or on a stream's message) is
   `machine.ErrUnauthorized`, and drops the cached JWT so the next call
-  exchanges the key again. `--debug` prints a new key's answer without its
+  exchanges the key, or mints an in-machine token, again. `--debug` prints a new key's answer without its
   secret. An issued key outliving its TTL is taken back (`ErrCannotIssue`,
   naming it if the delete fails), and a name is issued once while a key of
   it lives (`machine.ErrExists`).

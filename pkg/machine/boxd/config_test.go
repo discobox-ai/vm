@@ -2,6 +2,7 @@ package boxd
 
 import (
 	"encoding/json"
+	"strconv"
 	"testing"
 
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -14,7 +15,7 @@ func TestDecodeAppliesTheDefinitionsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]string{"addr": cfg.Addr, "tokenUrl": cfg.TokenURL, "region": cfg.Region}
+	got := map[string]string{"addr": cfg.Addr, "tokenUrl": cfg.TokenURL, "region": cfg.Region, "inMachine": strconv.FormatBool(cfg.InMachine)}
 	for _, f := range Definition().ConfigFields {
 		if got[f.Key] != f.Default {
 			t.Errorf("%s: decode gives %q, the definition %q", f.Key, got[f.Key], f.Default)
