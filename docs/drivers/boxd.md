@@ -50,7 +50,10 @@ use. The parts that matter here:
 - **Stop/Start, Suspend/Resume, Hibernate/Wake** change state. Machines have
   idle timers for auto-suspend and auto-hibernate (4 hours by default).
 - **Auth** is an API key (`bxd_...`, from `boxd auth keys create`) exchanged at
-  `https://app.boxd.sh/api/v1/auth/token` for a JWT that lives an hour.
+  `https://app.boxd.sh/api/v1/auth/token` for a JWT that lives an hour, or,
+  on a machine that is not isolated, with `inMachine`, a JWT its metadata
+  adapter mints
+  ([On a boxd machine](#on-a-boxd-machine)).
 
 ## How the seam maps
 
@@ -128,9 +131,10 @@ reads.
 
 | env | default | |
 |---|---|---|
-| `BOXD_API_KEY` | | an API key. `BOXD_TOKEN`, which the boxd CLI reads, also works, and may hold a JWT. The command line reads them (`machine.KeyFromEnv`); a program that embeds the engine gives the driver a `machine.KeySource` instead, and the driver reads neither. |
+| `BOXD_API_KEY` | | an API key; with none and `BOXD_IN_MACHINE`, the boxd machine's own token ([On a boxd machine](#on-a-boxd-machine)). `BOXD_TOKEN`, which the boxd CLI reads, also works, and may hold a JWT. The command line reads them (`machine.KeyFromEnv`); a program that embeds the engine gives the driver a `machine.KeySource` instead, and the driver reads neither. |
 | `BOXD_GRPC_ADDR` | `boxd.sh:9443` | another cluster: the configuration's `addr` (`--boxd-addr`; ADR 26-11-11-215), always over TLS, which the command line reads from it and the driver never does. `addr` and `tokenUrl` are privileged: they are sent the key |
 | `BOXD_TOKEN_URL` | `https://app.boxd.sh/api/v1/auth/token` | its key exchange: the configuration's `tokenUrl` (`--boxd-token-url`), `https`, or `http` to a loopback address |
+| `BOXD_IN_MACHINE` | `false` | the configuration's `inMachine` (`--boxd-in-machine`): with no key, authenticate as the boxd machine the driver runs on ([On a boxd machine](#on-a-boxd-machine)). Privileged: it acts as the machine's owner |
 | `BOXD_REGION` | the home region | the configuration's `region` (`--boxd-region`): the boxd region the driver's machines and snapshots live in, such as `nyc` ([Regions](#regions)) |
 | `HTTPS_PROXY` | | gRPC goes through it with HTTP CONNECT, as does the key exchange. A proxy that intercepts TLS has to offer HTTP/2 (ALPN `h2`) for gRPC to work through it. A discobox's egress proxy does, and the conformance suite passes through it (2026-10-08). |
 | `DISCO_VM_DEBUG` | | any value is `disco-vm --debug`: one line on stderr for every API call, when it finished, how long it took, and its request and answer. A stream (Exec, an upload) is one line when it ends. |
@@ -147,6 +151,42 @@ nothing would hold the forwards' listeners. A shim an older disco-vm started for
 the next time the instance is started, stopped or removed: it is asked for its
 status with its token first, so a reused PID is never signaled, and the
 machine is left as it is.
+
+## On a boxd machine
+
+With the configuration's `inMachine` set (`BOXD_IN_MACHINE=true`,
+`--boxd-in-machine`) and no key (no `BOXD_API_KEY` or `BOXD_TOKEN` on the
+command line, no `machine.KeySource` from an embedder), the driver
+authenticates as the machine it runs on: it asks boxd's metadata adapter,
+`GET http://<default gateway>:9002/v1/auth/token`, which needs no key and
+mints a JWT of the machine's owner, fenced to its org, living 15 minutes. The
+driver keeps it until a minute before its `expires_at`, and mints another
+when boxd refuses it. Without `inMachine` it never asks, and no key
+is "no credentials" as before. `inMachine` is privileged: an embedder lets
+no one set it who could not act as the host machine's owner. It dials the adapter through an embedder's dialer, never a
+proxy: the adapter knows the machine by where the request comes from. A
+configured key is always used instead.
+
+What it can do, from discobox-ai/discobox#1090's spike on boxd itself
+(2026-11-13, fra and nyc, the driver on such a token: `Check`, an isolated
+`Create` on a network with an egress allowlist, `Commit`, `Create` from it,
+`Destroy`):
+
+- **A private machine's token is its owner's `member` credential in the
+  org.** It lists, makes, snapshots, fences and deletes every machine of the
+  owner's there, other pools' included, and reads the org's env values: what
+  the owner's `member` key reaches, except key management (`key issue` is
+  `ErrCannotIssue`) and its own machine's egress allowlist. Nothing revokes
+  it but deleting the machine, and root on the machine mints one at will.
+- **A shared machine's token is `org`-scoped**, with no `Whoami`, snapshots
+  or egress fence: the driver fails `Check` there, so a pool cannot run on
+  one.
+- **An isolated machine has no adapter**: with no key, its calls fail with
+  "no credentials".
+
+The adapter's lifetime and address are boxd's SDK's and what was seen, not a
+documented contract. Its `api_url` (`http://boxd.sh:9443`) is not read: calls
+go to the configuration's `addr`, over TLS.
 
 ## Keys
 

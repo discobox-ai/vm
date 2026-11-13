@@ -63,7 +63,7 @@ func TestEveryDriverDecodesItsDefinition(t *testing.T) {
 func TestPrivileged(t *testing.T) {
 	want := map[string][]string{
 		"archil":  {"baseUrl"},
-		"boxd":    {"addr", "tokenUrl"},
+		"boxd":    {"addr", "inMachine", "tokenUrl"},
 		"docker":  {"agent", "host", "root"},
 		"fake":    {"agent"},
 		"hcs":     nil,

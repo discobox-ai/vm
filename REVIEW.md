@@ -67,6 +67,13 @@
   declared is erased on the next write, along with whatever it held: a warm
   user's only password, in vz's case. Keep it opaque, with a comment saying
   why. (ADR 26-10-15-851.)
+- **A driver acts as the host it runs on only when its configuration says
+  so.** boxd's in-machine token is the host machine's owner's, so it is
+  used where the privileged `inMachine` field is set and no key is given,
+  never inferred from variables a provider sets in its machines (which an
+  embedder's process may lack, and which a driver does not read: the
+  `pkg/machine` note on settings). A review found the first draft gated on
+  boxd's environment, as boxd's SDK does. (vm#109.)
 - **A driver reads its key from its source, on every call, and nowhere
   else.** Not from the environment (only `machine.KeyFromEnv`, which the
   command line passes, reads it), and not cached past a call except as the
