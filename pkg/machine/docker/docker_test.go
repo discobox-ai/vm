@@ -20,7 +20,7 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/machinetest"
 )
 
-// ImageEnv names a registry image, such as debian:trixie, to run the
+// ImageEnv names a registry image, such as debian:sid, to run the
 // conformance suite from as the driver's base (machine.Config.Base),
 // against the Docker daemon $DOCKER_HOST names (Config.Host).
 const ImageEnv = "DISCO_VM_DOCKER_IMAGE"
@@ -31,7 +31,7 @@ const ImageEnv = "DISCO_VM_DOCKER_IMAGE"
 func TestConformance(t *testing.T) {
 	image := os.Getenv(ImageEnv)
 	if image == "" {
-		t.Skipf("set %s (an image, such as debian:trixie) to run the conformance suite against docker", ImageEnv)
+		t.Skipf("set %s (an image, such as debian:sid) to run the conformance suite against docker", ImageEnv)
 	}
 	d := envNew(t, machine.Config{Base: image})
 	d.Agent = linuxAgent(t)
@@ -53,7 +53,7 @@ func TestConformance(t *testing.T) {
 func TestConformanceThroughAnAgent(t *testing.T) {
 	image := os.Getenv(ImageEnv)
 	if image == "" {
-		t.Skipf("set %s (an image, such as debian:trixie) to run the conformance suite against docker through an agent", ImageEnv)
+		t.Skipf("set %s (an image, such as debian:sid) to run the conformance suite against docker through an agent", ImageEnv)
 	}
 	host := os.Getenv(HostEnv)
 	if host == "" {
@@ -157,7 +157,7 @@ func TestDemux(t *testing.T) {
 func TestSplitRef(t *testing.T) {
 	for ref, want := range map[string][2]string{
 		"debian":                      {"debian", "latest"},
-		"debian:trixie":               {"debian", "trixie"},
+		"debian:sid":                  {"debian", "sid"},
 		"localhost:5000/os/debian":    {"localhost:5000/os/debian", "latest"},
 		"localhost:5000/os/debian:13": {"localhost:5000/os/debian", "13"},
 		"debian@sha256:0123":          {"debian@sha256:0123", ""},
@@ -199,7 +199,7 @@ func TestManagedLeavesTheOldOut(t *testing.T) {
 	}{
 		{map[string]string{labelInstance: "dev", labelPool: "p", labelImage: ""}, true},
 		{map[string]string{labelInstance: "dev", labelPool: "p"}, true},
-		{map[string]string{labelInstance: "base-0a1b2c", labelPool: "p", labelImage: "debian:trixie"}, true},
+		{map[string]string{labelInstance: "base-0a1b2c", labelPool: "p", labelImage: "debian:sid"}, true},
 		{map[string]string{labelInstance: "dev", labelPool: "p", labelImage: "e2e/base"}, false},
 		{map[string]string{labelInstance: "base-app", labelPool: "p", labelImage: "e2e/base"}, false},
 		{map[string]string{labelInstance: "dev", labelPool: "q"}, false},
@@ -221,7 +221,7 @@ func TestManagedLeavesTheOldOut(t *testing.T) {
 func TestUpgradeInterrupted(t *testing.T) {
 	image := os.Getenv(ImageEnv)
 	if image == "" {
-		t.Skipf("set %s (an image, such as debian:trixie) to run against docker", ImageEnv)
+		t.Skipf("set %s (an image, such as debian:sid) to run against docker", ImageEnv)
 	}
 	d := envNew(t, machine.Config{Base: image, Pool: "upgradetest"})
 	d.Agent = linuxAgent(t)

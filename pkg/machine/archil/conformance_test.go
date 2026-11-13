@@ -10,7 +10,7 @@ import (
 )
 
 // ImageEnv names the OCI image the conformance suite runs on Archil as the
-// driver's base (machine.Config.Base), such as debian:trixie.
+// driver's base (machine.Config.Base), such as debian:sid.
 const ImageEnv = "DISCO_VM_ARCHIL_IMAGE"
 
 // TestConformance runs the conformance suite against Archil itself. It needs
@@ -19,7 +19,7 @@ const ImageEnv = "DISCO_VM_ARCHIL_IMAGE"
 func TestConformance(t *testing.T) {
 	image := os.Getenv(ImageEnv)
 	if image == "" || os.Getenv(APIKeyEnv) == "" {
-		t.Skipf("set %s and %s (an image, such as debian:trixie) to run the conformance suite against Archil", APIKeyEnv, ImageEnv)
+		t.Skipf("set %s and %s (an image, such as debian:sid) to run the conformance suite against Archil", APIKeyEnv, ImageEnv)
 	}
 	config, err := machine.ConfigFromValues("archil", machine.ConfigFromEnv("archil"))
 	if err != nil {

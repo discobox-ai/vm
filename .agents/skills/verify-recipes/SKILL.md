@@ -74,7 +74,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   it fails at create or boot on an image without that libc. Off linux,
   `DISCO_VM_AGENT` names the linux build, by an absolute path.
 - Isolate state: `export DISCO_VM_POOL=<a scratch pool>
-  DISCO_VM_DRIVER=docker DISCO_VM_BASE=debian:trixie`. The daemon keeps
+  DISCO_VM_DRIVER=docker DISCO_VM_BASE=debian:sid`. The daemon keeps
   everything: a committed VM is a Docker image `disco-vm-vm:<pool>--<name>`
   (and a fresh VM's readied base `disco-vm-base:<pool>--<name>--<random>`),
   and a VM a container named `dvm-<pool>--<name>`, labeled
@@ -84,7 +84,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   `run dev2 --from dev` is a container of it.
 - `internal/e2e` against docker takes the static binary too:
   `DISCO_VM_TEST_BINARY=$PWD/build/linux-amd64/disco-vm DISCO_VM_DRIVER=docker
-  go test ./internal/e2e` (about 2 minutes; debian:trixie by default,
+  go test ./internal/e2e` (about 2 minutes; debian:sid by default,
   `DISCO_VM_E2E_IMAGE` names another). Its own `go build` is dynamic,
   and readying debian fails with `exec: /usr/local/libexec/disco-vm: not
   found`.
@@ -112,14 +112,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   `*.archil.app` (exposed ports), then `eval "$(discobox-access env)"`. Any
   build drives it: nothing of disco-vm's goes in the guest.
 - Isolate state: `export DISCO_VM_DRIVER=archil DISCO_VM_POOL=<scratch>
-  DISCO_VM_BASE=debian:trixie`. A VM is the sandbox `dvm-<pool>--<name>`,
+  DISCO_VM_BASE=debian:sid`. A VM is the sandbox `dvm-<pool>--<name>`,
   its data volume the disk `dvm-<pool>--<name>--data`. With no
   `DISCO_VM_BASE`, a fresh VM runs Archil's default image (Debian 12).
 - The flow: `run dev --data 1GiB` (about 7 s), `exec dev sh -c '...'` (no
   `--` after the name: it reaches the guest as the command), `stop`,
   `commit`, `run dev2 --from dev`. `rm dev` is refused with `ErrInUse`
   while `dev2`, its fork, exists.
-- Conformance: `DISCO_VM_ARCHIL_IMAGE=debian:trixie go test
+- Conformance: `DISCO_VM_ARCHIL_IMAGE=debian:sid go test
   ./pkg/machine/archil -run TestConformance -v` (about 2.5 minutes, in
   pool `conformance`).
 - Clean up: `ls -a` is empty, and the control plane lists no sandbox or disk

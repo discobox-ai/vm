@@ -8,7 +8,7 @@
 // ($DISCO_VM_E2E_ROOT), where the base install is made once, as the
 // committed VM e2e-base, and found by every later run. On hcs it also needs a
 // Windows ISO ($DISCO_VM_E2E_ISO) and an elevated shell. The docker driver
-// installs nothing: e2e-base is a fresh VM of its base, debian:trixie or the
+// installs nothing: e2e-base is a fresh VM of its base, debian:sid or the
 // image $DISCO_VM_E2E_IMAGE names, committed, so its state root is optional.
 // Nor does libkrun: its base is $DISCO_VM_LIBKRUN_BASE, or its default.
 // Nor does boxd: e2e-base is a fresh VM of boxd's default image, or the one
@@ -104,7 +104,7 @@ func targetFromEnv() target {
 	case "docker":
 		image := os.Getenv("DISCO_VM_E2E_IMAGE")
 		if image == "" {
-			image = "debian:trixie"
+			image = "debian:sid"
 		}
 		return target{
 			driver: "docker",
