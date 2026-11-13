@@ -140,13 +140,9 @@ func (b bundle) linuxConfiguration(cpus uint, memory uint64, cmdline string, nic
 		return nil, entitlementHint(fmt.Errorf("vz: machine configuration: %w", err))
 	}
 
-	attachment, err := vz.NewDiskImageStorageDeviceAttachment(b.path(diskName), false)
+	block, err := diskDevice(b.path(diskName))
 	if err != nil {
-		return nil, fmt.Errorf("vz: attach disk %s: %w", b.path(diskName), err)
-	}
-	block, err := vz.NewVirtioBlockDeviceConfiguration(attachment)
-	if err != nil {
-		return nil, fmt.Errorf("vz: disk device: %w", err)
+		return nil, err
 	}
 	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{block})
 

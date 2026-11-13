@@ -146,14 +146,15 @@ machine identifier. The MAC is created on the first boot. A fresh VM (no
 `Chain`) is a Linux guest from the base ([Linux guests](#linux-guests)).
 
 **Boot(inst, opts):** one configuration for install and every boot: the Mac
-platform, virtio block, NAT with the bundle's MAC, the Mac framebuffer (always
-attached, so opening a window never changes the hardware), keyboard and
-pointer, a virtio socket device, and optional virtiofs shares. There is **no
-memory balloon**: a macOS guest ignores its target. Every boot starts from
-power-off. A resume clone from before resume clones were removed (ADR
-26-10-15-851) is handled as its own: one that resumed once still has its
-template's identity, so its next boot first gives it a new machine identifier
-and MAC, and one never booted (`resume.pending`) is refused. `Dial` is the
+platform, virtio block (cached, fsync: see [Disks](#disks)), NAT with the
+bundle's MAC, the Mac framebuffer (always attached, so opening a window never
+changes the hardware), keyboard and pointer, a virtio socket device, and
+optional virtiofs shares. There is **no memory balloon**: a macOS guest
+ignores its target. Every boot starts from power-off. A resume clone from
+before resume clones were removed (ADR 26-10-15-851) is handled as its own:
+one that resumed once still has its template's identity, so its next boot
+first gives it a new machine identifier and MAC, and one never booted
+(`resume.pending`) is refused. `Dial` is the
 socket device's `Connect`, with the caller's deadline enforced around it, and
 `Listen` (`machine.HostListener`, for an instance's forwards) is the socket
 device's `Listen`: a guest process connects to the host at CID 2. Connections
@@ -244,11 +245,11 @@ guests has none and is macOS.
   than reporting as running; soft lockups and RCU stalls stay warnings, since
   the host can deschedule a vCPU past their thresholds; on an Intel Mac,
   Debian's amd64 kernel detects hard lockups through a guest PMU that
-  Virtualization.framework may not give, which is unverified); virtio block,
-  a socket device, the serial console appended to `console.log`, entropy, a
-  balloon, the NAT unless fenced, and tagged virtiofs shares. Once the agent
-  answers, a Linux guest whose `guest.Protocol` is not this host's is killed
-  and refused.
+  Virtualization.framework may not give, which is unverified); virtio block
+  (cached, fsync: see [Disks](#disks)), a socket device, the serial console
+  appended to `console.log`, entropy, a balloon, the NAT unless fenced, and
+  tagged virtiofs shares. Once the agent answers, a Linux guest whose
+  `guest.Protocol` is not this host's is killed and refused.
 - **No network device** is `Egress{}`: Create records the fence and Boot
   attaches no NIC, to a Linux or a macOS guest. A Linux guest then has `lo`
   alone. A macOS guest still lists Apple silicon's peripheral interfaces
@@ -264,6 +265,20 @@ guests has none and is macOS.
   alone. A Linux guest's size is 2 vCPUs and 2 GiB unless asked.
 
 The base is [pkg/guest/linux](../../pkg/guest/DESIGN.md#the-linux-guest-image).
+
+## Disks
+
+Every writable disk the driver attaches, a macOS guest's and a Linux
+guest's, at install and at every boot, is a virtio block device attached
+**cached, with fsync synchronization** (`diskDevice`), never the framework's
+default of automatic caching with full synchronization. That default
+corrupts ext4 on Apple silicon and was traced to guest hard lockups
+(lima-vm/lima#1957, crc-org/vfkit#447, applicative-systems/vzvm#5,
+NixOS/nixpkgs#557576); Lima, UTM, and vfkit each moved to cached with fsync.
+The cost is durability against the host: a guest's flush is an `fsync`,
+not the `F_FULLFSYNC` full synchronization issues, so what the guest flushed
+survives the shim or the guest dying but not the host losing power or
+panicking before the drive's own cache is written.
 
 ## Measured on real hardware
 
