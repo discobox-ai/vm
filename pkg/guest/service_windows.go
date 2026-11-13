@@ -58,7 +58,10 @@ func (a *agentService) Execute(_ []string, requests <-chan svc.ChangeRequest, st
 				status <- svc.Status{State: svc.StopPending}
 				a.stop()
 				select {
-				case <-served:
+				case err := <-served:
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "%s agent: stopping: %v\n", time.Now().Format(time.RFC3339), err)
+					}
 				case <-time.After(10 * time.Second):
 				}
 				return false, 0
