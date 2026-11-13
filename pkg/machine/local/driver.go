@@ -170,6 +170,11 @@ func (d *Driver) readRecord(id string) (instanceRecord, error) {
 	if rec.ID != id || machine.ValidatePool(rec.Pool) != nil {
 		return instanceRecord{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
 	}
+	if rec.Release == nil {
+		// A record from before Install returned the release: the
+		// hypervisor may still keep it with the VM's files.
+		rec.Release = d.hv.Release(Layer{ID: rec.ID, Dir: d.machineDir(rec.ID)})
+	}
 	return rec, nil
 }
 
@@ -362,7 +367,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		if shim, err := d.openShim(from.ID); err == nil && shim.status(ctx) == nil {
 			return machine.Instance{}, fmt.Errorf("instance %s is running; stop and commit it to create from it", from.Name)
 		}
-		rec.GuestOS, rec.From, rec.FromID = from.GuestOS, from.Name, from.ID
+		rec.GuestOS, rec.From, rec.FromID, rec.Release = from.GuestOS, from.Name, from.ID, from.Release
 		if from.Pool != d.pool {
 			rec.FromPool = from.Pool
 		}
@@ -442,7 +447,7 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, name str
 		// installed system), so it holds an admission as a boot does.
 		var release func()
 		if release, err = d.admit(rec); err == nil {
-			err = d.hv.Install(ctx, InstallSpec{InstallSpec: spec, CacheDir: d.cacheDir()}, Layer{ID: rec.ID, Dir: hs.Dir})
+			rec.Release, err = d.hv.Install(ctx, InstallSpec{InstallSpec: spec, CacheDir: d.cacheDir()}, Layer{ID: rec.ID, Dir: hs.Dir})
 			release()
 		}
 	}

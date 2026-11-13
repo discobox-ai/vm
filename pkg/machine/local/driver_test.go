@@ -214,7 +214,7 @@ type viewing struct {
 	viewed  chan local.Layer
 }
 
-func (v *viewing) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) error {
+func (v *viewing) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) (*machine.Release, error) {
 	v.started <- dst.ID
 	<-v.release
 	return v.Hypervisor.Install(ctx, spec, dst)

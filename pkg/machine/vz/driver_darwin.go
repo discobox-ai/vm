@@ -102,6 +102,17 @@ func (*Hypervisor) MoveVolumes(context.Context, local.InstanceSpec, local.Instan
 	return fmt.Errorf("vz: an upgrade: %w", machine.ErrUnsupported)
 }
 
+// Release is the macOS version and build a macOS VM was installed from,
+// which its bundle's vz.json records and every clone of it copies; nil for a
+// Linux guest or a bundle that records none.
+func (*Hypervisor) Release(vm local.Layer) *machine.Release {
+	m, err := bundle(vm.Dir).readMeta()
+	if err != nil || m.guestOS() != machine.Darwin || m.MacOSVersion == "" {
+		return nil
+	}
+	return &machine.Release{Version: m.MacOSVersion, Build: m.BuildVersion}
+}
+
 // SaveCache is unsupported: vz attaches no volume yet (ADR 26-11-02-180).
 func (*Hypervisor) SaveCache(context.Context, local.InstanceSpec, local.Layer) error {
 	return fmt.Errorf("vz: a cache volume: %w", machine.ErrUnsupported)

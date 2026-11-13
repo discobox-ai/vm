@@ -471,6 +471,28 @@ func TestCommit(t *testing.T) {
 	e.ok("stop", "snap")
 	e.ok("commit", "snap")
 	mustContain(t, e.ok("ls", "-a"), "snap")
+	// An install records the release its media resolved to, and every VM
+	// made from it carries it (vm#6): ls shows it, and inspect gives it to
+	// an embedder as the engine does. hcs resolves none from an ISO.
+	if tg.install != nil && tg.driver != "hcs" {
+		release := func(name string) machine.Release {
+			t.Helper()
+			var got struct {
+				Release *machine.Release `json:"release"`
+			}
+			out := e.ok("inspect", name)
+			if err := json.Unmarshal([]byte(out), &got); err != nil || got.Release == nil || got.Release.Version == "" || got.Release.Build == "" {
+				t.Fatalf("%s's release: %v\n%s", name, err, out)
+			}
+			return *got.Release
+		}
+		base := release("e2e-base")
+		if got := release("snap"); got != base {
+			t.Fatalf("snap, made from e2e-base (%v), has release %v", base, got)
+		}
+		mustContain(t, e.ok("ls", "-a"), base.String())
+		t.Logf("e2e-base is %s %s", tg.driver, base)
+	}
 	if out, code := e.run("create", "snap", "--from", "e2e-base"); code == 0 || !strings.Contains(out, "already exists") {
 		t.Fatalf("a VM named as a committed one (exit %d):\n%s", code, out)
 	}

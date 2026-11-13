@@ -494,6 +494,30 @@ type Instance struct {
 	// says which generation it was cloned from. A committed VM has neither.
 	Data  *DataVolume  `json:"data,omitempty"`
 	Cache *CacheVolume `json:"cache,omitempty"`
+	// Release is the guest OS release an install resolved its media to,
+	// carried by every VM created from it or upgraded to it, so an embedder
+	// can key a base on it (discobox ADR 26-10-09-106 §5): what `latest`
+	// was when it was installed. Nil where the driver resolved none, and
+	// for a fresh VM.
+	Release *Release `json:"release,omitempty"`
+}
+
+// Release is a guest OS release: macOS's product version and build, as an
+// IPSW's restore image reports them ("27.0.0", "26A428"). Version is always
+// set; Build, where the media names one, tells two releases of one version
+// apart, so a key made from a Release uses both (String).
+type Release struct {
+	Version string `json:"version"`
+	Build   string `json:"build,omitempty"`
+}
+
+// String is the version, then the build in parentheses where there is one:
+// "27.0.0 (26A428)".
+func (r Release) String() string {
+	if r.Build == "" {
+		return r.Version
+	}
+	return r.Version + " (" + r.Build + ")"
 }
 
 // InstallSpec makes a committed VM from installation media.

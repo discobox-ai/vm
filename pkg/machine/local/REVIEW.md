@@ -34,3 +34,13 @@
   itself. The part of a shim that lasts (`shimState`'s PID, socket, address,
   token, and service, and `/status`, `/stop`, and `/kill`) never changes, or
   an engine could not stop a shim of another build.
+- **A field a VM inherits from the VM it is made from goes through every
+  way it is made.** Create from a committed VM, Commit (which keeps the
+  record), and Upgrade, which holds it in the unfinished upgrade's
+  `upgradeTarget`: that target is written before the upgrade starts, and
+  the committed VM it came from may be gone by the time a resumed upgrade
+  finishes, so the field has to travel with it. A record written before the
+  field existed is filled from what the hypervisor keeps where it can
+  (`Hypervisor.Release`), not left empty. `pkg/engine`
+  TestInstallRecordsItsRelease is the test a new inherited field copies; a
+  review asked for each of these for `Instance.Release`.

@@ -182,20 +182,31 @@ func freshDir(dir string) error {
 }
 
 // Install creates an empty root. The media is not read; it is recorded, so a
-// test can see what the spec asked for.
-func (d *Hypervisor) Install(_ context.Context, spec local.InstallSpec, dst local.Layer) error {
+// test can see what the spec asked for, and resolved to FakeRelease, as a
+// driver that fetches `latest` resolves it to a concrete build.
+func (d *Hypervisor) Install(_ context.Context, spec local.InstallSpec, dst local.Layer) (*machine.Release, error) {
 	if spec.GuestOS != machine.OS(runtime.GOOS) {
-		return fmt.Errorf("fake: a %s host can only fake %s guests, not %s", runtime.GOOS, runtime.GOOS, spec.GuestOS)
+		return nil, fmt.Errorf("fake: a %s host can only fake %s guests, not %s", runtime.GOOS, runtime.GOOS, spec.GuestOS)
 	}
 	if err := os.MkdirAll(rootfs(dst.Dir), 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	if spec.Log != nil {
 		fmt.Fprintf(spec.Log, "fake: installed %s from %q\n", spec.GuestOS, spec.Media)
 	}
 	marker := fmt.Sprintf("os=%s\nmedia=%s\nedition=%s\n", spec.GuestOS, spec.Media, spec.Edition)
-	return os.WriteFile(filepath.Join(rootfs(dst.Dir), markerName), []byte(marker), 0o644) //nolint:gosec // G306: the fake guest's install marker, no secrets
+	if err := os.WriteFile(filepath.Join(rootfs(dst.Dir), markerName), []byte(marker), 0o644); err != nil { //nolint:gosec // G306: the fake guest's install marker, no secrets
+		return nil, err
+	}
+	release := FakeRelease
+	return &release, nil
 }
+
+// Release is nil: a fake VM's release is only ever in its record.
+func (*Hypervisor) Release(local.Layer) *machine.Release { return nil }
+
+// FakeRelease is what every fake install resolves its media to.
+var FakeRelease = machine.Release{Version: "1.0", Build: "FAKE1"}
 
 func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 	if len(inst.Chain) == 0 && d.BaseName == "" {

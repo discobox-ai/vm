@@ -16,7 +16,9 @@ var errNoCgo = errors.New("vz: this disco-vm was built without cgo, and Virtuali
 
 func (*Hypervisor) Check(context.Context) error { return errNoCgo }
 
-func (*Hypervisor) Install(context.Context, local.InstallSpec, local.Layer) error { return errNoCgo }
+func (*Hypervisor) Install(context.Context, local.InstallSpec, local.Layer) (*machine.Release, error) {
+	return nil, errNoCgo
+}
 
 func (*Hypervisor) Prepare(context.Context, local.InstanceSpec) error { return errNoCgo }
 

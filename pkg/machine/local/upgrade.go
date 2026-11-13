@@ -37,6 +37,9 @@ type upgradeTarget struct {
 	From     string `json:"from,omitempty"`
 	FromPool string `json:"fromPool,omitempty"`
 	FromID   string `json:"fromID,omitempty"`
+	// Release is the committed VM's (machine.Instance.Release), which the
+	// upgraded VM takes; held by value so targets compare.
+	Release machine.Release `json:"release,omitzero"`
 }
 
 // whole refuses a VM caught between two roots by an interrupted upgrade.
@@ -136,6 +139,9 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 			return machine.Instance{}, fmt.Errorf("instance %s is a %s guest, and %s a %s one: its data volume is %s's", rec.Name, rec.GuestOS, src.Name, src.GuestOS, rec.GuestOS)
 		}
 		target = upgradeTarget{From: src.Name, FromPool: asked.FromPool, FromID: src.ID}
+		if src.Release != nil {
+			target.Release = *src.Release
+		}
 	}
 	if rec.Upgrading != nil && *rec.Upgrading != target {
 		// Until the new disk is whole the old one and its volumes are
@@ -156,6 +162,10 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 		return machine.Instance{}, fmt.Errorf("upgrade %s: %w", rec.Name, err)
 	}
 	rec.From, rec.FromPool, rec.FromID, rec.Upgrading = target.From, target.FromPool, target.FromID, nil
+	rec.Release = nil
+	if target.Release != (machine.Release{}) {
+		rec.Release = &target.Release
+	}
 	if err := d.writeRecord(rec); err != nil {
 		return machine.Instance{}, err
 	}
