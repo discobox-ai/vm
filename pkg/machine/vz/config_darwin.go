@@ -110,13 +110,9 @@ func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk
 	}
 	config.SetPlatformVirtualMachineConfiguration(platform)
 
-	attachment, err := vz.NewDiskImageStorageDeviceAttachment(disk, false)
+	block, err := diskDevice(disk)
 	if err != nil {
-		return nil, fmt.Errorf("vz: attach disk %s: %w", disk, err)
-	}
-	block, err := vz.NewVirtioBlockDeviceConfiguration(attachment)
-	if err != nil {
-		return nil, fmt.Errorf("vz: disk device: %w", err)
+		return nil, err
 	}
 	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{block})
 
@@ -181,6 +177,24 @@ func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk
 		return nil, fmt.Errorf("vz: validate machine configuration: %w", err)
 	}
 	return config, nil
+}
+
+// diskDevice is the virtio block device of a guest's writable disk, on either
+// guest OS. The disk is attached cached, with fsync synchronization, not the
+// framework's default (automatic caching, full synchronization), which
+// corrupts ext4 on Apple silicon (lima-vm/lima#1957, crc-org/vfkit#447) and is
+// what Lima, UTM and vfkit moved off. A guest's flush is then an fsync, not an
+// F_FULLFSYNC: it outlives the shim and the guest, not the host losing power.
+func diskDevice(path string) (*vz.VirtioBlockDeviceConfiguration, error) {
+	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(path, false, vz.DiskImageCachingModeCached, vz.DiskImageSynchronizationModeFsync)
+	if err != nil {
+		return nil, fmt.Errorf("vz: attach disk %s: %w", path, err)
+	}
+	block, err := vz.NewVirtioBlockDeviceConfiguration(attachment)
+	if err != nil {
+		return nil, fmt.Errorf("vz: disk device: %w", err)
+	}
+	return block, nil
 }
 
 // natDevice is a virtio network device on the framework's NAT, which serves
