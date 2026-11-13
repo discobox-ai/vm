@@ -55,7 +55,7 @@ inside a git repository, `$RC` says so; stop and tell the user.
    - `env GOPROXY=direct go get -tool` for
      `github.com/go-task/task/v3/cmd/task`,
      `github.com/golangci/golangci-lint/v2/cmd/golangci-lint`,
-     `github.com/discobox-ai/watchnbuild@main` and
+     `github.com/discobox-ai/watchnbuild/cmd/watchnbuild@main` and
      `github.com/discobox-ai/repostd/cmd/repocheck@main`.
    - `go mod tidy`, because `go get -tool` leaves `go.sum` incomplete and
      `verify` would fail on it.
@@ -409,9 +409,23 @@ library or CLI repo has no server and skips it.
   `depot-windows-*`). `ci.runners`
 - Workflows install no tools: no `actions/setup-*`. Nix does not run on
   Windows, so a Go repo's `depot-windows-*` job may use `actions/setup-go`
-  with `go-version-file: go.mod` and nothing else. A node repo's toolchain
-  is installed by the managed pnpm and repocheck actions only.
-  `ci.no-setup`
+  with `go-version-file: go.mod`. A node repo's toolchain is installed by
+  the managed pnpm and repocheck actions only. `ci.no-setup`
+- A Go repo's build and test cache is Depot Cache, through the runner's
+  `GOCACHEPROG`, fetched per object; modules come from the proxy. No
+  `actions/cache` anywhere, and `actions/setup-go` sets `cache: false`:
+  `actions/cache` restored and saved the whole cache as a tarball, 6–11
+  minutes a job. Windows builds cold: `depot gocache` there fails when
+  another process holds an object open. `ci.no-actions-cache`
+- Only `pull_request` and branch-push runs share that cache: a pull
+  request's code can write it and Go trusts what it returns. The task action
+  clears it on every other run, for the steps after it. So no `env:` sets
+  `GOCACHEPROG` or `GOLANGCI_LINT_CACHEPROG` or is an expression, and a
+  non-Windows job runs nothing before a `./.github/actions/task` step
+  without `if:` but actions that run no Go: `actions/checkout`,
+  `actions/download-artifact`, `actions/upload-artifact`,
+  `docker/login-action`, `docker/setup-buildx-action`,
+  `docker/setup-qemu-action`, `depot/setup-action`. `ci.shared-cache`
 - Workflows contain no build logic. Every `run:` is one
   `[nix develop -c] go tool task <target>`, or a node repo's
   `pnpm run <script>`. `ci.run-steps`
