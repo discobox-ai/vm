@@ -294,7 +294,7 @@ func TestCheckAgent(t *testing.T) {
 
 func TestLinuxCmdline(t *testing.T) {
 	with := Cmdline("0123", true)
-	for _, want := range []string{"root=/dev/vda", " rw ", "panic=5", "console=hvc0", "systemd.machine_id=0123"} {
+	for _, want := range []string{"root=/dev/vda", " rw ", "panic=5", "nmi_watchdog=panic,1", "console=hvc0", "systemd.machine_id=0123"} {
 		if !strings.Contains(with, want) {
 			t.Errorf("%q lacks %q", with, want)
 		}

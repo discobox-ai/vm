@@ -78,8 +78,10 @@ libkrun boots the image's `krun/vmlinux`, not Debian's kernel:
 - It is built from libkrunfw's kernel source and patches (5.6.2, Linux
   6.12.109) and libkrunfw's x86_64 configuration, with `krun-kernel.config`
   merged over it: an initrd (zstd), autofs, ext4 ACLs, the full PID space
-  (`BASE_SMALL` off), and no `dummy0`. The build fails if olddefconfig changes
-  any of those.
+  (`BASE_SMALL` off), no `dummy0`, nf_tables with connection tracking, and
+  the buddy hard-lockup detector, which libkrunfw leaves out and the command
+  line's `nmi_watchdog=panic,1` needs to reset a wedged guest. The build fails
+  if olddefconfig changes any of those.
 - One patch is disco-vm's, `krun-kernel-poweroff.patch`. libkrun's x86
   machine has no ACPI, so nothing can power it off, and a halt spins. The
   patch makes a power-off or a halt a reset, which libkrun (`reboot=k`, its

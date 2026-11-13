@@ -323,11 +323,16 @@ func extract(r io.ReadCloser, dir string, files []string, mode os.FileMode) erro
 
 // Cmdline is a Linux guest's kernel command line. panic= makes a panicked
 // kernel reset, which the hypervisor sees as a stop, so a running VM has a
-// running kernel. systemd.machine_id gives the instance its own identity,
-// whatever the image's /etc/machine-id holds. disco-vm.nic=0 tells the base
-// it has no network device, so it does not wait for one.
+// running kernel. nmi_watchdog=panic,1 makes a hard lockup panic, so a
+// guest whose CPU stops taking interrupts resets too rather than staying
+// wedged and reported as running; the 1 turns the detector back on in an x86
+// KVM guest (libkrun), which Linux turns off for fear of an overcommitted
+// host. Soft lockups and RCU stalls stay warnings. systemd.machine_id gives
+// the instance its own identity, whatever the image's /etc/machine-id holds.
+// disco-vm.nic=0 tells the base it has no network device, so it does not
+// wait for one.
 func Cmdline(machineID string, nic bool) string {
-	cmdline := "console=hvc0 root=/dev/vda rw rootfstype=ext4 panic=5 systemd.machine_id=" + machineID
+	cmdline := "console=hvc0 root=/dev/vda rw rootfstype=ext4 panic=5 nmi_watchdog=panic,1 systemd.machine_id=" + machineID
 	if !nic {
 		cmdline += " disco-vm.nic=0"
 	}

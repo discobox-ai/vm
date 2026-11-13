@@ -237,11 +237,18 @@ guests has none and is macOS.
   `boot-initrd.img`: the image's initrd, padded to four bytes, then a newc
   archive holding the agent at `/.disco-vm/disco-vm`. The configuration is
   `VZLinuxBootLoader` with `console=hvc0 root=/dev/vda rw rootfstype=ext4
-  panic=5 systemd.machine_id=<id>`, plus `disco-vm.nic=0` when the instance
-  is fenced to nothing; virtio block, a socket device, the serial console
-  appended to `console.log`, entropy, a balloon, the NAT unless fenced, and
-  tagged virtiofs shares. Once the agent answers, a Linux guest whose
-  `guest.Protocol` is not this host's is killed and refused.
+  panic=5 nmi_watchdog=panic,1 systemd.machine_id=<id>`, plus
+  `disco-vm.nic=0` when the instance is fenced to nothing (`panic=5` resets
+  a panicked kernel, and `nmi_watchdog=panic,1` makes a hard lockup a panic,
+  which Debian's kernel leaves a warning, so a wedged guest resets rather
+  than reporting as running; soft lockups and RCU stalls stay warnings, since
+  the host can deschedule a vCPU past their thresholds; on an Intel Mac,
+  Debian's amd64 kernel detects hard lockups through a guest PMU that
+  Virtualization.framework may not give, which is unverified); virtio block,
+  a socket device, the serial console appended to `console.log`, entropy, a
+  balloon, the NAT unless fenced, and tagged virtiofs shares. Once the agent
+  answers, a Linux guest whose `guest.Protocol` is not this host's is killed
+  and refused.
 - **No network device** is `Egress{}`: Create records the fence and Boot
   attaches no NIC, to a Linux or a macOS guest. A Linux guest then has `lo`
   alone. A macOS guest still lists Apple silicon's peripheral interfaces
