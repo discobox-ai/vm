@@ -77,6 +77,24 @@ with disco-vm's content:
   but skipped when the command line says `disco-vm.nic=0`, so a guest with no
   network device reaches `network-online.target` at once instead of failing
   it 30 seconds in.
+- **A wedged guest resets.** The command line (`linuximage.Cmdline`, the same
+  for vz and libkrun) has `panic=5`, so a panicked kernel resets and the
+  hypervisor sees a stop, and `nmi_watchdog=panic,1`, so a hard lockup (a
+  CPU that takes no interrupt for 10 s) panics rather than leaving a guest
+  that reports as running wedged for good: Debian's kernel defaults it to a
+  warning. The `1` turns the detector on where Linux turns it off, in an x86
+  KVM guest (libkrun), for fear of false positives on an overcommitted host:
+  a host that stalls one vCPU for 10 s while another runs resets the guest.
+  Soft lockups (20 s) and RCU stalls (21 s on Debian's kernel, 59 s on
+  libkrun's) stay warnings, since a host can deschedule a vCPU past them.
+  vz's arm64 Debian kernel (its config, and discobox's vz guest reporting
+  `Watchdog detected hard LOCKUP` in #113) and libkrun's (from
+  `krun-kernel.config`) detect hard lockups with the buddy detector: each CPU
+  watches the next one's timer interrupts, so it needs two CPUs and no guest
+  PMU, and catches a vCPU the host stops. Debian's amd64 kernel (vz on an
+  Intel Mac) uses the perf detector, a PMU counter's NMI on the CPU itself,
+  which runs only where the hypervisor gives the guest a PMU; whether
+  Virtualization.framework does is unverified.
 - **The clock** stepped from the PL031 RTC every 30 seconds where there is
   one, since a Mac that slept leaves the guest behind.
 - **Hardware** is virtio and Hyper-V's synthetic devices: whole driver

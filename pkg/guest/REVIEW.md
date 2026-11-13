@@ -17,3 +17,10 @@
   side cannot both speak.** vz's Linux guests refuse an agent of another
   protocol at every boot, so forgetting to move it is a guest that answers
   and then misbehaves.
+- **`hardlockup_panic` reading 1 does not mean a hard lockup resets the
+  guest.** The sysctl is set by the command line whether or not a detector
+  runs: Linux turns the detector off in an x86 KVM guest, and the perf
+  detector does not start without a guest PMU. Check `nmi_watchdog` reads 1
+  and dmesg shows the detector starting, and prove the reset by stopping one
+  vCPU thread from the host (the buddy detector catches that; the perf one
+  cannot, since its NMI runs on the stopped CPU).
