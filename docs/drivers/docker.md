@@ -172,7 +172,7 @@ container's init, where it runs on the image's libc, so build it static:
 CGO_ENABLED=0 go build -o disco-vm ./cmd/disco-vm   # or: go tool task build:linux-agent (amd64)
 export DISCO_VM_DRIVER=docker
 
-export DISCO_VM_BASE=debian:trixie
+export DISCO_VM_BASE=debian:sid
 
 ./disco-vm info                                            # check: ok
 ./disco-vm run dev                                         # pulls, readies, and starts it
@@ -212,7 +212,7 @@ mount, and what runs as root in a guest.
 
 | env | default | |
 |---|---|---|
-| `DISCO_VM_BASE` | none | the base, an image reference such as `debian:trixie` (`machine.Config.Base`); with none, a fresh VM is refused |
+| `DISCO_VM_BASE` | none | the base, an image reference such as `debian:sid` (`machine.Config.Base`); with none, a fresh VM is refused |
 
 `Check` refuses a daemon on cgroup v1, one that runs Windows containers, and a
 rootless one, whose user namespace has too few uids to map the guest's 65536.

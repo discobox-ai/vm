@@ -58,7 +58,7 @@ Archil pauses it.
 ## Try it
 
 ```bash
-export ARCHIL_API_KEY=key-... DISCO_VM_DRIVER=archil DISCO_VM_POOL=scratch DISCO_VM_BASE=debian:trixie
+export ARCHIL_API_KEY=key-... DISCO_VM_DRIVER=archil DISCO_VM_POOL=scratch DISCO_VM_BASE=debian:sid
 disco-vm run dev --data 1GiB
 disco-vm exec dev sh -c 'apt-get update && apt-get install -y curl'
 disco-vm stop dev

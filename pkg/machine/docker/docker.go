@@ -226,7 +226,7 @@ type containerRef struct {
 
 // Install is not offered: a fresh VM is readied from the configured base.
 func (*Driver) Install(context.Context, machine.InstallSpec, string) (machine.Instance, error) {
-	return machine.Instance{}, fmt.Errorf("docker: create a fresh VM from the configured base (%s, such as debian:trixie) instead: %w", machine.BaseEnv, machine.ErrUnsupported)
+	return machine.Instance{}, fmt.Errorf("docker: create a fresh VM from the configured base (%s, such as debian:sid) instead: %w", machine.BaseEnv, machine.ErrUnsupported)
 }
 
 // ready makes the image a fresh VM runs: it pulls the base's image, installs
@@ -419,7 +419,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("docker: egress: %w", machine.ErrUnsupported)
 	}
 	if spec.From == nil && d.base == "" {
-		return machine.Instance{}, fmt.Errorf("docker: a fresh VM needs a base image, which is the driver's configuration: set %s to one, such as debian:trixie: %w", machine.BaseEnv, machine.ErrUnsupported)
+		return machine.Instance{}, fmt.Errorf("docker: a fresh VM needs a base image, which is the driver's configuration: set %s to one, such as debian:sid: %w", machine.BaseEnv, machine.ErrUnsupported)
 	}
 	name := containerName(d.pool, spec.Name)
 	// Refused before a base is readied, which takes a minute.
