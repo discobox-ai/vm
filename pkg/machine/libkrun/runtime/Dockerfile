@@ -1,3 +1,4 @@
+# check=skip=InvalidDefaultArgInFrom
 # disco-vm's libkrun runtime (ADR 26-11-03-530 §3): the host side of a libkrun
 # VM, as one directory that brings its own libc, so a Linux host needs only a
 # kernel with KVM.
@@ -14,8 +15,13 @@
 # that way in an otherwise empty filesystem, so a runtime missing a library
 # fails here. linux/amd64 only (§10).
 
-# Debian 13's own rustc is older than libkrun's dependencies need.
-FROM public.ecr.aws/docker/library/rust:1.90-slim-trixie AS build
+# Debian sid at the Taskfile's snapshot (the root DESIGN.md, Debian), with
+# sid's own Rust: there is no Rust image on sid. Build through go tool task,
+# which passes DEBIAN_IMAGE and DEBIAN_SNAPSHOT.
+# DEBIAN_IMAGE has no default, so the Taskfile names it alone (the check
+# directive above skips the warning that gives).
+ARG DEBIAN_IMAGE
+FROM ${DEBIAN_IMAGE} AS build
 # Every source is pinned by its SHA-256: a tag can move, and a tarball can
 # change under its name.
 ARG LIBKRUN_VERSION=1.19.7
@@ -23,9 +29,16 @@ ARG LIBKRUN_SHA256=d4541fcd959ad43fb073bff61bc91b645ea6413a10b8319e9b61664a6102d
 ARG PASST_VERSION=2026_10_02.cba3570
 ARG PASST_SHA256=7b81892b1070521ed217de672cdce43d7a37436e6f850cd04f2b63919ac484b6
 ARG RUNTIME_VERSION=dev
-RUN apt-get update \
+ARG DEBIAN_SNAPSHOT
+# apt reads sid at the snapshot, and the stage is upgraded to it whole, so a
+# build is the same on any day.
+RUN : "${DEBIAN_SNAPSHOT:?build through go tool task, which passes the Debian snapshot}" \
+    && sed -i "s|^URIs: .*|URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/|" /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' 'Acquire::Check-Valid-Until "false";' 'Acquire::Retries "5";' >/etc/apt/apt.conf.d/10-disco-vm-snapshot \
+    && apt-get update \
+    && apt-get -y full-upgrade \
     && apt-get install -y --no-install-recommends \
-        ca-certificates curl gcc libc6-dev libclang-dev make \
+        ca-certificates cargo curl gcc libc6-dev libclang-dev make rustc \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src

@@ -1,3 +1,4 @@
+# check=skip=InvalidDefaultArgInFrom
 # disco-vm's Linux guest image (ADR 26-10-31-990): a base vz boots with
 # VZLinuxBootLoader, and hcs will with direct kernel boot.
 #
@@ -18,10 +19,19 @@
 # no ACPI, so a power-off is a reset, its one way out), built on the build
 # platform. libkrun boots no kernel without libkrunfw's patches,
 # so it cannot boot Debian's.
+#
+# Every stage is Debian sid at one snapshot (the root DESIGN.md, Debian), and
+# the kernel vz and hcs boot is sid's linux-image on the sid root: the owner's
+# choice of a 7.x kernel, 2026-11-13. libkrun's kernel is the one exception:
+# libkrunfw's, built here on sid. Build through go tool task, which passes
+# DEBIAN_IMAGE and DEBIAN_SNAPSHOT.
+# DEBIAN_IMAGE has no default, so the Taskfile names it alone (the check
+# directive above skips the warning that gives).
+ARG DEBIAN_IMAGE
 
 # The libkrun kernel, cross-compiled on the build platform. libkrun on arm64
 # is deferred (ADR 26-11-03-530 §10), so another target gets no krun/.
-FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/debian:13-slim AS krun-kernel
+FROM --platform=$BUILDPLATFORM ${DEBIAN_IMAGE} AS krun-kernel
 ARG TARGETARCH
 ARG BUILDARCH
 # libkrunfw and the kernel it names, each pinned by its SHA-256.
@@ -29,7 +39,14 @@ ARG LIBKRUNFW_VERSION=5.6.2
 ARG LIBKRUNFW_SHA256=df45d649fcbd07a4d0ca03fa836b2f640fdcf9b40187f3eb7023259c6e83d582
 ARG KERNEL_VERSION=6.12.109
 ARG KERNEL_SHA256=5484e552a334e15019f4aeba89e5b58f04651cf2f4e24e04de9f152f1c38e3fa
-RUN apt-get update \
+ARG DEBIAN_SNAPSHOT
+# apt reads sid at the Taskfile's snapshot, and the stage is upgraded to it
+# whole, so a build is the same on any day (the root DESIGN.md, Debian).
+RUN : "${DEBIAN_SNAPSHOT:?build through go tool task, which passes the Debian snapshot}" \
+    && sed -i "s|^URIs: .*|URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/|" /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' 'Acquire::Check-Valid-Until "false";' 'Acquire::Retries "5";' >/etc/apt/apt.conf.d/10-disco-vm-snapshot \
+    && apt-get update \
+    && apt-get -y full-upgrade \
     && apt-get install -y --no-install-recommends \
         bc bison ca-certificates curl flex gcc libc6-dev libelf-dev libssl-dev make patch python3 xz-utils \
         $([ "$BUILDARCH" = amd64 ] || echo gcc-x86-64-linux-gnu) \
@@ -64,7 +81,7 @@ RUN set -eux; \
     "${cross}strip" --strip-debug /out/krun/vmlinux; \
     echo "${kernel#linux-} libkrunfw ${LIBKRUNFW_VERSION}" >/out/krun/version
 
-FROM public.ecr.aws/docker/library/debian:13-slim AS rootfs
+FROM ${DEBIAN_IMAGE} AS rootfs
 ARG TARGETARCH
 
 RUN printf '%s\n' \
@@ -74,7 +91,14 @@ RUN printf '%s\n' \
         'path-exclude /usr/share/man/*' \
         > /etc/dpkg/dpkg.cfg.d/01-disco-vm-nodoc
 
-RUN apt-get update \
+ARG DEBIAN_SNAPSHOT
+# apt reads sid at the Taskfile's snapshot, and the stage is upgraded to it
+# whole, so a build is the same on any day (the root DESIGN.md, Debian).
+RUN : "${DEBIAN_SNAPSHOT:?build through go tool task, which passes the Debian snapshot}" \
+    && sed -i "s|^URIs: .*|URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/|" /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' 'Acquire::Check-Valid-Until "false";' 'Acquire::Retries "5";' >/etc/apt/apt.conf.d/10-disco-vm-snapshot \
+    && apt-get update \
+    && apt-get -y full-upgrade \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         dbus \
@@ -91,7 +115,9 @@ RUN apt-get update \
         util-linux \
         zstd \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i "s|^URIs: .*|URIs: http://deb.debian.org/debian|" /etc/apt/sources.list.d/debian.sources \
+    && rm /etc/apt/apt.conf.d/10-disco-vm-snapshot
 
 # Debian's kernel carries a module for every device Debian supports. This
 # guest's hardware is virtio on vz and Hyper-V's synthetic devices on hcs, so
@@ -159,9 +185,16 @@ RUN mkdir -p /var/lib/disco-vm \
         systemd-networkd-wait-online.service \
         systemd-resolved.service
 
-FROM public.ecr.aws/docker/library/debian:13-slim AS assemble
+FROM ${DEBIAN_IMAGE} AS assemble
 ARG TARGETARCH
-RUN apt-get update \
+ARG DEBIAN_SNAPSHOT
+# apt reads sid at the Taskfile's snapshot, and the stage is upgraded to it
+# whole, so a build is the same on any day (the root DESIGN.md, Debian).
+RUN : "${DEBIAN_SNAPSHOT:?build through go tool task, which passes the Debian snapshot}" \
+    && sed -i "s|^URIs: .*|URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/|" /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' 'Acquire::Check-Valid-Until "false";' 'Acquire::Retries "5";' >/etc/apt/apt.conf.d/10-disco-vm-snapshot \
+    && apt-get update \
+    && apt-get -y full-upgrade \
     && apt-get install -y --no-install-recommends e2fsprogs gzip initramfs-tools-core lz4 xz-utils zstd \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

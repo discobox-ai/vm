@@ -67,13 +67,16 @@ The runtime is one directory (`pkg/machine/libkrun/runtime`, built by
   lacks `krun/vmlinux`. `DISCO_VM_BASE` and `DISCO_VM_KRUN_RUNTIME` name local
   builds in the meantime.
 - Every source the runtime and the kernel are built from (libkrun, passt,
-  libkrunfw, Linux) is pinned by its SHA-256 in its Dockerfile.
+  libkrunfw, Linux) is pinned by its SHA-256 in its Dockerfile. Both build on
+  Debian sid at the Taskfile's snapshot, the runtime with sid's own `rustc`,
+  and the runtime bundles that sid's glibc.
 
 ## The guest
 
 The guest is the Linux guest image (`pkg/guest/linux`, pulled through
 `pkg/machine/linuximage` into `cache/libkrun/linux/<digest>`, as vz pulls it).
-libkrun boots the image's `krun/vmlinux`, not Debian's kernel:
+libkrun boots the image's `krun/vmlinux`, not Debian's (sid's) kernel, the
+one exception to the guest booting Debian's own:
 
 - It is built from libkrunfw's kernel source and patches (5.6.2, Linux
   6.12.109) and libkrunfw's x86_64 configuration, with `krun-kernel.config`
