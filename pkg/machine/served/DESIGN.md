@@ -33,6 +33,17 @@ embedder authenticates the channel; the handler authenticates no one.
   discobox's server sets a sandbox's one forward to its pool machine and a
   darwin sandbox's base. A malformed peer forward is refused by the driver, as the
   engine refuses it (`local`'s `checkForwards`).
+- **URL requests** (`InstanceSpec.URLs`, ADR 26-11-12-604). The client
+  reports the driver's URL reach unnarrowed, since it is what an instance
+  gets, and runs `URLRequests.Check` itself. It sends a request only of a URL
+  the driver gives or withholds as asked (`URLOptional`), and only where
+  `FieldURLs` is listed; unlisted, a request is not sent and the driver's
+  default applies, a strict one refused on the client with
+  `ErrUnsupported`. A request a fixed reach already meets crosses nothing.
+  `FieldURLs` decides whether a client may ask, on or off alike, not what it
+  gets: an embedder that must withhold a URL (a public one, from a driver
+  whose default gives it) forces the request in `Options.Create`, strictly,
+  where the driver's Create holds it.
 - **A hook on every create** (`Options.Create`), after the fields are
   checked and `From` found, before the driver: the embedder forces a fence,
   a size, a forward of its own, or a `From` of another pool there, or

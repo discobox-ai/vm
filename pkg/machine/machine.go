@@ -210,15 +210,17 @@ const (
 // what Mode asks or refuses the create with ErrUnsupported. Strict needs a
 // Mode.
 type URLRequest struct {
-	Mode   URLMode
-	Strict bool
+	Mode   URLMode `json:"mode,omitempty"`
+	Strict bool    `json:"strict,omitempty"`
 }
 
 // URLRequests is a URLRequest for each of a service's URLs, as
 // URLCapabilities names them. The zero value is the driver's default for
 // every one.
 type URLRequests struct {
-	Internal, Private, Public URLRequest
+	Internal URLRequest `json:"internal"`
+	Private  URLRequest `json:"private"`
+	Public   URLRequest `json:"public"`
 }
 
 // Check refuses, with ErrUnsupported, a strict request the capabilities
