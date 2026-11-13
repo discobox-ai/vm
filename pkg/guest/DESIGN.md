@@ -81,13 +81,14 @@ with disco-vm's content:
   one, since a Mac that slept leaves the guest behind.
 - **Hardware** is virtio and Hyper-V's synthetic devices: whole driver
   classes neither can attach are deleted, `drivers/scsi` (hv_storvsc) kept,
-  and the initrd built from a module list.
+  and the initrd built from a module list, compressed with zstd, which both
+  Debian's kernel and libkrun's unpack.
 
 `assemble` builds the artifact set inside the image build (`mkfs.ext4 -d`
 needs no loop device or privilege), extracting the amd64 ELF from its
 bzImage and decompressing an arm64 Image only where Debian ships one
 compressed. `verify` then checks the kernel's form, the root's label, units,
-fstab, and nftables, and the initrd's hook and tools, so a broken image fails
+fstab, and nftables, and the initrd's hook, tools, and compression, so a broken image fails
 its build rather than booting to a blank console. `go tool task build:linux-guest`
 builds it for this host (CI builds amd64 on every change), and a `linux/vN`
 tag publishes both architectures as `ghcr.io/discobox-ai/disco-vm-linux:vN`
