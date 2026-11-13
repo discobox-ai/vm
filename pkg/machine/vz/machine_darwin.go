@@ -75,7 +75,9 @@ const pendingName = "resume.pending"
 
 // Boot starts a prepared instance from power-off and waits for its agent. A
 // Linux guest's agent is the one this boot handed it, and one that speaks
-// another protocol is killed and refused.
+// another protocol is killed and refused. A macOS guest's agent is the one it
+// was installed with, and one that speaks another protocol is moved to this
+// host's (moveAgent).
 func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
 	m, err := bundle(inst.Dir).readMeta()
 	if err != nil {
@@ -95,10 +97,13 @@ func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 		return nil, err
 	}
 	if m.guestOS() == machine.Linux {
-		if err := guest.CheckProtocol(ctx, vm); err != nil {
-			_ = vm.Kill(context.Background())
-			return nil, err
-		}
+		err = guest.CheckProtocol(ctx, vm)
+	} else {
+		err = h.moveAgent(ctx, vm, opts.Console)
+	}
+	if err != nil {
+		_ = vm.Kill(context.Background())
+		return nil, err
 	}
 	return vm, nil
 }
@@ -366,4 +371,25 @@ func (m *vmMachine) Done() <-chan struct{} { return m.done }
 func (m *vmMachine) Err() error {
 	<-m.done
 	return m.err
+}
+
+// moveAgent brings a booted macOS guest's agent to this host's protocol,
+// replacing it with this process's own executable: a VM is booted by its
+// shim, which is disco-vm built for darwin, the binary an install bakes in.
+func (*Hypervisor) moveAgent(ctx context.Context, vm *vmMachine, console io.Writer) error {
+	if console == nil {
+		console = io.Discard
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("vz: the agent to move a macOS guest's to: %w", err)
+	}
+	info, err := vm.Info(ctx)
+	if err != nil || info.Protocol == guest.Protocol {
+		return moveAgent(ctx, vm, exe, vm.done, console)
+	}
+	if err := checkAgentBinary(exe); err != nil {
+		return fmt.Errorf("vz: the guest's agent (disco-vm %s) speaks protocol %d, and this host speaks %d, so it has to move: %w", info.Version, info.Protocol, guest.Protocol, err)
+	}
+	return moveAgent(ctx, vm, exe, vm.done, console)
 }

@@ -21,13 +21,6 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
-// The agent's place in the guest, and the launchd daemon that starts it at
-// boot, before anyone logs in, as root.
-const (
-	agentPath = "/usr/local/libexec/disco-vm"
-	daemonID  = "ai.discobox.vm.guest"
-)
-
 var daemonPlist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

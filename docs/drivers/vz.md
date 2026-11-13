@@ -107,6 +107,26 @@ directory:
    also sets `pmset -a sleep 0`, because a sleeping guest's agent answers
    nothing. Then it waits for the agent on vsock 7300 and shuts down through
    it. That took 45 seconds.
+
+   That agent stays with the committed VM and every VM created from it, so
+   **a boot moves an out-of-date one forward** rather than installing macOS
+   again (issue #83, discobox ADR 26-11-11-963 §9). Once a macOS guest's
+   agent answers, Boot reads its protocol; one that is not this host's
+   `guest.Protocol` is replaced by the shim's own executable, the binary an
+   install bakes in. A shim that is not disco-vm (its Go build info names
+   another main package) is refused on the host, before anything reaches the
+   guest. The move uses only what every agent serves: a file put of
+   `disco-vm.new` beside it, and an exec that runs it first in a process
+   group of its own (`guest --protocol` must exit within 10 s and print this
+   host's protocol; otherwise the group is killed, the file removed, nothing
+   touched, and the boot fails naming what it printed), keeps the old agent as
+   `disco-vm.old` (the way back, by hand), moves the new one into place, and
+   kills the daemon (`launchctl kill SIGKILL`), so launchd's KeepAlive starts
+   the new one. Boot returns once the agent has gone and answers again with this
+   host's protocol, or fails within two minutes. launchd refused the first
+   start of the replaced binary each time (`OS_REASON_CODESIGNING`, a launch
+   constraint) and started it again 10 s later, so a boot that moves the
+   agent took 45 to 57 s against 30 s (2026-11-12, macOS 27.0 guest).
 4. **The account moves off uid 501.** Provisioning always makes the first
    account 501, which is also the first account on the host, so the bootstrap
    moves it to `uid` (default 600) and chowns its files. That freed 501 for

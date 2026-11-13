@@ -31,7 +31,11 @@ PATH for the next.
 `/v1/info` reports `guest.Protocol`, the protocol's own version, which moves
 whenever a host and an agent on either side of a change cannot work
 together. A driver that hands the guest its agent at every boot (vz's Linux
-guests) refuses an agent that reports another (`guest.CheckProtocol`). It is
+guests) refuses an agent that reports another (`guest.CheckProtocol`); one
+whose agent is baked in (vz's macOS guests) moves it forward at boot, so the
+info, a file put, and exec stay compatible across every protocol. A build
+tagged `disco_vm_older_agent` reports the protocol before `Protocol`, as a
+test's older agent; no release is built with it. It is
 not the build's version, which is the main module's: an embedder's in a
 program that embeds the engine.
 

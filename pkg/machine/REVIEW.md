@@ -79,3 +79,9 @@
   `go test ./...` with cgo, so a darwin test that fails first breaks CI, and
   `task test:vz` always sets the binary, so the author's runs never see it. A
   review found a vz test that did.
+- **A binary run in a guest to check it is bounded, and so is its
+  answer.** vz's agent move runs the uploaded binary before it replaces the
+  agent: in a process group of its own, killed whole after a few seconds, so
+  a program that never exits is refused rather than left running as root.
+  An exec still running at the host's deadline is a check that did not
+  finish, never an agent that was killed. A review found both missing.
