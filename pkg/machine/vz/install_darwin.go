@@ -28,22 +28,22 @@ import (
 // installs the restore image onto a new bundle, then boots it once with guest
 // provisioning to create an account and bake in the agent, shuts it down
 // through the agent, and freezes it.
-func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) error {
+func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) (*machine.Release, error) {
 	if spec.GuestOS != machine.Darwin {
-		return fmt.Errorf("vz: can install darwin guests, not %s", spec.GuestOS)
+		return nil, fmt.Errorf("vz: can install darwin guests, not %s", spec.GuestOS)
 	}
 	if err := d.Check(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	opts, err := parseOptions(spec.Options)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if spec.Agent == "" {
-		return errors.New("vz: install needs the agent binary")
+		return nil, errors.New("vz: install needs the agent binary")
 	}
 	if spec.DiskBytes <= 0 {
-		return errors.New("vz: install needs a disk size")
+		return nil, errors.New("vz: install needs a disk size")
 	}
 	log := spec.Log
 	if log == nil {
@@ -51,18 +51,23 @@ func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst lo
 	}
 	ipsw, err := restoreImage(ctx, spec.Media, spec.CacheDir, log)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	b := bundle(dst.Dir)
 	m, err := install(ctx, b, ipsw, spec.InstallSpec, opts, log)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := bootstrap(ctx, b, m, spec.Agent, opts, spec.GUI, log); err != nil {
-		return err
+		return nil, err
 	}
 	// A committed VM carries no running machine's identity.
-	return freezeLayer(b, machine.Darwin)
+	if err := freezeLayer(b, machine.Darwin); err != nil {
+		return nil, err
+	}
+	// What the media resolved to: `latest` is whatever Apple's catalog
+	// offered this host when it was installed.
+	return &machine.Release{Version: m.MacOSVersion, Build: m.BuildVersion}, nil
 }
 
 // options are the install options a spec passes through (from.install.options).

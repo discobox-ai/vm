@@ -61,6 +61,9 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 // it is.
 func (*Hypervisor) Chains() bool { return true }
 
+// Release is nil: hcs resolves no release from the ISO it installs from.
+func (*Hypervisor) Release(local.Layer) *machine.Release { return nil }
+
 // Base is none: a Windows VM is installed from media, or created from a
 // committed VM.
 func (*Hypervisor) Base() (machine.OS, bool) { return "", false }

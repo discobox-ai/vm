@@ -78,7 +78,12 @@ directory:
    supports, downloaded once into `spec.CacheDir` under the name Apple gives
    it (`UniversalMac_27.0_26A428_Restore.ipsw`). A partial download is
    resumed, and the image is renamed into place only once it is complete. The
-   local driver sets `CacheDir` to `<root>/cache/vz`.
+   local driver sets `CacheDir` to `<root>/cache/vz`. The image's macOS
+   version and build are what Install returns as the committed VM's
+   `Instance.Release` (`27.0.0 (26A428)`), the RELEASE column of `disco-vm
+   ls -a` (issue #6). A VM installed before Install returned it has it too:
+   the local driver fills a record that lacks one from the bundle's
+   `vz.json`, which every clone copies (`Hypervisor.Release`).
 2. The hardware model is the restore image's. The machine identifier, the aux
    storage, and a disk are created (raw by default, `disk-format: asif` for
    ASIF), and the installer runs. That took 3 minutes on an M-series Mac.

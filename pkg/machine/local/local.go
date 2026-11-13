@@ -142,8 +142,14 @@ type Hypervisor interface {
 	// and vz for macOS guests): then a fresh VM is refused.
 	Base() (machine.OS, bool)
 	// Install lays a committed VM's disk into dst.Dir from installation
-	// media. dst.Dir is the VM's own directory, final.
-	Install(ctx context.Context, spec InstallSpec, dst Layer) error
+	// media, and returns the release it resolved the media to, or nil where
+	// it resolves none. dst.Dir is the VM's own directory, final.
+	Install(ctx context.Context, spec InstallSpec, dst Layer) (*machine.Release, error)
+	// Release is the release the VM in vm.Dir was installed from, as the
+	// hypervisor keeps it with the VM's files, or nil where it keeps none.
+	// It fills in the record of a VM made before Install returned one, so an
+	// existing install, and every VM of it, has its release too.
+	Release(vm Layer) *machine.Release
 	// Prepare creates the instance's disk in inst.Dir: a copy-on-write copy
 	// of its Chain's last committed VM, or, with no Chain, a fresh disk from
 	// the hypervisor's base; either boots from power-off with a fresh

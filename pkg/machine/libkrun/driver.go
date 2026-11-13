@@ -95,9 +95,12 @@ func (*Hypervisor) Base() (machine.OS, bool) { return machine.Linux, true }
 // host's loopback.
 func (*Hypervisor) SharesLoopback() bool { return false }
 
+// Release is nil: a libkrun VM is never installed.
+func (*Hypervisor) Release(local.Layer) *machine.Release { return nil }
+
 // Install is unsupported: a libkrun VM starts from the base.
-func (*Hypervisor) Install(context.Context, local.InstallSpec, local.Layer) error {
-	return fmt.Errorf("libkrun: install: %w", machine.ErrUnsupported)
+func (*Hypervisor) Install(context.Context, local.InstallSpec, local.Layer) (*machine.Release, error) {
+	return nil, fmt.Errorf("libkrun: install: %w", machine.ErrUnsupported)
 }
 
 // Commit freezes the stopped VM's bundle in place: its kernel, initrd, disk,

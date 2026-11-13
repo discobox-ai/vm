@@ -15,7 +15,10 @@ column below.
 `machine.Driver` is one pool's (`machine.Config.Pool`) VMs, committed
 or not (ADR 26-11-03-606): Create, fresh from the driver's base
 (`Config.Base`) or a copy of a committed VM (`InstanceSpec.From`); Install,
-a committed VM from media; Commit, which freezes a stopped VM under its
+a committed VM from media, with the release the media resolved to
+(`Instance.Release`, which every VM created from it or upgraded to it
+carries, so an embedder keys a base on what `latest` was: discobox ADR
+26-10-09-106 §5); Commit, which freezes a stopped VM under its
 name; Upgrade, which gives a stopped VM a new root and keeps its volumes
 ([below](#a-data-volume-is-its-vms-and-upgrade-gives-it-a-new-root)); Instance, Instances, and Destroy, as its provider keeps them ([the root DESIGN.md](../../DESIGN.md#the-engine-keeps-no-state-and-a-driver-keeps-it-in-its-provider)).
 That a VM is committed is the caller's to record, since not every provider

@@ -274,13 +274,18 @@ func lsCommand(g *globals) *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tNAME\tFROM\tOS\tSTATE\tCREATED")
+			fmt.Fprintln(w, "ID\tNAME\tFROM\tOS\tRELEASE\tSTATE\tCREATED")
 			for _, inst := range instances {
 				state := e.State(cmd.Context(), inst)
 				if state == engine.Stopped && !all {
 					continue
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", short(inst.ID), inst.Name, dash(inst.From), inst.GuestOS, state, ago(inst.Created))
+				release := ""
+				if inst.Release != nil {
+					release = inst.Release.String()
+				}
+				release = dash(release)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", short(inst.ID), inst.Name, dash(inst.From), inst.GuestOS, release, state, ago(inst.Created))
 			}
 			return w.Flush()
 		},

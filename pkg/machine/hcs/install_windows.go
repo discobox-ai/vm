@@ -49,59 +49,60 @@ const (
 // Options: user and password name the local administrator Setup creates and
 // logs on automatically (default "disco", and the user's own name for a
 // password, which the agent and `disco-vm gui` sign in with).
-func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) error {
+func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) (*machine.Release, error) {
 	log := spec.Log
 	if log == nil {
 		log = io.Discard
 	}
 	if spec.GuestOS != machine.Windows {
-		return fmt.Errorf("hcs: can only install windows guests, not %s", spec.GuestOS)
+		return nil, fmt.Errorf("hcs: can only install windows guests, not %s", spec.GuestOS)
 	}
 	if spec.Media == "" || spec.Media == "latest" {
-		return errors.New("hcs: install needs a Windows ISO as its media; Microsoft allows no unattended download (https://www.microsoft.com/software-download/windows11)")
+		return nil, errors.New("hcs: install needs a Windows ISO as its media; Microsoft allows no unattended download (https://www.microsoft.com/software-download/windows11)")
 	}
 	if fi, err := os.Stat(spec.Media); err != nil || fi.IsDir() {
-		return fmt.Errorf("hcs: install media %s is not an ISO file", spec.Media)
+		return nil, fmt.Errorf("hcs: install media %s is not an ISO file", spec.Media)
 	}
 	if _, err := os.Stat(spec.Agent); err != nil {
-		return fmt.Errorf("hcs: the agent to bake in: %w", err)
+		return nil, fmt.Errorf("hcs: the agent to bake in: %w", err)
 	}
 	if err := d.Check(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	size := uint64(spec.DiskBytes)
 	if size == 0 {
 		size = defaultDiskBytes
 	}
 	if size < minDiskBytes {
-		return fmt.Errorf("hcs: a %s disk is too small for Windows; give it at least %s", units.FormatBytes(size), units.FormatBytes(minDiskBytes))
+		return nil, fmt.Errorf("hcs: a %s disk is too small for Windows; give it at least %s", units.FormatBytes(size), units.FormatBytes(minDiskBytes))
 	}
 	if err := os.MkdirAll(dst.Dir, 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	sweepAttached(dst.Dir, log)
 	// The fixed disk, its dynamic copy, and Setup's growth all at once.
 	if err := needSpace(dst.Dir, size+30<<30); err != nil {
-		return err
+		return nil, err
 	}
 
 	fixed := filepath.Join(dst.Dir, installDiskName)
 	fmt.Fprintf(log, "hcs: allocating a fixed %s disk (this is silent, and takes a while)\n", units.FormatBytes(size))
 	if err := createFixed(fixed, size); err != nil {
-		return err
+		return nil, err
 	}
 	if err := writeDisk(ctx, fixed, spec.InstallSpec, log); err != nil {
-		return err
+		return nil, err
 	}
 	fmt.Fprintln(log, "hcs: compacting the disk")
 	disk := filepath.Join(dst.Dir, diskName)
 	if err := createDynamicFrom(disk, fixed); err != nil {
-		return err
+		return nil, err
 	}
 	if err := os.Remove(fixed); err != nil {
-		return err
+		return nil, err
 	}
-	return firstBoot(ctx, spec.InstallSpec, dst.Dir, disk, log)
+	// The ISO is the person's own; hcs resolves no release from it.
+	return nil, firstBoot(ctx, spec.InstallSpec, dst.Dir, disk, log)
 }
 
 // needSpace fails early when dir's volume cannot hold what Install writes.
