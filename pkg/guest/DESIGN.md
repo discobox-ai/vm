@@ -52,6 +52,10 @@ whose final `FROM scratch` stage is the artifact set `vmlinux`
 and `linux/amd64` (hcs; an Intel Mac). It is discobox's `vm-image` pipeline
 with disco-vm's content:
 
+- **Debian sid, its kernel too**, at the Taskfile's snapshot (the root
+  [DESIGN.md](../../DESIGN.md#debian-is-sid-at-one-snapshot)): vz and hcs boot
+  sid's `linux-image-<arch>` (7.3 at the snapshot), and the root's apt reads
+  live sid. libkrun boots libkrunfw's kernel instead.
 - **A general Debian machine** with systemd, nftables, and nothing else: no
   Docker, nothing of discobox's. A caller shapes it through exec and copy, as
   discobox applies its pool-agent bundle (discobox ADR 26-10-23-551).
@@ -105,7 +109,9 @@ with disco-vm's content:
 `assemble` builds the artifact set inside the image build (`mkfs.ext4 -d`
 needs no loop device or privilege), extracting the amd64 ELF from its
 bzImage and decompressing an arm64 Image only where Debian ships one
-compressed. `verify` then checks the kernel's form, the root's label, units,
+compressed, and leaving no kernel in the root (Debian's 7.x packages keep one
+beside the modules as well as in `/boot`). `verify` then checks the kernel's
+form, that the root carries none, the root's label, units,
 fstab, and nftables, and the initrd's hook, tools, and compression, so a broken image fails
 its build rather than booting to a blank console. `go tool task build:linux-guest`
 builds it for this host (CI builds amd64 on every change), and a `linux/vN`

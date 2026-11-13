@@ -22,6 +22,14 @@ vars:
   VERSION:
     sh: git describe --tags --always --dirty 2>/dev/null || echo dev
   LDFLAGS: -X github.com/discobox-ai/vm/internal/version.Version={{.VERSION}}
+  # Every Debian this repository builds on is sid at one snapshot, and this is
+  # the only place it is named (the root DESIGN.md, Debian): the newest dated
+  # sid-slim image, by digest, to start from, and the snapshot.debian.org
+  # timestamp every stage's apt reads and full-upgrades to. A bump moves both
+  # (the snapshot no older than the image's own, in its debian.sources).
+  DEBIAN_IMAGE: public.ecr.aws/docker/library/debian:sid-20261104-slim@sha256:07a3205e8583fdff12d2b05bd030f50437e9fd340ee616df0c05dc77af75767b
+  DEBIAN_SNAPSHOT: 20261112T202949Z
+  DEBIAN_ARGS: --build-arg DEBIAN_IMAGE={{.DEBIAN_IMAGE}} --build-arg DEBIAN_SNAPSHOT={{.DEBIAN_SNAPSHOT}}
 
 tasks:
   default:
@@ -71,7 +79,7 @@ tasks:
     vars:
       GUEST_ARCH: '{{.GUEST_ARCH | default ARCH}}'
     cmds:
-      - docker buildx build --platform linux/{{.GUEST_ARCH}} --output type=local,dest=build/linux-guest/{{.GUEST_ARCH}} pkg/guest/linux
+      - docker buildx build --platform linux/{{.GUEST_ARCH}} {{.DEBIAN_ARGS}} --output type=local,dest=build/linux-guest/{{.GUEST_ARCH}} pkg/guest/linux
 
   # The Linux guest image's release, on its own line: a linux/vN tag pushes
   # ghcr.io/discobox-ai/disco-vm-linux:vN for both architectures and prints
@@ -87,7 +95,7 @@ tasks:
       - docker buildx create --use --name disco-vm-linux 2>/dev/null || docker buildx use disco-vm-linux
       - printenv GITHUB_TOKEN | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - mkdir -p build/linux-guest
-      - docker buildx build --platform linux/arm64,linux/amd64 --tag {{.IMAGE}} --push --metadata-file build/linux-guest/metadata.json pkg/guest/linux
+      - docker buildx build --platform linux/arm64,linux/amd64 {{.DEBIAN_ARGS}} --tag {{.IMAGE}} --push --metadata-file build/linux-guest/metadata.json pkg/guest/linux
       - 'echo "pin linuximage.DefaultBase to {{.IMAGE}}@$(sed -n ''s/.*"containerimage.digest": *"\([^"]*\)".*/\1/p'' build/linux-guest/metadata.json)"'
 
   # disco-vm's libkrun runtime (pkg/machine/libkrun/runtime, ADR
@@ -103,7 +111,7 @@ tasks:
     vars:
       VERSION: '{{trimPrefix "krun/" (.RUNTIME_VERSION | default "dev")}}'
     cmds:
-      - docker buildx build --platform linux/amd64 --build-arg RUNTIME_VERSION={{.VERSION}} --output type=local,dest=build/krun-runtime pkg/machine/libkrun/runtime
+      - docker buildx build --platform linux/amd64 {{.DEBIAN_ARGS}} --build-arg RUNTIME_VERSION={{.VERSION}} --output type=local,dest=build/krun-runtime pkg/machine/libkrun/runtime
 
   # The libkrun runtime's release, on its own line: a krun/vN tag pushes
   # ghcr.io/discobox-ai/disco-vm-krun:vN and prints the digest to pin as
@@ -119,7 +127,7 @@ tasks:
     cmds:
       - printenv GITHUB_TOKEN | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - mkdir -p build/krun-runtime
-      - docker buildx build --platform linux/amd64 --build-arg RUNTIME_VERSION={{.VERSION}} --tag {{.IMAGE}} --push --metadata-file build/krun-runtime.metadata.json pkg/machine/libkrun/runtime
+      - docker buildx build --platform linux/amd64 {{.DEBIAN_ARGS}} --build-arg RUNTIME_VERSION={{.VERSION}} --tag {{.IMAGE}} --push --metadata-file build/krun-runtime.metadata.json pkg/machine/libkrun/runtime
       - 'echo "pin libkrun.DefaultRuntime to {{.IMAGE}}@$(sed -n ''s/.*"containerimage.digest": *"\([^"]*\)".*/\1/p'' build/krun-runtime.metadata.json)"'
 
   # disco-vm's linux agent, published per module version (discobox ADR

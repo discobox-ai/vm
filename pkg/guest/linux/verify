@@ -39,6 +39,9 @@ has /etc/nftables.conf
 has /etc/systemd/system/sysinit.target.wants/nftables.service
 modules=$(debugfs -R "ls -p /usr/lib/modules" "$out/root.ext4" 2>/dev/null | awk -F/ '$6 != "." && $6 != ".." && $6 != "" { print $6 }')
 [ -n "$modules" ] && [ "$(echo "$modules" | wc -l)" = 1 ] || fail "root.ext4 has not exactly one kernel's modules: ${modules:-none}"
+# The kernel is vmlinux, loaded from the host; a copy in the root is dead
+# weight.
+! debugfs -R "stat /usr/lib/modules/$modules/vmlinuz" "$out/root.ext4" 2>/dev/null | grep -q "^Inode:" || fail "root.ext4 carries the kernel at /usr/lib/modules/$modules/vmlinuz"
 # A rule set admitting only replies needs connection tracking (ct state).
 for module in nf_tables nft_ct nf_conntrack; do
     has "/usr/lib/modules/$modules/kernel/net/netfilter/$module.ko.xz"

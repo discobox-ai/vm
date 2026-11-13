@@ -103,3 +103,8 @@
   (`TestAPoolsRequestNamesNoForwardAndNoPool`,
   `TestOnlyTheHookReachesAnotherPool`). The served protocol decodes
   `machine.Forward` whole, so a field added to it is a field a pool sends.
+- **A proof-table claim about a guest's kernel command line is checked
+  against `linuximage.Cmdline`.** A hand boot under QEMU takes whatever line
+  it is given; a behaviour that needs a parameter `Cmdline` does not pass
+  (`nmi_watchdog=panic`) is not one disco-vm's guests have. The first sid
+  kernel row claimed a lockup reset that only an added parameter gave.

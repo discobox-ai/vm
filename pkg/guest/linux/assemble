@@ -81,8 +81,11 @@ esac
 cp "$initrd" "$out/initrd.img"
 
 # The hypervisor loads the kernel and the initrd from the host; the guest
-# never reads /boot, so leaving them in the tree ships each twice.
+# never reads /boot, so leaving them in the tree ships each twice. Debian's
+# 7.x packages keep the kernel beside its modules too, where /boot's copy
+# came from.
 rm -rf "${rootfs:?}"/boot/*
+rm -f "$rootfs"/usr/lib/modules/*/vmlinuz
 
 # What a container runtime supplies and a VM does not: a resolver that is not
 # the builder's, a hostname, and hosts.
