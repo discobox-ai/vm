@@ -131,12 +131,20 @@ const (
 	FieldEgress Field = "egress"
 	// FieldData is InstanceSpec.Data.
 	FieldData Field = "data"
+	// FieldURLs is InstanceSpec.URLs, for a URL the driver gives or withholds
+	// as asked (machine.URLOptional). A request of a URL it gives never or
+	// always is met or refused on the client (URLRequests.Check), and is
+	// not sent. Unlisted, a client's request is not sent and the driver's
+	// default applies, a strict one refused with ErrUnsupported. It decides
+	// only whether a client may ask, either way: an embedder that must
+	// withhold a URL forces it in Options.Create.
+	FieldURLs Field = "urls"
 )
 
 // Fields is every field a create can carry. A cache volume is not one:
 // caches are not served.
 var Fields = []Field{
-	FieldFrom, FieldCPUs, FieldMemory, FieldForwards, FieldIsolated, FieldNetworks, FieldEgress, FieldData,
+	FieldFrom, FieldCPUs, FieldMemory, FieldForwards, FieldIsolated, FieldNetworks, FieldEgress, FieldData, FieldURLs,
 }
 
 // ErrRefused reports a call, or a field of one, that the embedder's
@@ -180,14 +188,15 @@ type createRequest struct {
 	// FromPool is the pool the client's From is in, as it found it: the
 	// server refuses one that is not its own, since another pool's VM is
 	// never served, and it finds From by name in its own.
-	FromPool string              `json:"fromPool,omitempty"`
-	CPUs     int                 `json:"cpus,omitempty"`
-	Memory   uint64              `json:"memory,omitempty"`
-	Forwards []machine.Forward   `json:"forwards,omitempty"`
-	Isolated bool                `json:"isolated,omitempty"`
-	Networks []string            `json:"networks,omitempty"`
-	Egress   *machine.Egress     `json:"egress,omitempty"`
-	Data     *machine.DataVolume `json:"data,omitempty"`
+	FromPool string               `json:"fromPool,omitempty"`
+	CPUs     int                  `json:"cpus,omitempty"`
+	Memory   uint64               `json:"memory,omitempty"`
+	Forwards []machine.Forward    `json:"forwards,omitempty"`
+	Isolated bool                 `json:"isolated,omitempty"`
+	Networks []string             `json:"networks,omitempty"`
+	Egress   *machine.Egress      `json:"egress,omitempty"`
+	Data     *machine.DataVolume  `json:"data,omitempty"`
+	URLs     *machine.URLRequests `json:"urls,omitempty"`
 }
 
 // set lists the fields the request sets.
@@ -206,6 +215,7 @@ func (r createRequest) set() []Field {
 	add(FieldNetworks, len(r.Networks) > 0)
 	add(FieldEgress, r.Egress != nil)
 	add(FieldData, r.Data != nil)
+	add(FieldURLs, r.URLs != nil)
 	return set
 }
 

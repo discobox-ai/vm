@@ -451,3 +451,99 @@ func TestOnlyTheHookReachesAnotherPool(t *testing.T) {
 		t.Fatalf("the pool's VMs: %+v, %v; want its base and the sandbox alone", all, err)
 	}
 }
+
+// The client reports the driver's URL reach as its own, refuses a strict
+// request it cannot meet before it asks, and sends a request only of a URL
+// the driver gives or withholds as asked, which needs FieldURLs: a request a
+// fixed reach already meets crosses nothing.
+func TestURLRequests(t *testing.T) {
+	ctx := t.Context()
+	bin := agent(t)
+	driver := fakeDriver(t, bin, t.TempDir(), "p")
+	dial := serve(t, driver, served.Options{
+		Version: "v1", Allow: []served.Op{served.OpCapabilities, served.OpCreate, served.OpGet, served.OpRemove},
+	})
+	c := client(t, dial, "v1")
+	if got, want := c.Capabilities().URLs, driver.Capabilities().URLs; got != want {
+		t.Fatalf("the client reports URL reach %+v, want the driver's %+v", got, want)
+	}
+	if _, err := c.Create(ctx, machine.InstanceSpec{Name: "kept", URLs: machine.URLRequests{Private: machine.URLRequest{Mode: machine.URLOff, Strict: true}}}); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("a strict private URL off of a driver that always gives one: %v, want ErrUnsupported", err)
+	}
+	// The fake never gives a public URL, so asking it off is met, and not
+	// sent, though FieldURLs is not listed.
+	inst, err := c.Create(ctx, machine.InstanceSpec{Name: "private", URLs: machine.URLRequests{Public: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
+	if err != nil {
+		t.Fatalf("a strict public URL off of a driver that never gives one: %v", err)
+	}
+	t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+	if status := raw(t, dial, http.MethodPost, "/v1/vms", "v1", []byte(`{"name":"refused","urls":{"public":{"mode":"off"}}}`)); status != http.StatusForbidden {
+		t.Fatalf("a create carrying URL requests with FieldURLs not listed: %d, want refused", status)
+	}
+}
+
+// optionalPublic is a driver whose public URL is given or withheld as asked,
+// as boxd's is: it records the URL requests each create reaches it with.
+type optionalPublic struct {
+	machine.Driver
+	asked []machine.URLRequests
+}
+
+func (d *optionalPublic) Capabilities() machine.Capabilities {
+	caps := d.Driver.Capabilities()
+	caps.URLs.Public = machine.URLOptional
+	return caps
+}
+
+func (d *optionalPublic) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
+	d.asked = append(d.asked, spec.URLs)
+	spec.URLs.Public = machine.URLRequest{}
+	return d.Driver.Create(ctx, spec)
+}
+
+// A request of an optional URL crosses only where FieldURLs is listed:
+// unlisted, a non-strict one leaves the driver's default and a strict one is
+// refused on the client with ErrUnsupported; listed, it reaches the driver;
+// and the embedder's hook forces one whatever the client asks.
+func TestOptionalURLRequests(t *testing.T) {
+	ctx := t.Context()
+	bin := agent(t)
+	off := machine.URLRequests{Public: machine.URLRequest{Mode: machine.URLOff, Strict: true}}
+	on := machine.URLRequests{Public: machine.URLRequest{Mode: machine.URLOn}}
+	ops := []served.Op{served.OpCapabilities, served.OpCreate, served.OpGet, served.OpRemove}
+
+	unlisted := &optionalPublic{Driver: fakeDriver(t, bin, t.TempDir(), "p")}
+	c := client(t, serve(t, unlisted, served.Options{Version: "v1", Allow: ops}), "v1")
+	inst, err := c.Create(ctx, machine.InstanceSpec{Name: "lax", URLs: on})
+	if err != nil {
+		t.Fatalf("a non-strict request, FieldURLs unlisted: %v", err)
+	}
+	t.Cleanup(func() { _ = unlisted.Destroy(context.Background(), inst) })
+	if _, err := c.Create(ctx, machine.InstanceSpec{Name: "strict", URLs: off}); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("a strict request, FieldURLs unlisted: %v, want ErrUnsupported", err)
+	}
+	if len(unlisted.asked) != 1 || unlisted.asked[0] != (machine.URLRequests{}) {
+		t.Fatalf("FieldURLs unlisted, the driver was asked %+v, want one create with the default", unlisted.asked)
+	}
+
+	listed := &optionalPublic{Driver: fakeDriver(t, bin, t.TempDir(), "p")}
+	c = client(t, serve(t, listed, served.Options{Version: "v1", Allow: ops, Fields: []served.Field{served.FieldURLs}}), "v1")
+	if inst, err = c.Create(ctx, machine.InstanceSpec{Name: "asked", URLs: off}); err != nil {
+		t.Fatalf("a strict request, FieldURLs listed: %v", err)
+	}
+	t.Cleanup(func() { _ = listed.Destroy(context.Background(), inst) })
+	if len(listed.asked) != 1 || listed.asked[0] != off {
+		t.Fatalf("FieldURLs listed, the driver was asked %+v, want %+v", listed.asked, off)
+	}
+
+	forced := &optionalPublic{Driver: fakeDriver(t, bin, t.TempDir(), "p")}
+	c = client(t, serve(t, forced, served.Options{Version: "v1", Allow: ops, Fields: []served.Field{served.FieldURLs},
+		Create: func(_ context.Context, spec *machine.InstanceSpec) error { spec.URLs.Public = off.Public; return nil }}), "v1")
+	if inst, err = c.Create(ctx, machine.InstanceSpec{Name: "forced", URLs: on}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = forced.Destroy(context.Background(), inst) })
+	if len(forced.asked) != 1 || forced.asked[0] != off {
+		t.Fatalf("the hook forced the public URL off, and the driver was asked %+v", forced.asked)
+	}
+}

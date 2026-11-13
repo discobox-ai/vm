@@ -152,6 +152,9 @@ func (s *server) capabilities() machine.Capabilities {
 		Ports:      caps.Ports && s.allowed(OpDial),
 		Commit:     caps.Commit && s.allowed(OpCommit) && s.field(FieldFrom),
 		Isolation:  caps.Isolation && s.field(FieldIsolated) && s.field(FieldNetworks),
+		// What the driver gives is what an instance gets, whatever a client
+		// may ask; FieldURLs only lets it ask of an optional one.
+		URLs: caps.URLs,
 	}
 	if s.field(FieldEgress) {
 		out.Egress = caps.Egress
@@ -224,6 +227,9 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 	spec := machine.InstanceSpec{
 		Name: req.Name, CPUs: req.CPUs, Memory: req.Memory, Forwards: req.Forwards,
 		Isolated: req.Isolated, Networks: req.Networks, Egress: req.Egress, Data: req.Data,
+	}
+	if req.URLs != nil {
+		spec.URLs = *req.URLs
 	}
 	if req.From != "" {
 		from, err := s.find(r.Context(), req.From)

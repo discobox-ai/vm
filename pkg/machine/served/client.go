@@ -86,9 +86,25 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if spec.Cache != nil {
 		return machine.Instance{}, fmt.Errorf("served: caches are never served: %w", machine.ErrUnsupported)
 	}
+	reach := d.Capabilities().URLs
+	if err := spec.URLs.Check(reach); err != nil {
+		return machine.Instance{}, fmt.Errorf("served: %w", err)
+	}
 	req := createRequest{
 		Name: spec.Name, CPUs: spec.CPUs, Memory: spec.Memory, Forwards: spec.Forwards,
 		Isolated: spec.Isolated, Networks: spec.Networks, Egress: spec.Egress, Data: spec.Data,
+	}
+	if asked := asked(spec.URLs, reach); len(asked) > 0 {
+		switch {
+		case slices.Contains(d.info.Fields, FieldURLs):
+			req.URLs = &spec.URLs
+		case strict(spec.URLs, asked):
+			// The embedder lets no create ask, so the driver's default is
+			// what the instance gets, and a strict request of it is one
+			// the client cannot meet, as a narrowed capability is.
+			return machine.Instance{}, fmt.Errorf("served: the embedder lets no create ask for a %s URL: %w", strings.Join(asked, " or "), machine.ErrUnsupported)
+		}
+		// Not strict: the driver's default, which the caller takes.
 	}
 	if spec.From != nil {
 		req.From, req.FromPool = spec.From.Name, spec.From.Pool
@@ -419,4 +435,32 @@ func (m *remoteMachine) Done() <-chan struct{} {
 func (m *remoteMachine) Err() error {
 	<-m.Done()
 	return m.err
+}
+
+// asked is each scope whose request the server's driver acts on: a mode of
+// a URL it gives or withholds as asked. Any other is met already, or refused
+// by URLRequests.Check, and is not sent.
+func asked(urls machine.URLRequests, reach machine.URLCapabilities) []string {
+	var scopes []string
+	for _, c := range []struct {
+		name  string
+		req   machine.URLRequest
+		reach machine.URLReach
+	}{{"internal", urls.Internal, reach.Internal}, {"private", urls.Private, reach.Private}, {"public", urls.Public, reach.Public}} {
+		if c.req.Mode != machine.URLDefault && c.reach == machine.URLOptional {
+			scopes = append(scopes, c.name)
+		}
+	}
+	return scopes
+}
+
+// strict reports whether any of the scopes' requests is strict.
+func strict(urls machine.URLRequests, scopes []string) bool {
+	for _, scope := range scopes {
+		switch {
+		case scope == "internal" && urls.Internal.Strict, scope == "private" && urls.Private.Strict, scope == "public" && urls.Public.Strict:
+			return true
+		}
+	}
+	return false
 }
