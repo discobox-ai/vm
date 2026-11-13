@@ -89,6 +89,7 @@ RUN apt-get update \
         systemd-sysv \
         udev \
         util-linux \
+        zstd \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -113,7 +114,9 @@ RUN rm -rf /usr/lib/udev/hwdb.bin /usr/lib/udev/hwdb.d
 
 # The initrd mounts an ext4 root on a virtio disk (vz) or a Hyper-V one (hcs),
 # and carries the hook that moves the agent a boot appends. Names built into
-# the kernel on an architecture are ignored there.
+# the kernel on an architecture are ignored there. It is zstd, which both
+# kernels unpack: update-initramfs falls back to gzip, with only a warning,
+# when the root has no zstd, so the package list carries it and verify checks.
 COPY --chmod=0755 disco-vm-agent /etc/initramfs-tools/scripts/init-bottom/disco-vm-agent
 COPY --chmod=0755 disco-vm-agent-hook /etc/initramfs-tools/hooks/disco-vm-agent
 RUN set -eux; \

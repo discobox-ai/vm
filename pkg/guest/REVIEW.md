@@ -5,6 +5,11 @@
   tool puts it in with `copy_exec` from a build hook
   (`linux/disco-vm-agent-hook`), and `verify` checks the initrd holds it. The
   first boot of the base found this.
+- **The Linux base's initrd compression is what `verify` reads, not what
+  `initramfs.conf` says.** `update-initramfs` falls back to gzip, with only a
+  warning, when the compressor `COMPRESS` names is not in the root: the base
+  shipped gzip under `COMPRESS=zstd` until its root carried `zstd`. A change to the root's packages
+  or to `COMPRESS` is judged by `verify`'s check of the built initrd.
 - **Nothing runs from `/run` in the Linux base.** initramfs-tools mounts it
   noexec, and the root keeps that mount. The agent runs from `/run/disco-vm`,
   a tmpfs the init-bottom hook mounts for it; a second boot of the base found
