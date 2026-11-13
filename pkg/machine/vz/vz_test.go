@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -420,12 +421,14 @@ func randomName() string {
 	return strconv.FormatInt(time.Now().UnixNano()%1e9, 36)
 }
 
-// TestMoveAnOlderAgent is issue #83's proof: a committed macOS VM whose
-// agent speaks the protocol before this host's (an agent built with the
-// disco_vm_older_agent tag) is not installed again; a VM created from it
-// boots with its agent moved to this host's protocol, the binary its shim
-// runs.
-func TestMoveAnOlderAgent(t *testing.T) {
+// TestAnImageTakesTheAgentDisk is issue #83's proof: a committed macOS VM
+// installed before the agent stub, whose daemon runs an agent of the
+// protocol before this host's (one built with the disco_vm_older_agent tag)
+// at agentPath, is not installed again. A VM created from it is put on the
+// stub at its first boot, and runs the agent on the disk its boot attaches:
+// the binary its shim runs. Booted again, it is left as it is, and its copy
+// of the agent is not rewritten.
+func TestAnImageTakesTheAgentDisk(t *testing.T) {
 	name := os.Getenv(BaseEnv)
 	if name == "" {
 		t.Skipf("$%s names no committed macOS VM", BaseEnv)
@@ -478,25 +481,18 @@ func TestMoveAnOlderAgent(t *testing.T) {
 			t.Fatal("the guest did not power off")
 		}
 	}
-	inode := func(m machine.Machine) string {
+	sh := func(m machine.Machine, script string) string {
 		t.Helper()
 		var out bytes.Buffer
-		if code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"stat", "-f", "%i", agentPath}}, nil, &out, &out); err != nil || code != 0 {
-			t.Fatalf("stat the agent: exit %d, %v\n%s", code, err, out.String())
+		if code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"/bin/sh", "-c", script}}, nil, &out, &out); err != nil || code != 0 {
+			t.Fatalf("%s: exit %d, %v\n%s", script, code, err, out.String())
 		}
 		return strings.TrimSpace(out.String())
 	}
-	sum := func(m machine.Machine) string {
-		t.Helper()
-		var out bytes.Buffer
-		if code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"shasum", "-a", "256", agentPath}}, nil, &out, &out); err != nil || code != 0 {
-			t.Fatalf("shasum the agent: exit %d, %v\n%s", code, err, out.String())
-		}
-		return strings.Fields(out.String())[0]
-	}
 
-	// A VM of the base, given the older agent the way moveAgent gives the
-	// current one, then committed: a base installed by an older disco-vm.
+	// A VM of the base, made a guest installed before the stub: its daemon
+	// runs the older agent at agentPath, and it holds no copy. Then
+	// committed.
 	base, err := driver.Create(ctx, machine.InstanceSpec{Name: "older-agent-" + run, From: &from})
 	if err != nil {
 		t.Fatal(err)
@@ -509,7 +505,7 @@ func TestMoveAnOlderAgent(t *testing.T) {
 	}
 	var archive bytes.Buffer
 	tw := tar.NewWriter(&archive)
-	if err := tw.WriteHeader(&tar.Header{Name: "disco-vm.new", Mode: 0o755, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+	if err := tw.WriteHeader(&tar.Header{Name: "disco-vm.older", Mode: 0o755, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tw.Write(data); err != nil {
@@ -518,13 +514,12 @@ func TestMoveAnOlderAgent(t *testing.T) {
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CopyTo(ctx, filepath.Dir(agentPath), &archive); err != nil {
+	if err := m.CopyTo(ctx, agentDir, &archive); err != nil {
 		t.Fatal(err)
 	}
-	install := moveRequest()
-	install.Argv[len(install.Argv)-1] = strconv.Itoa(guest.Protocol - 1)
-	_, _ = machine.Run(ctx, m, install, nil, io.Discard, io.Discard)
-	deadline := time.Now().Add(agentMoveTimeout)
+	_, _ = machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"/bin/sh", "-c", "set -e; cd " + agentDir +
+		"; chown root:wheel disco-vm.older; mv -f disco-vm.older disco-vm; rm -f disco-vm-agent; launchctl kill SIGKILL system/" + daemonID}}, nil, io.Discard, io.Discard)
+	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		info, err := m.Info(ctx)
 		if err == nil && info.Protocol == guest.Protocol-1 {
@@ -535,25 +530,8 @@ func TestMoveAnOlderAgent(t *testing.T) {
 		}
 		time.Sleep(time.Second)
 	}
-	// A binary that is not an agent of this host's protocol is refused in
-	// the guest, and the older agent goes on serving.
-	if err := moveAgent(ctx, m, "/bin/echo", m.Done(), io.Discard); err == nil || !strings.Contains(err.Error(), "does not speak protocol") {
-		t.Fatalf("moving the agent to /bin/echo: %v", err)
-	}
-	// One that never exits is killed in the guest within its 10 s.
-	blocks := filepath.Join(t.TempDir(), "blocks")
-	if err := os.WriteFile(blocks, []byte("#!/bin/sh\nsleep 600\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := moveAgent(ctx, m, blocks, m.Done(), io.Discard); err == nil || !strings.Contains(err.Error(), "did not exit") {
-		t.Fatalf("moving the agent to a program that does not exit: %v", err)
-	}
-	var left bytes.Buffer
-	if _, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"/bin/sh", "-c", "ps -axo command | grep -E '[d]isco-vm.new|[s]leep 600'; ls /usr/local/libexec"}}, nil, &left, &left); err != nil || strings.Contains(left.String(), ".new") || strings.Contains(left.String(), "sleep 600") {
-		t.Fatalf("a refused move left behind: %v\n%s", err, left.String())
-	}
-	if info, err := m.Info(ctx); err != nil || info.Protocol != guest.Protocol-1 {
-		t.Fatalf("the older agent after a refused move: %+v, %v", info, err)
+	if got := sh(m, "ps -o comm= -p $PPID; ls "+agentDir); got != agentPath+"\ndisco-vm" {
+		t.Fatalf("the base before its commit: %q", got)
 	}
 	stop(m)
 	base, err = driver.Commit(ctx, base)
@@ -568,7 +546,7 @@ func TestMoveAnOlderAgent(t *testing.T) {
 	t.Cleanup(func() { _ = driver.Destroy(context.Background(), clone) })
 	booted := time.Now()
 	m = start(clone)
-	t.Logf("booted with its agent moved in %s", time.Since(booted).Round(time.Second))
+	t.Logf("booted onto the stub in %s", time.Since(booted).Round(time.Second))
 	info, err := m.Info(ctx)
 	if err != nil || info.Protocol != guest.Protocol {
 		t.Fatalf("the clone's agent once booted: %+v, %v; want protocol %d", info, err, guest.Protocol)
@@ -577,16 +555,25 @@ func TestMoveAnOlderAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sum(m); got != want {
-		t.Fatalf("the clone's agent is %s, and the shim's binary %s", got, want)
+	state := func() string {
+		t.Helper()
+		return sh(m, `ps -o comm= -p $PPID; head -n 2 `+agentPath+` | tail -n 1; shasum -a 256 `+agentCopy+` | cut -d" " -f1; mount | grep -c " on /Volumes/`+agentVolume+` (cd9660, .*read-only"; stat -f %i `+agentPath+` `+agentCopy)
 	}
-	moved := inode(m)
+	got := strings.Split(state(), "\n")
+	if len(got) != 6 || got[0] != agentCopy || got[1] != stubMark || got[2] != want || got[3] != "1" {
+		t.Fatalf("the clone once booted: %q; want its agent %s run from %s, the stub, and the disk mounted read-only", got, want, agentCopy)
+	}
+	if stub := sh(m, "cat "+agentPath); stub+"\n" != agentStub {
+		t.Fatalf("agentPath is not the stub:\n%s", stub)
+	}
 	stop(m)
-	// Booted again, the agent is current and is not moved again: the same
-	// file, which a move would have replaced with another.
+	// Booted again, it is left on the stub, and the copy, the disk's agent
+	// already, is not rewritten: the same files.
+	booted = time.Now()
 	m = start(clone)
-	if got := inode(m); got != moved {
-		t.Fatalf("booted again, the clone's agent was moved again (inode %s, was %s)", got, moved)
+	t.Logf("booted again in %s", time.Since(booted).Round(time.Second))
+	if again := strings.Split(state(), "\n"); !slices.Equal(again, got) {
+		t.Fatalf("booted again: %q; was %q", again, got)
 	}
 }
 

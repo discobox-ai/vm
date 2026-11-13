@@ -33,10 +33,11 @@ import (
 // Protocol is the version of this protocol, which the agent reports in its
 // info. It moves whenever a change to the protocol means a host and an agent
 // on either side of it cannot work together, so a driver that hands the
-// guest its agent at every boot (vz's Linux guests) refuses one that reports
-// another (CheckProtocol), and one whose agent is baked in (vz's macOS guests)
-// moves it forward, through an old agent's info, file put and exec, which
-// therefore stay compatible across every Protocol. It is not the build's version, which is the main
+// guest its agent at every boot (vz's Linux and macOS guests) refuses one
+// that reports another (CheckProtocol). A macOS guest installed before vz
+// handed it its agent is put on vz's agent stub through its old agent's file
+// put and exec, which therefore stay compatible across every Protocol. It is
+// not the build's version, which is the main
 // module's: an embedder's in a program that embeds the engine, and "dev" for
 // any two builds with no VCS data.
 const Protocol = 1

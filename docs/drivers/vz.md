@@ -101,6 +101,7 @@ directory:
    provisioning (the account, auto-login, Remote Login on). The driver finds
    the guest's address in the NAT's DHCP leases (`/var/db/dhcpd_leases`, by
    MAC), logs in with `x/crypto/ssh`, copies `spec.Agent` to
+   `/usr/local/libexec/disco-vm-agent`, writes the agent stub to
    `/usr/local/libexec/disco-vm`, and installs
    `/Library/LaunchDaemons/ai.discobox.vm.guest.plist` (root, RunAtLoad,
    KeepAlive, `disco-vm guest`, logging to `/var/log/disco-vm-guest.log`). It
@@ -108,25 +109,39 @@ directory:
    nothing. Then it waits for the agent on vsock 7300 and shuts down through
    it. That took 45 seconds.
 
-   That agent stays with the committed VM and every VM created from it, so
-   **a boot moves an out-of-date one forward** rather than installing macOS
-   again (issue #83, discobox ADR 26-11-11-963 §9). Once a macOS guest's
-   agent answers, Boot reads its protocol; one that is not this host's
-   `guest.Protocol` is replaced by the shim's own executable, the binary an
-   install bakes in. A shim that is not disco-vm (its Go build info names
-   another main package) is refused on the host, before anything reaches the
-   guest. The move uses only what every agent serves: a file put of
-   `disco-vm.new` beside it, and an exec that runs it first in a process
-   group of its own (`guest --protocol` must exit within 10 s and print this
-   host's protocol; otherwise the group is killed, the file removed, nothing
-   touched, and the boot fails naming what it printed), keeps the old agent as
-   `disco-vm.old` (the way back, by hand), moves the new one into place, and
-   kills the daemon (`launchctl kill SIGKILL`), so launchd's KeepAlive starts
-   the new one. Boot returns once the agent has gone and answers again with this
-   host's protocol, or fails within two minutes. launchd refused the first
-   start of the replaced binary each time (`OS_REASON_CODESIGNING`, a launch
-   constraint) and started it again 10 s later, so a boot that moves the
-   agent took 45 to 57 s against 30 s (2026-11-12, macOS 27.0 guest).
+   **Every boot hands the guest its agent on a disk** (issue #83, discobox
+   ADR 26-11-11-963 §9), the macOS twin of the agent a Linux guest's boot
+   initrd carries: a Mac's boot loader is the platform's own, so there is no
+   initrd to append to. The shim writes `agent.iso` into the instance's
+   bundle, an ISO 9660 image named `DISCO_VM_AGENT` holding its own
+   executable (`hdiutil makehybrid`, about a second), and attaches it as a
+   read-only virtio disk after the guest's own. A commit drops it, as it does
+   everything but the layer's files. diskarbitrationd mounts it at
+   `/Volumes/DISCO_VM_AGENT` before launchd starts the daemon, or within a
+   second or two, with no one logged in: a virtio disk is internal. The
+   daemon's program is the stub, a short `sh` script: it waits up to 10 s for
+   a read-only `cd9660` mount at that path, copies the agent to
+   `disco-vm-agent` unless the copy is already the same (`cmp`), and `exec`s
+   it; with no disk it runs the copy it made last. launchd's own program never
+   changes, so a new agent meets no launch constraint (a replaced program was
+   refused its first start, `OS_REASON_CODESIGNING`, and started again 10 s
+   later). A shim that is not disco-vm (its Go build info names another main
+   package) has no agent to hand: its boot attaches no disk, the guest runs
+   the agent it last had, and one of another protocol is refused, naming why.
+
+   A guest installed before the stub runs the agent it was installed with at
+   `disco-vm`, which a committed VM and every VM created from it keep. Once
+   its agent answers, Boot asks it which program it runs (`ps` of the exec's
+   parent) and what `disco-vm` holds; one not on this stub is put on it with
+   only what every agent serves: a file put of `disco-vm.stub` beside it, and
+   an exec that keeps a Mach-O agent there as `disco-vm-agent` (the stub's
+   copy until a disk hands it another), moves the stub into place, and kills
+   the daemon (`launchctl kill SIGKILL`). launchd's KeepAlive starts the stub,
+   which runs the disk's agent. Boot returns once the agent answers from
+   `disco-vm-agent`, or fails within two minutes, and then checks its
+   protocol as every boot does (`guest.CheckProtocol`). A later change to the
+   stub changes its mark (`# disco-vm agent stub N`, its second line), and a
+   boot puts the guest on the new one the same way.
 4. **The account moves off uid 501.** Provisioning always makes the first
    account 501, which is also the first account on the host, so the bootstrap
    moves it to `uid` (default 600) and chowns its files. That freed 501 for

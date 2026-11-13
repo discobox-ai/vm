@@ -18,19 +18,12 @@ import (
 // and started at boot: a SYSTEM service on Windows, a launchd daemon on macOS.
 func guestCommand() *cobra.Command {
 	var listen, addrFile, root string
-	var fake, protocol bool
+	var fake bool
 	cmd := &cobra.Command{
 		Use:   "guest",
 		Short: "Run the guest agent (inside a VM)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if protocol {
-				// What a host moving this agent into a guest runs first, to
-				// see the binary it uploaded is an agent that speaks its
-				// protocol (vz's moveAgent).
-				_, err := fmt.Fprintln(cmd.OutOrStdout(), guest.ServedProtocol())
-				return err
-			}
 			listener, err := guest.Listen(listen)
 			if err != nil {
 				return err
@@ -81,8 +74,7 @@ func guestCommand() *cobra.Command {
 	cmd.Flags().StringVar(&addrFile, "addr-file", "", "write the bound address here once listening")
 	cmd.Flags().StringVar(&root, "root", "", "confine file paths and processes to this directory (fake driver)")
 	cmd.Flags().BoolVar(&fake, "fake", false, "shutdown exits the agent instead of powering off (fake driver)")
-	cmd.Flags().BoolVar(&protocol, "protocol", false, "print the agent protocol this binary speaks and exit")
-	for _, name := range []string{"addr-file", "root", "fake", "protocol"} {
+	for _, name := range []string{"addr-file", "root", "fake"} {
 		_ = cmd.Flags().MarkHidden(name)
 	}
 	return cmd

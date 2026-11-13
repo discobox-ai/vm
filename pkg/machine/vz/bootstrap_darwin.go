@@ -45,8 +45,10 @@ var daemonPlist = `<?xml version="1.0" encoding="UTF-8"?>
 `
 
 // installScript runs as root in the guest with the uploaded agent ($1), the
-// provisioned account ($2), and the uid to move that account to ($3). System
-// sleep is turned off because a sleeping guest's agent answers nothing.
+// provisioned account ($2), and the uid to move that account to ($3). The
+// daemon runs the agent stub, and the uploaded agent is the stub's first
+// copy, which a boot's agent disk replaces (issue #83). System sleep is
+// turned off because a sleeping guest's agent answers nothing.
 //
 // Provisioning always makes the first account uid 501, which is also the first
 // account on the host. It is moved off 501, which warm stages gave to the
@@ -63,8 +65,13 @@ if [ "$old" != "$3" ]; then
 	find -x / -uid "$old" -print0 2>/dev/null | xargs -0 chown -h "$3" 2>/dev/null || true
 fi
 install -d -o root -g wheel -m 755 /usr/local/libexec
-install -o root -g wheel -m 755 "$1" ` + agentPath + `
+install -o root -g wheel -m 755 "$1" ` + agentCopy + `
 rm -f "$1"
+cat > ` + agentPath + `.stub <<'STUB'
+` + agentStub + `STUB
+chown root:wheel ` + agentPath + `.stub
+chmod 755 ` + agentPath + `.stub
+mv -f ` + agentPath + `.stub ` + agentPath + `
 cat > /Library/LaunchDaemons/` + daemonID + `.plist <<'PLIST'
 ` + daemonPlist + `PLIST
 chown root:wheel /Library/LaunchDaemons/` + daemonID + `.plist
@@ -91,6 +98,11 @@ func bootstrap(ctx context.Context, b bundle, m meta, agent string, opts options
 	}
 	address, err := b.macAddress()
 	if err != nil {
+		return err
+	}
+	// The install's boots have the agent's disk every boot has, so the
+	// guest's hardware never changes, and the stub finds it at once.
+	if err := writeAgentISO(ctx, b.path(agentISOName), agent); err != nil {
 		return err
 	}
 	for boot := 1; ; boot++ {

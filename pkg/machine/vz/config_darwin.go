@@ -78,8 +78,9 @@ func (b bundle) macAddress() (*vz.MACAddress, error) {
 
 // configuration is a macOS bundle's machine. It is the same set of devices
 // at install and at every boot, so the guest never sees its hardware change;
-// only shares are optional, and the network device, which an instance fenced
-// to nothing has none of.
+// only shares are optional, the network device, which an instance fenced to
+// nothing has none of, and the agent's disk, which a boot whose shim is not
+// disco-vm has none of.
 func (b bundle) configuration(cpus uint, memory uint64, shares []machine.Share, nic bool) (*vz.VirtualMachineConfiguration, error) {
 	platform, err := b.platform()
 	if err != nil {
@@ -92,12 +93,17 @@ func (b bundle) configuration(cpus uint, memory uint64, shares []machine.Share, 
 	if !nic {
 		address = nil
 	}
-	return configure(platform, cpus, memory, b.path(diskName), address, shares)
+	agentISO := b.path(agentISOName)
+	if _, err := os.Stat(agentISO); err != nil {
+		agentISO = ""
+	}
+	return configure(platform, cpus, memory, b.path(diskName), agentISO, address, shares)
 }
 
 // configure is a macOS guest's machine, with a NAT network device at address,
-// or none when address is nil.
-func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk string, address *vz.MACAddress, shares []machine.Share) (*vz.VirtualMachineConfiguration, error) {
+// or none when address is nil, and the agent's disk read-only after its own
+// when agentISO names one.
+func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk, agentISO string, address *vz.MACAddress, shares []machine.Share) (*vz.VirtualMachineConfiguration, error) {
 	// No kernel, no initrd: a Mac's boot loader is the platform's own, and
 	// everything it needs is in the auxiliary storage.
 	loader, err := vz.NewMacOSBootLoader()
@@ -118,7 +124,19 @@ func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk
 	if err != nil {
 		return nil, fmt.Errorf("vz: disk device: %w", err)
 	}
-	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{block})
+	devices := []vz.StorageDeviceConfiguration{block}
+	if agentISO != "" {
+		attachment, err := vz.NewDiskImageStorageDeviceAttachment(agentISO, true)
+		if err != nil {
+			return nil, fmt.Errorf("vz: attach the agent's disk %s: %w", agentISO, err)
+		}
+		agentDisk, err := vz.NewVirtioBlockDeviceConfiguration(attachment)
+		if err != nil {
+			return nil, fmt.Errorf("vz: the agent's disk device: %w", err)
+		}
+		devices = append(devices, agentDisk)
+	}
+	config.SetStorageDevicesVirtualMachineConfiguration(devices)
 
 	if address != nil {
 		network, err := natDevice(address)

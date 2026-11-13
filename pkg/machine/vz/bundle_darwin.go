@@ -27,6 +27,9 @@ const (
 	// bootInitrdName is the initrd a boot hands a Linux guest's kernel: the
 	// image's, with the agent appended.
 	bootInitrdName = "boot-initrd.img"
+	// agentISOName is the disk a boot hands a macOS guest's agent stub: the
+	// booting disco-vm, on a read-only ISO 9660 image (writeAgentISO).
+	agentISOName = "agent.iso"
 	// consoleName is a Linux guest's serial console, appended across boots:
 	// the one record a guest that never answered leaves.
 	consoleName = "console.log"

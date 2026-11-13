@@ -73,20 +73,32 @@ func (h *Hypervisor) Prepare(ctx context.Context, inst local.InstanceSpec) error
 // no disk to boot.
 const pendingName = "resume.pending"
 
-// Boot starts a prepared instance from power-off and waits for its agent. A
-// Linux guest's agent is the one this boot handed it, and one that speaks
-// another protocol is killed and refused. A macOS guest's agent is the one it
-// was installed with, and one that speaks another protocol is moved to this
-// host's (moveAgent).
+// Boot starts a prepared instance from power-off and waits for its agent,
+// the one this boot handed the guest: a Linux guest's in its boot initrd, a
+// macOS guest's on the agent's disk, which its stub runs (issue #83). A
+// macOS guest installed before the stub is put on it first (adoptStub). An
+// agent that speaks another protocol is killed and refused.
 func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
 	m, err := bundle(inst.Dir).readMeta()
 	if err != nil {
 		return nil, err
 	}
+	console := opts.Console
+	if console == nil {
+		console = io.Discard
+	}
 	var vm *vmMachine
+	var noDisk error
 	if m.guestOS() == machine.Linux {
 		vm, err = bootLinux(inst, m, opts, h.agent)
 	} else {
+		noDisk, err = agentDisk(ctx, bundle(inst.Dir))
+		if err != nil {
+			return nil, err
+		}
+		if noDisk != nil {
+			fmt.Fprintf(console, "%v; the guest runs the agent it last had\n", noDisk)
+		}
 		vm, err = bootInstance(inst, opts)
 	}
 	if err != nil {
@@ -96,16 +108,40 @@ func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 		_ = vm.Kill(context.Background())
 		return nil, err
 	}
-	if m.guestOS() == machine.Linux {
-		err = guest.CheckProtocol(ctx, vm)
-	} else {
-		err = h.moveAgent(ctx, vm, opts.Console)
+	if m.guestOS() == machine.Darwin {
+		if err := adoptStub(ctx, vm, vm.done, console); err != nil {
+			_ = vm.Kill(context.Background())
+			return nil, err
+		}
 	}
-	if err != nil {
+	if err := guest.CheckProtocol(ctx, vm); err != nil {
 		_ = vm.Kill(context.Background())
+		if noDisk != nil {
+			return nil, fmt.Errorf("%w; it was handed no agent: %w", err, noDisk)
+		}
 		return nil, err
 	}
 	return vm, nil
+}
+
+// agentDisk writes the agent's disk for a macOS guest's boot from this
+// process's executable: the shim, which is disco-vm built for darwin, the
+// binary an install bakes in. A shim that is not disco-vm has no agent to
+// hand the guest, so its boot attaches no disk (a stale one is removed), and
+// noDisk says why.
+func agentDisk(ctx context.Context, b bundle) (noDisk, err error) {
+	iso := b.path(agentISOName)
+	exe, err := os.Executable()
+	if err == nil {
+		err = checkAgentBinary(exe)
+	}
+	if err != nil {
+		if rmErr := os.Remove(iso); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("vz: remove the agent's disk: %w", rmErr)
+		}
+		return err, nil
+	}
+	return nil, writeAgentISO(ctx, iso, exe)
 }
 
 // fenced reports that the instance was created fenced to nothing beyond its
@@ -371,25 +407,4 @@ func (m *vmMachine) Done() <-chan struct{} { return m.done }
 func (m *vmMachine) Err() error {
 	<-m.done
 	return m.err
-}
-
-// moveAgent brings a booted macOS guest's agent to this host's protocol,
-// replacing it with this process's own executable: a VM is booted by its
-// shim, which is disco-vm built for darwin, the binary an install bakes in.
-func (*Hypervisor) moveAgent(ctx context.Context, vm *vmMachine, console io.Writer) error {
-	if console == nil {
-		console = io.Discard
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("vz: the agent to move a macOS guest's to: %w", err)
-	}
-	info, err := vm.Info(ctx)
-	if err != nil || info.Protocol == guest.Protocol {
-		return moveAgent(ctx, vm, exe, vm.done, console)
-	}
-	if err := checkAgentBinary(exe); err != nil {
-		return fmt.Errorf("vz: the guest's agent (disco-vm %s) speaks protocol %d, and this host speaks %d, so it has to move: %w", info.Version, info.Protocol, guest.Protocol, err)
-	}
-	return moveAgent(ctx, vm, exe, vm.done, console)
 }
