@@ -1,9 +1,15 @@
 # Managed by repostd (go tool repocheck sync).
 #
-# The whole GitHub Actions layer: install Nix, restore the Go caches, run one
-# Taskfile target in the flake's devShell. What a target does lives in
+# The whole GitHub Actions layer: install Nix, choose Go's build cache, run
+# one Taskfile target in the flake's devShell. What a target does lives in
 # Taskfile.yml and runs the same way in a terminal. Jobs run actions/checkout
 # first, because a local action resolves only once the repo is on disk.
+#
+# Nothing is cached with actions/cache (repostd ci.no-actions-cache). Go's
+# build and test cache is Depot Cache, fetched per object through the
+# runner's GOCACHEPROG; modules come from the module proxy each run. An
+# actions/cache of ~/.cache/go-build was a tarball restored and saved whole,
+# 6-11 minutes a job, and jobs ran 3-7x faster without it.
 name: Task
 description: Run one Taskfile target in the repository's Nix devShell.
 
@@ -21,19 +27,53 @@ runs:
         extra_nix_config: |
           experimental-features = nix-command flakes
 
-    # Depot runners back the Actions cache API with Depot Cache, so plain
-    # actions/cache is already the fast path.
-    - name: Restore the Go caches
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/Library/Caches/go-build
-          ~/go/pkg/mod
-        key: go-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('go.work.sum', '**/go.sum') }}
-        restore-keys: |
-          go-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-
-          go-${{ runner.os }}-${{ runner.arch }}-
+    # Depot's Linux and macOS runners start every job with GOCACHEPROG set to
+    # Depot Cache (`depot gocache`) and GOLANGCI_LINT_CACHEPROG beside it.
+    # Nix keeps the environment, so the devShell's go sees them. This step
+    # shows them in the log and warns on a runner without them, where every
+    # build starts cold.
+    #
+    # Only a pull request or a push to a branch shares the cache. Go trusts
+    # whatever the cache returns for a key, and a pull request's code runs
+    # with its credentials and can write it, so every other run (a tag that
+    # releases, a release dispatched by hand off a branch, a schedule, any
+    # trigger added later) turns it off for the rest of the job and builds
+    # from cold local caches. GITHUB_ENV reaches only later steps, so a job
+    # runs nothing before this action (repostd ci.shared-cache).
+    - name: Choose the Go build cache
+      shell: bash
+      env:
+        SHARED: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')) }}
+      run: |
+        go='nix develop -c go'
+        if [ "$SHARED" != true ]; then
+          echo "GOCACHEPROG=" >> "$GITHUB_ENV"
+          echo "GOLANGCI_LINT_CACHEPROG=" >> "$GITHUB_ENV"
+          # Go reads an empty variable as unset and falls back to its go.env
+          # settings, so check what Go itself now sees: the last line, past
+          # any devShell output. A failing nix or go fails the assignment,
+          # since Actions runs bash -eo pipefail.
+          seen=$(GOCACHEPROG='' $go env GOCACHEPROG | tail -n 1)
+          if [ -n "$seen" ]; then
+            echo "::error title=Shared Go cache::GOCACHEPROG is still set from Go's settings file; this run must not read a cache pull requests write."
+            exit 1
+          fi
+          echo "A $GITHUB_EVENT_NAME run of $GITHUB_REF: Depot Cache is off, Go and golangci-lint build from cold local caches."
+          exit 0
+        fi
+        prog=$($go env GOCACHEPROG | tail -n 1)
+        if [ -z "$prog" ]; then
+          echo "::warning title=No Depot Cache::GOCACHEPROG is unset on this runner, so Go builds from a cold cache. Is Depot Cache's automatic connection on for Actions jobs?"
+          exit 0
+        fi
+        # First words only: the rest is the runner's, and could carry a credential.
+        echo "Go's build cache is GOCACHEPROG, running ${prog%% *}."
+        lint=${GOLANGCI_LINT_CACHEPROG:-}
+        if [ -n "$lint" ]; then
+          echo "golangci-lint's cache is GOLANGCI_LINT_CACHEPROG, running ${lint%% *}."
+        else
+          echo "golangci-lint's cache is local to this job."
+        fi
 
     - name: go tool task ${{ inputs.target }}
       shell: bash

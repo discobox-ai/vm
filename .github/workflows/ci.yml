@@ -110,7 +110,9 @@ jobs:
           target: test
 
   # Nix does not run on Windows: this job gets Go from setup-go and nothing
-  # else (repostd ci.no-setup).
+  # else (repostd ci.no-setup). It builds cold: setup-go's cache is
+  # actions/cache, and Depot Cache fails on Windows (repostd
+  # ci.no-actions-cache).
   windows:
     runs-on: depot-windows-2025-4
     timeout-minutes: 30
@@ -121,4 +123,5 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: false
       - run: go tool task test
