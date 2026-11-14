@@ -50,17 +50,26 @@ jobs:
           target: test
 
   # The Linux guest image (pkg/guest/linux) assembles and verifies itself
-  # inside its build; amd64 is this runner's own, so no emulation.
+  # inside its build, made here as a linux/v* tag's release makes it
+  # (linux-guest.yml), without the push: both architectures on Depot, each
+  # natively. The depot CLI signs in with the job's OIDC token, or, for a
+  # pull request from a fork, Depot's exchange for public repositories.
   linux-guest:
     runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: depot/setup-action@91bc8495a33ebfc504ffc89e5674379ccf23c29c # v1.7.2
+        with:
+          version: 2.103.5
       - uses: ./.github/actions/task
         with:
-          target: build:linux-guest
+          target: build:linux-guest:depot
 
   # The agent, as a push to main publishes it (agent.yml), pushed to a
   # registry on the runner and pulled back by its digest.
