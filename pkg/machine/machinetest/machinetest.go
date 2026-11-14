@@ -17,8 +17,10 @@
 // and every other subtest starts from a fresh VM, so needs no commit; VMs
 // run side by side; Kill always works; a VM fenced at create keeps its fence
 // across a boot, or the driver refuses the fence; a started machine is
-// attached to from another call, its service has a URL, and a private URL
-// where it has one, and it is found stopped once its guest powers off; a
+// attached to from another call, its service has an ingress URL this process
+// connects to where the driver gives one, and a pool URL that is an HTTP URL
+// or the ingress one where it has one, and it is found stopped once its
+// guest powers off; a
 // guest's agent port is dialed through an attached machine and no port but
 // the agent's and the service's is, and a guest reaches a peer's agent port
 // through a forward and no other of its ports, or the driver refuses both; a
@@ -66,6 +68,10 @@ type Config struct {
 	Timeout time.Duration
 	// ScratchDir is a guest directory the suite may write into.
 	ScratchDir string
+	// UnreachedIngress says an instance's ingress URL names a host this
+	// process does not reach, as a stand-in of the provider's API gives:
+	// the suite checks the URL, and does not connect to it.
+	UnreachedIngress bool
 	// GuestAgent is where the disco-vm agent is in the guest, which the
 	// suite runs as `dial-host` to reach a peer through a forward. Empty
 	// skips that subtest.
@@ -803,9 +809,10 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	// A started machine outlives the call that started it: another call
-	// attaches to it, its service has a URL, and a private URL that is one
-	// where it has any, and a guest that powers itself off while nothing
-	// watches is found stopped.
+	// attaches to it, its service has an ingress URL this process connects
+	// to where the driver gives one, and a pool URL that is an HTTP URL or
+	// the ingress one where it has any (ADR 26-11-14-610), and a guest that
+	// powers itself off while nothing watches is found stopped.
 	t.Run("start-attach-and-stop", func(t *testing.T) {
 		inst := create(t, start)
 		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
@@ -823,12 +830,10 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("info through an attached machine: %+v, %v", info, err)
 		}
 		service, err := driver.Service(ctx, inst)
-		if err != nil || service.Listen == "" || service.URL == "" {
+		if err != nil || service.Listen == "" {
 			t.Fatalf("service of a running instance: %+v, %v", service, err)
 		}
-		if p := service.PrivateURL; p != "" && !strings.HasPrefix(p, "http://") && !strings.HasPrefix(p, "https://") {
-			t.Fatalf("the private URL of a running instance is %q, not an HTTP URL", p)
-		}
+		checkServiceURLs(ctx, t, caps.URLs, service, !cfg.UnreachedIngress)
 		if err := m.Shutdown(ctx, false); err != nil {
 			t.Fatalf("shutdown request: %v", err)
 		}
@@ -846,40 +851,37 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	// A strict URL request is met or refused: a URL the driver never gives
-	// asked on, or always gives asked off, is refused, and a public URL it
-	// gives when asked, asked off, is not there.
+	// asked on, or always gives asked off, is refused, and an ingress URL
+	// it gives when asked, asked off, is not there.
 	t.Run("url-requests", func(t *testing.T) {
-		scopes := []struct {
-			name  string
-			reach machine.URLReach
-			set   func(*machine.URLRequests, machine.URLRequest)
-		}{
-			{"internal", caps.URLs.Internal, func(r *machine.URLRequests, q machine.URLRequest) { r.Internal = q }},
-			{"private", caps.URLs.Private, func(r *machine.URLRequests, q machine.URLRequest) { r.Private = q }},
-			{"public", caps.URLs.Public, func(r *machine.URLRequests, q machine.URLRequest) { r.Public = q }},
-		}
-		for _, scope := range scopes {
+		for _, scope := range machine.URLScopes {
+			reach := caps.URLs.Of(scope)
 			for _, mode := range []machine.URLMode{machine.URLOn, machine.URLOff} {
-				if (mode == machine.URLOn && scope.reach != machine.URLNever) || (mode == machine.URLOff && scope.reach != machine.URLAlways) {
+				if (mode == machine.URLOn && reach != machine.URLNever) || (mode == machine.URLOff && reach != machine.URLAlways) {
 					continue
 				}
 				spec := start
 				spec.Name, spec.CPUs, spec.Memory = newName(), cfg.CPUs, cfg.Memory
-				scope.set(&spec.URLs, machine.URLRequest{Mode: mode, Strict: true})
+				req := machine.URLRequest{Mode: mode, Strict: true}
+				if scope == machine.URLPool {
+					spec.URLs.Pool = req
+				} else {
+					spec.URLs.Ingress = req
+				}
 				inst, err := driver.Create(ctx, spec)
 				if err == nil {
 					_ = driver.Destroy(context.Background(), inst)
 				}
 				if !errors.Is(err, machine.ErrUnsupported) {
-					t.Fatalf("a strict %s URL %s on a driver whose reach is %q: %v, want ErrUnsupported", scope.name, mode, scope.reach, err)
+					t.Fatalf("a strict %s URL %s on a driver whose reach is %q: %v, want ErrUnsupported", scope, mode, reach, err)
 				}
 			}
 		}
-		if caps.URLs.Public != machine.URLOptional {
+		if caps.URLs.Ingress != machine.URLOptional {
 			return
 		}
 		spec := start
-		spec.URLs.Public = machine.URLRequest{Mode: machine.URLOff, Strict: true}
+		spec.URLs.Ingress = machine.URLRequest{Mode: machine.URLOff, Strict: true}
 		inst := create(t, spec)
 		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
@@ -892,8 +894,13 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err != nil {
 			t.Fatalf("service of a running instance: %v", err)
 		}
-		if service.Listen == "" || service.URL != "" {
-			t.Fatalf("an instance whose public URL is asked off has service %+v, with a URL", service)
+		if service.Listen == "" || service.IngressURL != "" {
+			t.Fatalf("an instance whose ingress URL is asked off has service %+v, with an ingress URL", service)
+		}
+		// A driver with networks gives a peer on none no URL but the
+		// ingress one (boxd); any other always giving a pool URL keeps it.
+		if caps.URLs.Pool == machine.URLAlways && !caps.Isolation && service.PoolURL == "" {
+			t.Fatalf("an instance whose ingress URL is asked off has service %+v, with no pool URL, which the driver always gives", service)
 		}
 	})
 
@@ -1429,4 +1436,34 @@ func checkExec(t *testing.T, g machine.Guest, guestOS machine.OS, dir string) {
 	if code != 3 || !slices.Equal(lines, []string{"hello", "committed", "piped"}) || strings.TrimSpace(stderr.String()) != "oops" {
 		t.Fatalf("exec: exit %d, stdout %q, stderr %q; want exit 3, hello, committed, and piped, and oops", code, stdout.String(), stderr.String())
 	}
+}
+
+// checkServiceURLs checks a running instance's service URLs against the
+// driver's reach (ADR 26-11-14-610): an ingress URL wherever the driver
+// gives one by default, which this process connects to; a pool URL wherever
+// it always gives one, an HTTP URL or the ingress URL; and none in a scope
+// it never gives. Where connect says so, this process connects to it.
+func checkServiceURLs(ctx context.Context, t *testing.T, reach machine.URLCapabilities, service machine.Service, connect bool) {
+	t.Helper()
+	switch {
+	case reach.Ingress == machine.URLNever && service.IngressURL != "":
+		t.Fatalf("the driver gives no ingress URL, and a running instance has %q", service.IngressURL)
+	case reach.Ingress != machine.URLNever && service.IngressURL == "":
+		t.Fatalf("a running instance asked for the driver's default has no ingress URL: %+v", service)
+	case reach.Pool == machine.URLNever && service.PoolURL != "":
+		t.Fatalf("the driver gives no pool URL, and a running instance has %q", service.PoolURL)
+	}
+	if p := service.PoolURL; p != "" && p != service.IngressURL && !strings.HasPrefix(p, "http://") && !strings.HasPrefix(p, "https://") {
+		t.Fatalf("the pool URL of a running instance is %q, neither an HTTP URL nor its ingress URL", p)
+	}
+	if service.IngressURL == "" || !connect {
+		return
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	conn, err := machine.DialURL(dialCtx, service.IngressURL)
+	if err != nil {
+		t.Fatalf("connect to the ingress URL %s of a running instance: %v", service.IngressURL, err)
+	}
+	_ = conn.Close()
 }

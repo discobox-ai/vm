@@ -73,6 +73,11 @@ type Hypervisor struct {
 	// MaxRunning is the Capabilities.MaxRunning it reports: none by default,
 	// a test option so that the local driver's admission runs on every OS.
 	MaxRunning map[machine.OS]int
+	// NoLoopback makes a hypervisor whose SharesLoopback is false, so the
+	// shim serves an instance's service on an owner-only local socket, as
+	// it does for vz, libkrun, and hcs (ADR 26-11-14-610): a test option, so
+	// that path runs on every OS.
+	NoLoopback bool
 }
 
 var _ local.Hypervisor = (*Hypervisor)(nil)
@@ -92,7 +97,7 @@ func New(base string, cfg Config) (*Hypervisor, error) {
 	if base == "" {
 		base = DefaultBase
 	}
-	hv := &Hypervisor{Agent: agent, BaseName: base, NoCommit: cfg.NoCommit}
+	hv := &Hypervisor{Agent: agent, BaseName: base, NoCommit: cfg.NoCommit, NoLoopback: cfg.NoLoopback}
 	if cfg.MaxRunning != nil {
 		hv.MaxRunning = map[machine.OS]int{machine.OS(runtime.GOOS): *cfg.MaxRunning}
 	}
@@ -112,9 +117,7 @@ func (d *Hypervisor) Capabilities() machine.Capabilities {
 		Keys:        machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopePool},
 		Volumes:     []machine.Volume{machine.VolumeData, machine.VolumeCache},
 		MaxRunning:  d.MaxRunning,
-		// Its guests share the host's loopback, so the URL, never public,
-		// is the private one too.
-		URLs: machine.URLCapabilities{Private: machine.URLAlways},
+		// URLs are local's, from SharesLoopback.
 	}
 	if d.NoCommit {
 		caps.Install, caps.Commit = nil, false
@@ -128,9 +131,9 @@ func (*Hypervisor) Chains() bool { return false }
 // Base is the host's OS, where the hypervisor has a base.
 func (d *Hypervisor) Base() (machine.OS, bool) { return machine.OS(runtime.GOOS), d.BaseName != "" }
 
-// SharesLoopback is true: a fake guest is a process on the host's loopback,
-// and so are its peers.
-func (*Hypervisor) SharesLoopback() bool { return true }
+// SharesLoopback is true, unless NoLoopback: a fake guest is a process on
+// the host's loopback, and so are its peers.
+func (d *Hypervisor) SharesLoopback() bool { return !d.NoLoopback }
 
 func (*Hypervisor) Check(context.Context) error { return nil }
 

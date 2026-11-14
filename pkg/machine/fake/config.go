@@ -19,6 +19,9 @@ const NoCommitEnv = "DISCO_VM_FAKE_NO_COMMIT"
 // MaxRunningEnv is where the command line reads Config.MaxRunning from.
 const MaxRunningEnv = "DISCO_VM_FAKE_MAX_RUNNING"
 
+// NoLoopbackEnv is where the command line reads Config.NoLoopback from.
+const NoLoopbackEnv = "DISCO_VM_FAKE_NO_LOOPBACK"
+
 // Config is the fake driver's configuration (machine.Config.DriverConfig,
 // ADR 26-11-11-215).
 type Config struct {
@@ -32,6 +35,9 @@ type Config struct {
 	// (Capabilities.MaxRunning), as Hypervisor.MaxRunning does. Absent is
 	// no cap.
 	MaxRunning *int `json:"maxRunning,omitempty"`
+	// NoLoopback makes a driver whose guests do not share the host's
+	// loopback, as Hypervisor.NoLoopback does.
+	NoLoopback bool `json:"noLoopback,omitempty"`
 }
 
 // Definition describes the fake driver and its configuration.
@@ -47,6 +53,8 @@ func Definition() machine.Definition {
 				Description: "Make a driver that does not commit, so every VM is fresh: a test of the refusals of such a driver."},
 			{Key: "maxRunning", Label: "Max Running", Type: machine.ConfigNumber, Env: MaxRunningEnv, Advanced: true,
 				Description: "Cap how many guests run at once in the root, as vz caps macOS guests; absent is no cap."},
+			{Key: "noLoopback", Label: "No Loopback", Type: machine.ConfigBoolean, Env: NoLoopbackEnv, Default: "false", Advanced: true,
+				Description: "Serve each VM's service on a socket only its owner opens, as vz, libkrun, and hcs do, not a loopback port: a test of that path."},
 		},
 		// The key is checked in the process, against the root's records,
 		// and sent nowhere.

@@ -75,8 +75,24 @@ func (d *Driver) Dir() string { return d.dir }
 // may not exist yet.
 func (d *Driver) CacheDir() string { return d.cacheDir() }
 
-func (d *Driver) Name() string                       { return d.hv.Name() }
-func (d *Driver) Capabilities() machine.Capabilities { return d.hv.Capabilities() }
+func (d *Driver) Name() string { return d.hv.Name() }
+func (d *Driver) Capabilities() machine.Capabilities {
+	caps := d.hv.Capabilities()
+	caps.URLs = urlCapabilities(d.hv)
+	return caps
+}
+
+// urlCapabilities is the URLs the shim serves (ADR 26-11-14-610 §2): a
+// loopback port where the hypervisor's guests share the host's loopback
+// (fake), both scopes' URL always; otherwise (vz, libkrun, hcs) an
+// owner-only local socket spliced into the guest's vsock, the pool's URL
+// always and the caller's ingress unless asked off.
+func urlCapabilities(hv Hypervisor) machine.URLCapabilities {
+	if hv.SharesLoopback() {
+		return machine.URLCapabilities{Ingress: machine.URLAlways, Pool: machine.URLAlways}
+	}
+	return machine.URLCapabilities{Ingress: machine.URLOptional, Pool: machine.URLAlways}
+}
 
 // Check is the hypervisor's, and the driver's key.
 func (d *Driver) Check(ctx context.Context) error {
@@ -123,6 +139,10 @@ type instanceRecord struct {
 	// which a chain is walked: the driver's own, since a name is reused
 	// once its VM is removed.
 	FromID string `json:"fromID,omitempty"`
+	// NoIngress is a VM whose ingress URL was asked off, on a hypervisor
+	// that withholds it (urlCapabilities): its shim still serves the
+	// service, at the pool's URL, and Service gives no ingress URL.
+	NoIngress bool `json:"noIngress,omitempty"`
 	// Upgrading is the root an unfinished upgrade gives the VM, written
 	// before the upgrade touches a disk and dropped once it is done. While
 	// it is set the VM does not boot or commit (Upgrade).
@@ -347,7 +367,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if spec.Isolated || len(spec.Networks) > 0 {
 		return machine.Instance{}, fmt.Errorf("%s: isolation: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
-	if err := spec.URLs.Check(d.hv.Capabilities().URLs); err != nil {
+	if err := spec.URLs.Check(d.Capabilities().URLs); err != nil {
 		return machine.Instance{}, fmt.Errorf("%s: %w", d.hv.Name(), err)
 	}
 	if spec.From != nil && !d.hv.Capabilities().Commit {
@@ -362,6 +382,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	rec := instanceRecord{
 		Pool: d.pool, ID: fsutil.RandomHex(6), Name: spec.Name, CPUs: spec.CPUs, Memory: spec.Memory,
 		Created: time.Now().UTC(), Forwards: spec.Forwards, Egress: spec.Egress,
+		NoIngress: spec.URLs.Ingress.Mode == machine.URLOff && d.Capabilities().URLs.Ingress == machine.URLOptional,
 	}
 	if spec.From == nil {
 		guestOS, ok := d.hv.Base()
@@ -780,9 +801,10 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 	return rec.Instance, nil
 }
 
-// Service is the hypervisor's address in the guest, and the loopback URL the
-// instance's shim serves while it runs, which is its PrivateURL too where
-// the guests share the host's loopback.
+// Service is the hypervisor's address in the guest, and the URL the
+// instance's shim serves it at while it runs (listenService): both scopes'
+// where the guests share the host's loopback, and otherwise the pool's, and
+// the ingress's unless it was asked off (urlCapabilities).
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return machine.Service{}, err
@@ -801,12 +823,23 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 	}
 	service := machine.Service{Listen: listen}
 	shim, err := d.openShim(inst.ID)
-	if err != nil || shim.state.Service == "" || shim.status(ctx) != nil {
+	if err != nil || shim.status(ctx) != nil {
 		return service, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrNotRunning)
 	}
-	service.URL = "http://" + shim.state.Service
-	if d.hv.SharesLoopback() {
-		service.PrivateURL = service.URL
+	url := shim.state.ServiceURL
+	if url == "" && shim.state.Service != "" && d.hv.SharesLoopback() {
+		// A shim from before ServiceURL serves a loopback port alone.
+		url = "http://" + shim.state.Service
+	}
+	if url == "" {
+		if shim.state.Service != "" {
+			return service, fmt.Errorf("instance %s: its shim serves its service on a loopback port, which this build gives no scope; stop and start it: %w", inst.Name, machine.ErrStale)
+		}
+		return service, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrNotRunning)
+	}
+	service.PoolURL = url
+	if !rec.NoIngress {
+		service.IngressURL = url
 	}
 	return service, nil
 }

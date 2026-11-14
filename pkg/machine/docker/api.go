@@ -34,6 +34,10 @@ type Daemon struct {
 	// connection that costs a process to open (GuestDaemon's) is closed once
 	// its request is answered instead, so none outlives its request.
 	KeepIdle bool
+	// Remote is a daemon on another host than this process's: a port it
+	// publishes on its host's loopback is not reached from here, so the
+	// driver gives no ingress URL (ADR 26-11-14-610).
+	Remote bool
 }
 
 // HostDaemon is the daemon a host names, as the docker CLI reads one:
@@ -57,7 +61,22 @@ func HostDaemon(host string, dial machine.DialFunc) Daemon {
 			return dial(ctx, network, addr)
 		},
 		KeepIdle: true,
+		Remote:   network == "tcp" && !loopbackHost(addr),
 	}
+}
+
+// loopbackHost reports whether addr, HOST:PORT, names this host's loopback:
+// localhost or a loopback address.
+func loopbackHost(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // api is a client of the Docker Engine API, the few calls the driver makes.

@@ -98,7 +98,7 @@ func TestValidateRefusesWhatTheDriverDoesNotTake(t *testing.T) {
 	for _, c := range []struct {
 		driver, config, want string
 	}{
-		{"fake", `{"nope":1}`, `unknown field "nope" (the driver takes agent, noCommit, maxRunning)`},
+		{"fake", `{"nope":1}`, `unknown field "nope" (the driver takes agent, noCommit, maxRunning, noLoopback)`},
 		{"fake", `{"noCommit":"yes"}`, "noCommit: not a bool"},
 		{"fake", `{"maxRunning":-1}`, "maxRunning: not a count"},
 		{"fake", `{"agent":"disco-vm"}`, "agent: not an absolute path"},

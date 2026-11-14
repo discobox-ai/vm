@@ -28,7 +28,7 @@ refuses one only where its provider has no machine left to run
 write to a disk another VM's differences over (`ErrInUse`: hcs). And a VM's
 machine: Boot, in this process; Start, outliving it;
 Attach, from any process; and Service
-([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-one-http-url-and-a-private-one)).
+([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-an-ingress-url-and-a-pool-url)).
 A machine also dials the agent's port and the service's (`Machine.Dial`)
 where the driver lists `Capabilities.Ports` ([below](#ports-not-guids)).
 Boot and Start return once the guest answers. A running `Machine` is the
@@ -58,8 +58,9 @@ a `Capabilities` field, never a faked method:
 | keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | none (`ErrNoKey`) | issue, scope `pool` | none (`ErrCannotIssue`: an Archil token never expires) |
 | isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no | no | no |
 | egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | `none`: no network device (else a NIC on passt) | none | `none` and `allow`: `network.egress`, default `deny` |
-| private URL (`Service.PrivateURL`) | none | none | `http://<machine>.boxd:7302` on networks, else the URL | the container's address on its network | none | the URL (a shared loopback) | the URL |
-| URLs (`URLs`: given never, when asked, or always) | none | none | private always on networks (direct); on none the public one, so none with that off; public when asked (the default proxy, its default) | private always; never public (a loopback port) | none | private always (a shared loopback); never public | private and public always (the exposed port) |
+| ingress URL (`Service.IngressURL`) | the shim's owner-only named pipe, `npipe:////./pipe/disco-vm-…` | the shim's owner-only `unix:///…/service.sock` | the default proxy, `https://<machine>.<zone>.boxd.sh` | the port the daemon publishes, `http://127.0.0.1:N`; none for a daemon on another host | the shim's owner-only `unix:///…/service.sock` | the shim's loopback port, `http://127.0.0.1:N` (with `noLoopback`, its `service.sock`) | the exposed port, `https://…archil.app` |
+| pool URL (`Service.PoolURL`) | the ingress URL | the ingress URL | `http://<machine>.boxd:7302` on networks, else the ingress URL | the container's address on its network | the ingress URL | the ingress URL (a shared loopback) | the ingress URL |
+| URLs (`URLs`: given never, when asked, or always) | ingress when asked (its default), pool always | ingress when asked (its default), pool always | ingress when asked (the default proxy, its default); pool always on networks (direct), on none the ingress one, so none with that off | both always (ingress never for a daemon on another host) | ingress when asked (its default), pool always | both always (with `noLoopback`, as vz) | both always |
 | volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<pool>--<name>--data` |
 | upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
 
@@ -203,19 +204,21 @@ no network device, whose only reach is the vsock its spec forwards; its
 read-back is the instance's record, which Boot reads to attach no NIC.
 `Instance.Egress` is the fence the provider reports.
 
-`URLs` at create asks for each of the service's URLs, internal, private and
-public, on or off, strictly or not; unset is the driver's default (ADR
-26-11-12-604; the scopes are ADR 26-11-04-412 §4's). `Capabilities.URLs` is
-each scope's reach (`URLNever`, `URLOptional`, `URLAlways`). A driver honors
-a request where it can; a strict one it cannot meet, a URL it never gives
-asked on or one it always gives asked off, it refuses (`URLRequests.Check`, in
-every driver's Create and the engine's). A reach that depends on the rest of
-the spec is reported as the common case, and the driver's Create refuses what
-it cannot meet (boxd: a strict private URL on no networks, the public one
-off). Internal has no field on `Service`
-yet, so no driver gives one. A URL on the engine's host alone, a loopback
-port, is not public. The provider reports no request on `Instance`:
-`Service` says which URLs an instance has.
+`URLs` at create asks for each of the service's URLs, by who reaches it,
+ingress (the driver's caller) and pool (the instance's peers), on or off,
+strictly or not; unset is the driver's default (ADR 26-11-12-604; the
+scopes are ADR 26-11-14-610's). `Capabilities.URLs` is each scope's reach
+(`URLNever`, `URLOptional`, `URLAlways`). A driver honors a request where
+it can; a strict one it cannot meet, a URL it never gives asked on or one it
+always gives asked off, it refuses (`URLRequests.Check`, in every driver's
+Create and the engine's). A reach that depends on the rest of the spec is
+reported as the common case, and the driver's Create refuses what it cannot
+meet (boxd: a strict pool URL on no networks, ingress off). Neither scope
+says how public the network under it is: an ingress URL may be on the
+internet, a VLAN, the host's loopback, or a socket only the owner opens. A
+URL is `http`, `https`, `unix`, or `npipe`, and `DialURL` connects to any
+of them. The provider reports no request on `Instance`: `Service` says
+which URLs an instance has.
 
 ## Two volumes, at fixed paths, and a cache is saved only on request
 
@@ -302,7 +305,8 @@ port only before its VM starts (ADR 26-11-03-247):
   for an attached machine, which dials the service where the hypervisor
   serves it (fake's loopback port); `Engine.Dial` and
   `disco-vm dial INSTANCE PORT`. Any other port is `ErrUnsupported` on every
-  driver. The service stays one port at one URL (ADR 0005). boxd and docker
+  driver. The service stays one port, at its ingress and pool URLs (ADR
+  0005, ADR 26-11-14-610). boxd and docker
   return `ErrUnsupported`.
 - **Guest to host:** a guest process connects out with `guest.DialHost(port)`
   (vsock to CID 2 on vz, hvsocket to the parent partition on HCS), and an

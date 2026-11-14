@@ -51,10 +51,10 @@ func TestService(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
 	service, err := d.Service(ctx, inst)
-	if err != nil || !strings.HasPrefix(service.URL, "https://") || service.Listen != "tcp:0.0.0.0:7302" {
+	if err != nil || !strings.HasPrefix(service.IngressURL, "https://") || service.Listen != "tcp:0.0.0.0:7302" {
 		t.Fatalf("service %+v, %v", service, err)
 	}
-	url, port := service.URL, guest.ServicePort
+	url, port := service.IngressURL, guest.ServicePort
 	t.Logf("URL %s", url)
 	ref := vmRef{ID: inst.ID}
 	api, _ := d.api.API(ctx)
@@ -87,8 +87,8 @@ sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, port)
 		if err := m.Kill(ctx); err != nil {
 			t.Fatal(err)
 		}
-		if again, err := d.Service(ctx, inst); err != nil || again.URL != url {
-			t.Fatalf("URL after a stop: %q, %v; want %q", again.URL, err, url)
+		if again, err := d.Service(ctx, inst); err != nil || again.IngressURL != url {
+			t.Fatalf("URL after a stop: %q, %v; want %q", again.IngressURL, err, url)
 		}
 	}
 	list, err := api.ListProxies(ctx, &boxdapi.ListProxiesRequest{Vm: ref.ID})
@@ -110,25 +110,25 @@ sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, port)
 	}
 }
 
-// TestNoPublicURL makes a VM whose public URL is asked off, strictly, as a
+// TestNoIngressURL makes a VM whose ingress URL is asked off, strictly, as a
 // sandbox's is (isolated), and checks on boxd itself that boxd removes its default proxy,
 // that none comes back across two boots, and that a server on the service
 // port answers at no <machine>.<zone> URL. It makes billable machines, so it
 // runs only when asked for and given an account.
-func TestNoPublicURL(t *testing.T) {
+func TestNoIngressURL(t *testing.T) {
 	if os.Getenv(IntegrationEnv) != "1" || (os.Getenv(APIKeyEnv) == "" && os.Getenv(TokenEnv) == "") {
-		t.Skipf("set %s=1 and %s to check a private VM on boxd, which bills the account", IntegrationEnv, APIKeyEnv)
+		t.Skipf("set %s=1 and %s to check a VM with no ingress URL on boxd, which bills the account", IntegrationEnv, APIKeyEnv)
 	}
 	d := envDriver(t, machine.KeyFromEnv("boxd"))
 	ctx := context.Background()
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "private-" + randomID()[:8], Isolated: true, URLs: machine.URLRequests{Public: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "noingress-" + randomID()[:8], Isolated: true, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
 	if err != nil {
-		t.Fatalf("create a VM with its public URL off: %v", err)
+		t.Fatalf("create a VM with its ingress URL off: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
 	api, _ := d.api.API(ctx)
 	// The URL its default proxy had: <machine>.<zone>, where the zone is
-	// the region's, as a public VM's in the same region shows.
+	// the region's, as a VM's with an ingress URL in the same region shows.
 	public, err := d.Create(ctx, machine.InstanceSpec{Name: "public-" + randomID()[:8]})
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestNoPublicURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, zone, _ := strings.Cut(strings.TrimPrefix(service.URL, "https://"), ".")
+	_, zone, _ := strings.Cut(strings.TrimPrefix(service.IngressURL, "https://"), ".")
 	url := "https://" + d.machineName(inst.Name) + "." + zone
 	for boot := 1; boot <= 2; boot++ {
 		m, err := d.Boot(ctx, inst, machine.BootOptions{})
@@ -156,7 +156,7 @@ sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, guest.
 		if err != nil || len(list.GetProxies()) > 0 {
 			t.Fatalf("boot %d: proxies %v, %v; want none", boot, list.GetProxies(), err)
 		}
-		if service, err := d.Service(ctx, inst); err != nil || service.URL != "" {
+		if service, err := d.Service(ctx, inst); err != nil || service.IngressURL != "" {
 			t.Fatalf("boot %d: service %+v, %v; want no URL", boot, service, err)
 		}
 		// Long enough for a proxy boxd made again at boot to answer.

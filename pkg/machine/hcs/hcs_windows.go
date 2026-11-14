@@ -341,7 +341,8 @@ func removeAll(dir string) error {
 }
 
 // Service is the hvsocket service ID of guest.ServicePort, which every VM's
-// ServiceTable lists; the instance's shim serves it on the host's loopback.
+// ServiceTable lists; the instance's shim serves it on an owner-only named
+// pipe.
 func (*Hypervisor) Service(local.InstanceSpec) (string, uint32, error) {
 	return fmt.Sprintf("vsock:%d", guest.ServicePort), guest.ServicePort, nil
 }

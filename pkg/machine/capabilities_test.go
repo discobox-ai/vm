@@ -40,26 +40,33 @@ func TestInstalls(t *testing.T) {
 // A strict URL request the driver cannot meet is refused; one it can, and any
 // that is not strict, passes; a strict one with no mode is an error.
 func TestURLRequestsCheck(t *testing.T) {
-	caps := machine.URLCapabilities{Private: machine.URLAlways, Public: machine.URLOptional}
+	caps := machine.URLCapabilities{Ingress: machine.URLOptional, Pool: machine.URLAlways}
+	never := machine.URLCapabilities{Ingress: machine.URLAlways}
 	on, off := machine.URLRequest{Mode: machine.URLOn, Strict: true}, machine.URLRequest{Mode: machine.URLOff, Strict: true}
 	for _, c := range []struct {
 		name        string
+		caps        *machine.URLCapabilities
 		req         machine.URLRequests
 		unsupported bool
 		invalid     bool
 	}{
 		{name: "the driver's default"},
-		{name: "public off, strict", req: machine.URLRequests{Public: off}},
-		{name: "public on, strict", req: machine.URLRequests{Public: on}},
-		{name: "private on, strict", req: machine.URLRequests{Private: on}},
-		{name: "private off, strict, always given", req: machine.URLRequests{Private: off}, unsupported: true},
-		{name: "internal on, strict, never given", req: machine.URLRequests{Internal: on}, unsupported: true},
-		{name: "internal on, not strict", req: machine.URLRequests{Internal: machine.URLRequest{Mode: machine.URLOn}}},
-		{name: "private off, not strict", req: machine.URLRequests{Private: machine.URLRequest{Mode: machine.URLOff}}},
-		{name: "strict with no mode", req: machine.URLRequests{Public: machine.URLRequest{Strict: true}}, invalid: true},
-		{name: "an unknown mode", req: machine.URLRequests{Public: machine.URLRequest{Mode: "maybe"}}, invalid: true},
+		{name: "ingress off, strict", req: machine.URLRequests{Ingress: off}},
+		{name: "ingress on, strict", req: machine.URLRequests{Ingress: on}},
+		{name: "pool on, strict", req: machine.URLRequests{Pool: on}},
+		{name: "pool off, strict, always given", req: machine.URLRequests{Pool: off}, unsupported: true},
+		{name: "pool on, strict, never given", caps: &never, req: machine.URLRequests{Pool: on}, unsupported: true},
+		{name: "ingress off, strict, always given", caps: &never, req: machine.URLRequests{Ingress: off}, unsupported: true},
+		{name: "pool on, not strict, never given", caps: &never, req: machine.URLRequests{Pool: machine.URLRequest{Mode: machine.URLOn}}},
+		{name: "pool off, not strict", req: machine.URLRequests{Pool: machine.URLRequest{Mode: machine.URLOff}}},
+		{name: "strict with no mode", req: machine.URLRequests{Ingress: machine.URLRequest{Strict: true}}, invalid: true},
+		{name: "an unknown mode", req: machine.URLRequests{Ingress: machine.URLRequest{Mode: "maybe"}}, invalid: true},
 	} {
-		err := c.req.Check(caps)
+		reach := caps
+		if c.caps != nil {
+			reach = *c.caps
+		}
+		err := c.req.Check(reach)
 		switch {
 		case c.unsupported && !errors.Is(err, machine.ErrUnsupported):
 			t.Errorf("%s: %v, want ErrUnsupported", c.name, err)
@@ -67,6 +74,20 @@ func TestURLRequestsCheck(t *testing.T) {
 			t.Errorf("%s: %v, want an error that is not ErrUnsupported", c.name, err)
 		case !c.unsupported && !c.invalid && err != nil:
 			t.Errorf("%s: %v, want it passed", c.name, err)
+		}
+	}
+}
+
+// A scope is ingress or pool, and nothing else: not the scopes before them.
+func TestParseURLScope(t *testing.T) {
+	for _, scope := range machine.URLScopes {
+		if got, err := machine.ParseURLScope(string(scope)); err != nil || got != scope {
+			t.Errorf("parse %q = %q, %v", scope, got, err)
+		}
+	}
+	for _, bad := range []string{"", "internal", "private", "public", "Ingress"} {
+		if _, err := machine.ParseURLScope(bad); err == nil {
+			t.Errorf("parse %q succeeded", bad)
 		}
 	}
 }

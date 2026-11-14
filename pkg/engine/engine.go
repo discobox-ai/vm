@@ -443,13 +443,19 @@ func (e *Engine) Dial(ctx context.Context, inst Instance, port uint32) (net.Conn
 	return conn, nil
 }
 
-// URL is where an instance's one service is reached over HTTP: boxd's public
-// HTTPS URL, the same across stop and start, or a loopback port the Docker
-// daemon publishes or the instance's shim serves while it runs, a new one at
-// every start. None needs a credential, so the service authenticates its
-// callers. It is refused for an instance whose public URL was asked off, on a
-// driver that withholds it.
-func (e *Engine) URL(ctx context.Context, inst Instance) (string, error) {
+// URL is where scope's audience reaches an instance's one service over
+// HTTP (machine.Service.URL, ADR 26-11-14-610): for ingress, the caller,
+// at boxd's HTTPS URL, archil's exposed port, a loopback port the Docker
+// daemon publishes or fake's shim serves, or the owner-only local socket a
+// held VM's shim serves (machine.DialURL); for pool, the instance's peers.
+// None needs a credential, so the service authenticates its callers. It is
+// refused while the instance is not running, and with machine.ErrUnsupported
+// where the instance has no URL in scope: one asked off, or a driver that
+// gives none. One scope's request is never answered with the other's URL.
+func (e *Engine) URL(ctx context.Context, inst Instance, scope machine.URLScope) (string, error) {
+	if _, err := machine.ParseURLScope(string(scope)); err != nil {
+		return "", err
+	}
 	service, err := e.Driver.Service(ctx, inst)
 	if errors.Is(err, machine.ErrNotRunning) {
 		return "", fmt.Errorf("instance %s is not running", inst.Name)
@@ -457,32 +463,16 @@ func (e *Engine) URL(ctx context.Context, inst Instance) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if service.URL == "" {
-		if e.Driver.Capabilities().URLs.Public == machine.URLOptional {
-			return "", fmt.Errorf("instance %s has no URL: the %s driver's is public, and gives none to an instance whose public URL is asked off: %w", inst.Name, e.Driver.Name(), machine.ErrUnsupported)
-		}
-		return "", fmt.Errorf("instance %s: the %s driver gave its service no URL", inst.Name, e.Driver.Name())
+	if url := service.URL(scope); url != "" {
+		return url, nil
 	}
-	return service.URL, nil
-}
-
-// PrivateURL is where the instance's peers, other instances of the driver on
-// its networks, reach its service (machine.Service.PrivateURL): a direct
-// path to the instance's address, or URL where that is how peers reach it.
-// It is refused while the instance is not running, as URL is, and where the
-// driver gives peers no way to it.
-func (e *Engine) PrivateURL(ctx context.Context, inst Instance) (string, error) {
-	service, err := e.Driver.Service(ctx, inst)
-	if errors.Is(err, machine.ErrNotRunning) {
-		return "", fmt.Errorf("instance %s is not running", inst.Name)
+	switch e.Driver.Capabilities().URLs.Of(scope) {
+	case machine.URLNever:
+		return "", fmt.Errorf("instance %s has no %s URL: the %s driver gives none: %w", inst.Name, scope, e.Driver.Name(), machine.ErrUnsupported)
+	case machine.URLOptional:
+		return "", fmt.Errorf("instance %s has no %s URL: the %s driver gives none to an instance whose %s URL is asked off: %w", inst.Name, scope, e.Driver.Name(), scope, machine.ErrUnsupported)
 	}
-	if err != nil {
-		return "", err
-	}
-	if service.PrivateURL == "" {
-		return "", fmt.Errorf("instance %s: the %s driver gives its instances no way to each other: %w", inst.Name, e.Driver.Name(), machine.ErrUnsupported)
-	}
-	return service.PrivateURL, nil
+	return "", fmt.Errorf("instance %s: the %s driver gave its service no %s URL", inst.Name, e.Driver.Name(), scope)
 }
 
 // announceService tells a started guest where its service listens, in its

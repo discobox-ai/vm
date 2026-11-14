@@ -187,19 +187,44 @@ const (
 	URLAlways URLReach = "always"
 )
 
-// URLCapabilities is a driver's URLReach for each of a service's URLs, by
-// who reaches it (ADR 26-11-12-604; ADR 26-11-04-412 §4):
-//
-//   - Internal: the caller managing the pool, alone. No driver reports one
-//     yet (machine.Service has no field for it).
-//   - Private: the instance's peers, at Service.PrivateURL.
-//   - Public: anyone on the internet, at Service.URL. A URL on the engine's
-//     host alone, a loopback port, is not one: a local driver's or docker's
-//     Service.URL is never public.
+// URLScope names one of a service's URLs by who reaches it (ADR
+// 26-11-14-610 §1). Neither scope says how public the network under it is.
+type URLScope string
+
+const (
+	// URLIngress is where the driver's caller, the controller managing the
+	// pool, reaches the instance's service with no credential of the
+	// driver's: an internet URL, a VLAN address, a loopback port, or an
+	// owner-only local socket a shim serves (Service.IngressURL).
+	URLIngress URLScope = "ingress"
+	// URLPool is where the instance's peers, the other instances of the
+	// driver in its pool, reach its service (Service.PoolURL).
+	URLPool URLScope = "pool"
+)
+
+// URLScopes is every URLScope.
+var URLScopes = []URLScope{URLIngress, URLPool}
+
+// ParseURLScope reads a scope's name, refusing any other.
+func ParseURLScope(s string) (URLScope, error) {
+	if scope := URLScope(s); slices.Contains(URLScopes, scope) {
+		return scope, nil
+	}
+	return "", fmt.Errorf("a URL scope of %q, not ingress or pool", s)
+}
+
+// URLCapabilities is a driver's URLReach for each URLScope.
 type URLCapabilities struct {
-	Internal URLReach `json:"internal,omitempty"`
-	Private  URLReach `json:"private,omitempty"`
-	Public   URLReach `json:"public,omitempty"`
+	Ingress URLReach `json:"ingress,omitempty"`
+	Pool    URLReach `json:"pool,omitempty"`
+}
+
+// Of is the reach of scope.
+func (c URLCapabilities) Of(scope URLScope) URLReach {
+	if scope == URLPool {
+		return c.Pool
+	}
+	return c.Ingress
 }
 
 // URLMode is what a caller asks of one of a service's URLs.
@@ -224,39 +249,42 @@ type URLRequest struct {
 	Strict bool    `json:"strict,omitempty"`
 }
 
-// URLRequests is a URLRequest for each of a service's URLs, as
-// URLCapabilities names them. The zero value is the driver's default for
-// every one.
+// URLRequests is a URLRequest for each URLScope. The zero value is the
+// driver's default for every one.
 type URLRequests struct {
-	Internal URLRequest `json:"internal"`
-	Private  URLRequest `json:"private"`
-	Public   URLRequest `json:"public"`
+	Ingress URLRequest `json:"ingress"`
+	Pool    URLRequest `json:"pool"`
+}
+
+// Of is the request of scope.
+func (r URLRequests) Of(scope URLScope) URLRequest {
+	if scope == URLPool {
+		return r.Pool
+	}
+	return r.Ingress
 }
 
 // Check refuses, with ErrUnsupported, a strict request the capabilities
 // cannot meet: a URL the driver never gives asked on, or one it always gives
 // asked off. A mode it does not know, or Strict with no mode, is an error.
 func (r URLRequests) Check(caps URLCapabilities) error {
-	for _, c := range []struct {
-		name  string
-		req   URLRequest
-		reach URLReach
-	}{{"internal", r.Internal, caps.Internal}, {"private", r.Private, caps.Private}, {"public", r.Public, caps.Public}} {
-		switch c.req.Mode {
+	for _, scope := range URLScopes {
+		req, reach := r.Of(scope), caps.Of(scope)
+		switch req.Mode {
 		case URLDefault:
-			if c.req.Strict {
-				return fmt.Errorf("a strict %s URL request needs on or off", c.name)
+			if req.Strict {
+				return fmt.Errorf("a strict %s URL request needs on or off", scope)
 			}
 		case URLOn:
-			if c.req.Strict && c.reach == URLNever {
-				return fmt.Errorf("the driver gives no instance its %s URL: %w", c.name, ErrUnsupported)
+			if req.Strict && reach == URLNever {
+				return fmt.Errorf("the driver gives no instance its %s URL: %w", scope, ErrUnsupported)
 			}
 		case URLOff:
-			if c.req.Strict && c.reach == URLAlways {
-				return fmt.Errorf("the driver gives every instance its %s URL: %w", c.name, ErrUnsupported)
+			if req.Strict && reach == URLAlways {
+				return fmt.Errorf("the driver gives every instance its %s URL: %w", scope, ErrUnsupported)
 			}
 		default:
-			return fmt.Errorf("a %s URL request of %q, not on or off", c.name, c.req.Mode)
+			return fmt.Errorf("a %s URL request of %q, not on or off", scope, req.Mode)
 		}
 	}
 	return nil
@@ -567,10 +595,11 @@ type InstanceSpec struct {
 	// Capabilities.Isolation refuses them.
 	Networks []string
 	// URLs asks for each of the service's URLs, or for none; the zero value
-	// is the driver's default for each. A public URL is an inbound path from
-	// the internet to the guest that its egress fence never sees, answered by
-	// whatever the guest's root binds to the service's port, so a caller
-	// that must not have one asks for it off, strictly (ADR 26-11-12-604).
+	// is the driver's default for each. An ingress URL on the internet is an
+	// inbound path to the guest that its egress fence never sees, answered
+	// by whatever the guest's root binds to the service's port, so a caller
+	// that must not have one asks for it off, strictly (ADR 26-11-12-604,
+	// ADR 26-11-14-610).
 	URLs URLRequests
 	// Egress fences what the machine reaches beyond its networks, in place
 	// before Create returns and across stop and start; nil is the
@@ -681,7 +710,7 @@ type InstallSpec struct {
 }
 
 // Service is an instance's one service: where a program in the guest listens,
-// and where any process reaches it. The driver picks it, never the caller or
+// and where its caller and its peers reach it. The driver picks it, never the caller or
 // a committed VM, and it is the same for every boot of a VM.
 type Service struct {
 	// Listen is the address a guest program listens on, in guest.Listen's
@@ -689,19 +718,35 @@ type Service struct {
 	// on hcs), tcp:ADDR. The engine writes it to the guest's
 	// guest.ServiceFile at every start.
 	Listen string
-	// URL is where any process reaches the service over HTTP with no
-	// credential of the driver's: boxd's https://<machine>.boxd.sh, a port
-	// the Docker daemon publishes on the host's loopback, a loopback port a
-	// local driver's shim serves. It is empty for an instance whose public
-	// URL was asked off, on a driver that can withhold it.
-	URL string
-	// PrivateURL is where the instance's peers, other instances of the
-	// driver on its networks, reach the service: a direct path,
-	// http://<address>:<port>, at an address where every port the guest
-	// listens on is reachable too; URL, where the driver gives instances no
-	// path to each other but URL reaches them; or empty, where neither does.
-	// A caller tells a direct path by PrivateURL != URL.
-	PrivateURL string
+	// IngressURL is where the driver's caller reaches the service over HTTP
+	// with no credential of the driver's (URLIngress): boxd's
+	// https://<machine>.boxd.sh, archil's exposed port, a port the Docker
+	// daemon publishes on its host's loopback, a loopback port fake's shim
+	// serves, or the owner-only local socket a held VM's shim serves
+	// (unix:///PATH, or npipe:////./pipe/NAME on Windows; DialURL). It is
+	// empty for an instance whose ingress URL was asked off, on a driver that
+	// can withhold it.
+	IngressURL string
+	// PoolURL is where the instance's peers reach the service (URLPool): a
+	// direct path, http://<address>:<port>, at an address where every port
+	// the guest listens on is reachable too; the ingress URL, where the
+	// driver gives instances no path to each other but its ingress reaches
+	// them (boxd on no networks, archil, fake); the owner-only socket of
+	// a VM held on the host (vz, libkrun, hcs), whose guests reach a peer
+	// only through the forwards their shims relay, never at a URL; or empty,
+	// where none is. Only an http:// PoolURL that is not the ingress URL is
+	// a direct path. On vz, libkrun, and hcs it is set whether or not
+	// IngressURL is withheld; on boxd on no networks it is the ingress URL,
+	// so none with that withheld.
+	PoolURL string
+}
+
+// URL is the service's URL in scope, empty where it has none.
+func (s Service) URL(scope URLScope) string {
+	if scope == URLPool {
+		return s.PoolURL
+	}
+	return s.IngressURL
 }
 
 // Share is a host directory exported to the guest.

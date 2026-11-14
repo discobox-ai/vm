@@ -34,3 +34,26 @@ func TestTheDialerReachesTheDaemon(t *testing.T) {
 		}
 	}
 }
+
+// A daemon on another host publishes the service on its own loopback, which
+// this process does not reach, so the driver reports and gives no ingress
+// URL; one on this host's socket or loopback does (ADR 26-11-14-610).
+func TestARemoteDaemonGivesNoIngress(t *testing.T) {
+	for host, remote := range map[string]bool{
+		"unix:///var/run/docker.sock": false,
+		"tcp://127.0.0.1:2375":        false,
+		"tcp://[::1]:2375":            false,
+		"tcp://localhost:2375":        false,
+		"tcp://10.0.0.7:2375":         true,
+		"tcp://docker.example:2375":   true,
+	} {
+		d := newDriver(machine.Config{}, Config{}, HostDaemon(host, machine.Config{}.Dialer()))
+		want := machine.URLAlways
+		if remote {
+			want = machine.URLNever
+		}
+		if got := d.Capabilities().URLs; got.Ingress != want || got.Pool != machine.URLAlways {
+			t.Errorf("%s: URL reach %+v, want ingress %q and pool always", host, got, want)
+		}
+	}
+}

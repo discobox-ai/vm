@@ -16,11 +16,11 @@ import (
 var serviceListen = "tcp:0.0.0.0:" + strconv.FormatUint(uint64(guest.ServicePort), 10)
 
 // Service is the guest's TCP port behind the HTTPS URL of the machine's
-// default proxy, which Create pinned to it for a VM asked to be public. The
-// URL is the same across stop and start. A machine with no default proxy has
-// no URL. A machine on networks is reached by its peers there directly, at
-// its name on boxd's internal DNS, <machine>.boxd, on every port; one on
-// none, by its URL, if it has one.
+// default proxy, which Create pinned to it unless its ingress URL was asked
+// off: its ingress URL, the same across stop and start. A machine with no
+// default proxy has none. A machine on networks is reached by its peers
+// there directly, at its name on boxd's internal DNS, <machine>.boxd, on
+// every port: its pool URL; one on none, by its ingress URL, if it has one.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	api, err := d.api.API(ctx)
 	if err != nil {
@@ -46,11 +46,11 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 		if def.GetDomain() == "" {
 			return machine.Service{}, fmt.Errorf("boxd: %s's proxy has no domain", d.machineName(inst.Name))
 		}
-		service.URL = "https://" + def.GetDomain()
+		service.IngressURL = "https://" + def.GetDomain()
 	}
-	service.PrivateURL = service.URL
+	service.PoolURL = service.IngressURL
 	if len(inst.Networks) > 0 {
-		service.PrivateURL = "http://" + net.JoinHostPort(d.machineName(inst.Name)+".boxd", strconv.FormatUint(uint64(guest.ServicePort), 10))
+		service.PoolURL = "http://" + net.JoinHostPort(d.machineName(inst.Name)+".boxd", strconv.FormatUint(uint64(guest.ServicePort), 10))
 	}
 	return service, nil
 }
@@ -86,7 +86,7 @@ func pinProxy(ctx context.Context, api boxdapi.BoxdApiClient, vm string, port ui
 
 // dropProxies removes every proxy boxd gave the machine, its default one at
 // <machine>.<zone> among them, and reads back that none is left: a VM not
-// asked to be public is reached from the internet at no URL, since whatever
+// whose ingress URL is asked off is reached from the internet at no URL, since whatever
 // answers there is the guest root's choice, not the service's. An isolated
 // machine has no in-VM CLI to make one again.
 func dropProxies(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {

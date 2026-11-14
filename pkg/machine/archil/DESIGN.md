@@ -65,8 +65,8 @@ the guest and nothing on the host:
   machine's first exec or copy resumes it (a stop stops it as it is), so a listing, which
   attaches to every VM, wakes none. A guest that powers itself off halts its VM, which
   Archil goes on reporting `running`: unsupported, as on boxd.
-- **The URL** is the hostname Archil gives the exposed port 7302, the same
-  across stop and start, and the private URL is the URL. It is public and
-  the only path to a sandbox, so every VM has both (`Capabilities.URLs`:
-  always), and Create refuses a strict request for either off (ADR
-  26-11-12-604).
+- **The ingress URL** is the hostname Archil gives the exposed port 7302,
+  the same across stop and start, and the pool URL is the ingress URL. It is
+  on the internet and the only path to a sandbox, so every VM has both
+  (`Capabilities.URLs`: always), and Create refuses a strict request for
+  either off (ADR 26-11-12-604, ADR 26-11-14-610).
