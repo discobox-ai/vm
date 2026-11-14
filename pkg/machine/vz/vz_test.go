@@ -5,6 +5,8 @@ package vz
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -69,7 +71,7 @@ func TestConformance(t *testing.T) {
 		Memory:     8 << 30,
 		Timeout:    10 * time.Minute,
 		ScratchDir: "/Users/Shared",
-		GuestAgent: agentPath,
+		GuestAgent: agentRunDir + "/disco-vm",
 		Pool: func(pool string) machine.Driver {
 			d, err := driver.InPool(pool)
 			if err != nil {
@@ -205,7 +207,13 @@ func linuxBaseFromEnv(t *testing.T) (string, bool) {
 // 26-11-11-215 §6): a shim made from another is refused.
 func envConfig(t *testing.T) (json.RawMessage, Config) {
 	t.Helper()
-	config, err := machine.ConfigFromValues("vz", machine.ConfigFromEnv("vz"))
+	// The macOS agent is the signed disco-vm the shims run, unless named,
+	// as the command line's is itself.
+	values := machine.ConfigFromEnv("vz")
+	if _, ok := values["macosAgent"]; !ok && os.Getenv("DISCO_VM_TEST_BINARY") != "" {
+		values["macosAgent"] = os.Getenv("DISCO_VM_TEST_BINARY")
+	}
+	config, err := machine.ConfigFromValues("vz", values)
 	if err == nil && config == nil {
 		config = json.RawMessage("{}")
 	}
@@ -302,7 +310,7 @@ func TestNoRouteOffTheMachine(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		noRoute(t, driver, machine.InstanceSpec{From: &from}, agentPath, "/Users/Shared",
+		noRoute(t, driver, machine.InstanceSpec{From: &from}, agentRunDir+"/disco-vm", "/Users/Shared",
 			// Every macOS guest has the Apple silicon peripheral interfaces
 			// (anpi0 and its en2) and the system's utun tunnels: none may be
 			// active or hold an address beyond link-local, nothing off the
@@ -414,4 +422,63 @@ func noRoute(t *testing.T, driver *local.Driver, spec machine.InstanceSpec, agen
 // randomName is a suffix no other run's instances share.
 func randomName() string {
 	return strconv.FormatInt(time.Now().UnixNano()%1e9, 36)
+}
+
+// TestMacOSAgentFromTheDrive is ADR 26-11-13-318's proof that a macOS guest
+// runs the agent its boot's drive carries: the agent answering is the
+// stub's copy, it is the configured macOS agent byte for byte, and the stub
+// unmounted the drive once it had copied it. The base must have been
+// installed with the stub; one installed before keeps its own agent.
+func TestMacOSAgentFromTheDrive(t *testing.T) {
+	base := os.Getenv(BaseEnv)
+	if base == "" {
+		t.Skipf("$%s names no committed macOS VM", BaseEnv)
+	}
+	binary := os.Getenv("DISCO_VM_TEST_BINARY")
+	if binary == "" {
+		t.Fatal("$DISCO_VM_TEST_BINARY names no signed disco-vm to run each started instance's shim")
+	}
+	config, conf := envConfig(t)
+	dir := machine.DefaultDir()
+	cfg := machine.Config{
+		Dir:          dir,
+		ShimCommand:  []string{binary, "--root", dir, "--driver", "vz", "--driver-config", string(config), "shim"},
+		DriverConfig: config,
+	}
+	driver, err := local.New(cfg, newHypervisor(cfg, conf))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	from, err := driver.Instance(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := driver.Create(ctx, machine.InstanceSpec{Name: "drive-" + randomName(), From: &from})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+	startCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	m, err := driver.Start(startCtx, inst, machine.BootOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Kill(context.Background()) })
+	var out bytes.Buffer
+	code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"/bin/sh", "-c",
+		`ps -o comm= -p "$PPID"; shasum -a 256 "$(ps -o comm= -p "$PPID")" | cut -d ' ' -f 1; mount | grep -c ` + driveLabel + ` || true`}}, nil, &out, &out)
+	if err != nil || code != 0 {
+		t.Fatalf("exit %d, %v\n%s", code, err, out.String())
+	}
+	want, err := os.ReadFile(conf.MacOSAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(want)
+	lines := strings.Fields(out.String())
+	if len(lines) != 3 || lines[0] != agentRunDir+"/disco-vm" || lines[1] != hex.EncodeToString(sum[:]) || lines[2] != "0" {
+		t.Fatalf("the guest's agent, its SHA-256, and the drive's mounts are %q; want %s/disco-vm, %x, and 0", lines, agentRunDir, sum)
+	}
 }

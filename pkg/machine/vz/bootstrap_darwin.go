@@ -21,39 +21,11 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
-// The agent's place in the guest, and the launchd daemon that starts it at
-// boot, before anyone logs in, as root.
-const (
-	agentPath = "/usr/local/libexec/disco-vm"
-	daemonID  = "ai.discobox.vm.guest"
-)
-
-var daemonPlist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>` + daemonID + `</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>` + agentPath + `</string>
-		<string>guest</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-	<key>KeepAlive</key>
-	<true/>
-	<key>StandardOutPath</key>
-	<string>/var/log/disco-vm-guest.log</string>
-	<key>StandardErrorPath</key>
-	<string>/var/log/disco-vm-guest.log</string>
-</dict>
-</plist>
-`
-
-// installScript runs as root in the guest with the uploaded agent ($1), the
-// provisioned account ($2), and the uid to move that account to ($3). System
-// sleep is turned off because a sleeping guest's agent answers nothing.
+// installScript runs as root in the guest with the provisioned account ($1)
+// and the uid to move that account to ($2). It installs the launch daemon
+// whose stub runs the agent each boot's drive carries (daemonPlist), and
+// starts it. System sleep is turned off because a sleeping guest's agent
+// answers nothing.
 //
 // Provisioning always makes the first account uid 501, which is also the first
 // account on the host. It is moved off 501, which warm stages gave to the
@@ -64,38 +36,33 @@ var daemonPlist = `<?xml version="1.0" encoding="UTF-8"?>
 // Access may change a user record, which SSH has and the agent's daemon has
 // not, so this happens here.
 var installScript = `set -e
-old=$(id -u "$2")
-if [ "$old" != "$3" ]; then
-	dscl . -change "/Users/$2" UniqueID "$old" "$3"
-	find -x / -uid "$old" -print0 2>/dev/null | xargs -0 chown -h "$3" 2>/dev/null || true
+old=$(id -u "$1")
+if [ "$old" != "$2" ]; then
+	dscl . -change "/Users/$1" UniqueID "$old" "$2"
+	find -x / -uid "$old" -print0 2>/dev/null | xargs -0 chown -h "$2" 2>/dev/null || true
 fi
-install -d -o root -g wheel -m 755 /usr/local/libexec
-install -o root -g wheel -m 755 "$1" ` + agentPath + `
-rm -f "$1"
 cat > /Library/LaunchDaemons/` + daemonID + `.plist <<'PLIST'
-` + daemonPlist + `PLIST
+` + daemonPlist() + `PLIST
 chown root:wheel /Library/LaunchDaemons/` + daemonID + `.plist
 chmod 644 /Library/LaunchDaemons/` + daemonID + `.plist
 pmset -a sleep 0
 launchctl bootstrap system /Library/LaunchDaemons/` + daemonID + `.plist
 `
 
-// bootstrap is the install's first boot. An IPSW install leaves no way to
-// write to the guest's Data volume, so macOS 27 guest provisioning creates
-// the account with SSH on, and the agent goes in over SSH across the NAT.
-// From then on the host speaks only to the agent, over vsock.
+// bootstrap is the install's first boot, with the agent's drive attached as
+// at every boot. An IPSW install leaves no way to write to the guest's Data
+// volume, so macOS 27 guest provisioning creates the account with SSH on,
+// and the launch daemon goes in over SSH across the NAT. Its stub runs the
+// agent off the drive, and from then on the host speaks only to the agent,
+// over vsock.
 //
 // A new guest restarts itself during its first boot, and to the framework a
 // restart is a stop, so a guest that stops cleanly before the agent is in is
 // booted again. Provisioning is asked for every time; a guest that has
 // already applied it ignores it.
-func bootstrap(ctx context.Context, b bundle, m meta, agent string, opts options, gui bool, log io.Writer) error {
+func bootstrap(ctx context.Context, b bundle, m meta, drive string, opts options, gui bool, log io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Minute)
 	defer cancel()
-	binary, err := os.ReadFile(agent)
-	if err != nil {
-		return fmt.Errorf("vz: read the agent: %w", err)
-	}
 	address, err := b.macAddress()
 	if err != nil {
 		return err
@@ -106,7 +73,7 @@ func bootstrap(ctx context.Context, b bundle, m meta, agent string, opts options
 		} else {
 			fmt.Fprintln(log, "vz: the guest restarted itself during setup; booting it again")
 		}
-		vm, err := start(b, m.CPUs, m.Memory, nil, true, &vz.MacGuestProvisioningOptions{
+		vm, err := start(b, m.CPUs, m.Memory, nil, true, drive, &vz.MacGuestProvisioningOptions{
 			FullName:            opts.fullName,
 			Username:            opts.user,
 			Password:            opts.password,
@@ -119,7 +86,7 @@ func bootstrap(ctx context.Context, b bundle, m meta, agent string, opts options
 		if err := vm.display(local.BootOptions{GUI: gui, Title: "disco-vm install: first boot"}); err != nil {
 			return err
 		}
-		err = installAgent(ctx, vm, address.String(), binary, opts, log)
+		err = installDaemon(ctx, vm, address.String(), opts, log)
 		if errors.Is(err, errRestarted) && vm.Err() == nil && boot < 4 {
 			continue
 		}
@@ -133,30 +100,26 @@ func bootstrap(ctx context.Context, b bundle, m meta, agent string, opts options
 // errRestarted is a guest that stopped during setup without an error.
 var errRestarted = errors.New("vz: the guest stopped during its first boot")
 
-// installAgent puts the agent into a booting guest, then shuts the guest down
-// through it.
-func installAgent(ctx context.Context, vm *vmMachine, mac string, binary []byte, opts options, log io.Writer) error {
+// installDaemon puts the launch daemon into a booting guest, waits for the
+// agent its stub runs off the drive, then shuts the guest down through it.
+func installDaemon(ctx context.Context, vm *vmMachine, mac string, opts options, log io.Writer) error {
 	ip, err := waitLease(ctx, mac, vm.Done())
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(log, "vz: guest is %s; installing the agent over SSH\n", ip)
+	fmt.Fprintf(log, "vz: guest is %s; installing the agent's launch daemon over SSH\n", ip)
 	client, err := dialSSH(ctx, ip, opts.user, opts.password, vm.Done())
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-	const upload = "/tmp/disco-vm.upload"
-	if _, err := runSSH(client, "cat > "+upload, bytes.NewReader(binary)); err != nil {
-		return fmt.Errorf("vz: copy the agent into the guest: %w", err)
-	}
-	if out, err := sudo(client, opts.password, installScript, upload, opts.user, strconv.Itoa(opts.uid)); err != nil {
-		return fmt.Errorf("vz: install the agent in the guest: %w\n%s", err, out)
+	if out, err := sudo(client, opts.password, installScript, opts.user, strconv.Itoa(opts.uid)); err != nil {
+		return fmt.Errorf("vz: install the agent's launch daemon in the guest: %w\n%s", err, out)
 	}
 
 	guest := vm.Client
 	if err := guest.WaitReady(ctx, vm.Done()); err != nil {
-		return fmt.Errorf("vz: the agent was installed but does not answer on vsock: %w", err)
+		return fmt.Errorf("vz: the agent's launch daemon was installed, but no agent from the drive answers on vsock (see /var/log/%s.log in the guest): %w", daemonID, err)
 	}
 	info, err := guest.Info(ctx)
 	if err != nil {

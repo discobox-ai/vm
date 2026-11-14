@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,8 +28,9 @@ import (
 
 // Install makes a committed macOS VM in dst.Dir, its own directory: it
 // installs the restore image onto a new bundle, then boots it once with guest
-// provisioning to create an account and bake in the agent, shuts it down
-// through the agent, and freezes it.
+// provisioning to create an account and install the launch daemon that runs
+// the agent each boot's drive carries, shuts it down through that agent, and
+// freezes it.
 func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) (*machine.Release, error) {
 	if spec.GuestOS != machine.Darwin {
 		return nil, fmt.Errorf("vz: can install darwin guests, not %s", spec.GuestOS)
@@ -40,8 +42,10 @@ func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst lo
 	if err != nil {
 		return nil, err
 	}
-	if spec.Agent == "" {
-		return nil, errors.New("vz: install needs the agent binary")
+	// The agent is the configured macOS agent, on the first boot's drive
+	// (ADR 26-11-13-318 §4); spec.Agent is not read.
+	if err := checkMacOSAgent(d.macosAgent, runtime.GOARCH); err != nil {
+		return nil, err
 	}
 	if spec.DiskBytes <= 0 {
 		return nil, errors.New("vz: install needs a disk size")
@@ -59,7 +63,11 @@ func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst lo
 	if err != nil {
 		return nil, err
 	}
-	if err := bootstrap(ctx, b, m, spec.Agent, opts, spec.GUI, log); err != nil {
+	drive, err := b.agentDrive(spec.CacheDir, d.macosAgent)
+	if err != nil {
+		return nil, err
+	}
+	if err := bootstrap(ctx, b, m, drive, opts, spec.GUI, log); err != nil {
 		return nil, err
 	}
 	// A committed VM carries no running machine's identity.
@@ -227,7 +235,9 @@ func install(ctx context.Context, b bundle, ipsw string, spec machine.InstallSpe
 	if err := b.writeMeta(m); err != nil {
 		return meta{}, err
 	}
-	vm, err := newVM(b, m.CPUs, m.Memory, nil, true)
+	// The installer restores the image onto the disk and boots no macOS of
+	// its own, so it is given no agent's drive.
+	vm, err := newVM(b, m.CPUs, m.Memory, nil, true, "")
 	if err != nil {
 		return meta{}, err
 	}

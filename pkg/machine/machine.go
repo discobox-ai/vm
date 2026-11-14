@@ -125,8 +125,10 @@ type Capabilities struct {
 	AcrossPools bool `json:"acrossPools"`
 	// Agent reports that the driver puts the disco-vm agent in the guest and
 	// reaches the guest's operations through it: Install bakes it in
-	// (InstallSpec.Agent) on hcs and vz, and docker adds it to its base
-	// at Create. boxd reaches them through its own API, and needs none.
+	// (InstallSpec.Agent) on hcs, a boot hands it to a vz or libkrun guest
+	// (a read-only drive on macOS, the initrd on Linux), and docker adds it
+	// to its base at Create. boxd reaches them through its own API, and
+	// needs none.
 	Agent bool `json:"agent"`
 	// Install is every guest OS the driver makes a committed VM of from
 	// installation media (Install). An OS it boots but does not install
@@ -631,9 +633,10 @@ type InstallSpec struct {
 	CPUs      int
 	Memory    uint64
 	// Agent is the disco-vm binary built for GuestOS, given to a driver that
-	// lists Capabilities.Agent. The driver bakes it into the disk and
-	// arranges for `disco-vm guest` to start at boot, as a SYSTEM service on
-	// Windows and a launchd daemon on macOS.
+	// lists Capabilities.Agent. hcs bakes it into the disk and arranges for
+	// `disco-vm guest` to start at boot as a SYSTEM service. vz does not
+	// read it: a macOS guest runs the agent each boot attaches on a drive,
+	// its configured macOS agent (ADR 26-11-13-318).
 	Agent string
 	// Options carries driver-specific settings the spec passes through
 	// untouched, such as a product key or a locale.
