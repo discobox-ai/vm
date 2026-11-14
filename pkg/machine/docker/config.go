@@ -29,8 +29,9 @@ type Config struct {
 	// host (ADR 26-11-03-782). Empty is DefaultRoot.
 	Root string `json:"root,omitempty"`
 	// Agent is the disco-vm binary, built for linux and the daemon's CPU,
-	// that Create puts in a base's image, as an absolute path. Empty is
-	// this binary on a linux host.
+	// that Create puts in a base's image, as an absolute path. The command
+	// line sets it to itself on a linux host, and to the one it carries on
+	// another (ADR 26-11-14-352); the driver falls back to nothing.
 	Agent string `json:"agent,omitempty"`
 }
 
@@ -45,8 +46,8 @@ func Definition() machine.Definition {
 				Description: "The Docker daemon: unix://PATH, or tcp://HOST:PORT without TLS (the driver sends it no key). Docker contexts, ssh://, and TLS are not read."},
 			{Key: "root", Label: "Root", Type: machine.ConfigString, Env: RootEnv, Default: DefaultRoot, Advanced: true, Privileged: true,
 				Description: "The absolute directory on the daemon's host where the driver keeps VMs' data volumes and caches, which guests mount."},
-			{Key: "agent", Label: "Agent", Type: machine.ConfigString, Env: AgentEnv, Advanced: true, Privileged: true,
-				Description: "The absolute path of the static linux disco-vm, for the daemon's CPU, that Create puts in a base's image; empty is this binary, on linux."},
+			{Key: "agent", Label: "Agent", Type: machine.ConfigString, Env: AgentEnv, Advanced: true, Privileged: true, AgentOS: machine.Linux,
+				Description: "The absolute path of the static linux disco-vm, for the daemon's CPU, that Create puts in a base's image; the command line sets it to itself on linux, and to the one it carries on another host."},
 		},
 	}
 }

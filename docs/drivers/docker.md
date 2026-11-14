@@ -185,10 +185,15 @@ export DISCO_VM_BASE=debian:sid
 ./disco-vm rm -f dev2 && ./disco-vm rm dev
 ```
 
-From a host whose daemon is elsewhere, the agent must be built for the
-daemon's OS and CPU, static:
+On linux the command line is its own agent. A release for macOS or Windows,
+and `go tool task build` on a Mac, carries the linux disco-vm of its own
+build for the host's CPU, which the command line writes out once and names
+as the agent (ADR 26-11-14-352). For a daemon of another CPU, or from a
+plain `go build` off linux, the agent must be built for the daemon's OS and
+CPU, static:
 `CGO_ENABLED=0 GOOS=linux go build -o disco-vm-linux ./cmd/disco-vm`, and
-`DISCO_VM_AGENT=$PWD/disco-vm-linux` (an absolute path). Create checks only the CPU, so a binary
+`DISCO_VM_AGENT=$PWD/disco-vm-linux` (an absolute path). The driver falls
+back to nothing: given no agent, it refuses. Create checks only the CPU, so a binary
 linked against a libc the base lacks fails at create, where the readying
 script runs it to shift the image's owners (exit 127), before any guest
 boots.
@@ -208,7 +213,7 @@ mount, and what runs as root in a guest.
 |---|---|---|---|---|
 | `host` | `--docker-host` | `DOCKER_HOST` | `unix:///var/run/docker.sock` | `unix://` or `tcp://` without TLS. Docker contexts, `ssh://`, and TLS are not read. |
 | `root` | `--docker-root` | `DISCO_VM_DOCKER_ROOT` | `/var/lib/discobox` | where volumes and caches are kept on the daemon's host |
-| `agent` | `--docker-agent` | `DISCO_VM_AGENT` | this binary, on linux | the absolute path of the static linux disco-vm, for the daemon's CPU, that Create puts in the base |
+| `agent` | `--docker-agent` | `DISCO_VM_AGENT` | set by the command line: itself on linux, the linux disco-vm it carries elsewhere | the absolute path of the static linux disco-vm, for the daemon's CPU, that Create puts in the base |
 
 | env | default | |
 |---|---|---|

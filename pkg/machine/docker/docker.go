@@ -53,7 +53,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -147,7 +146,7 @@ func New(cfg machine.Config) (*Driver, error) {
 
 // NewWithDaemon returns a driver for the daemon d, for cfg's pool
 // (machine.DefaultPool when empty), whose fresh VMs are readied from
-// cfg.Base, whose agent is the configured one or, on linux, this binary,
+// cfg.Base, whose agent is the configured one, with no fallback,
 // and whose directories are under the configured root on the daemon's
 // host. A configuration that names a host is refused: the daemon is d. It
 // dials nothing until it is used.
@@ -175,11 +174,7 @@ func newDriver(cfg machine.Config, conf Config, d Daemon) *Driver {
 	if pool == "" {
 		pool = machine.DefaultPool
 	}
-	agent := conf.Agent
-	if agent == "" && runtime.GOOS == "linux" {
-		agent, _ = os.Executable()
-	}
-	return &Driver{api: newAPI(d), pool: pool, base: cfg.Base, Agent: agent, Root: conf.Root}
+	return &Driver{api: newAPI(d), pool: pool, base: cfg.Base, Agent: conf.Agent, Root: conf.Root}
 }
 
 func (*Driver) Name() string { return "docker" }

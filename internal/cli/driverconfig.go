@@ -92,7 +92,7 @@ func (g *globals) driverConfig(name string) (json.RawMessage, error) {
 		if err != nil {
 			return nil, err
 		}
-		return withExecutable(name, config)
+		return g.withAgents(name, config)
 	}
 	values := machine.ConfigFromEnv(name)
 	for _, f := range set {
@@ -112,42 +112,7 @@ func (g *globals) driverConfig(name string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return withExecutable(name, config)
-}
-
-// withExecutable sets each field of the named driver's that defaults to the
-// executable (ConfigField.DefaultExecutable) and that config leaves out to
-// this disco-vm, which the driver then hands its guests: vz's macOS agent.
-func withExecutable(name string, config json.RawMessage) (json.RawMessage, error) {
-	def, err := machine.DefinitionOf(name)
-	if err != nil {
-		return config, nil //nolint:nilerr // an unknown driver is machine.New's to refuse
-	}
-	var fields map[string]any
-	if len(bytes.TrimSpace(config)) > 0 {
-		if err := json.Unmarshal(config, &fields); err != nil {
-			return nil, fmt.Errorf("%s: configuration: not a JSON object", name)
-		}
-	}
-	if fields == nil {
-		// No configuration, or JSON's null, which decodes to no map.
-		fields = map[string]any{}
-	}
-	changed := false
-	for _, f := range def.Current() {
-		if _, ok := fields[f.Key]; ok || !f.DefaultExecutable {
-			continue
-		}
-		exe, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("%s: configuration: %s: this executable: %w", name, f.Key, err)
-		}
-		fields[f.Key], changed = exe, true
-	}
-	if !changed {
-		return config, nil
-	}
-	return json.Marshal(fields)
+	return g.withAgents(name, config)
 }
 
 // configInEffect is the named driver's configuration as it runs with it:
@@ -255,7 +220,7 @@ func (g *globals) installHelp(root *cobra.Command) {
 			commandHelp(cmd, args)
 			return
 		}
-		if err := writeDriverHelp(cmd.OutOrStdout(), help.driver); err != nil {
+		if err := writeDriverHelp(cmd.OutOrStdout(), help.driver, g.agentDefault); err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), "disco-vm:", err)
 		}
 	})
@@ -263,8 +228,9 @@ func (g *globals) installHelp(root *cobra.Command) {
 
 // writeDriverHelp shows a driver's configuration: its base, or that it
 // takes none, its key's variables, and each current field's flag, its key in
-// --driver-config, its environment variable, and its default.
-func writeDriverHelp(w io.Writer, driver string) error {
+// --driver-config, its environment variable, and its default, which for a
+// field that names an agent is agentDefault's.
+func writeDriverHelp(w io.Writer, driver string, agentDefault func(machine.OS) string) error {
 	def, err := machine.DefinitionOf(driver)
 	if err != nil {
 		return err
@@ -277,7 +243,7 @@ func writeDriverHelp(w io.Writer, driver string) error {
 	if def.TakesBase() {
 		fmt.Fprintf(w, "\nBase ($%s, what a fresh VM is made from):\n", machine.BaseEnv)
 		fmt.Fprintf(w, "        %s\n", def.Base.Description)
-		if details := fieldDetails(*def.Base, ""); details != "" {
+		if details := fieldDetails(*def.Base, "", ""); details != "" {
 			fmt.Fprintf(w, "        (%s)\n", details)
 		}
 	} else {
@@ -301,7 +267,11 @@ func writeDriverHelp(w io.Writer, driver string) error {
 		}
 		fmt.Fprintf(w, "  %s\n", flag)
 		fmt.Fprintf(w, "        %s\n", field.Description)
-		fmt.Fprintf(w, "        (%s)\n", fieldDetails(field, "key: "+field.Key))
+		dflt := ""
+		if field.AgentOS != "" {
+			dflt = agentDefault(field.AgentOS)
+		}
+		fmt.Fprintf(w, "        (%s)\n", fieldDetails(field, "key: "+field.Key, dflt))
 	}
 	fmt.Fprintf(w, `
 A flag takes the place of its environment variable. Or give the whole
@@ -315,8 +285,9 @@ guest's data is sent: let no one set it who could not be handed both.
 	return nil
 }
 
-// fieldDetails is a field's key, variable, default, and marks, for help.
-func fieldDetails(field machine.ConfigField, key string) string {
+// fieldDetails is a field's key, variable, default, and marks, for help:
+// its Default, else agentDefault, what the command line fills it with.
+func fieldDetails(field machine.ConfigField, key, agentDefault string) string {
 	var details []string
 	if key != "" {
 		details = append(details, key)
@@ -326,8 +297,8 @@ func fieldDetails(field machine.ConfigField, key string) string {
 	}
 	if field.Default != "" {
 		details = append(details, "default: "+field.Default)
-	} else if field.DefaultExecutable {
-		details = append(details, "default: this disco-vm")
+	} else if agentDefault != "" {
+		details = append(details, "default: "+agentDefault)
 	} else if field.Placeholder != "" {
 		details = append(details, "e.g. "+field.Placeholder)
 	}

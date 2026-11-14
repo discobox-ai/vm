@@ -10,6 +10,10 @@
 //	disco-vm-release tap -tag vX.Y.Z [-print]
 //	    commit the Homebrew formula of a published full release to the tap
 //	    ($HOMEBREW_TAP_TOKEN), or print it
+//	disco-vm-release carry -agent PATH -arch ARCH -dir cmd/disco-vm/carried
+//	    put the linux disco-vm for ARCH at PATH, alone, where a build with the
+//	    carryagent tag embeds it (ADR 26-11-14-352 §1); by a release, and by
+//	    `go tool task build` on a Mac, so it takes no tag
 package main
 
 import (
@@ -21,9 +25,10 @@ import (
 	"os/signal"
 
 	"github.com/discobox-ai/vm/internal/release"
+	"github.com/discobox-ai/vm/pkg/machine/agent"
 )
 
-const usage = "usage: disco-vm-release tag|assets|publish|tap -tag vX.Y.Z [flags]"
+const usage = "usage: disco-vm-release tag|assets|publish|tap -tag vX.Y.Z [flags], or carry -agent PATH -arch ARCH -dir DIR"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -46,8 +51,23 @@ func run(ctx context.Context, args []string) error {
 	repo := fs.String("repo", env("GITHUB_REPOSITORY", "discobox-ai/vm"), "the repository released")
 	tap := fs.String("tap", "discobox-ai/homebrew-tap", "the Homebrew tap")
 	printOnly := fs.Bool("print", false, "tap: print the formula rather than commit it")
+	agentPath := fs.String("agent", "", "carry: the linux disco-vm to carry")
+	arch := fs.String("arch", "", "carry: its architecture")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
+	}
+	if cmd == "carry" {
+		// -dir is emptied first, so only what this build carries is
+		// embedded; it is named, never the release's default.
+		dirSet := false
+		fs.Visit(func(f *flag.Flag) { dirSet = dirSet || f.Name == "dir" })
+		if *agentPath == "" || *arch == "" || !dirSet || *dir == "" {
+			return errors.New("carry needs -agent, -arch, and -dir")
+		}
+		if err := os.RemoveAll(*dir); err != nil {
+			return err
+		}
+		return agent.Carry(*dir, *agentPath, "linux", *arch)
 	}
 	if err := release.CheckTag(*tag); err != nil {
 		return err

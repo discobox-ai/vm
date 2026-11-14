@@ -76,10 +76,26 @@ copies the agent off the drive and runs it, and a boot refuses an agent
 that speaks another `guest.Protocol` (ADR 26-11-13-318). A Docker guest is Linux, so from another host the
 driver's `agent` field (`$DISCO_VM_AGENT`) names a disco-vm built for it, and
 so does a Linux guest on vz, which every boot hands that agent in its initrd and refuses if it speaks
-another `guest.Protocol`; `go tool task build` builds it beside the darwin
-binary. On a Linux host the binary is static, so a libkrun guest's agent is
-the running binary, handed it the same way. Protocol changes therefore
-ship to both ends at once.
+another `guest.Protocol`. On a Linux host the binary is static, so a libkrun
+or Docker guest's agent is the running binary, handed it the same way.
+
+Every field that names an agent declares the guest OS it is for
+(`ConfigField.AgentOS`), and a driver falls back to nothing: given none, it
+refuses, naming the field. The command line fills an absent one with one
+resolver (`internal/cli`, ADR 26-11-14-352 §2): this executable if it is a
+disco-vm for that OS on this host's architecture (`agent.Check`), which is
+a Linux host's linux fields and a Mac's `macosAgent`; else the agent it
+carries, written out once (`agent.Unpack`) to an owner-only
+`cache/cli/agent/sha256-<digest>-<os>-<arch>/disco-vm` under its directory;
+else nothing. One it carries but cannot write out is nothing too, with a
+warning, so no command that needs no agent fails for it. It goes by what the files are, never by the host's OS. A
+disco-vm for a host that is not Linux, built with the `carryagent` tag,
+carries the static linux disco-vm of its own build for the host's
+architecture, gzipped beside its SHA-256 in `cmd/disco-vm/carried`
+(`agent.Carry`, `disco-vm-release carry`; not in git), which the release and
+`go tool task build` on a Mac fill first. A plain `go build`, `go install`,
+or `go test` carries nothing, and no package an embedder links carries an
+agent. Protocol changes therefore ship to both ends at once.
 
 An embedder that links the engine ships no disco-vm binary of its own:
 disco-vm publishes its agent for each module version (discobox ADR
@@ -120,7 +136,11 @@ on Linux, then `release:publish`:
   ad-hoc signed with `cmd/disco-vm/disco-vm.entitlements`, and checked for
   `com.apple.security.virtualization`; and static `disco-vm-linux-amd64`,
   `disco-vm-linux-arm64`, and `disco-vm-windows-amd64.exe`. Each that the
-  builder can run answers `--version` with the tag before it is kept.
+  builder can run answers `--version` with the tag before it is kept. The
+  darwin binary carries the linux/arm64 one, built on the Mac as the Linux
+  job builds it, and says so in `--help=vz`; the windows binary carries the
+  linux/amd64 one just built (ADR 26-11-14-352 §1). Each that carries one is
+  checked to be built with `carryagent`.
   darwin/amd64 is not built, because vz's macOS guests need Apple silicon.
 - **`checksums.txt`** (`sha256sum`'s format), and **`install.sh` and
   `install.ps1`**, stamped with the tag and each binary's SHA-256
@@ -146,9 +166,10 @@ on Linux, then `release:publish`:
   anything.
 
 Neither channel quarantines what it downloads, so the ad-hoc signed darwin
-binary runs a vz VM as installed. A Linux guest on vz, or a Docker guest from
-a Mac, needs a linux agent of the same version as its driver's `agent`: the
-release's `disco-vm-linux-arm64` (or `-amd64`) is that agent.
+binary runs a vz VM as installed, and since it carries its linux agent, a
+Linux guest on vz and a Docker guest too, with `DISCO_VM_AGENT` unset. Each
+channel installs the one file, whose SHA-256 and signature cover the agent
+it carries.
 
 ## The engine keeps no state, and a driver keeps it in its provider
 
@@ -317,6 +338,7 @@ docker and archil) are theirs, not built here.
 | the agent published per module version and pulled by its digest (`agent.Pull`; `go tool task test:agent`, the `agent` CI job; the `Agent` workflow): an index per module version of linux/amd64, linux/arm64, and darwin/arm64, each platform's agent pulled into an owner-only cache once, used with no registry, and a tag, an OS published for none, a platform the index lacks, a single image for another platform, no agent, or one that is not an executable for its platform (another architecture's ELF, an ELF or a script as darwin's, a Mach-O library or another architecture's Mach-O) refused (`TestPull`, `TestCheck`, every OS); what a push published pulled back anonymously by digest, every platform it lists checked, and the host's run at its version (`TestPullPublishedAgent`), and every commit of a push published once, one published before darwin checked for its linux agents (`scripts/release-agent.sh`) | ✅ `TestPull`, `TestCheck`; ✅ `test:agent`, a registry on localhost, darwin/arm64 a Mach-O arm64 executable (2026-11-14); ✅ two commits published to a local registry and a second run skipping both, by hand (2026-11-12); ⬜ a release to ghcr | n/a | ⬜ a Linux guest booted on a pulled agent; ⬜ a macOS guest's drive carrying the pulled darwin agent | n/a | ✅ a VM of `debian:trixie` run with an agent pulled by digest from a local registry, `exec` served by it at its module version, by hand (2026-11-12) | n/a | ✅ a VM booted with `$DISCO_VM_AGENT` the linux/amd64 agent `agent.Pull` took from a local registry, the guest running it at its pushed version, and the darwin/arm64 one from the same index refused at start as no linux executable, by hand (2026-11-14) |
 | a tag publishes the release (ADR 26-11-13-679): the four binaries, each that the builder runs answering `--version` with the tag, darwin's signature checked for its entitlement; `checksums.txt`; stamped installers; a release made a draft, given every file, then published, a prerelease for an `-alpha`/`-rc` tag, a draft left by a failed run finished, and a published release left alone; a full release's formula written from the published checksums and committed to the tap once, a prerelease's never (`go tool task release:build`, the `release` and `macos` CI jobs; `internal/release` `TestPublish*`, `TestTheTapIsToldWhatTheReleaseUploaded`, against a fake of GitHub's API) | ✅ the units; ✅ `release:build` on Linux amd64, by hand in a discobox (2026-11-14); ⬜ a tag's `Release` workflow | n/a | ⬜ `release:build` on a Mac (the `macos` CI job) | n/a | n/a | n/a | n/a |
 | each channel installs a release (ADR 26-11-13-679): the stamped installer installs its own release, checked by digest and by `--version`; hands another version, with or without its `v`, to that release's installer; from the tree hands over to the newest full release; refuses a binary of another digest, a second hand-over, and a version that is not one (`internal/release` installer tests: `install.sh` off Windows, `install.ps1` under every PowerShell on Windows); `brew install discobox-ai/tap/disco-vm` | ✅ `install.sh` on Linux against a fake of GitHub's release downloads; ✅ by hand in a discobox (2026-11-14): a `v9.9.9` built by `release:build` and `assets` (a stand-in for darwin), served as GitHub lays a release out, installed by `curl .../latest/download/install.sh \| sh` and by the tree's installer with `--version 9.9.9`, its `checksums.txt` passing `sha256sum -c`; ⬜ `install.ps1` (the `windows` CI job); ⬜ a published release, by either installer or by Homebrew | ⬜ a release installed by `install.ps1` runs | ⬜ a release installed by `install.sh` and by Homebrew runs a vz VM without re-signing | n/a | ✅ by hand in a discobox (2026-11-14): the `linux/amd64` binary that `install.sh` installed from that stand-in `v9.9.9` ran a `debian:trixie` VM as its own agent, and `exec` reached it | n/a | n/a |
+| every Linux agent field filled by the command line (ADR 26-11-14-352): itself where it is a linux disco-vm for this host's architecture, else the agent it carries, written out once, owner-only, under its directory, and checked against its recorded SHA-256 and platform, else nothing, which the driver refuses naming the field; `--help=DRIVER` says which; a release's darwin and windows binaries built with `carryagent` (`internal/cli` TestAgentFieldDefaults, TestAgentFieldHelp; `pkg/machine/agent` TestUnpack, TestUnpackRefuses; docker and libkrun TestNoAgentIsNoFallback; `go tool task release:build`) | n/a (its own agent) | n/a | ⬜ a Mac with a released install, `DISCO_VM_AGENT` unset, booting the default Linux base and serving `exec` | n/a | ✅ by hand on Linux (2026-11-14, Docker 29.9.3, debian:sid): the static build with `DISCO_VM_AGENT` unset fills `agent` with itself (`info`), readies the base with it, and serves `exec`; `--docker-agent ''` refused naming `$DISCO_VM_AGENT`; ⬜ the carried agent from a Mac or Windows | n/a | ✅ by hand on Linux amd64 with KVM (2026-11-14): with `DISCO_VM_AGENT` unset the command line hands the shim its own path in its configuration file, and the guest boots and serves `exec`; `--libkrun-agent ''` refused naming `$DISCO_VM_AGENT` |
 | a libkrun runtime that verifies itself in its build (its launcher run through its own loader in an empty filesystem), pulled by digest and run before it is cached, a broken one refused, and one for another launch configuration refused naming both (`go tool task build:krun-runtime`; `pkg/machine/libkrun` TestPullRuntime, TestCheckRuntime) | n/a | n/a | n/a | n/a | n/a | n/a | ✅ `linux/amd64` built and verified by hand (2026-11-03); ✅ the pull and refusals by unit; ⬜ a published `krun/v*` release |
 | a libkrun VM powers off through its agent, dies with its shim, and on passt takes a DHCP lease for `eth0`, and DNS from a host resolver off its loopback (ADR 26-11-03-530 Consequences; since discobox ADR 26-11-11-963 §11, none from one on it) | n/a | n/a | n/a | n/a | n/a | n/a | ✅ by hand (2026-11-03): `stop` in 0.4 s, the kernel's power-off a reset libkrun exits on; the launcher gone 0.2 s after the shim's SIGKILL; 10.0.2.15/24, its route, and DNS 10.0.2.3 in a network namespace with a default route (the discobox host has none, so passt offers no lease there); again on passt's new arguments by hand (2026-11-12): 10.77.0.2/24 and its route in such a namespace, DNS 10.77.0.1 from a host resolver at 10.77.0.1, and none from one at 127.0.0.53 |
 | a libkrun VM on passt reaches nothing on the host's loopback and is forwarded no host port (discobox ADR 26-11-11-963 §11; `pkg/machine/libkrun` TestPasstReachesNoHostLoopback) | n/a | n/a | n/a | n/a | n/a | n/a | ✅ `TestPasstReachesNoHostLoopback` on Linux amd64 with KVM, in a network namespace with a default route, in a discobox (2026-11-12): its gateway refuses a port the host serves on 127.0.0.1, and the host's 127.0.0.1 refuses a port the guest serves; the same test fails on passt's old arguments (the guest read the host's loopback service through its gateway) and on `--tcp-ports all`; by hand, a host resolver on loopback gives the guest no DNS server, and one off it is the guest's; ⬜ a published `krun/v*` runtime, and `DefaultRuntime` pinned by digest |

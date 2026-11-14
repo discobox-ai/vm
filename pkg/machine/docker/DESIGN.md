@@ -17,7 +17,8 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   26-11-03-606). There is no install, and with no base a fresh VM is
   `ErrUnsupported`. A fresh Create pulls the image, adds systemd and the
   agent (the configuration's `agent`, `$DISCO_VM_AGENT` to the command line,
-  or this binary on linux), chowns its files into
+  which sets it to itself on linux and to the linux disco-vm it carries
+  elsewhere; the driver falls back to nothing), chowns its files into
   the guest's uids, and commits that as the VM's own Docker image,
   `disco-vm-base:<pool>--<name>--<random>`, which Destroy removes with
   every other such tag of the name older than a readying could be that no

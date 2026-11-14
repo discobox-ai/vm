@@ -23,8 +23,9 @@ type Config struct {
 	// DefaultRuntime: one `go tool task build:krun-runtime` built from the
 	// checkout. It must be absolute.
 	Runtime string `json:"runtime,omitempty"`
-	// Agent is the disco-vm a boot hands the guest as its agent, in place
-	// of the running binary: a test's, whose own binary is not disco-vm.
+	// Agent is the static linux disco-vm a boot hands the guest as its
+	// agent. The command line sets it to itself (ADR 26-11-14-352 §2); a
+	// test, whose own binary is not disco-vm, and an embedder name one.
 	Agent string `json:"agent,omitempty"`
 }
 
@@ -37,8 +38,8 @@ func Definition() machine.Definition {
 		ConfigFields: []machine.ConfigField{
 			{Key: "runtime", Label: "Runtime", Type: machine.ConfigString, Env: RuntimeEnv, Advanced: true, Privileged: true,
 				Description: "An absolute runtime directory (the launcher, passt, and libkrun) to run as it is; empty is " + DefaultRuntime + ", pulled into the cache."},
-			{Key: "agent", Label: "Agent", Type: machine.ConfigString, Env: AgentEnv, Advanced: true, Privileged: true,
-				Description: "The absolute path of the static linux disco-vm a boot hands the guest as its agent; empty is this binary."},
+			{Key: "agent", Label: "Agent", Type: machine.ConfigString, Env: AgentEnv, Advanced: true, Privileged: true, AgentOS: machine.Linux,
+				Description: "The absolute path of the static linux disco-vm a boot hands the guest as its agent; the command line sets it to itself."},
 		},
 	}
 }

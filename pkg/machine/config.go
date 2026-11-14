@@ -33,7 +33,7 @@ const BaseEnv = "DISCO_VM_BASE"
 // (Config.DriverConfig): a key of its JSON object (ADR 26-11-11-215). Its
 // shape is discobox's sandbox.ProviderConfigField, so a provider that
 // embeds the engine can list a driver's fields as its own, plus Default,
-// Env, Privileged, DefaultExecutable, and Retired.
+// Env, Privileged, AgentOS, and Retired.
 type ConfigField struct {
 	// Key is the field's key in the JSON object, in lowerCamelCase.
 	Key string `json:"key"`
@@ -62,10 +62,13 @@ type ConfigField struct {
 	// sent to. An embedder lets no one set one who could not be handed the
 	// key and the host.
 	Privileged bool `json:"privileged,omitempty"`
-	// DefaultExecutable fields name a disco-vm the driver hands its guests:
-	// absent, the command line, which is one, sets the field to its own
-	// executable. An embedder that is not disco-vm sets it itself.
-	DefaultExecutable bool `json:"defaultExecutable,omitempty"`
+	// AgentOS is set on a field that names a disco-vm the driver hands its
+	// guests as their agent, and is the OS that agent is built for (ADR
+	// 26-11-14-352 §2): absent, the command line sets the field to a
+	// disco-vm for that OS on this host's architecture, itself or the one
+	// it carries, and leaves it absent when it has neither. An embedder that
+	// is not disco-vm sets it itself.
+	AgentOS OS `json:"agentOS,omitempty"`
 	// Retired fields are accepted for good and listed nowhere a person
 	// reads: decoded into ReplacedBy's field, or, with none, ignored with a
 	// warning. One given beside its replacement is refused.
@@ -152,8 +155,14 @@ func (d Definition) check() error {
 		if f.ReplacedBy != "" && !f.Retired {
 			return fmt.Errorf("field %q is replaced but not retired", f.Key)
 		}
-		if f.DefaultExecutable && (f.Type != ConfigString || !f.Privileged || f.Default != "") {
-			return fmt.Errorf("field %q defaults to the executable, so it is a privileged string with no Default", f.Key)
+		switch f.AgentOS {
+		case "":
+		case Linux, Darwin, Windows:
+			if f.Type != ConfigString || !f.Privileged || f.Default != "" {
+				return fmt.Errorf("field %q names an agent, so it is a privileged string with no Default", f.Key)
+			}
+		default:
+			return fmt.Errorf("field %q names an agent for %q, which is no guest OS", f.Key, f.AgentOS)
 		}
 	}
 	for _, f := range d.ConfigFields {

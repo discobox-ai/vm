@@ -1,6 +1,7 @@
 // Package agent is disco-vm's published guest agent (discobox ADR
 // 26-11-11-963 §10, ADR 26-11-13-318 §3) as a host holds it: the index an
-// embedder pins by digest and pulls a platform's agent from (Pull), and the
+// embedder pins by digest and pulls a platform's agent from (Pull), the agent
+// a disco-vm carries (Carry) written out beside those (Unpack), and the
 // one check every hypervisor makes of an agent before it hands it a guest
 // (Check). It is pure Go, so it builds and is tested on every OS.
 package agent
@@ -59,13 +60,11 @@ func Pull(ctx context.Context, cacheDir, ref, goos, arch string) (string, error)
 	if _, ok := executables[goos]; !ok {
 		return "", fmt.Errorf("agent image %s: disco-vm publishes no agent for %s", ref, goos)
 	}
-	// Check takes an absolute path alone.
-	if cacheDir, err = filepath.Abs(cacheDir); err != nil {
+	entry := hash.Algorithm + "-" + hash.Hex + "-" + goos + "-" + arch
+	agent, err := cached(cacheDir, entry)
+	if err != nil {
 		return "", err
 	}
-	root := filepath.Join(cacheDir, "agent")
-	dir := filepath.Join(root, hash.Algorithm+"-"+hash.Hex+"-"+goos+"-"+arch)
-	agent := filepath.Join(dir, File)
 	if Check(agent, goos, arch) == nil {
 		return agent, nil
 	}
@@ -85,6 +84,41 @@ func Pull(ctx context.Context, cacheDir, ref, goos, arch string) (string, error)
 	if config.OS != goos || config.Architecture != arch {
 		return "", fmt.Errorf("agent image %s is for %s/%s, not %s/%s", ref, config.OS, config.Architecture, goos, arch)
 	}
+	agent, err = place(cacheDir, entry, goos, arch, func(dst string) error {
+		found, err := extract(mutate.Extract(img), dst)
+		if err == nil && !found {
+			err = fmt.Errorf("it holds no %s", File)
+		}
+		return err
+	})
+	if err != nil {
+		return "", fmt.Errorf("agent image %s: %w", ref, err)
+	}
+	return agent, nil
+}
+
+// cached is where the agent of the entry is in cacheDir: absolute, since Check
+// takes an absolute path alone (a relative cacheDir is taken from the working
+// directory).
+func cached(cacheDir, entry string) (string, error) {
+	cacheDir, err := filepath.Abs(cacheDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cacheDir, "agent", entry, File), nil
+}
+
+// place writes an agent with write into a temporary directory of
+// cacheDir/agent, checks it is a goos/arch executable, and moves it to
+// cacheDir/agent/<entry>/disco-vm, unless a good one is there by then, and
+// returns that path.
+func place(cacheDir, entry, goos, arch string, write func(dst string) error) (string, error) {
+	agent, err := cached(cacheDir, entry)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(agent)
+	root := filepath.Dir(dir)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", err
 	}
@@ -97,24 +131,20 @@ func Pull(ctx context.Context, cacheDir, ref, goos, arch string) (string, error)
 		return "", err
 	}
 	defer os.RemoveAll(tmp)
-	found, err := extract(mutate.Extract(img), filepath.Join(tmp, File))
-	if err != nil {
-		return "", fmt.Errorf("agent image %s: %w", ref, err)
-	}
-	if !found {
-		return "", fmt.Errorf("agent image %s holds no %s", ref, File)
+	if err := write(filepath.Join(tmp, File)); err != nil {
+		return "", err
 	}
 	if err := Check(filepath.Join(tmp, File), goos, arch); err != nil {
-		return "", fmt.Errorf("agent image %s: %w", ref, err)
+		return "", err
 	}
-	// A broken pull of the same digest is replaced; a good one, which a
+	// A broken agent of the same entry is replaced; a good one, which a
 	// concurrent pull may have just returned and a boot be reading, is not.
 	if Check(agent, goos, arch) == nil {
 		return agent, nil
 	}
 	_ = os.RemoveAll(dir)
 	if err := os.Rename(tmp, dir); err != nil {
-		// Another pull of the same digest won.
+		// Another of the same entry won.
 		if Check(agent, goos, arch) == nil {
 			return agent, nil
 		}

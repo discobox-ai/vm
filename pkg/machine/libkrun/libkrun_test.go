@@ -77,6 +77,14 @@ share src ro /home/me/src
 	}
 }
 
+// A boot given no agent refuses, naming where it is configured: it falls
+// back to nothing (ADR 26-11-14-352 §3).
+func TestNoAgentIsNoFallback(t *testing.T) {
+	if _, err := (&Hypervisor{}).agentBinary(); err == nil || !strings.Contains(err.Error(), AgentEnv) {
+		t.Fatalf("agentBinary: %v, want a refusal naming $%s", err, AgentEnv)
+	}
+}
+
 // A copy where the filesystem has no reflinks keeps the source's holes.
 func TestCopyFileSparse(t *testing.T) {
 	dir := t.TempDir()
@@ -342,7 +350,13 @@ func TestPrepareCommitBoot(t *testing.T) {
 	usableKVM(t)
 	ctx := context.Background()
 	rt := writeRuntime(t, fakeRuntime(t, launchVersion, "echo 'krun-launch: krun_start_enter: Operation not permitted' >&2; exit 1"))
-	h := newHypervisor(machine.Config{Base: guestDir(t)}, Config{Runtime: rt})
+	// The boot fails before any guest runs, so this test's own linux
+	// executable stands in for the agent the command line names.
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHypervisor(machine.Config{Base: guestDir(t)}, Config{Runtime: rt, Agent: self})
 	root := t.TempDir()
 	fresh := local.InstanceSpec{ID: "a", Dir: filepath.Join(root, "a"), GuestOS: machine.Linux, CacheDir: filepath.Join(root, "cache")}
 	agentForward := fresh
@@ -380,7 +394,7 @@ func TestPrepareCommitBoot(t *testing.T) {
 	copied.Egress = &machine.Egress{}
 	copied.Forwards = []machine.Forward{{Port: 7402, Socket: "/nowhere"}}
 	var console bytes.Buffer
-	_, err := h.Boot(ctx, copied, local.BootOptions{Console: &console})
+	_, err = h.Boot(ctx, copied, local.BootOptions{Console: &console})
 	if err == nil || !strings.Contains(err.Error(), "krun_start_enter: Operation not permitted") {
 		t.Fatalf("a launcher that fails: %v, want its standard error", err)
 	}

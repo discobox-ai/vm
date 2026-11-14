@@ -105,8 +105,9 @@ a sparse copy of the blocks in use. `Chains` is false.
 
 1. The host is checked, the runtime found (or pulled, if it was removed behind
    the driver's back), and the agent appended to the image's initrd. The
-   agent is the running disco-vm, a static linux/amd64 executable, or
-   the configured one (`--libkrun-agent`, `$DISCO_VM_AGENT`; a test's). The initrd is padded to a page, since
+   agent is the configured one (`--libkrun-agent`, `$DISCO_VM_AGENT`; a
+   test's), which the command line sets to itself, a static linux/amd64
+   executable (ADR 26-11-14-352 §2); with none, the boot is refused. The initrd is padded to a page, since
    libkrun ends it on one and the kernel frees it from its start.
 2. The vsock sockets are made in the instance's directory, or in a private
    temporary one when that path is too long for a Unix socket:
