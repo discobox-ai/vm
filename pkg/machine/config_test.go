@@ -68,7 +68,7 @@ func TestPrivileged(t *testing.T) {
 		"fake":    {"agent"},
 		"hcs":     nil,
 		"libkrun": {"agent", "base", "runtime"},
-		"vz":      {"agent", "base"},
+		"vz":      {"agent", "base", "macosAgent"},
 	}
 	for _, name := range machine.Names() {
 		if name == testDriver {
@@ -341,6 +341,10 @@ func TestRegistration(t *testing.T) {
 			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Endpoint: "plain", Header: "A"})},
 		"a send to a field with no default and no hosts": {New: newFn, Validate: validate,
 			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Endpoint: "bare", Header: "A"})},
+		"the executable in a field not privileged": {New: newFn, Validate: validate,
+			Definition: machine.Definition{ConfigFields: []machine.ConfigField{{Key: "a", Type: machine.ConfigString, DefaultExecutable: true}}}},
+		"the executable in a field with a default": {New: newFn, Validate: validate,
+			Definition: machine.Definition{ConfigFields: []machine.ConfigField{{Key: "a", Type: machine.ConfigString, Privileged: true, Default: "/x", DefaultExecutable: true}}}},
 		"a send to a relative path": {New: newFn, Validate: validate,
 			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Endpoint: "url", Path: "api/", Header: "A"})},
 	} {

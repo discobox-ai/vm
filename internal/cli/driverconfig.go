@@ -88,7 +88,11 @@ func (g *globals) driverConfig(name string) (json.RawMessage, error) {
 		if len(set) > 0 {
 			return nil, fmt.Errorf("--driver-config cannot be combined with --%s", set[0].flag.Name)
 		}
-		return readConfigArg(g.config)
+		config, err := readConfigArg(g.config)
+		if err != nil {
+			return nil, err
+		}
+		return withExecutable(name, config)
 	}
 	values := machine.ConfigFromEnv(name)
 	for _, f := range set {
@@ -104,7 +108,46 @@ func (g *globals) driverConfig(name string) (json.RawMessage, error) {
 			}
 		}
 	}
-	return machine.ConfigFromValues(name, values)
+	config, err := machine.ConfigFromValues(name, values)
+	if err != nil {
+		return nil, err
+	}
+	return withExecutable(name, config)
+}
+
+// withExecutable sets each field of the named driver's that defaults to the
+// executable (ConfigField.DefaultExecutable) and that config leaves out to
+// this disco-vm, which the driver then hands its guests: vz's macOS agent.
+func withExecutable(name string, config json.RawMessage) (json.RawMessage, error) {
+	def, err := machine.DefinitionOf(name)
+	if err != nil {
+		return config, nil //nolint:nilerr // an unknown driver is machine.New's to refuse
+	}
+	var fields map[string]any
+	if len(bytes.TrimSpace(config)) > 0 {
+		if err := json.Unmarshal(config, &fields); err != nil {
+			return nil, fmt.Errorf("%s: configuration: not a JSON object", name)
+		}
+	}
+	if fields == nil {
+		// No configuration, or JSON's null, which decodes to no map.
+		fields = map[string]any{}
+	}
+	changed := false
+	for _, f := range def.Current() {
+		if _, ok := fields[f.Key]; ok || !f.DefaultExecutable {
+			continue
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("%s: configuration: %s: this executable: %w", name, f.Key, err)
+		}
+		fields[f.Key], changed = exe, true
+	}
+	if !changed {
+		return config, nil
+	}
+	return json.Marshal(fields)
 }
 
 // configInEffect is the named driver's configuration as it runs with it:
@@ -283,6 +326,8 @@ func fieldDetails(field machine.ConfigField, key string) string {
 	}
 	if field.Default != "" {
 		details = append(details, "default: "+field.Default)
+	} else if field.DefaultExecutable {
+		details = append(details, "default: this disco-vm")
 	} else if field.Placeholder != "" {
 		details = append(details, "e.g. "+field.Placeholder)
 	}
