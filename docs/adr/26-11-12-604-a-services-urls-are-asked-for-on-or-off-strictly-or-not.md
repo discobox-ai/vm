@@ -1,7 +1,10 @@
 # 26-11-12-604 — A service's URLs are asked for, on or off, strictly or not
 
 - **Status**: Accepted (by the owner, 2026-11-12, while delivering
-  discobox-ai/discobox#1049)
+  discobox-ai/discobox#1049; §1 and §2's scope names, internal, private
+  and public, §2's reach table, and that a URL on the engine's host alone
+  is not public, superseded by
+  [26-11-14-610](26-11-14-610-a-services-urls-are-named-by-who-reaches-them-ingress-and-pool-and-a-caller-asks-for-the-one-it-means.md))
 - **Date**: 2026-11-12
 - **Supersedes in part**: 26-10-29-129 §1, that `Service.URL` is every
   instance's public URL; 0005, that every instance has one HTTP URL

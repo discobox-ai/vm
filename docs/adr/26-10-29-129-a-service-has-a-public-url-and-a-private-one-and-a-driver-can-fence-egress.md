@@ -2,7 +2,9 @@
 
 - **Status**: Accepted (§2's vz listing no `Egress`, and `Capabilities.Egress`
   as a bool, superseded by 26-10-31-990; §1's `URL` as every instance's public
-  URL superseded by 26-11-12-604)
+  URL superseded by 26-11-12-604; §1's names `URL` and `PrivateURL`,
+  `Engine.PrivateURL`, and `disco-vm url --private` superseded by
+  [26-11-14-610](26-11-14-610-a-services-urls-are-named-by-who-reaches-them-ingress-and-pool-and-a-caller-asks-for-the-one-it-means.md))
 - **Date**: 2026-10-29
 
 ## Context
