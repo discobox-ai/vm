@@ -270,7 +270,7 @@ tasks:
       DISCO_VM_AGENT:
         sh: echo "${DISCO_VM_AGENT:-{{.ROOT_DIR}}/build/linux-{{ARCH}}/disco-vm}"
     cmds:
-      - caffeinate -d go test -exec {{.ROOT_DIR}}/scripts/codesign-exec -timeout 4h -v -run 'TestConformance|TestLinuxBesideMacOS|TestNoRouteOffTheMachine' ./pkg/machine/vz
+      - caffeinate -d go test -exec {{.ROOT_DIR}}/scripts/codesign-exec -timeout 4h -v -run 'TestConformance|TestLinuxBesideMacOS|TestNoRouteOffTheMachine|TestMacOSAgentFromTheDrive' ./pkg/machine/vz
 
   # internal/e2e against vz: the signed binary, and a state root that keeps its
   # base install between runs (the first run installs macOS).
