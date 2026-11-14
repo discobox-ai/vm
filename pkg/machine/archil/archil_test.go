@@ -97,8 +97,16 @@ func TestFences(t *testing.T) {
 // resends a frame from before the cursor, writes to stderr, and exits 3.
 func fakeArchil(t *testing.T) *api {
 	t.Helper()
+	srv := fakeArchilServer(t, httptest.NewServer)
+	return &api{base: srv.URL, keys: machine.StaticKey(machine.Key{Secret: "secret"}), http: srv.Client()}
+}
+
+// fakeArchilServer is fakeArchil's server, started by start: httptest's
+// NewServer, or NewTLSServer for one whose process API is at a wss:// URL.
+func fakeArchilServer(t *testing.T, start func(http.Handler) *httptest.Server) *httptest.Server {
+	t.Helper()
 	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv = start(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/sandboxes/sb1/connections":
 			if r.Header.Get("Authorization") != "Bearer key-secret" {
@@ -106,7 +114,9 @@ func fakeArchil(t *testing.T) *api {
 				_, _ = io.WriteString(w, `{"success":false,"error":"no"}`)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]string{"url": "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"}})
+			if err := json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]string{"url": "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"}}); err != nil {
+				t.Error(err)
+			}
 		case "/ws":
 			c, err := websocket.Accept(w, r, nil)
 			if err != nil {
@@ -156,7 +166,7 @@ func fakeArchil(t *testing.T) *api {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &api{base: srv.URL, keys: machine.StaticKey(machine.Key{Secret: "secret"}), http: srv.Client()}
+	return srv
 }
 
 func TestProcess(t *testing.T) {
@@ -248,7 +258,9 @@ func fakeCopy(t *testing.T, blob []byte, drop bool, killed *atomic.Bool) *api {
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/sandboxes/sb1/connections":
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]string{"url": "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"}})
+			if err := json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]string{"url": "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"}}); err != nil {
+				t.Error(err)
+			}
 		case "/ws":
 			c, err := websocket.Accept(w, r, nil)
 			if err != nil {

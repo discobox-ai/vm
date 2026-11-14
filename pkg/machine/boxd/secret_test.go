@@ -3,6 +3,7 @@ package boxd
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,8 +14,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -145,6 +148,13 @@ func configured(t *testing.T, config json.RawMessage, keys machine.KeySource, di
 		t.Fatal(err)
 	}
 	d.api.creds = insecure.NewCredentials()
+	closeConns(t, d)
+	return d
+}
+
+// closeConns closes the driver's gRPC connections when the test ends.
+func closeConns(t *testing.T, d *Driver) {
+	t.Helper()
 	t.Cleanup(func() {
 		d.api.dialMu.Lock()
 		defer d.api.dialMu.Unlock()
@@ -152,7 +162,81 @@ func configured(t *testing.T, config json.RawMessage, keys machine.KeySource, di
 			_ = conn.Close()
 		}
 	})
-	return d
+}
+
+// TestTheEmbeddersRootsAreTrusted serves the token exchange and the API, at
+// the home endpoint and a region's, over TLS with a certificate from a
+// private CA, and drives boxd there with an API key and with a token: with
+// the CA in machine.Config.RootCAs every call succeeds, and with none the
+// system's roots refuse the exchange (an API key) or the gRPC API (a token).
+func TestTheEmbeddersRootsAreTrusted(t *testing.T) {
+	const apiKey = "bxd_the-real-key" //nolint:gosec // G101: a stand-in a test sends, not a credential
+	home := newFakeAPI(t.TempDir())
+	home.region = "fra"
+	homeTLS := serveFakeTLS(t, home)
+	tokens := httptest.NewTLSServer(http.HandlerFunc(home.serveTokens))
+	t.Cleanup(tokens.Close)
+	home.tokenURL = tokens.URL + "/api/v1/auth/token"
+	region := newFakeAPI(t.TempDir())
+	region.region, region.account, region.tokenURL = "nyc", home, home.tokenURL
+	regionTLS := serveFakeTLS(t, region)
+	home.regions = []*boxdapi.Region{
+		{Id: "fra", ApiEndpoint: home.addr, Home: true, OrgState: "enabled"},
+		{Id: "nyc", ApiEndpoint: "https://" + region.addr, OrgState: "enabled"},
+	}
+	home.mu.Lock()
+	home.keys.byID["key_ci"] = &fakeKey{id: "key_ci", name: "ci", secret: apiKey, kind: "member"}
+	home.mu.Unlock()
+	roots := x509.NewCertPool()
+	for _, srv := range []*httptest.Server{homeTLS, tokens, regionTLS} {
+		roots.AddCert(srv.Certificate())
+	}
+
+	config := json.RawMessage(fmt.Sprintf(`{"addr":%q,"tokenUrl":%q,"region":"nyc"}`, home.addr, home.tokenURL))
+	for _, key := range []string{apiKey, fakeSession} {
+		for _, trusted := range []*x509.CertPool{roots, nil} {
+			d, err := New(machine.Config{DriverConfig: config, Keys: machine.StaticKey(machine.Key{Driver: "boxd", Secret: key}), RootCAs: trusted})
+			if err != nil {
+				t.Fatal(err)
+			}
+			closeConns(t, d)
+			err = d.Check(t.Context())
+			switch {
+			case trusted != nil && err != nil:
+				t.Fatalf("%s with the CA in RootCAs: %v", key, err)
+			case trusted == nil && (err == nil || !strings.Contains(err.Error(), "tls: failed to verify certificate")):
+				t.Fatalf("%s with no RootCAs: %v, want the system's roots to refuse the private CA", key, err)
+			}
+		}
+	}
+	if regionTLS.Config.Handler.(*countingHandler).calls.Load() == 0 {
+		t.Fatal("no call reached the region's endpoint")
+	}
+}
+
+// serveFakeTLS serves fake's API over TLS on loopback, at fake.addr, with
+// httptest's certificate, which the returned server's Certificate issued.
+func serveFakeTLS(t *testing.T, fake *fakeAPI) *httptest.Server {
+	t.Helper()
+	server := grpc.NewServer(grpc.UnaryInterceptor(fake.unaryAuth), grpc.StreamInterceptor(fake.streamAuth))
+	boxdapi.RegisterBoxdApiServer(server, fake)
+	srv := httptest.NewUnstartedServer(&countingHandler{next: server})
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(func() { server.Stop(); srv.Close() })
+	fake.addr = srv.Listener.Addr().String()
+	return srv
+}
+
+// countingHandler counts the requests it passes on.
+type countingHandler struct {
+	next  http.Handler
+	calls atomic.Int64
+}
+
+func (h *countingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.calls.Add(1)
+	h.next.ServeHTTP(w, r)
 }
 
 // sendOf is the send of a secret's form: the one whose Prefix it starts

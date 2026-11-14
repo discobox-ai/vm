@@ -2,10 +2,13 @@ package machine_test
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -158,5 +161,42 @@ func TestAnEmbeddersDialerReadsNoProxy(t *testing.T) {
 	}
 	if err == nil || dialed != "control.example:443" {
 		t.Fatalf("dialed %q (%v), want the service's own address", dialed, err)
+	}
+}
+
+// TestAnEmbeddersRootsAreTrusted: with Config.RootCAs set, an HTTPS service
+// whose certificate a private CA issued is trusted through HTTPTransport,
+// and gRPC's TLS from TLSConfig trusts the same roots; with none, the
+// system's roots refuse it.
+func TestAnEmbeddersRootsAreTrusted(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(srv.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	get := func(c machine.Config) error {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := (&http.Client{Transport: c.HTTPTransport()}).Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		return err
+	}
+	if err := get(machine.Config{RootCAs: roots}); err != nil {
+		t.Fatalf("with the CA in RootCAs: %v", err)
+	}
+	if err := get(machine.Config{}); err == nil || !strings.Contains(err.Error(), "tls: failed to verify certificate") {
+		t.Fatalf("with no RootCAs: %v, want the system's roots to refuse the private CA", err)
+	}
+	conf := machine.Config{RootCAs: roots}.TLSConfig()
+	if conf.RootCAs != roots || conf.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("TLSConfig %+v, want RootCAs and TLS 1.2 or later", conf)
+	}
+	if (machine.Config{}).TLSConfig().RootCAs != nil {
+		t.Fatal("with no RootCAs, TLSConfig trusts other than the system's roots")
 	}
 }

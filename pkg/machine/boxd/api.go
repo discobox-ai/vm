@@ -3,7 +3,6 @@ package boxd
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,7 +92,7 @@ func newClient(conf Config, cfg machine.Config) *client {
 		tokenURL: conf.TokenURL,
 		region:   conf.Region,
 		keys:     cfg.Keys,
-		creds:    credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}),
+		creds:    credentials.NewTLS(cfg.TLSConfig()),
 		http:     &http.Client{Transport: cfg.HTTPTransport()},
 	}
 	if c.keys == nil && conf.InMachine {
