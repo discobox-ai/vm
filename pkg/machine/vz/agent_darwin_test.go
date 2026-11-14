@@ -34,7 +34,8 @@ func TestAgentDriveOnMacOS(t *testing.T) {
 	if out, err := exec.CommandContext(ctx, "hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", mnt, iso).CombinedOutput(); err != nil {
 		t.Fatalf("hdiutil attach: %v\n%s", err, out)
 	}
-	t.Cleanup(func() { _ = exec.Command("hdiutil", "detach", "-force", mnt).Run() })
+	// The test's context is done by the time cleanup runs.
+	t.Cleanup(func() { _ = exec.CommandContext(context.Background(), "hdiutil", "detach", "-force", mnt).Run() })
 	got, err := os.ReadFile(filepath.Join(mnt, driveAgent))
 	if err != nil {
 		t.Fatal(err)
