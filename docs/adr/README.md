@@ -44,4 +44,5 @@ Follow `template.md` and the `repostd` skill.
 | [26-11-12-604](26-11-12-604-a-services-urls-are-asked-for-on-or-off-strictly-or-not.md) | A service's URLs are asked for, on or off, strictly or not | Accepted (by the owner, 2026-11-12, while delivering discobox-ai/discobox#1049) |
 | [26-11-13-318](26-11-13-318-a-macos-guest-boots-its-agent-from-a-read-only-drive-the-host-attaches-at-every-boot.md) | A macOS guest boots its agent from a read-only drive the host attaches at every boot, and its base carries only a launchd stub | Accepted |
 | [26-11-13-679](26-11-13-679-a-tag-publishes-disco-vms-binaries-an-installer-and-a-homebrew-formula.md) | A tag publishes disco-vm's binaries, an installer, and a Homebrew formula | Proposed |
+| [26-11-14-816](26-11-14-816-hcs-installs-windows-inside-the-vm-from-the-iso-and-attaches-and-mounts-nothing-on-the-host.md) | hcs installs Windows inside the VM from the ISO, and attaches and mounts nothing on the host | Proposed |
 <!-- /repostd:adr-index -->
