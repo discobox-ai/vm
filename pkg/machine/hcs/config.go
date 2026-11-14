@@ -41,7 +41,7 @@ func decode(config json.RawMessage) (Config, error) {
 		return cfg, err
 	}
 	if cfg.View != "" && cfg.View != ViewDisplay {
-		return cfg, fmt.Errorf("hcs: configuration: view: %q is not empty or %q", cfg.View, ViewDisplay)
+		return cfg, fmt.Errorf("hcs: configuration: view: not empty or %q", ViewDisplay)
 	}
 	return cfg, nil
 }

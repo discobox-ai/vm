@@ -15,10 +15,17 @@
   every test on hcs, vz, and fake, whose hypervisors connect to any port at
   any time, and fails only on libkrun, which maps ports before its VM starts
   and never after.
-- **A window reaches the guest's display through the shim's `/display`
-  alone** (ADR 26-11-11-746). The display stream is guest port 7301, which
-  no caller dials: adding it to `DialablePort` would hand a Windows desktop
-  and its input to every `disco-vm dial` and peer forward.
+- **A window in a process that attached the machine reaches the display
+  through the shim's `/display` alone** (ADR 26-11-11-746). Only a process
+  holding the machine (the shim, an install), or reaching an install's VM
+  by its runtime ID (`gui --install`, which has no shim), dials
+  `guest.DisplayPort` itself, and nothing adds it to `DialablePort`, which would hand a Windows
+  desktop and its input to every `disco-vm dial` and peer forward.
+- **A check-then-write against the credential manager is not a claim.**
+  CredRead then CredWrite lets two hcs windows take one loopback address,
+  and one guest then gets the other's sign-in. A window claims its address
+  by binding a fixed port there first (`listenRDP`); only then is its
+  sign-in stored.
 - **A driver's setting is a field of its configuration, never an
   environment variable it reads** (ADR 26-11-11-215). A new one is a field of
   the driver's `Config`, a `ConfigField` in its `Definition` with the

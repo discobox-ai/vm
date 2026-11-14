@@ -91,8 +91,13 @@ What building it found, beyond the recipes below:
   credential named `COMPUTER\user` (mstsc ignores a password in the `.rdp`
   file and a generic credential). mstsc finds it by host alone
   (`TERMSRV/HOST`, no port), so each window listens on a loopback address
-  of its own (`127.a.b.c`) and stores the credential for that, for as long as
-  it is open. Otherwise a window
+  of its own (the first of `127.77.0.1` to `127.77.0.254` it can bind port
+  13389 on, which claims it) and stores
+  the credential for that, for as long as it is open, then removes it and
+  mstsc's record of the host (`HKCU\...\Terminal Server Client\Servers\HOST`).
+  A guest's hostname goes into the `.rdp` file only as a computer name
+  (letters, digits, hyphens): a line break would add settings of the
+  guest's choosing to it. Otherwise a window
   of disco-vm's own shows the stream on `guest.DisplayPort` (from another
   process, through the shim's `/display`, ADR 26-11-11-746), which the agent
   serves from `disco-vm display-host` in the console session (sandboxi's

@@ -170,15 +170,18 @@ type Hypervisor interface {
 	// (machine.Driver's View), titled title, and returns once someone
 	// closes it, ctx is done, or m stops. display opens a stream to the
 	// guest's display (guest.DisplayPort), which m's Dial refuses to a
-	// process that attached it: the shim's /display. A hypervisor that does
-	// not report Capabilities.View returns machine.ErrUnsupported.
+	// process that attached it: the shim's /display. The local driver asks
+	// only a hypervisor that reports Capabilities.View; one that does not
+	// returns machine.ErrUnsupported, or machine.ErrNotImplemented while a
+	// window after boot is deferred (vz).
 	View(ctx context.Context, m machine.Machine, display func(context.Context) (net.Conn, error), title string) error
 	// ViewInstall opens a window on the install Install is making into dst,
 	// in another process, and returns once someone closes it, ctx is done,
 	// or the install's machine stops. One with no machine running is
 	// machine.ErrNotRunning. Progress, such as waiting for a desktop to
-	// show, goes to log. A hypervisor that does not report
-	// Capabilities.View returns machine.ErrUnsupported.
+	// show, goes to log. The local driver asks only a hypervisor that
+	// reports Capabilities.View; one that does not returns
+	// machine.ErrUnsupported, or machine.ErrNotImplemented (vz).
 	ViewInstall(ctx context.Context, dst Layer, title string, log io.Writer) error
 	// Service is where a prepared instance's service listens in its guest
 	// (machine.Service.Listen), and the guest port the shim dials it on.
