@@ -50,23 +50,14 @@ debugfs -R "cat /etc/fstab" "$out/root.ext4" 2>/dev/null | grep -q "^/dev/vda / 
 size=$(debugfs -R "stat /etc/machine-id" "$out/root.ext4" 2>/dev/null | sed -n 's/.*Size: \([0-9]*\).*/\1/p' | head -n1)
 [ "$size" = "0" ] || fail "/etc/machine-id is not empty"
 
-# The initrd's main archive is zstd, as initramfs.conf asks (COMPRESS=zstd):
-# update-initramfs falls back to gzip, with only a warning, when the root has
-# no zstd. As unmkinitramfs finds it, it follows any uncompressed early
-# archives (modules already compressed, .ko.xz; microcode) and their zero
-# padding.
-initrd="$out/initrd.img"
-skip=0
-while :; do
-    set -- $(tail -c +$((skip + 1)) "$initrd" | od -An -tx1 -v | awk '{ for (i = 1; i <= NF; i++) { if (!n && $i == "00") { z++; continue } m = m $i; if (++n == 4) { print z + 0, m; exit } } }')
-    skip=$((skip + ${1:-0}))
-    magic=${2:-}
-    [ "$magic" = "30373037" ] || break
-    blocks=$(tail -c +$((skip + 1)) "$initrd" | cpio -t 2>&1 >/dev/null | awk '/ blocks?$/ { print $1 }')
-    [ -n "$blocks" ] && [ "$blocks" -gt 0 ] || fail "the initrd's early archive at byte $skip does not read"
-    skip=$((skip + blocks * 512))
-done
-[ "$magic" = "28b52ffd" ] || fail "the initrd's main archive is not zstd (magic ${magic:-none}), as initramfs.conf asks"
+# The initrd's main archive, its last, is zstd, as initramfs.conf asks
+# (COMPRESS=zstd): update-initramfs falls back to gzip, with only a warning,
+# when the root has no zstd. 3cpio, which sid's mkinitramfs builds with, lists
+# each archive's compression after any uncompressed early ones (modules
+# already compressed, .ko.xz; microcode), which it pads to 4 bytes, not 512.
+archives=$(3cpio --examine --raw "$out/initrd.img") || fail "the initrd does not read"
+compression=$(printf '%s\n' "$archives" | tail -n 1 | cut -f 4)
+[ "$compression" = "zstd" ] || fail "the initrd's main archive is ${compression:-unreadable}, not zstd, as initramfs.conf asks"
 
 contents=$(lsinitramfs "$out/initrd.img")
 for want in scripts/init-bottom/disco-vm-agent bin/cp bin/chmod; do

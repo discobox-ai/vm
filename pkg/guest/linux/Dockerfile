@@ -190,12 +190,13 @@ ARG TARGETARCH
 ARG DEBIAN_SNAPSHOT
 # apt reads sid at the Taskfile's snapshot, and the stage is upgraded to it
 # whole, so a build is the same on any day (the root DESIGN.md, Debian).
+# 3cpio is verify's, which reads the initrd's archives with it.
 RUN : "${DEBIAN_SNAPSHOT:?build through go tool task, which passes the Debian snapshot}" \
     && sed -i "s|^URIs: .*|URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/|" /etc/apt/sources.list.d/debian.sources \
     && printf '%s\n' 'Acquire::Check-Valid-Until "false";' 'Acquire::Retries "5";' >/etc/apt/apt.conf.d/10-disco-vm-snapshot \
     && apt-get update \
     && apt-get -y full-upgrade \
-    && apt-get install -y --no-install-recommends e2fsprogs gzip initramfs-tools-core lz4 xz-utils zstd \
+    && apt-get install -y --no-install-recommends 3cpio e2fsprogs gzip initramfs-tools-core lz4 xz-utils zstd \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=rootfs / /rootfs
