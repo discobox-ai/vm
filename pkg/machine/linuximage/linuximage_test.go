@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -262,33 +261,6 @@ func TestWriteBootInitrd(t *testing.T) {
 	}
 	if e, ok := entries[AgentDir]; !ok || e[0] != 0o040755 {
 		t.Fatalf("the agent's directory entry is %v (found %v)", e, ok)
-	}
-}
-
-func TestCheckAgent(t *testing.T) {
-	if err := CheckAgent(filepath.Join(t.TempDir(), "missing"), "arm64"); err == nil {
-		t.Fatal("a missing agent passed")
-	}
-	notELF := filepath.Join(t.TempDir(), "script")
-	if err := os.WriteFile(notELF, []byte("#!/bin/sh\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := CheckAgent(notELF, "arm64"); err == nil {
-		t.Fatal("a script passed as the agent")
-	}
-	if runtime.GOOS != "linux" || (runtime.GOARCH != "arm64" && runtime.GOARCH != "amd64") {
-		t.Skip("the test binary is not a linux agent")
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := CheckAgent(exe, runtime.GOARCH); err != nil {
-		t.Fatalf("a linux/%s binary: %v", runtime.GOARCH, err)
-	}
-	other := map[string]string{"arm64": "amd64", "amd64": "arm64"}[runtime.GOARCH]
-	if err := CheckAgent(exe, other); err == nil {
-		t.Fatalf("a linux/%s binary passed for %s", runtime.GOARCH, other)
 	}
 }
 

@@ -62,9 +62,9 @@ jobs:
         with:
           target: build:linux-guest
 
-  # The linux agent, as a push to main publishes it (linux-agent.yml), pushed
-  # to a registry on the runner and pulled back by its digest.
-  linux-agent:
+  # The agent, as a push to main publishes it (agent.yml), pushed to a
+  # registry on the runner and pulled back by its digest.
+  agent:
     runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 30
     steps:
@@ -73,7 +73,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/task
         with:
-          target: test:linux-agent
+          target: test:agent
 
   # The libkrun driver booted (ADR 26-11-03-530 §9): its runtime and the
   # guest image's libkrun kernel built and verified from the checkout, then

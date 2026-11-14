@@ -1,8 +1,7 @@
 // Package linuximage is disco-vm's Linux guest image (pkg/guest/linux; ADR
 // 26-10-31-990 §3) as a hypervisor below the seam boots it: the base a fresh
 // VM starts from, pulled per manifest digest into the hypervisor's cache,
-// what every boot hands the kernel, and the published agent an embedder pulls
-// by digest (PullAgent). vz and libkrun share it (ADR
+// and what every boot hands the kernel. vz and libkrun share it (ADR
 // 26-11-03-530 §6). It is pure Go, so it builds and is tested on every OS.
 package linuximage
 
@@ -11,7 +10,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,8 +28,6 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-
-	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // What a Linux guest image is made of. A hypervisor names the ones it boots
@@ -220,7 +216,7 @@ func Pull(ctx context.Context, transport http.RoundTripper, cacheDir, ref, arch 
 		}
 		return "", fmt.Errorf("guest image %s: %w", ref, err)
 	}
-	img, err := platformImage(desc, "guest image", ref, arch)
+	img, err := platformImage(desc, ref, arch)
 	if err != nil {
 		return "", err
 	}
@@ -271,20 +267,19 @@ func Pull(ctx context.Context, transport http.RoundTripper, cacheDir, ref, arch 
 	return dir, nil
 }
 
-// platformImage is desc's image for linux/arch, refused, naming what it is,
-// for another platform.
-func platformImage(desc *remote.Descriptor, what, ref, arch string) (v1.Image, error) {
+// platformImage is desc's image for linux/arch, refused for another platform.
+func platformImage(desc *remote.Descriptor, ref, arch string) (v1.Image, error) {
 	img, err := desc.Image()
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", what, ref, err)
+		return nil, fmt.Errorf("guest image %s: %w", ref, err)
 	}
 	// A single-platform image is returned whatever platform was asked for.
 	config, err := img.ConfigFile()
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", what, ref, err)
+		return nil, fmt.Errorf("guest image %s: %w", ref, err)
 	}
 	if config.OS != "linux" || config.Architecture != arch {
-		return nil, fmt.Errorf("%s %s is for %s/%s, and this host boots linux/%s", what, ref, config.OS, config.Architecture, arch)
+		return nil, fmt.Errorf("guest image %s is for %s/%s, and this host boots linux/%s", ref, config.OS, config.Architecture, arch)
 	}
 	return img, nil
 }
@@ -346,26 +341,6 @@ func NewMachineID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
-}
-
-// CheckAgent refuses an agent that is not a linux executable for the guest's
-// architecture, before a VM is started that could never answer.
-func CheckAgent(agent, arch string) error {
-	// Nothing else is read from a path the configuration names (ADR
-	// 26-11-11-215 §7).
-	if err := machine.CheckFile(agent); err != nil {
-		return fmt.Errorf("the agent: %w", err)
-	}
-	f, err := elf.Open(agent)
-	if err != nil {
-		return fmt.Errorf("the agent %s is not a linux executable: %w", agent, err)
-	}
-	defer f.Close()
-	want := map[string]elf.Machine{"arm64": elf.EM_AARCH64, "amd64": elf.EM_X86_64}[arch]
-	if f.Machine != want || (f.OSABI != elf.ELFOSABI_NONE && f.OSABI != elf.ELFOSABI_LINUX) || (f.Type != elf.ET_EXEC && f.Type != elf.ET_DYN) {
-		return fmt.Errorf("the agent %s is not a linux/%s executable (it is %s, %s)", agent, arch, f.Machine, f.OSABI)
-	}
-	return nil
 }
 
 // WriteBootInitrd writes the initrd a boot hands the kernel to dst: the

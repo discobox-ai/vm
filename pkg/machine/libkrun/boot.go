@@ -23,6 +23,7 @@ import (
 
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/agent"
 	"github.com/discobox-ai/vm/pkg/machine/linuximage"
 	"github.com/discobox-ai/vm/pkg/machine/local"
 )
@@ -108,18 +109,18 @@ func (l launch) render() ([]byte, error) {
 // static linux/amd64 executable (ADR 26-11-03-530 §6). The protocol check
 // after boot refuses one of another disco-vm.
 func (h *Hypervisor) agentBinary() (string, error) {
-	agent := h.agent
-	if agent == "" {
+	bin := h.agent
+	if bin == "" {
 		exe, err := os.Executable()
 		if err != nil {
 			return "", fmt.Errorf("libkrun: the agent: %w", err)
 		}
-		agent = exe
+		bin = exe
 	}
-	if err := linuximage.CheckAgent(agent, runtime.GOARCH); err != nil {
+	if err := agent.Check(bin, "linux", runtime.GOARCH); err != nil {
 		return "", fmt.Errorf("libkrun: %w: the agent is the running disco-vm, or the configured one ($%s), and must be a static linux build (`go tool task build`)", err, AgentEnv)
 	}
-	return agent, nil
+	return bin, nil
 }
 
 // checkForwards refuses a forward on the agent's port or the service's:

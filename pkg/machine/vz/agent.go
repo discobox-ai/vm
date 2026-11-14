@@ -3,7 +3,6 @@ package vz
 import (
 	"bytes"
 	"crypto/sha256"
-	"debug/macho"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/agent"
 )
 
 // A macOS guest's agent comes on a read-only drive the host attaches at
@@ -143,22 +142,12 @@ const MacOSAgentEnv = "DISCO_VM_MACOS_AGENT"
 // checkMacOSAgent refuses an agent that is not a Mach-O executable for this
 // Mac's architecture, before a macOS guest is booted or installed with a
 // drive it could never run.
-func checkMacOSAgent(agent, arch string) error {
-	if agent == "" {
+func checkMacOSAgent(macosAgent, arch string) error {
+	if macosAgent == "" {
 		return fmt.Errorf("vz: a macOS guest needs the disco-vm built for darwin/%s as its agent: configure macosAgent ($%s) as it", arch, MacOSAgentEnv)
 	}
-	// A FIFO or a device would hang the read below.
-	if err := machine.CheckFile(agent); err != nil {
+	if err := agent.Check(macosAgent, "darwin", arch); err != nil {
 		return fmt.Errorf("vz: the macOS agent (macosAgent, $%s): %w", MacOSAgentEnv, err)
-	}
-	f, err := macho.Open(agent)
-	if err != nil {
-		return fmt.Errorf("vz: the macOS agent (macosAgent, $%s) %s is not a Mach-O executable: %w", MacOSAgentEnv, agent, err)
-	}
-	defer f.Close()
-	want := map[string]macho.Cpu{"arm64": macho.CpuArm64, "amd64": macho.CpuAmd64}[arch]
-	if f.Type != macho.TypeExec || f.Cpu != want {
-		return fmt.Errorf("vz: the macOS agent (macosAgent, $%s) %s is a Mach-O %s for %s, not an executable for darwin/%s", MacOSAgentEnv, agent, f.Type, f.Cpu, arch)
 	}
 	return nil
 }
