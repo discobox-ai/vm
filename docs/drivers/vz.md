@@ -213,9 +213,14 @@ reinstall.
   (`--vz-macos-agent`, `$DISCO_VM_MACOS_AGENT`): a disco-vm built for darwin
   on this Mac's architecture, which a boot refuses unless it is a Mach-O
   executable for it, naming the field. The command line sets the field to
-  its own executable (`ConfigField.DefaultExecutable`); an embedder whose
-  program is not disco-vm names one. A shim is given it in the driver's
-  configuration.
+  its own executable (`ConfigField.DefaultExecutable`). An embedder whose
+  program is not disco-vm pulls it from the published agent index it
+  already pins for its Linux guests
+  (`ghcr.io/discobox-ai/disco-vm-agent:<module version>`, by digest), which
+  holds darwin/arm64 beside the linux agents under that one digest:
+  `agent.Pull(ctx, cache, ref, "darwin", "arm64")`, which refuses anything
+  but a Mach-O arm64 executable. It names the pulled file. A shim is given
+  it in the driver's configuration.
 - **The drive** is an ISO 9660 image with Rock Ridge names and modes, label
   `DISCO_VM_AGENT`, holding `disco-vm` (0755) and `disco-vm.sha256`, its
   digest in hex. It is built in Go (`writeISO`), with every timestamp fixed,

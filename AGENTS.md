@@ -40,7 +40,8 @@ brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
 - `pkg/machine`: the driver seam; `pkg/machine/<driver>` holds each
   hypervisor, `pkg/machine/local` the store and shim that hcs, vz, libkrun,
   and fake share, `pkg/machine/linuximage` the Linux guest image vz and
-  libkrun boot, and `machinetest` the conformance suite.
+  libkrun boot, `pkg/machine/agent` the published agent and the check every
+  hypervisor makes of one, and `machinetest` the conformance suite.
 - `pkg/guest`: the guest agent.
 - `internal/cli`: the command line. `internal/e2e`: the CLI lifecycle test.
 - `scripts/codesign-exec`: the `go test -exec` wrapper vz tests need.

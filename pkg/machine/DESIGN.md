@@ -111,7 +111,10 @@ required. `Config.Base` stays common, described per driver by
   resource, or where the key or a guest's data goes, is `Privileged`
   (`TestPrivileged` holds the list); a URL the key goes to is `https`, or
   `http` to loopback (`CheckKeyURL`); an agent is a regular file at an
-  absolute path, checked before it is read (`CheckFile`).
+  absolute path, checked before it is read (`CheckFile`), and an executable
+  for the guest's platform (`agent.Check`: a linux ELF, or a Mach-O for a
+  macOS guest), which `agent.Pull` also requires of the published agent it
+  pulls by digest.
 
 ## A driver is given its key, and issues keys that cannot issue
 

@@ -67,11 +67,11 @@
   reaping paragraph of `pkg/engine/DESIGN.md` in the same change. A review
   found the region added without it.
 - **A cache keyed by digest replaces only an entry that is broken.**
-  `linuximage.Pull` and `PullAgent` let a boot read an entry another pull
+  `linuximage.Pull` and `agent.Pull` let a boot read an entry another pull
   has just returned, so a pull that finds a good entry at its key when it is
   done keeps that one and drops its own. Removing the key unconditionally
   before the rename deletes a guest image or an agent from under a boot of
-  the same digest; a review found `PullAgent` copied from `Pull` without
+  the same digest; a review found the agent's pull copied from `Pull` without
   that check.
 - **A real-hypervisor test skips before it requires anything.** Its first
   check is the variable naming its base or image; only once one is named may
@@ -89,7 +89,7 @@
   promise what the driver then refuses.
 - **A test that checks a file's owner-only mode skips the check on
   Windows**, which reports no owner-only mode: 0666 for a writable file,
-  0444 for a read-only one (`linuximage` TestPullAgent,
+  0444 for a read-only one (`agent` TestPull,
   `local` TestShimSocket, `vz` TestAgentDrive). A test in a file with no
   build tag runs in the `windows` CI job, and a review found one that would
   fail there on every run.

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/agent"
 	"github.com/discobox-ai/vm/pkg/machine/linuximage"
 )
 
@@ -83,11 +84,11 @@ func parseLinuxBase(base string) (linuximage.Image, error) {
 
 // checkAgent refuses an agent that is not a linux executable for the guest's
 // architecture, before a VM is started that could never answer.
-func checkAgent(agent, arch string) error {
-	if agent == "" {
+func checkAgent(linuxAgent, arch string) error {
+	if linuxAgent == "" {
 		return fmt.Errorf("vz: a Linux guest needs the disco-vm built for linux/%s as its agent: configure agent ($%s) as it (`go tool task build` builds it in build/linux-%s)", arch, AgentEnv, arch)
 	}
-	if err := linuximage.CheckAgent(agent, arch); err != nil {
+	if err := agent.Check(linuxAgent, "linux", arch); err != nil {
 		return fmt.Errorf("vz: %w (%s)", err, AgentEnv)
 	}
 	return nil
