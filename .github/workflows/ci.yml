@@ -75,6 +75,21 @@ jobs:
         with:
           target: test:agent
 
+  # The linux and windows release binaries, as a tag's release builds them
+  # (release.yml).
+  release:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        env:
+          RELEASE_TAG: v0.0.0-alpha.0
+        with:
+          target: release:build
+
   # The libkrun driver booted (ADR 26-11-03-530 §9): its runtime and the
   # guest image's libkrun kernel built and verified from the checkout, then
   # machinetest and internal/e2e on them. GitHub's own Linux runners expose
@@ -108,6 +123,13 @@ jobs:
       - uses: ./.github/actions/task
         with:
           target: test
+      # The darwin release binary, signed and checked for its entitlement as
+      # a tag's release builds it (release.yml).
+      - uses: ./.github/actions/task
+        env:
+          RELEASE_TAG: v0.0.0-alpha.0
+        with:
+          target: release:build
 
   # Nix does not run on Windows: this job gets Go from setup-go and nothing
   # else (repostd ci.no-setup). It builds cold: setup-go's cache is

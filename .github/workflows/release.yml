@@ -1,0 +1,71 @@
+# A v* tag publishes disco-vm (ADR 26-11-13-679): its binaries, their
+# checksums, and stamped installers as a GitHub Release (a prerelease for an
+# -alpha or -rc tag), and a full release's Homebrew formula in
+# discobox-ai/homebrew-tap. The same tag publishes the agent index
+# (agent.yml). This workflow decides only where each step runs and how
+# files move between jobs; every step is a release:* Taskfile target.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Each platform builds what only it can: darwin on a Mac (cgo and
+  # codesign), and linux and windows, which are static, on Linux.
+  binaries:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runs-on: depot-ubuntu-24.04-4
+            platform: linux
+          - runs-on: depot-macos-15
+            platform: darwin
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        with:
+          target: release:build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.platform }}
+          path: build/release
+          if-no-files-found: error
+
+  publish:
+    needs: binaries
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: build/release
+      - uses: ./.github/actions/task
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        with:
+          target: release:publish

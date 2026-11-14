@@ -38,6 +38,42 @@ disco-vm drivers
 disco-vm --driver docker info
 ```
 
+## Install
+
+On macOS (Apple silicon) or Linux:
+
+```sh
+curl -sSfL https://github.com/discobox-ai/vm/releases/latest/download/install.sh | sh
+```
+
+or with Homebrew:
+
+```sh
+brew install discobox-ai/tap/disco-vm
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://github.com/discobox-ai/vm/releases/latest/download/install.ps1 | iex
+```
+
+Each installs the newest release. To install another, such as a release
+candidate, pass `--version v0.2.0-rc.1` to `install.sh` (`sh -s -- --version
+...` through a pipe), or set `$env:DISCO_VM_INSTALL_VERSION` before
+`install.ps1`. Every release also has its binaries and their `checksums.txt`
+on its [GitHub Releases](https://github.com/discobox-ai/vm/releases) page.
+`disco-vm --version` prints the release.
+
+The macOS binary is signed with the entitlement Virtualization.framework
+needs, so it runs macOS guests as installed. A Linux guest on vz, or a Docker
+guest driven from a Mac, also needs a Linux disco-vm of the same release as
+its agent. Download `disco-vm-linux-arm64` (`-amd64` for Docker on an Intel
+host) from the same release, check it against `checksums.txt`, make it
+executable, and name it by its absolute path in `DISCO_VM_AGENT`.
+
+To build from a checkout instead, run `go tool task build` (or `install`).
+
 ## There are only VMs
 
 A VM is made fresh, from the driver's base (its configuration,
