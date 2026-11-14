@@ -1,9 +1,10 @@
 # 26-11-14-352 — A disco-vm for a host that is not Linux carries its own build's Linux agent, and the command line hands it to every Linux guest
 
-- **Status**: Proposed
+- **Status**: Accepted (supersedes in part 26-11-13-679 §2, its darwin and
+  windows binaries built alone)
 - **Date**: 2026-11-14
-- **Supersedes in part**: 26-11-13-679 §2, its darwin and windows binaries
-  built alone
+
+Accepted by the owner by merging #139, 2026-11-14.
 
 ## Context
 
