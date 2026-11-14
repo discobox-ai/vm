@@ -156,6 +156,14 @@ media is the latest (install's `latest`) is Virtualization.framework's own
 lookup, out of any dialer's reach; vz downloads what it names itself, through
 the transport.
 
+`Config.RootCAs` is what a driver trusts, in place of the system's roots, for
+the TLS of those same connections, so an embedder whose proxy terminates TLS
+trusts its CA for one engine's driver, never for its whole process. Nil is
+the system's roots. A driver takes it through `Config.HTTPTransport()` (its
+`TLSClientConfig`) and `Config.TLSConfig()` (boxd's gRPC credentials), never
+a `tls.Config` of its own. A Docker daemon is reached without TLS, and a shim
+is never given it, as with `Dial`.
+
 `IssueKey` makes the narrowest key the driver can for another host to run the
 pool's machines. An issued key expires (a TTL is required) and cannot
 itself issue keys; a driver that cannot promise both returns `ErrNoKey` (it

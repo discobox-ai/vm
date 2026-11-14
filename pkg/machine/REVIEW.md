@@ -51,7 +51,11 @@
   `Config.HTTPTransport()`, or `Config.Dial` handed to gRPC), and then reads
   no proxy variable; never a bare `net.Dialer` or `http.DefaultClient`
   regardless of it. A review found a driver that dialed through it for gRPC
-  and through `HTTPS_PROXY` for its token exchange.
+  and through `HTTPS_PROXY` for its token exchange. Its TLS trusts
+  `Config.RootCAs`: through `Config.HTTPTransport()` or
+  `Config.TLSConfig()`, never a `tls.Config` built in the driver, which
+  would trust only the system's roots and fail behind an embedder's proxy
+  that terminates TLS.
 - **A test that a dial skips the proxy reads the transport, not a proxy
   variable**: assert `Proxy == nil` on what `Config.HTTPTransport()` returns.
   A dial recorded against an `httptest` server proves the embedder's dialer

@@ -23,6 +23,8 @@ package machine
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -352,6 +354,17 @@ type Config struct {
 	// the process's own way. Which macOS media is the latest is
 	// Virtualization.framework's own lookup, which no dialer can reach.
 	Dial DialFunc
+	// RootCAs is what the driver trusts, in place of the system's roots,
+	// for every TLS connection it makes to its provider's service: boxd's
+	// API (home and region endpoints) and token exchange, Archil's API and
+	// process API, the registry vz and libkrun pull a base or runtime
+	// from, and the host vz downloads macOS media from. An embedder that
+	// routes a driver through a proxy that terminates TLS trusts that
+	// proxy's CA for this driver's connections alone, never the process's.
+	// Nil is the system's roots. A Docker daemon is reached without TLS,
+	// so it has no use for it. A shim is never given it, as it is never
+	// given Dial.
+	RootCAs *x509.CertPool
 }
 
 // DialFunc opens a connection, as net.Dialer.DialContext does.
@@ -369,7 +382,8 @@ func (c Config) Dialer() DialFunc {
 
 // HTTPTransport is the transport a driver calls an HTTP service with: one
 // that dials the service through c.Dial and reads no proxy variable, or,
-// where Dial is nil, http.DefaultTransport's own, which takes HTTPS_PROXY.
+// where Dial is nil, http.DefaultTransport's own, which takes HTTPS_PROXY;
+// and that trusts c.TLSConfig's roots.
 func (c Config) HTTPTransport() *http.Transport {
 	t := &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
 	if def, ok := http.DefaultTransport.(*http.Transport); ok {
@@ -379,7 +393,16 @@ func (c Config) HTTPTransport() *http.Transport {
 		t.Proxy = nil
 		t.DialContext = c.Dial
 	}
+	t.TLSClientConfig = c.TLSConfig()
 	return t
+}
+
+// TLSConfig is the TLS a driver speaks to its service with, a new one each
+// call: TLS 1.2 or later, trusting c.RootCAs, or the system's roots where
+// it is nil. A driver hands it to a client that is no HTTPTransport (boxd's
+// gRPC).
+func (c Config) TLSConfig() *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: c.RootCAs}
 }
 
 // DirEnv overrides DefaultDir.

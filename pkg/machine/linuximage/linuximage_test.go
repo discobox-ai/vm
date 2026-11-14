@@ -3,6 +3,7 @@ package linuximage
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
@@ -65,6 +67,12 @@ func TestParse(t *testing.T) {
 // registry, and returns its reference and the registry.
 func pushGuest(t *testing.T, files map[string][]byte, arch, repo string) (string, *httptest.Server) {
 	t.Helper()
+	return pushImage(t, httptest.NewServer, guestImage(t, files, arch), repo)
+}
+
+// guestImage is an image of files, a layer each, for linux/arch.
+func guestImage(t *testing.T, files map[string][]byte, arch string) v1.Image {
+	t.Helper()
 	img, err := crane.Image(files)
 	if err != nil {
 		t.Fatal(err)
@@ -77,14 +85,21 @@ func pushGuest(t *testing.T, files map[string][]byte, arch, repo string) (string
 	if img, err = mutate.ConfigFile(img, config); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(registry.New())
+	return img
+}
+
+// pushImage pushes img to a registry start serves (httptest's NewServer,
+// or NewTLSServer), as repo:v1, and is its reference and the server.
+func pushImage(t *testing.T, start func(http.Handler) *httptest.Server, img v1.Image, repo string) (string, *httptest.Server) {
+	t.Helper()
+	server := start(registry.New())
 	t.Cleanup(server.Close)
-	ref := strings.TrimPrefix(server.URL, "http://") + "/" + repo + ":v1"
+	ref := server.Listener.Addr().String() + "/" + repo + ":v1"
 	tag, err := name.NewTag(ref)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := remote.Write(tag, img); err != nil {
+	if err := remote.Write(tag, img, remote.WithTransport(server.Client().Transport)); err != nil {
 		t.Fatal(err)
 	}
 	return ref, server
@@ -166,6 +181,22 @@ func TestPullDialsThroughConfigDial(t *testing.T) {
 	defer mu.Unlock()
 	if !slices.Contains(dialed, server.Listener.Addr().String()) {
 		t.Fatalf("the pull from %s dialed %v through Config.Dial", server.Listener.Addr(), dialed)
+	}
+}
+
+// A pull over TLS trusts the roots of the transport it is given, so with
+// the driver's Config.HTTPTransport it trusts an embedder's
+// Config.RootCAs: a registry whose certificate a private CA issued is
+// pulled from with that CA in RootCAs, and refused with none.
+func TestPullTrustsConfigRootCAs(t *testing.T) {
+	ref, server := pushImage(t, httptest.NewTLSServer, guestImage(t, guestFiles(), "arm64"), "guest")
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	if _, err := Pull(t.Context(), machine.Config{RootCAs: roots}.HTTPTransport(), t.TempDir(), ref, "arm64", vzNeed...); err != nil {
+		t.Fatalf("with the CA in RootCAs: %v", err)
+	}
+	if _, err := Pull(t.Context(), machine.Config{}.HTTPTransport(), t.TempDir(), ref, "arm64", vzNeed...); err == nil || !strings.Contains(err.Error(), "tls: failed to verify certificate") {
+		t.Fatalf("with no RootCAs: %v, want the system's roots to refuse the private CA", err)
 	}
 }
 

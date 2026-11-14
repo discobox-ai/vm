@@ -3,6 +3,7 @@ package vz
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -20,7 +21,8 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// restoreServer is a stand-in for Apple's restore image host: it serves
+// restoreServer is a stand-in for Apple's restore image host, started by
+// httptest's NewServer or NewTLSServer: it serves
 // image, honoring a range unless ignoreRange, and records each request's
 // Range header.
 type restoreServer struct {
@@ -31,10 +33,10 @@ type restoreServer struct {
 	ranges      []string
 }
 
-func newRestoreServer(t *testing.T, image []byte) *restoreServer {
+func newRestoreServer(t *testing.T, start func(http.Handler) *httptest.Server, image []byte) *restoreServer {
 	t.Helper()
 	s := &restoreServer{image: image}
-	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.Server = start(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.ranges = append(s.ranges, r.Header.Get("Range"))
 		ignore := s.ignoreRange
@@ -96,7 +98,7 @@ func testImage() []byte {
 
 func TestRestoreImageDownloadDialsThroughConfigDial(t *testing.T) {
 	image := testImage()
-	srv := newRestoreServer(t, image)
+	srv := newRestoreServer(t, httptest.NewServer, image)
 	rec := &dialRecorder{}
 	transport := machine.Config{Dial: rec.dial}.HTTPTransport()
 	dst := filepath.Join(t.TempDir(), "UniversalMac_27.0_26A428_Restore.ipsw")
@@ -117,8 +119,28 @@ func TestRestoreImageDownloadDialsThroughConfigDial(t *testing.T) {
 	}
 }
 
+// The download trusts an embedder's Config.RootCAs, through the driver's
+// transport: a host whose certificate a private CA issued is downloaded
+// from with that CA in RootCAs, and refused with none.
+func TestRestoreImageDownloadTrustsConfigRootCAs(t *testing.T) {
+	image := testImage()
+	srv := newRestoreServer(t, httptest.NewTLSServer, image)
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	dst := filepath.Join(t.TempDir(), "image.ipsw")
+	if err := downloadResumable(context.Background(), machine.Config{RootCAs: roots}.HTTPTransport(), srv.url(), dst, io.Discard); err != nil {
+		t.Fatalf("with the CA in RootCAs: %v", err)
+	}
+	assertFile(t, dst, image)
+	other := filepath.Join(t.TempDir(), "image.ipsw")
+	err := downloadResumable(context.Background(), machine.Config{}.HTTPTransport(), srv.url(), other, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "tls: failed to verify certificate") {
+		t.Fatalf("with no RootCAs: %v, want the system's roots to refuse the private CA", err)
+	}
+}
+
 func TestRestoreImageDownloadTheDialerCanRefuse(t *testing.T) {
-	srv := newRestoreServer(t, testImage())
+	srv := newRestoreServer(t, httptest.NewServer, testImage())
 	rec := &dialRecorder{refuse: true}
 	dst := filepath.Join(t.TempDir(), "image.ipsw")
 	err := downloadResumable(context.Background(), machine.Config{Dial: rec.dial}.HTTPTransport(), srv.url(), dst, io.Discard)
@@ -135,7 +157,7 @@ func TestRestoreImageDownloadTheDialerCanRefuse(t *testing.T) {
 
 func TestRestoreImageDownloadResumes(t *testing.T) {
 	image := testImage()
-	srv := newRestoreServer(t, image)
+	srv := newRestoreServer(t, httptest.NewServer, image)
 	dst := filepath.Join(t.TempDir(), "image.ipsw")
 	half := int64(len(image) / 2)
 	writeFile(t, dst+".download", image[:half])
@@ -155,7 +177,7 @@ func TestRestoreImageDownloadResumes(t *testing.T) {
 
 func TestRestoreImageDownloadStartsAgainWhenTheRangeIsIgnored(t *testing.T) {
 	image := testImage()
-	srv := newRestoreServer(t, image)
+	srv := newRestoreServer(t, httptest.NewServer, image)
 	srv.ignoreRange = true
 	dst := filepath.Join(t.TempDir(), "image.ipsw")
 	// Not a prefix of the image: appending the whole body to it, as the vz
@@ -170,7 +192,7 @@ func TestRestoreImageDownloadStartsAgainWhenTheRangeIsIgnored(t *testing.T) {
 
 func TestRestoreImageDownloadOfAWholePartialFile(t *testing.T) {
 	image := testImage()
-	srv := newRestoreServer(t, image)
+	srv := newRestoreServer(t, httptest.NewServer, image)
 	dst := filepath.Join(t.TempDir(), "image.ipsw")
 	writeFile(t, dst+".download", image)
 
@@ -185,7 +207,7 @@ func TestRestoreImageDownloadOfAWholePartialFile(t *testing.T) {
 
 func TestRestoreImageDownloadStartsAgainFromAPartialFileTooLong(t *testing.T) {
 	image := testImage()
-	srv := newRestoreServer(t, image)
+	srv := newRestoreServer(t, httptest.NewServer, image)
 	dst := filepath.Join(t.TempDir(), "image.ipsw")
 	writeFile(t, dst+".download", append(append([]byte(nil), image...), 1, 2, 3))
 
@@ -199,7 +221,7 @@ func TestRestoreImageDownloadStartsAgainFromAPartialFileTooLong(t *testing.T) {
 }
 
 func TestRestoreImageDownloadRefusesAnErrorStatus(t *testing.T) {
-	srv := newRestoreServer(t, testImage())
+	srv := newRestoreServer(t, httptest.NewServer, testImage())
 	dst := filepath.Join(t.TempDir(), "image.ipsw")
 	err := downloadResumable(context.Background(), machine.Config{}.HTTPTransport(), srv.URL+"/missing.ipsw", dst, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "404") {

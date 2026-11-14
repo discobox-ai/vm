@@ -2,6 +2,7 @@ package archil
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net"
@@ -78,5 +79,33 @@ func TestTheDialerCanRefuse(t *testing.T) {
 	}
 	if err := d.Check(t.Context()); err == nil || !strings.Contains(err.Error(), refused.Error()) {
 		t.Fatalf("Check through a refusing dialer: %v", err)
+	}
+}
+
+// TestTheEmbeddersRootsAreTrusted serves Archil's API and process API over
+// TLS with a certificate from a private CA: with the CA in
+// machine.Config.RootCAs, a command runs through both; with none, the
+// system's roots refuse the API.
+func TestTheEmbeddersRootsAreTrusted(t *testing.T) {
+	srv := fakeArchilServer(t, httptest.NewTLSServer)
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	config := json.RawMessage(`{"baseUrl":"` + srv.URL + `"}`)
+	run := func(trusted *x509.CertPool) error {
+		d, err := New(machine.Config{DriverConfig: config, Keys: machine.StaticKey(machine.Key{Secret: "secret"}), RootCAs: trusted})
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, out, _, err := d.api.run(t.Context(), "sb1", "echo", "", strings.NewReader("hello"))
+		if err == nil && (code != 3 || string(out) != "hello!") {
+			t.Fatalf("run = %d %q, want 3 hello!", code, out)
+		}
+		return err
+	}
+	if err := run(roots); err != nil {
+		t.Fatalf("with the CA in RootCAs: %v", err)
+	}
+	if err := run(nil); err == nil || !strings.Contains(err.Error(), "tls: failed to verify certificate") {
+		t.Fatalf("with no RootCAs: %v, want the system's roots to refuse the private CA", err)
 	}
 }

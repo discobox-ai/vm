@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -226,6 +227,30 @@ func TestRuntimeLacksALibrary(t *testing.T) {
 // pushRuntime pushes a runtime image of files, executable, for linux/arch.
 func pushRuntime(t *testing.T, files map[string]string, arch string) string {
 	t.Helper()
+	ref, _ := pushImage(t, httptest.NewServer, runtimeImage(t, files, arch))
+	return ref
+}
+
+// pushImage pushes img to a registry start serves (httptest's NewServer,
+// or NewTLSServer), and is its reference and the server.
+func pushImage(t *testing.T, start func(http.Handler) *httptest.Server, img v1.Image) (string, *httptest.Server) {
+	t.Helper()
+	server := start(registry.New())
+	t.Cleanup(server.Close)
+	ref := server.Listener.Addr().String() + "/krun:v1"
+	tag, err := name.NewTag(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Write(tag, img, remote.WithTransport(server.Client().Transport)); err != nil {
+		t.Fatal(err)
+	}
+	return ref, server
+}
+
+// runtimeImage is a runtime image of files, executable, for linux/arch.
+func runtimeImage(t *testing.T, files map[string]string, arch string) v1.Image {
+	t.Helper()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for file, data := range files {
@@ -255,17 +280,7 @@ func pushRuntime(t *testing.T, files map[string]string, arch string) string {
 	if img, err = mutate.ConfigFile(img, config); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(registry.New())
-	t.Cleanup(server.Close)
-	ref := strings.TrimPrefix(server.URL, "http://") + "/krun:v1"
-	tag, err := name.NewTag(ref)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := remote.Write(tag, img); err != nil {
-		t.Fatal(err)
-	}
-	return ref
+	return img
 }
 
 // A runtime is pulled once per digest into the cache, executable, and only

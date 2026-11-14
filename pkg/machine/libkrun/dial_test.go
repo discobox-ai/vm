@@ -4,6 +4,7 @@ package libkrun
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"net"
 	"net/http/httptest"
@@ -105,5 +106,20 @@ func TestPullRuntimeDialsThroughConfigDial(t *testing.T) {
 	registry, _, _ := strings.Cut(ref, "/")
 	if got := dialed.addrs(); !slices.Contains(got, registry) {
 		t.Fatalf("the runtime pull from %s dialed %v through Config.Dial", registry, got)
+	}
+}
+
+// The runtime pull trusts an embedder's Config.RootCAs, through Prepare's
+// Config.HTTPTransport: a registry whose certificate a private CA issued is
+// pulled from with that CA in RootCAs, and refused with none.
+func TestPullRuntimeTrustsConfigRootCAs(t *testing.T) {
+	ref, server := pushImage(t, httptest.NewTLSServer, runtimeImage(t, fakeRuntime(t, launchVersion, ""), runtime.GOARCH))
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	if _, err := pullRuntime(t.Context(), machine.Config{RootCAs: roots}.HTTPTransport(), t.TempDir(), ref); err != nil {
+		t.Fatalf("with the CA in RootCAs: %v", err)
+	}
+	if _, err := pullRuntime(t.Context(), machine.Config{}.HTTPTransport(), t.TempDir(), ref); err == nil || !strings.Contains(err.Error(), "tls: failed to verify certificate") {
+		t.Fatalf("with no RootCAs: %v, want the system's roots to refuse the private CA", err)
 	}
 }
