@@ -1,7 +1,9 @@
 # 26-11-13-318 — A macOS guest boots its agent from a read-only drive the host attaches at every boot, and its base carries only a launchd stub
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-13
+
+Accepted by the owner by merging #111, 2026-11-14.
 
 ## Context
 
