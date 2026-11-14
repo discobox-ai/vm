@@ -9,15 +9,16 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
-// View is unsupported: vz's window needs the VM object the process that
-// booted it holds, so it opens only at boot (BootOptions.GUI), never from
-// another process (Capabilities.View).
+// View is not implemented yet: vz's window needs the VM object the process
+// that booted it holds, so it opens only at boot (BootOptions.GUI). A window
+// after boot is deferred (ADR 26-11-02-274); until then vz does not report
+// Capabilities.View, and the engine refuses gui before asking.
 func (*Hypervisor) View(context.Context, machine.Machine, func(context.Context) (net.Conn, error), string) error {
-	return machine.ErrUnsupported
+	return machine.ErrNotImplemented
 }
 
-// ViewInstall is unsupported: an install's window opens only from the
-// install (Capabilities.View).
+// ViewInstall is not implemented yet: an install's window opens only from
+// the install (install --gui).
 func (*Hypervisor) ViewInstall(context.Context, local.Layer, string, io.Writer) error {
-	return machine.ErrUnsupported
+	return machine.ErrNotImplemented
 }

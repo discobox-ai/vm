@@ -40,7 +40,9 @@ const (
 	shimConfigName = "driver-config.json"
 	// shimProtocol is the version of what a caller asks of a shim beyond the
 	// part that lasts (shimState): its relay on /guest, which also speaks
-	// guest.Protocol, and its streams on /dial. It moves whenever a change
+	// guest.Protocol, and its streams on /dial and /display (which a shim
+	// of protocol 2 from before it answers 404, read as "restart the
+	// instance"). It moves whenever a change
 	// to them means an engine and a shim of different builds cannot work
 	// together. A shim outlives the engine that started it, an embedder's
 	// restart included (discobox ADR 26-11-11-963 §7), so an engine meets shims of
@@ -869,9 +871,15 @@ func (c *shimClient) dial(ctx context.Context, port uint32) (net.Conn, error) {
 }
 
 // display opens a stream to the guest's display (guest.DisplayPort) of the
-// shim's machine, on a hypervisor that lists Capabilities.View.
+// shim's machine, on a hypervisor that lists Capabilities.View. A shim from
+// before /display answers 404: the instance must be restarted to get one
+// that serves it.
 func (c *shimClient) display(ctx context.Context) (net.Conn, error) {
-	return c.upgrade(ctx, "/display", dialUpgrade)
+	conn, err := c.upgrade(ctx, "/display", dialUpgrade)
+	if errors.Is(err, errNoRoute) {
+		return nil, errors.New("the instance's shim is from before disco-vm reached its display (/display): restart the instance")
+	}
+	return conn, err
 }
 
 // upgrade asks the shim to upgrade a connection to one of its streams, and
@@ -909,11 +917,18 @@ func (c *shimClient) upgrade(ctx context.Context, path, token string) (net.Conn,
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = conn.Close()
 		what, _, _ := strings.Cut(strings.TrimPrefix(path, "/"), "?")
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("shim: %s: %w", what, errNoRoute)
+		}
 		return nil, fmt.Errorf("shim: %s: %s", what, strings.TrimSpace(string(msg)))
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return &netutil.BufConn{Conn: conn, R: reader}, nil
 }
+
+// errNoRoute is a shim's 404: a route the shim, started by an older
+// disco-vm, does not serve.
+var errNoRoute = errors.New("the shim does not serve this route")
 
 const (
 	// guestUpgrade is the Upgrade token of a connection to a shim's relay.

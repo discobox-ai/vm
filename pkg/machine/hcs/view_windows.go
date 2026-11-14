@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -12,11 +11,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -195,7 +196,7 @@ func viewRDP(ctx context.Context, g machine.Guest, title string) error {
 	// The guest's own account, named by its computer name: a bare name, as
 	// mstsc completes it, would be the host's account of that name.
 	account := user
-	if info, err := g.Info(ctx); err == nil && info.Hostname != "" {
+	if info, err := g.Info(ctx); err == nil && computerName.MatchString(info.Hostname) {
 		account = info.Hostname + `\` + user
 	}
 	listener, forget, err := listenRDP(ctx, account, user)
@@ -288,34 +289,53 @@ type credential struct {
 // the window is open: mstsc takes a password from the credential manager,
 // not from the .rdp file, and finds it by the host alone (TERMSRV/HOST, no
 // port), so windows sharing 127.0.0.1 would share one sign-in, the first
-// window's, and lose it when that window closed. It returns the listener
-// and what forgets the sign-in.
+// window's, and lose it when that window closed. The address is the first of
+// 127.77.0.1 to 127.77.0.254 this window can claim, so the hosts mstsc
+// records stay a fixed few. The claim is the listener on rdpRelayPort, which
+// a second bind of the same address fails, so two windows opening at once
+// never share one, and a sign-in stored there already (the user's own) is
+// skipped, never written over. It returns the listener and what forgets the
+// sign-in and mstsc's record of the host.
 func listenRDP(ctx context.Context, user, password string) (net.Listener, func(), error) {
-	for range 16 {
-		var b [3]byte
-		if _, err := rand.Read(b[:]); err != nil {
-			return nil, nil, err
+	for n := 1; n < 255; n++ {
+		host := fmt.Sprintf("127.77.0.%d", n)
+		listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", net.JoinHostPort(host, rdpRelayPort))
+		if err != nil {
+			continue // another window's, or another program's
 		}
-		if b[2] == 0 || b[2] == 255 {
-			continue
-		}
-		host := fmt.Sprintf("127.%d.%d.%d", b[0], b[1], b[2])
 		forget, err := rememberRDPCredential(host, user, password)
 		if errors.Is(err, errCredentialTaken) {
+			_ = listener.Close()
 			continue
 		}
 		if err != nil {
+			_ = listener.Close()
 			return nil, nil, err
 		}
-		listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", host+":0")
-		if err != nil {
+		return listener, func() {
 			forget()
-			return nil, nil, err
-		}
-		return listener, forget, nil
+			forgetRDPServer(host)
+		}, nil
 	}
-	return nil, nil, errors.New("hcs: no free loopback address for a Remote Desktop sign-in")
+	return nil, nil, fmt.Errorf("hcs: no loopback address of 127.77.0.1 to 127.77.0.254 is free on port %s for a Remote Desktop window", rdpRelayPort)
 }
+
+// rdpRelayPort is the port a Remote Desktop window's relay listens on, at
+// its own loopback address: fixed, so that binding it claims the address.
+const rdpRelayPort = "13389"
+
+// forgetRDPServer removes what mstsc records of a host it connected to
+// (HKCU\...\Terminal Server Client\Servers\HOST: the user name and the
+// certificate it was shown), for a loopback address only a window used.
+func forgetRDPServer(host string) {
+	_ = registry.DeleteKey(registry.CURRENT_USER, `Software\Microsoft\Terminal Server Client\Servers\`+host)
+}
+
+// computerName matches a name Windows gives a computer: a DNS label, which
+// is all a guest's hostname is let into an .rdp file as. Anything else, a
+// line break above all, would add settings of the guest's choosing to the
+// file mstsc reads (drive redirection, say).
+var computerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,62}$`)
 
 // errCredentialTaken is a Remote Desktop sign-in already stored for a host:
 // someone's own, or another window's.

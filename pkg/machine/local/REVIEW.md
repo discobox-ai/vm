@@ -20,6 +20,15 @@
   advice that sent a pool's engine looking in its own pool, the second
   resume path missed after the root's note on finishing an interrupted
   step.
+- **A shim outlives the binary that started it, so a new route has a plan
+  for an old shim.** An instance started before an upgrade keeps its shim
+  until it stops. `/kill` falls back to a stop; `/display` turns the old
+  shim's 404 (`errNoRoute`) into "restart the instance". A review found a
+  new route with no plan twice.
+- **A nil `*shimMachine` is never returned as a `machine.Machine`.** The
+  interface holding a nil pointer is not nil, so a caller that checks
+  `m != nil` calls into it. Return an untyped nil with the error, as
+  `Attach` does.
 - **A peer forward cannot refuse.** The shim's listener has accepted the
   guest's connection before it can know the peer is stopped, so the guest
   connects and reads EOF. Write it that way wherever it is described.
