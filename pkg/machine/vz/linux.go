@@ -21,9 +21,9 @@ const AgentEnv = "DISCO_VM_AGENT"
 // Config is the vz driver's configuration (machine.Config.DriverConfig).
 type Config struct {
 	// Agent is the disco-vm built for linux on this host's architecture,
-	// which every boot of a Linux guest hands the guest. A darwin disco-vm
-	// carries no linux one: `go tool task build` builds it beside the
-	// darwin one, and a release ships both.
+	// which every boot of a Linux guest hands the guest. The command line
+	// sets it to the one a release, or `go tool task build`, carries in
+	// the darwin disco-vm (ADR 26-11-14-352); an embedder names one.
 	Agent string `json:"agent,omitempty"`
 	// MacOSAgent is the disco-vm built for darwin on this Mac's
 	// architecture, which every boot of a macOS guest attaches on a
@@ -39,9 +39,9 @@ func Definition() machine.Definition {
 		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Default: DefaultLinuxBase, Privileged: true,
 			Description: "The Linux guest image a fresh VM is made from: a registry reference, or an absolute directory on this Mac whose kernel and root are booted."},
 		ConfigFields: []machine.ConfigField{
-			{Key: "agent", Label: "Agent", Type: machine.ConfigString, Env: AgentEnv, Placeholder: "/path/to/build/linux-arm64/disco-vm", Privileged: true,
-				Description: "The absolute path of the disco-vm built for linux on this Mac's architecture, which every boot of a Linux guest hands the guest as its agent. A Linux guest needs it."},
-			{Key: "macosAgent", Label: "macOS agent", Type: machine.ConfigString, Env: MacOSAgentEnv, Placeholder: "/path/to/build/disco-vm", Privileged: true, DefaultExecutable: true,
+			{Key: "agent", Label: "Agent", Type: machine.ConfigString, Env: AgentEnv, Placeholder: "/path/to/build/linux-arm64/disco-vm", Privileged: true, AgentOS: machine.Linux,
+				Description: "The absolute path of the disco-vm built for linux on this Mac's architecture, which every boot of a Linux guest hands the guest as its agent. A Linux guest needs it; the command line sets it to the one it carries, if it carries one."},
+			{Key: "macosAgent", Label: "macOS agent", Type: machine.ConfigString, Env: MacOSAgentEnv, Placeholder: "/path/to/build/disco-vm", Privileged: true, AgentOS: machine.Darwin,
 				Description: "The absolute path of the disco-vm built for darwin on this Mac's architecture, which every boot of a macOS guest, and its install, attaches on a read-only drive as its agent. A macOS guest needs it; the command line is one, and sets it to itself."},
 		},
 	}
@@ -86,7 +86,7 @@ func parseLinuxBase(base string) (linuximage.Image, error) {
 // architecture, before a VM is started that could never answer.
 func checkAgent(linuxAgent, arch string) error {
 	if linuxAgent == "" {
-		return fmt.Errorf("vz: a Linux guest needs the disco-vm built for linux/%s as its agent: configure agent ($%s) as it (`go tool task build` builds it in build/linux-%s)", arch, AgentEnv, arch)
+		return fmt.Errorf("vz: a Linux guest needs the disco-vm built for linux/%s as its agent: configure agent ($%s) as it", arch, AgentEnv)
 	}
 	if err := agent.Check(linuxAgent, "linux", arch); err != nil {
 		return fmt.Errorf("vz: %w (%s)", err, AgentEnv)

@@ -105,22 +105,18 @@ func (l launch) render() ([]byte, error) {
 }
 
 // agentBinary is the agent a boot appends to the initrd: the configured one
-// (Config.Agent), or the running disco-vm, which on a Linux amd64 host is a
-// static linux/amd64 executable (ADR 26-11-03-530 §6). The protocol check
-// after boot refuses one of another disco-vm.
+// (Config.Agent), which the command line sets to itself, a static
+// linux/amd64 executable on a Linux amd64 host (ADR 26-11-03-530 §6). With
+// none, it refuses: it falls back to nothing (ADR 26-11-14-352 §3). The
+// protocol check after boot refuses one of another disco-vm.
 func (h *Hypervisor) agentBinary() (string, error) {
-	bin := h.agent
-	if bin == "" {
-		exe, err := os.Executable()
-		if err != nil {
-			return "", fmt.Errorf("libkrun: the agent: %w", err)
-		}
-		bin = exe
+	if h.agent == "" {
+		return "", fmt.Errorf("libkrun: a guest needs the static linux disco-vm as its agent: configure agent ($%s) as one", AgentEnv)
 	}
-	if err := agent.Check(bin, "linux", runtime.GOARCH); err != nil {
-		return "", fmt.Errorf("libkrun: %w: the agent is the running disco-vm, or the configured one ($%s), and must be a static linux build (`go tool task build`)", err, AgentEnv)
+	if err := agent.Check(h.agent, "linux", runtime.GOARCH); err != nil {
+		return "", fmt.Errorf("libkrun: %w: the agent ($%s) must be a static linux build (`go tool task build`)", err, AgentEnv)
 	}
-	return bin, nil
+	return h.agent, nil
 }
 
 // checkForwards refuses a forward on the agent's port or the service's:

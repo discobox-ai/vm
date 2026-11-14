@@ -66,11 +66,11 @@ on its [GitHub Releases](https://github.com/discobox-ai/vm/releases) page.
 `disco-vm --version` prints the release.
 
 The macOS binary is signed with the entitlement Virtualization.framework
-needs, so it runs macOS guests as installed. A Linux guest on vz, or a Docker
-guest driven from a Mac, also needs a Linux disco-vm of the same release as
-its agent. Download `disco-vm-linux-arm64` (`-amd64` for Docker on an Intel
-host) from the same release, check it against `checksums.txt`, make it
-executable, and name it by its absolute path in `DISCO_VM_AGENT`.
+needs, so it runs macOS guests as installed. It also carries the Linux
+disco-vm of the same release, which it hands a Linux guest on vz, or a
+Docker guest, as its agent, so those run as installed too; the Windows
+binary carries one for Docker guests the same way. To use another, name it
+by its absolute path in `DISCO_VM_AGENT`.
 
 To build from a checkout instead, run `go tool task build` (or `install`).
 

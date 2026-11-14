@@ -3,7 +3,9 @@
 // (Virtualization.framework), from one codebase and one command line.
 //
 // The same binary is also the guest agent (`disco-vm guest`) and each VM's
-// supervisor (`disco-vm shim`).
+// supervisor (`disco-vm shim`). Built with the carryagent tag for a host
+// that is not Linux, it carries the linux disco-vm of its own build, which
+// it hands a Linux guest as its agent.
 package main
 
 import (
@@ -19,5 +21,5 @@ import (
 func init() { runtime.LockOSThread() }
 
 func main() {
-	os.Exit(machine.Main(func() int { return cli.Main(os.Args[1:]) }))
+	os.Exit(machine.Main(func() int { return cli.Main(os.Args[1:], carried()) }))
 }

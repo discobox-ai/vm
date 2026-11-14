@@ -2,6 +2,8 @@
 /disco-vm.exe
 *.test
 /build/
+# The agent a release, or go tool task build, embeds (cmd/disco-vm/carry.go).
+/cmd/disco-vm/carried/
 /.direnv/
 /result*
 .env

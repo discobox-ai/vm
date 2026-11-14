@@ -213,7 +213,7 @@ reinstall.
   (`--vz-macos-agent`, `$DISCO_VM_MACOS_AGENT`): a disco-vm built for darwin
   on this Mac's architecture, which a boot refuses unless it is a Mach-O
   executable for it, naming the field. The command line sets the field to
-  its own executable (`ConfigField.DefaultExecutable`). An embedder whose
+  its own executable (`ConfigField.AgentOS` darwin, ADR 26-11-14-352 §2). An embedder whose
   program is not disco-vm pulls it from the published agent index it
   already pins for its Linux guests
   (`ghcr.io/discobox-ai/disco-vm-agent:<module version>`, by digest), which
@@ -294,10 +294,18 @@ guests has none and is macOS.
   sparse, to 64 GiB, and writes a new machine ID and MAC. A VM created from
   a committed Linux VM clones its layer and gets a new identity the same
   way.
+- **The Linux agent** is vz's privileged `agent` field. When it is not
+  configured, the command line sets it to the linux disco-vm its own binary
+  carries (ADR 26-11-14-352): a release's `disco-vm-darwin-arm64`, and
+  `go tool task build`'s, embed the linux/arm64 disco-vm of the same build,
+  gzipped beside its SHA-256, and the command line writes it out once to
+  `cache/cli/agent/sha256-<digest>-linux-arm64/disco-vm` under its directory,
+  owner-only. A plain `go build` carries none, so the field stays absent and a
+  Linux boot is refused, naming it. An embedder names one it pulled
+  (`agent.Pull`).
 - **Boot** refuses a window, checks the configured agent (`--vz-agent`,
   `$DISCO_VM_AGENT`; ADR 26-11-11-215, which the shim is given) names a linux
-  executable of this Mac's architecture (`go tool task build` builds
-  `build/linux-arm64/disco-vm` beside the darwin one), and writes
+  executable of this Mac's architecture, and writes
   `boot-initrd.img`: the image's initrd, padded to four bytes, then a newc
   archive holding the agent at `/.disco-vm/disco-vm`. The configuration is
   `VZLinuxBootLoader` with `console=hvc0 root=/dev/vda rw rootfstype=ext4

@@ -37,21 +37,39 @@ tasks:
     cmds:
       - task --list
 
+  # On a Mac, as a release does, the binary carries the linux agent of its
+  # own build (ADR 26-11-14-352 §1), which a Linux guest on vz and a Docker
+  # guest are handed with no $DISCO_VM_AGENT; it is left in build/linux-ARCH
+  # too, for the tasks that name it.
   build:
-    desc: Compile disco-vm into build/, static off macOS, signed on macOS
+    desc: Compile disco-vm into build/, static off macOS, signed on macOS and carrying its linux agent
     env:
       CGO_ENABLED: "{{.CGO}}"
+    vars:
+      TAGS: '{{if eq OS "darwin"}}-tags carryagent{{end}}'
     cmds:
       - mkdir -p build
-      - go build -ldflags '{{.LDFLAGS}}' -o {{.BINARY}} {{.MAIN}}
-      - cmd: codesign --force --sign - --entitlements {{.ENTITLEMENTS}} {{.BINARY}}
-        platforms: [darwin]
-      # A Linux guest on vz boots with the linux agent beside it
-      # ($DISCO_VM_AGENT), which a darwin binary cannot be.
       - task: build:linux-agent
         vars:
           AGENT_ARCH: "{{ARCH}}"
         platforms: [darwin]
+      - task: carry
+        vars:
+          AGENT: build/linux-{{ARCH}}/disco-vm
+          AGENT_ARCH: "{{ARCH}}"
+        platforms: [darwin]
+      - go build {{.TAGS}} -ldflags '{{.LDFLAGS}}' -o {{.BINARY}} {{.MAIN}}
+      - cmd: codesign --force --sign - --entitlements {{.ENTITLEMENTS}} {{.BINARY}}
+        platforms: [darwin]
+
+  # What the carryagent tag embeds: AGENT, the linux disco-vm for AGENT_ARCH,
+  # alone in cmd/disco-vm/carried (not in git), gzipped beside its SHA-256.
+  carry:
+    internal: true
+    requires:
+      vars: [AGENT, AGENT_ARCH]
+    cmds:
+      - go run ./internal/cmd/disco-vm-release carry -agent {{.AGENT}} -arch {{.AGENT_ARCH}} -dir cmd/disco-vm/carried
 
   # A plain `go install` links the host's libc where cgo is on, and a guest
   # without that libc cannot run the result as its agent.
@@ -213,13 +231,18 @@ tasks:
         vars: { TARGET_OS: linux, TARGET_ARCH: amd64 }
       - task: release:binary
         vars: { TARGET_OS: linux, TARGET_ARCH: arm64 }
+      # Windows carries the linux/amd64 binary just built (ADR 26-11-14-352
+      # §1), for a Docker guest.
       - task: release:binary
-        vars: { TARGET_OS: windows, TARGET_ARCH: amd64 }
+        vars: { TARGET_OS: windows, TARGET_ARCH: amd64, CARRY: build/release/disco-vm-linux-amd64, CARRY_ARCH: amd64 }
       - test "$(build/release/disco-vm-linux-{{ARCH}} --version)" = "disco-vm version {{.RELEASE_TAG}}"
 
   # Signed as build signs it, and checked to carry the Virtualization
   # entitlement before anything uploads it: neither channel quarantines what
-  # it downloads, so this signature is what runs a vz VM.
+  # it downloads, so this signature is what runs a vz VM. It carries the
+  # linux/arm64 disco-vm built here as the Linux job builds it (ADR
+  # 26-11-14-352 §1), which build/carry keeps out of what is uploaded, and
+  # says so in --help=vz.
   release:build:darwin:
     internal: true
     platforms: [darwin]
@@ -227,24 +250,39 @@ tasks:
       OUT: build/release/disco-vm-darwin-arm64
     cmds:
       - task: release:binary
-        vars: { TARGET_OS: darwin, TARGET_ARCH: arm64 }
+        vars: { TARGET_OS: linux, TARGET_ARCH: arm64, DIR: build/carry }
+      - task: release:binary
+        vars: { TARGET_OS: darwin, TARGET_ARCH: arm64, CARRY: build/carry/disco-vm-linux-arm64, CARRY_ARCH: arm64 }
       - codesign --force --sign - --entitlements {{.ENTITLEMENTS}} {{.OUT}}
       - codesign --verify --strict {{.OUT}}
       - codesign -d --entitlements - --xml {{.OUT}} 2>&1 | grep -q com.apple.security.virtualization
       - test "$({{.OUT}} --version)" = "disco-vm version {{.RELEASE_TAG}}"
+      - '{{.OUT}} --help=vz | grep -q "default: the linux/arm64 disco-vm this one carries"'
 
+  # One binary into DIR (build/release unless set). With CARRY, the linux
+  # disco-vm for CARRY_ARCH, it is built with the carryagent tag and carries
+  # it, which its build info is checked to say.
   release:binary:
     internal: true
     requires:
       vars: [RELEASE_TAG, TARGET_OS, TARGET_ARCH]
     vars:
       EXT: '{{if eq .TARGET_OS "windows"}}.exe{{end}}'
+      DIR: '{{.DIR | default "build/release"}}'
+      OUT: '{{.DIR}}/disco-vm-{{.TARGET_OS}}-{{.TARGET_ARCH}}{{.EXT}}'
+      TAGS: '{{if .CARRY}}-tags carryagent{{end}}'
     env:
       CGO_ENABLED: '{{if eq .TARGET_OS "darwin"}}1{{else}}0{{end}}'
       GOOS: "{{.TARGET_OS}}"
       GOARCH: "{{.TARGET_ARCH}}"
     cmds:
-      - go build -trimpath -ldflags '-X github.com/discobox-ai/vm/internal/version.Version={{.RELEASE_TAG}}' -o build/release/disco-vm-{{.TARGET_OS}}-{{.TARGET_ARCH}}{{.EXT}} {{.MAIN}}
+      - task: carry
+        vars: { AGENT: "{{.CARRY}}", AGENT_ARCH: "{{.CARRY_ARCH}}" }
+        if: '[ -n "{{.CARRY}}" ]'
+      - mkdir -p {{.DIR}}
+      - go build {{.TAGS}} -trimpath -ldflags '-X github.com/discobox-ai/vm/internal/version.Version={{.RELEASE_TAG}}' -o {{.OUT}} {{.MAIN}}
+      - cmd: go version -m {{.OUT}} | grep -q -- '-tags=carryagent'
+        if: '[ -n "{{.CARRY}}" ]'
 
   # Checksums and installers are written here rather than in release:build,
   # because they name every platform's binary, and only this job has them

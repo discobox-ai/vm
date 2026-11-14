@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"slices"
@@ -42,6 +43,10 @@ type globals struct {
 	driverFlags []driverFlag
 	// opened is the engine a command opened.
 	opened *engine.Engine
+	// carried is the agents this disco-vm carries (Main), and agents what
+	// agentFor found for each guest OS.
+	carried fs.FS
+	agents  map[machine.OS]string
 }
 
 // dir is where a driver on this host's disk keeps its state.
@@ -79,12 +84,15 @@ func (g *globals) engine() (*engine.Engine, error) {
 	return g.opened, err
 }
 
-// Main runs the command line and returns the process exit code.
-func Main(args []string) int {
+// Main runs the command line and returns the process exit code. carried is
+// the agents this disco-vm carries for guests of another OS than its own
+// (ADR 26-11-14-352 §1), as agent.Carry writes them, which the command line
+// hands a driver whose agent is not configured; nil is none.
+func Main(args []string, carried fs.FS) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	g := &globals{}
+	g := &globals{carried: carried}
 	root := &cobra.Command{
 		Use:   "disco-vm",
 		Short: "Run VMs, fresh or from committed ones, and commit them",
