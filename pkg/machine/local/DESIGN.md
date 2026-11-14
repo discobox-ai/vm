@@ -25,9 +25,10 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   difference over an image this driver no longer knows. While a VM is
   created from another, `from` in its directory names that one's ID, before
   its chain is read and its record written;
-- while an install runs, `instances/<id>/installing.json`, the VM's record,
-  which `ViewInstall` finds it by; `instance.json` is written once it is
-  done;
+- while an install runs, `instances/<id>/installing.json`, the VM's record
+  and the installing process's PID, which `ViewInstall` finds it by and
+  skips once that process is gone (a crash left it); `instance.json` is
+  written once it is done;
 - while an upgrade runs, `instances/<id>/machine.next` (the new disk),
   `next.ready` (written once it is whole), and `machine.old` (the old disk,
   once the new one is in place), [below](#an-upgrade-swaps-a-vms-disk-in-its-directory);
@@ -202,7 +203,10 @@ instead, which `shim.json` names. The API is:
 - `/dial?port=N`, which upgrades to a stream spliced into the machine's
   `Dial(N)`: the agent's port or the service's (`guest.DialablePort`), the
   service's dialed where `Hypervisor.Service` says, which only the owner can
-  reach; any other port is refused.
+  reach; any other port is refused;
+- `/display`, on a hypervisor that reports `View`, which upgrades to a stream
+  spliced into the machine's `Dial(guest.DisplayPort)`: the guest's display
+  for a window another process opens (`View`). It takes no port.
 
 It also serves the instance's URL on a loopback TCP port spliced into the
 machine's `Dial(service port)`, since ADR 0005 makes that an HTTP URL any

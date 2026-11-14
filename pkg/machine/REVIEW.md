@@ -15,6 +15,10 @@
   every test on hcs, vz, and fake, whose hypervisors connect to any port at
   any time, and fails only on libkrun, which maps ports before its VM starts
   and never after.
+- **A window reaches the guest's display through the shim's `/display`
+  alone** (ADR 26-11-11-746). The display stream is guest port 7301, which
+  no caller dials: adding it to `DialablePort` would hand a Windows desktop
+  and its input to every `disco-vm dial` and peer forward.
 - **A driver's setting is a field of its configuration, never an
   environment variable it reads** (ADR 26-11-11-215). A new one is a field of
   the driver's `Config`, a `ConfigField` in its `Definition` with the

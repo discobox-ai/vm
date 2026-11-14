@@ -88,12 +88,17 @@ What building it found, beyond the recipes below:
   `127.0.0.1:3389` answers an RDP request. If so, `mstsc` opens full screen
   at the host's resolution on a loopback port relayed to it through the
   agent's `pipe`, signed in as the image's user by a Domain Password
-  credential for `TERMSRV/127.0.0.1` named `COMPUTER\user` (mstsc ignores a
-  password in the `.rdp` file and a generic credential). Otherwise a window
-  of disco-vm's own shows the stream on `guest.DisplayPort`, which the agent
+  credential named `COMPUTER\user` (mstsc ignores a password in the `.rdp`
+  file and a generic credential). mstsc finds it by host alone
+  (`TERMSRV/HOST`, no port), so each window listens on a loopback address
+  of its own (`127.a.b.c`) and stores the credential for that, for as long as
+  it is open. Otherwise a window
+  of disco-vm's own shows the stream on `guest.DisplayPort` (from another
+  process, through the shim's `/display`, ADR 26-11-11-746), which the agent
   serves from `disco-vm display-host` in the console session (sandboxi's
   guestfb: GDI capture, changed rows as raw BGRA, the cursor's shape,
-  `SendInput`). `DISCO_VM_HCS_VIEW=display` skips Remote Desktop. Documents
+  `SendInput`). The driver's `view` setting, `display`
+  (`DISCO_VM_HCS_VIEW=display`), skips Remote Desktop. Documents
   keep `VideoMonitor`, `Keyboard` and `Mouse`, as the guest's adapter and
   input. `disco-vm gui` opens a window on a running instance; `run --gui`
   and `start --gui` open it from the shim once the guest is up, and again

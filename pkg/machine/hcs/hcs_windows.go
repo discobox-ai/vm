@@ -26,7 +26,13 @@ func init() {
 	// refused at Create, and a base configured for another driver
 	// ($DISCO_VM_BASE) stops nothing else.
 	machine.Register("hcs", machine.Registration{
-		New:        func(cfg machine.Config) (machine.Driver, error) { return local.New(cfg, &Hypervisor{}) },
+		New: func(cfg machine.Config) (machine.Driver, error) {
+			conf, err := decode(cfg.DriverConfig)
+			if err != nil {
+				return nil, err
+			}
+			return local.New(cfg, &Hypervisor{view: conf.View})
+		},
 		Definition: Definition(),
 		Validate:   Validate,
 	})
@@ -34,19 +40,23 @@ func init() {
 
 // Hypervisor runs Windows guests as HCS virtual machines, under a
 // local.Driver.
-type Hypervisor struct{}
+type Hypervisor struct {
+	// view is Config.View.
+	view string
+}
 
 var _ local.Hypervisor = (*Hypervisor)(nil)
 
 func (*Hypervisor) Name() string { return "hcs" }
 
 // Capabilities is what the driver offers on this host: Windows guests, and a
-// display: the guest's Remote Desktop or the agent's stream of its desktop
-// (View).
+// display: the guest's Remote Desktop or the agent's stream of its desktop,
+// in a window any process opens (View, ViewInstall).
 func (*Hypervisor) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS:     []machine.OS{machine.Windows},
 		Display:     true,
+		View:        true,
 		Ports:       true,
 		AcrossPools: true,
 		Agent:       true,

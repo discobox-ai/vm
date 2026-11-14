@@ -33,7 +33,6 @@ type Driver struct {
 
 var (
 	_ machine.Driver = (*Driver)(nil)
-	_ machine.Viewer = (*Driver)(nil)
 )
 
 // New is a driver for hv, keeping its state in cfg.Dir (machine.DefaultDir
@@ -128,6 +127,14 @@ type instanceRecord struct {
 	// before the upgrade touches a disk and dropped once it is done. While
 	// it is set the VM does not boot or commit (Upgrade).
 	Upgrading *upgradeTarget `json:"upgrading,omitempty"`
+}
+
+// installingRecord is installing.json: the record of the VM an install is
+// making, and the installing process, so that a record a crashed install
+// left is not taken for one in progress.
+type installingRecord struct {
+	instanceRecord
+	PID int `json:"pid"`
 }
 
 // oldRecord is what an instance.json written before ADR 26-11-03-606 has
@@ -443,7 +450,7 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, name str
 	// makes, so another process can find it (ViewInstall).
 	marker := filepath.Join(d.instanceDir(rec.ID), installingFile)
 	if err == nil {
-		err = fsutil.WriteJSON(marker, rec)
+		err = fsutil.WriteJSON(marker, installingRecord{instanceRecord: rec, PID: os.Getpid()})
 	}
 	if err == nil {
 		// An install runs the guest (vz boots its installer, then the
