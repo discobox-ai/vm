@@ -30,6 +30,8 @@ vars:
   DEBIAN_IMAGE: public.ecr.aws/docker/library/debian:sid-20261104-slim@sha256:07a3205e8583fdff12d2b05bd030f50437e9fd340ee616df0c05dc77af75767b
   DEBIAN_SNAPSHOT: 20261112T202949Z
   DEBIAN_ARGS: --build-arg DEBIAN_IMAGE={{.DEBIAN_IMAGE}} --build-arg DEBIAN_SNAPSHOT={{.DEBIAN_SNAPSHOT}}
+  # The Depot project the Linux guest image's release builds in.
+  DEPOT_PROJECT: bbqjs4tj1g
 
 tasks:
   default:
@@ -99,22 +101,44 @@ tasks:
     cmds:
       - docker buildx build --platform linux/{{.GUEST_ARCH}} {{.DEBIAN_ARGS}} --output type=local,dest=build/linux-guest/{{.GUEST_ARCH}} pkg/guest/linux
 
+  # The Linux guest image for linux/arm64 and linux/amd64 as its release
+  # builds it: one Depot build, each architecture on a builder of its own,
+  # never under emulation (sid's systemd 262.2-1 postinst crashed binfmt
+  # qemu-aarch64 on an amd64 runner, #145). It pushes nothing; CI's
+  # linux-guest job runs it on every change. The depot CLI signs in through
+  # GitHub's OIDC in CI, and with `depot login` anywhere else.
+  build:linux-guest:depot:
+    desc: Build the Linux guest image for linux/arm64 and linux/amd64 on Depot, each natively, as release:linux-guest does, without pushing (needs the depot CLI)
+    cmds:
+      # ARGS set here, or the environment's would reach depot build.
+      - task: depot:linux-guest
+        vars:
+          ARGS: ""
+
   # The Linux guest image's release, on its own line: a linux/vN tag pushes
-  # ghcr.io/discobox-ai/disco-vm-linux:vN for both architectures and prints
-  # the digest to pin as linuximage.DefaultBase. arm64 builds under QEMU.
+  # ghcr.io/discobox-ai/disco-vm-linux:vN, built as build:linux-guest:depot
+  # builds it, and prints the digest to pin as linuximage.DefaultBase. It
+  # builds with --no-cache: the Depot project's cache is shared with every
+  # pull request's build, a fork's included, and a release must not take
+  # layers one wrote.
   release:linux-guest:
-    desc: Push the Linux guest image for linux/arm64 and linux/amd64 as ghcr.io/discobox-ai/disco-vm-linux:TAG (CI, on a linux/v* tag; needs GITHUB_TOKEN and GITHUB_ACTOR)
+    desc: Push the Linux guest image for linux/arm64 and linux/amd64, each built natively on Depot, as ghcr.io/discobox-ai/disco-vm-linux:TAG (CI, on a linux/v* tag; needs the depot CLI, GITHUB_TOKEN and GITHUB_ACTOR)
     requires:
       vars: [TAG]
     vars:
       IMAGE: ghcr.io/discobox-ai/disco-vm-linux:{{trimPrefix "linux/" .TAG}}
     cmds:
-      - docker run --privileged --rm docker.io/tonistiigi/binfmt@sha256:1b804311fe87047a4c96d38b4b3ef6f62fca8cd125265917a9e3dc3c996c39e6 --install arm64
-      - docker buildx create --use --name disco-vm-linux 2>/dev/null || docker buildx use disco-vm-linux
       - printenv GITHUB_TOKEN | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - mkdir -p build/linux-guest
-      - docker buildx build --platform linux/arm64,linux/amd64 {{.DEBIAN_ARGS}} --tag {{.IMAGE}} --push --metadata-file build/linux-guest/metadata.json pkg/guest/linux
+      - task: depot:linux-guest
+        vars:
+          ARGS: --no-cache --tag {{.IMAGE}} --push --metadata-file build/linux-guest/metadata.json
       - 'echo "pin linuximage.DefaultBase to {{.IMAGE}}@$(sed -n ''s/.*"containerimage.digest": *"\([^"]*\)".*/\1/p'' build/linux-guest/metadata.json)"'
+
+  depot:linux-guest:
+    internal: true
+    cmds:
+      - depot build --project {{.DEPOT_PROJECT}} --platform linux/arm64,linux/amd64 {{.DEBIAN_ARGS}} {{.ARGS}} pkg/guest/linux
 
   # disco-vm's libkrun runtime (pkg/machine/libkrun/runtime, ADR
   # 26-11-03-530 §3): libkrun, passt, and the launcher, with the libc they

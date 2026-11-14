@@ -114,9 +114,13 @@ beside the modules as well as in `/boot`). `verify` then checks the kernel's
 form, that the root carries none, the root's label, units,
 fstab, and nftables, and the initrd's hook, tools, and compression, so a broken image fails
 its build rather than booting to a blank console. `go tool task build:linux-guest`
-builds it for this host (CI builds amd64 on every change), and a `linux/vN`
-tag publishes both architectures as `ghcr.io/discobox-ai/disco-vm-linux:vN`
-(`release:linux-guest`), whose digest is pinned in `vz.DefaultLinuxBase` by
-hand: the image ships on its own line, so a guest fix needs no disco-vm
-release. The command line, the hook's path, and the unit are a contract
+builds it for this host, and a `linux/vN` tag publishes both architectures
+as `ghcr.io/discobox-ai/disco-vm-linux:vN` (`release:linux-guest`), whose
+digest is pinned in `linuximage.DefaultBase` by hand. The release builds
+both in one Depot build, each on a builder of its own architecture, never
+under emulation: sid's systemd 262.2-1 postinst crashed binfmt qemu-aarch64
+on an amd64 runner. CI makes the same build on every change
+(`build:linux-guest:depot`), without the push. The image ships on its own
+line, so a guest fix needs no disco-vm release. The command line, the hook's
+path, and the unit are a contract
 between the two: a change ships the base first, then the pin.

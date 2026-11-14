@@ -114,3 +114,9 @@
   newest. Anything that moves a channel (`make_latest`, the tap's formula)
   first checks that no published full release has a higher version, or a fix
   tagged on an older line downgrades every user. (ADR 26-11-13-679.)
+- **A release builds from no cache a pull request can write.** The Depot
+  project's build cache is shared with every pull request's build, a fork's
+  included, so `release:linux-guest` passes `--no-cache`, as the task action
+  turns Go's shared cache off for a tag (repostd `ci.shared-cache`). A
+  release target that reads a shared cache publishes whatever layers a pull
+  request left in it. (#145.)
