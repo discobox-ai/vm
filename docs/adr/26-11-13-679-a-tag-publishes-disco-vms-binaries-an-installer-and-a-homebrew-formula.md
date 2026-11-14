@@ -1,6 +1,8 @@
 # 26-11-13-679 — A tag publishes disco-vm's binaries, an installer, and a Homebrew formula
 
-- **Status**: Accepted
+- **Status**: Accepted (§2's darwin and windows binaries built alone
+  superseded by
+  [26-11-14-352](26-11-14-352-a-disco-vm-for-a-host-that-is-not-linux-carries-its-own-builds-linux-agent-and-the-command-line-hands-it-to-every-linux-guest.md))
 - **Date**: 2026-11-13
 
 Accepted by the owner by merging #105, 2026-11-14.
