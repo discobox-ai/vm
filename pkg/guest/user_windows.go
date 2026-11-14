@@ -1,6 +1,7 @@
 package guest
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"sync"
@@ -8,6 +9,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 var (
@@ -30,28 +33,25 @@ var (
 // The agent runs as SYSTEM, which may log any account on. The account the
 // image made (the install's user) has its own name for a password; an image
 // from before that has a blank one, which Install allows for LogonUser by
-// turning LimitBlankPasswordUse off, so a blank password is tried second. The
-// process runs in the
-// agent's session, on the agent's window station and desktop, which the
-// account is granted: without that, anything that loads user32 fails to start
-// (0xC0000142).
+// turning LimitBlankPasswordUse off, so a blank password is tried second. An
+// image installed with --option password has a password of the person's
+// own, which disco-vm keeps nowhere: running as its account is unsupported,
+// and the error says so. The process runs in the agent's session, on the
+// agent's window station and desktop, which the account is granted: without
+// that, anything that loads user32 fails to start (0xC0000142).
 func runAs(cmd *exec.Cmd, name string) ([]string, func(), error) {
 	namep, err := windows.UTF16PtrFromString(name)
 	if err != nil {
 		return nil, nil, err
 	}
-	dot, _ := windows.UTF16PtrFromString(".")
-	empty, _ := windows.UTF16PtrFromString("")
-	const logonInteractive, providerDefault = 2, 0
 	var token windows.Token
-	for _, password := range []*uint16{namep, empty} {
-		r, _, e := logonUser.Call(uintptr(unsafe.Pointer(namep)), uintptr(unsafe.Pointer(dot)), uintptr(unsafe.Pointer(password)),
-			logonInteractive, providerDefault, uintptr(unsafe.Pointer(&token)))
-		if r != 0 {
-			err = nil
+	for _, password := range []string{name, ""} {
+		if token, err = logOn(name, password); err == nil {
 			break
 		}
-		err = e
+	}
+	if errors.Is(err, windows.ERROR_LOGON_FAILURE) {
+		return nil, nil, fmt.Errorf("guest: run as %q: no such account, or its password is neither its name nor blank, as an image installed with --option password has it, and disco-vm keeps no other: %w", name, machine.ErrUnsupported)
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("guest: log on as %q (the account the image made has its name for a password, or, made before that, a blank one): %w", name, err)
@@ -106,6 +106,44 @@ func runAs(cmd *exec.Cmd, name string) ([]string, func(), error) {
 		token.Close()
 	}
 	return env, release, nil
+}
+
+// logOn logs the local account name on interactively with password.
+func logOn(name, password string) (windows.Token, error) {
+	namep, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return 0, err
+	}
+	passwordp, err := windows.UTF16PtrFromString(password)
+	if err != nil {
+		return 0, err
+	}
+	dot, _ := windows.UTF16PtrFromString(".")
+	const logonInteractive, providerDefault = 2, 0
+	var token windows.Token
+	if r, _, e := logonUser.Call(uintptr(unsafe.Pointer(namep)), uintptr(unsafe.Pointer(dot)), uintptr(unsafe.Pointer(passwordp)),
+		logonInteractive, providerDefault, uintptr(unsafe.Pointer(&token))); r == 0 {
+		return 0, e
+	}
+	return token, nil
+}
+
+// PasswordIsName reports whether the local account name still has its own
+// name for a password, as an image's install makes it unless --option
+// password gave it one of the person's own. It only tries the logon: no
+// password is read, kept, or sent anywhere. An account that does not exist
+// is no different: Windows fails its logon the same way. Any other failure
+// (a disabled account, say) is an error.
+func PasswordIsName(name string) (bool, error) {
+	token, err := logOn(name, name)
+	if errors.Is(err, windows.ERROR_LOGON_FAILURE) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("guest: log on as %q: %w", name, err)
+	}
+	token.Close()
+	return true, nil
 }
 
 var desktopGrants sync.Map // user SID string → struct{}

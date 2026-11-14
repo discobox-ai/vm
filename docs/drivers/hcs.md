@@ -69,9 +69,11 @@ What building it found, beyond the recipes below:
   does.
 - **Run as user is LogonUser**, with the password Install's unattend gives
   the account, its own name (an image from before has a blank one, which is
-  tried second; `LimitBlankPasswordUse` is turned off in the offline hive),
-  the linked elevated token, the profile loaded, and the account granted the
-  agent's window station and desktop (without which anything that loads
+  tried second; `LimitBlankPasswordUse` is turned off in the offline hive).
+  An image installed with `--option password` has a password disco-vm keeps
+  nowhere, so running as its account is unsupported, and the error says so
+  (ADR 26-11-14-593). The process gets the linked elevated token and the
+  profile loaded, and the account is granted the agent's window station and desktop (without which anything that loads
   user32 fails with 0xC0000142). A TTY session as the account gets a console
   of the account's own (`disco-vm console-host`): one the SYSTEM agent made
   could be written to but not read back, which broke every PowerShell
@@ -89,7 +91,11 @@ What building it found, beyond the recipes below:
   at the host's resolution on a loopback port relayed to it through the
   agent's `pipe`, signed in as the image's user by a Domain Password
   credential named `COMPUTER\user` (mstsc ignores a password in the `.rdp`
-  file and a generic credential). mstsc finds it by host alone
+  file and a generic credential). It stores the name as the password only
+  where the agent's `password-is-name` (a `LogonUser` it only tries) says
+  it still is; where it says `other` (`--option password`), it stores none
+  and mstsc asks the person, and an agent too old to answer gets the name
+  as before (ADR 26-11-14-593). mstsc finds it by host alone
   (`TERMSRV/HOST`, no port), so each window listens on a loopback address
   of its own (the first of `127.77.0.1` to `127.77.0.254` it can bind port
   13389 on, which claims it) and stores
