@@ -110,3 +110,11 @@
   macOS stub as its first line alone and no install's agent ever started.
   `plutil`, `plistlib` and `encoding/xml` all read the references, so only
   a real guest showed it; `TestDaemonPlist` now refuses any `&#`.
+- **An in-machine endpoint is declared whether the driver uses it or not**
+  (`Definition.InMachine`). The endpoint is the provider's (boxd's metadata
+  adapter answers any process on a non-isolated boxd machine), so whether
+  the driver's configuration turns it on never decides whether it is listed:
+  an embedder blocks every endpoint listed, whatever the configuration. Its
+  field defaults to off, as every way a driver acts as its host does. A
+  review found a first draft that listed the adapter only when the driver
+  used it, and so told an embedder holding a key there was nothing to block.

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -201,6 +202,24 @@ func TestInMachineIsTheConfigurations(t *testing.T) {
 	}
 	if _, err := d.api.token(t.Context()); !errors.Is(err, errNoCredentials) {
 		t.Fatalf("no key and no inMachine: %v, want errNoCredentials", err)
+	}
+}
+
+// TestTheDefinitionDeclaresInMachineAuth: an embedder learns from boxd's
+// definition, not its field's name, that it can authenticate as the machine,
+// what turns it on, and the address it asks: the adapter on the default
+// gateway, which it keeps the machine's other processes from.
+func TestTheDefinitionDeclaresInMachineAuth(t *testing.T) {
+	adapter := machine.MachineEndpoint{Gateway: true, Port: 9002}
+	want := &machine.InMachineAuth{Field: "inMachine", Endpoints: []machine.MachineEndpoint{adapter}}
+	if got := Definition().InMachine; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Definition().InMachine = %+v, want %+v", got, want)
+	}
+	if got := adapter.String(); got != "<gateway>:9002" {
+		t.Errorf("the adapter is %s", got)
+	}
+	if f, ok := Definition().Field("inMachine"); !ok || f.Default != "false" {
+		t.Errorf("inMachine is %+v: in-machine auth is off unless configured", f)
 	}
 }
 

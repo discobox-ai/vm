@@ -18,12 +18,12 @@ import (
 )
 
 const (
-	// metadataPort and metadataPath are boxd's in-machine metadata adapter,
+	// metadataPortNumber and metadataPath are boxd's in-machine metadata adapter,
 	// which listens on a non-isolated machine's default gateway and mints
 	// the machine's owner a token, asking for nothing (the boxd SDK's
 	// _credentials.py, and discobox-ai/discobox#1090's spike).
-	metadataPort = "9002"
-	metadataPath = "/v1/auth/token"
+	metadataPortNumber = 9002
+	metadataPath       = "/v1/auth/token"
 	// vmTokenSkew is how long before its expiry an in-machine token is
 	// minted again. One lives 15 minutes and is minted, not refreshed, so a
 	// minute covers a call's latency and a clock's drift, as boxd's SDK
@@ -137,7 +137,7 @@ func metadataURL() (string, error) {
 	if !ok {
 		return "", fmt.Errorf("%w (no default gateway, where a boxd machine's metadata adapter is)", errNoCredentials)
 	}
-	return "http://" + net.JoinHostPort(gateway, metadataPort) + metadataPath, nil
+	return "http://" + net.JoinHostPort(gateway, strconv.Itoa(metadataPortNumber)) + metadataPath, nil
 }
 
 // defaultGateway is the IPv4 gateway of the default route in a Linux route

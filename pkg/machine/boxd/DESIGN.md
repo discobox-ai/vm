@@ -87,7 +87,9 @@ machines and snapshots (the root
   fenced to its org, that lives 15 minutes. It is a field of the
   configuration, not inferred from boxd's environment variables, which an
   embedder's process may not have and a driver does not read; and it is
-  privileged, since it acts as the host machine's owner. Unset, no key is
+  privileged, since it acts as the host machine's owner. The definition
+  declares both, field and adapter (`Definition.InMachine`), so an embedder
+  can keep the machine's other processes from the adapter. Unset, no key is
   `errNoCredentials` as before, and the gateway is sent nothing. The
   token is kept until a minute before its `expires_at` and dropped when boxd
   answers `Unauthenticated`. The adapter is dialed through

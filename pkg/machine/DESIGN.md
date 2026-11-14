@@ -142,6 +142,18 @@ refuses its key by name, and no definition, `info`, help, error, or file
 carries its value. Each driver's test drives its real client and checks
 the key arrived where `SecretSends` says and nowhere else.
 
+A driver that can authenticate as the machine it runs on, with no key,
+declares it (`Definition.InMachine`): the privileged boolean field that turns
+it on, off by default, and every endpoint a process on the machine reaches
+for the credential (`MachineEndpoint`: the machine's default gateway, or a
+host or CIDR, and a port). boxd's is `inMachine` and `<gateway>:9002`, its
+metadata adapter. The endpoints are the provider's and answer any process on
+its machine, whether the driver uses them or not, so an embedder that runs
+other processes on such a machine (sandboxes, a proxy, a builder) keeps them
+from every endpoint listed, whatever the configuration, and reads the field
+only to learn whether the driver authenticates that way. Every other driver
+declares none (`TestInMachineAuth` holds the list).
+
 `Config.Dial` dials every connection a driver makes to its service (boxd's
 gRPC and token exchange, archil's API and process API, a Docker daemon, the
 registry vz and libkrun pull a base or runtime from, the host vz downloads
