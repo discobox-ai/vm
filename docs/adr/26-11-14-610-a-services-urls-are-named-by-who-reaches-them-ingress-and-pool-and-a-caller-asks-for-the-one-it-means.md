@@ -1,6 +1,9 @@
 # 26-11-14-610 — A service's URLs are named by who reaches them, ingress and pool, and a caller asks for the one it means
 
-- **Status**: Proposed
+- **Status**: Accepted (supersedes in part 26-11-12-604 §1 and §2, its
+  scope names and reach table; 26-11-04-412 §4, its internal URL,
+  selection order, and host relay; and 26-10-29-129 §1, the names `URL` and
+  `PrivateURL`)
 - **Date**: 2026-11-14
 - **Supersedes in part**: 26-11-12-604 §1 and §2, their three scope names
   (internal, private, public), §2's reach table, and that a URL on the
@@ -9,6 +12,9 @@
   selection order and its host relay for the pool's own traffic;
   26-10-29-129 §1, the names `URL` and `PrivateURL`, `Engine.PrivateURL` and
   `disco-vm url --private`
+
+Accepted by the owner by merging #149, 2026-11-14. The owner answered its
+Open item while #148 was delivered, 2026-11-14: §6.
 
 ## Context
 
@@ -67,8 +73,8 @@ says how public the network under it is.
   `http://<address>:<port>` at an address where every port the guest
   listens on is reachable too, or the ingress URL where the driver gives
   peers no path to each other but its ingress URL reaches them. A caller
-  tells a direct path by the pool URL differing from the ingress URL, as
-  26-10-29-129 §1 had it for `PrivateURL != URL`.
+  tells a direct path by an `http://` pool URL differing from the ingress
+  URL, as 26-10-29-129 §1 had it for `PrivateURL != URL`.
 
 ### 2. Every driver reports where its caller reaches it as ingress
 
@@ -82,13 +88,13 @@ scopes:
 | archil | always: the exposed port | always: the ingress URL |
 | docker | always: the port the daemon publishes on its host's loopback | always: the container's address on its network |
 | fake | always: the shim's loopback port | always: the ingress URL (a shared loopback) |
-| vz, libkrun, hcs | always: what it is there is open for the owner (Open) | never |
+| vz, libkrun, hcs | optional: the owner-only local socket the shim serves (§6), given by default | always: the same socket (§6) |
 
 A strict ingress request, `ingress=on,strict`, then passes
-`URLRequests.Check` on every driver, unless one of the two open points
-under Open (the served client's ingress, docker with a daemon on another
-host) is settled as `URLNever`. `ingress=off,strict` is refused
-everywhere but boxd, as `public=off,strict` is today. A reach that depends
+`URLRequests.Check` on every driver, unless one of the two points left to
+implementation (the served client's ingress, docker with a daemon on
+another host) is settled as `URLNever`. `ingress=off,strict` is refused on
+archil, docker and fake, which always give it. A reach that depends
 on the rest of the spec is still reported as its common case, and the
 driver's Create refuses the combination it cannot meet (boxd: a strict pool
 URL on no networks with ingress off). Where a driver's ingress URL lasts
@@ -120,10 +126,10 @@ pool's own traffic flows. Whether docker-vz needs a relay to give its
 caller an ingress URL on the physical host is decided with docker-vz
 itself (Deferred).
 
-A driver with no pool URL (vz, libkrun, hcs) keeps what its instances
-have today: no URL to each other, and only the forwards the shim relays
-between them (ADR 26-10-31-990 §4). A caller that requires a pool URL
-strictly on one is refused, as a strict private URL is today.
+vz, libkrun and hcs give their instances no network path to each other.
+Their pool URL is the socket of §6, on the host; a guest reaches a peer
+only through the forwards its shim relays over vsock, through the peer
+shim's owner-only control socket (ADR 26-10-31-990 §4), never at a URL.
 
 ### 5. The API, the CLI and the protocol take the new names
 
@@ -154,46 +160,31 @@ Every driver, the fake, `machinetest`, the CLI and `internal/e2e` change
 together, with the `DESIGN.md` and `REVIEW.md` files that name the old
 scopes.
 
-### Open
+### 6. On a driver that holds its VMs on the host, both URLs are an owner-only socket over vsock
 
-**For the owner, before acceptance: what ingress is on a driver that holds
-its VMs on the host (vz, libkrun, hcs).** The shim serves the service on a
-loopback port (`Service.URL` today, `pkg/machine/local/driver.go`), which
-any local process reaches. discobox's ADR 26-11-11-963 §4 has its server
-reach a pool machine on these drivers by `Engine.Dial` of the service port
-through the shim's owner-only socket (`shim.sock`,
-`pkg/machine/local/DESIGN.md`), never by that loopback URL. So "where the
-controller reaches the instance" is the Dial path, not the URL. Two
-answers:
+The owner's answer (2026-11-14, on #148) to what ingress is on vz, libkrun
+and hcs. The only way to such a VM is its vsock, so vsock is both its
+ingress and its pool scope:
 
-- **(a) Ingress there is the owner-only Dial path** (recommended). The
-  driver reports ingress `URLAlways`, and a strict ingress request holds,
-  because its caller always reaches the service by `Engine.Dial`.
-  `Service.IngressURL` is empty, and `Engine.URL` of ingress tells the
-  caller to dial. The loopback listener is no scope's URL. Whether it stays
-  for a developer's `disco-vm url`, or goes, is decided with the rename.
-  This keeps 963 §4's trust boundary, and "ingress" means the same thing
-  on every driver: the path the controller uses. It changes three things
-  written above, which this ADR then says: `URLAlways` for ingress means
-  the caller always reaches the service, at `IngressURL` or, where that is
-  empty, by `Engine.Dial` (today it means every instance has the URL);
-  §1's ingress is a URL or that Dial path; and `machinetest` checks that
-  ingress answers by whichever of the two the driver gives.
-- **(b) Ingress there is the loopback URL**, as #148 has it. discobox's
-  server keeps reaching held pool machines by Dial, outside the scopes. So
-  "the server reaches the pool agent at its ingress URL alone"
-  (discobox-ai/discobox#1077) holds only on boxd and archil. §1, the
-  meaning of `URLAlways` and `machinetest`'s check stand as written.
+- **The shim serves the service on a platform-native local socket**,
+  spliced into the guest's vsock service port, as it splices the loopback
+  port it served before: on macOS and Linux an owner-only Unix socket,
+  `service.sock` in the instance's directory (`unix:///PATH`); on Windows
+  a named pipe only the owner may open (`npipe:////./pipe/NAME`). It takes
+  any number of connections while the instance runs. The owner chose a
+  named pipe for Windows over its Unix sockets.
+- **The loopback port goes.** It is no scope's URL, and nothing serves it:
+  any local process reached it, where the socket keeps the trust boundary
+  of discobox's ADR 26-11-11-963 §4, the owner alone.
+- **Both scopes' URL is that socket.** Ingress is optional and given by
+  default. Asked off, the URL is not returned as ingress, though the socket
+  still serves the pool scope, the same path. Pool is always given.
+- `machine.DialURL` connects to any URL a `Service` gives, `http`, `https`,
+  `unix` or `npipe`, for a caller that speaks HTTP over it.
 
-The same drivers' sandboxes meet §4 the same way. Under 963 §5 a
-held-driver sandbox has no network device and reaches its pool only through
-one peer forward the server sets. So it has no pool URL, and, with ingress
-always given, it cannot ask for ingress off. #1077's "a sandbox requires
-pool strictly, with ingress off" is refused on these drivers, and on
-archil too, which always gives ingress. It holds on boxd alone. Either that
-forward counts as the sandbox's pool reach, or discobox asks for ingress
-off only on a driver that can withhold it (boxd today). That is settled
-with the answer above.
+So a held-driver sandbox can ask for ingress off and pool on, strictly,
+which discobox#1077 needs; on archil, which always gives ingress, it still
+cannot.
 
 Left to implementation, not decided here:
 
@@ -239,14 +230,12 @@ Left to implementation, not decided here:
 
 - discobox pins the release with these names and asks its pool machine
   for ingress strictly (discobox-ai/discobox#1077). What it asks for a
-  sandbox's machine on a driver other than boxd follows from the owner's
-  answer under Open. Its bootstrap fields are placed again
+  sandbox's machine on a driver other than boxd follows from §6. Its bootstrap fields are placed again
   once, which is discobox's to say. discobox's `scripts/live-run.sh`
   (discobox-ai/discobox#1050) reads `disco-vm url`, and is changed for the
   new flags when discobox pins the rename.
 - `machinetest` checks a strict ingress request on every driver, that an
-  instance's ingress answers from the test's process (by URL, or by Dial
-  under (a) on a held driver), and, as today,
+  instance's ingress URL is reached from the test's process, and, as today,
   that a strict request a driver cannot meet is refused and an optional
   ingress URL asked off is not there. boxd's `TestNoPublicURL` becomes an
   ingress test with the same proof on boxd itself.
