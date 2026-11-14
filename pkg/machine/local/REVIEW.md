@@ -44,3 +44,14 @@
   (`Hypervisor.Release`), not left empty. `pkg/engine`
   TestInstallRecordsItsRelease is the test a new inherited field copies; a
   review asked for each of these for `Instance.Release`.
+- **Every way out of `Start` after the shim is spawned settles it.** Only an
+  attached shim is told it is started (`startedShim.started`); every other
+  return abandons it (`startedShim.abandon`), or a shim booting slower than
+  its caller waits holds a guest and its slot behind an instance that reads
+  as stopped. A review found a deadline that left one running (#130).
+- **Killing a shim's process does not stop its VM.** An HCS VM belongs to
+  vmcompute, and a fake guest is a child of the shim; only a vz or libkrun
+  VM dies with it. A shim is ended through its boot (its lifeline, its
+  context) or its control API, never by killing its process, or the guest
+  runs on with no shim, no `shim.json`, and its slot released. A review
+  found a give-up that killed the shim (#130).

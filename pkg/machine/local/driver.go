@@ -596,6 +596,24 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 		return d.release(inst)
 	}
+	// A boot holds the lock from its admission until its machine stops: a
+	// shim still booting, with no shim.json yet, or a machine a process
+	// booted itself. Its disk is not removed from under it, and no boot is
+	// admitted while it is removed. Windows removes no file a process holds
+	// open, so the lock goes last, and its directory once it is released.
+	unlock, err := fsutil.TryLock(filepath.Join(dir, bootLockName))
+	if errors.Is(err, fsutil.ErrLocked) {
+		return fmt.Errorf("instance %s is being booted, by a start still waiting on its shim or by a process that runs it itself; remove it once that start has finished or given up, or that process has stopped it", inst.Name)
+	}
+	if err != nil {
+		return err
+	}
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 	hs, err := d.spec(rec)
 	if err != nil {
 		// A chain whose base is gone: its disks are removed all the same.
@@ -617,13 +635,15 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 		return err
 	}
 	for _, entry := range entries {
-		if entry.Name() == instanceFile {
+		if entry.Name() == instanceFile || entry.Name() == bootLockName {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
 			return err
 		}
 	}
+	unlock()
+	locked = false
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}

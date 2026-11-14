@@ -171,7 +171,25 @@ any pool in its root, the pool its record names (`Driver.InPool`), for the
 owner alone: a driver given an issued key finds no VM of another pool. The shim boots the VM, holds it for its whole life, and exits when
 it stops. A shim is detached on purpose, and outlives whoever started it, an
 embedder's process included: a NIC-less guest's way to its peers must not
-depend on its caller (ADR 26-10-31-990). Once the machine answers it writes
+depend on its caller (ADR 26-10-31-990). It is detached only once it is
+up, though: until `Start` returns it, the shim's stdin is a pipe from
+`Start` (`DISCO_VM_SHIM_STARTER` in its environment says so, and the shim
+takes it out before it starts anything), on which `Start` writes one byte
+once it has attached. A `Start` that gives up first (its deadline, its
+caller's cancel, its process dying) closes the pipe with none, so the shim
+cancels its boot, or kills the machine it has booted, and exits. `Start`
+waits up to 30 seconds for that, so the slot is free when it returns, and
+never kills the shim: canceling the boot, and not the process, is what
+reaches an HCS VM, which vmcompute holds, and a fake guest, a child of the
+shim. A shim that has not exited by then is named in `Start`'s error; one
+of a build before the pipe ignores it, comes up, and is listed running, to
+be stopped. A boot holds the instance's `boot.lock` from its admission, in
+the shim, so a second `Start` is refused as running, and `Destroy` refuses
+the instance rather than remove its disk from under the boot, as it does
+one a process booted outside a shim; `Destroy` holds the lock itself while
+it removes the instance, so no boot is admitted halfway. Between `Start`
+spawning the shim and the shim's admission nothing holds it, and a removal
+in that moment is not refused. Once the machine answers it writes
 `shim.json` (PID, socket, bearer token, service address), private to the
 owner, and serves its control API on `shim.sock`, an owner-only Unix socket
 in the instance's directory, behind the token. A socket path too long for a
