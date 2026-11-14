@@ -16,6 +16,18 @@ func Detach(cmd *exec.Cmd) {
 	}
 }
 
+// NoWindow starts a console program with a console of its own that shows no
+// window. A console program whose parent has none (a shim, which Detach
+// starts with no console) is otherwise given a new console, and where
+// Windows Terminal is the default terminal that is a window, left open on
+// a non-zero exit: one for every fake guest a test kills.
+func NoWindow(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NO_WINDOW
+}
+
 // Alive reports whether a process of the PID runs.
 func Alive(pid int) bool {
 	if pid <= 0 {
