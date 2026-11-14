@@ -231,8 +231,10 @@ func viewRDP(ctx context.Context, g machine.Guest, title string) error {
 	if err != nil {
 		return err
 	}
-	defer forget()
+	// The sign-in goes before the address: once the listener closes,
+	// another window may claim the address and store its own there.
 	defer listener.Close()
+	defer forget()
 	go func() {
 		for {
 			conn, err := listener.Accept()
