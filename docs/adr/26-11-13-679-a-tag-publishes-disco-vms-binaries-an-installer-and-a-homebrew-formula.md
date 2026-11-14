@@ -1,7 +1,9 @@
 # 26-11-13-679 — A tag publishes disco-vm's binaries, an installer, and a Homebrew formula
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-13
+
+Accepted by the owner by merging #105, 2026-11-14.
 
 ## Context
 
