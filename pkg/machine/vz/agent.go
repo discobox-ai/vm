@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"debug/macho"
 	"encoding/hex"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -103,8 +102,7 @@ exec "$dir/disco-vm" guest
 // so the base holds no executable of disco-vm's and launchd's program is
 // Apple's own /bin/sh.
 func daemonPlist() string {
-	var stub bytes.Buffer
-	_ = xml.EscapeText(&stub, []byte(stubScript("/Volumes/"+driveLabel, "/dev/disk[0-9]*", agentRunDir)))
+	stub := plistEscape(stubScript("/Volumes/"+driveLabel, "/dev/disk[0-9]*", agentRunDir))
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -115,7 +113,7 @@ func daemonPlist() string {
 	<array>
 		<string>/bin/sh</string>
 		<string>-c</string>
-		<string>` + stub.String() + `</string>
+		<string>` + stub + `</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -128,6 +126,14 @@ func daemonPlist() string {
 </dict>
 </plist>
 `
+}
+
+// plistEscape escapes text for a plist's <string>: &, < and > alone. Newlines
+// and tabs stay literal, since launchd's plist reader ends a string at a
+// character reference such as encoding/xml's &#xA;, so a stub escaped that
+// way runs as its first line alone.
+func plistEscape(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
 }
 
 // MacOSAgentEnv is where the command line reads Config.MacOSAgent from,

@@ -93,3 +93,9 @@
   `local` TestShimSocket, `vz` TestAgentDrive). A test in a file with no
   build tag runs in the `windows` CI job, and a review found one that would
   fail there on every run.
+- **A string vz writes into a launchd plist escapes `&`, `<` and `>` and
+  nothing else** (`plistEscape`). launchd's reader ends a string at a
+  character reference, so `encoding/xml`'s `&#xA;` for a newline ran the
+  macOS stub as its first line alone and no install's agent ever started.
+  `plutil`, `plistlib` and `encoding/xml` all read the references, so only
+  a real guest showed it; `TestDaemonPlist` now refuses any `&#`.

@@ -272,9 +272,32 @@ esac
 }
 
 // TestDaemonPlist reads the launch daemon back as XML: its program is
-// /bin/sh, given the stub whole.
+// /bin/sh, given the stub whole. launchd's plist reader ends a string at a
+// character reference (&#xA; for a newline cut the stub to its first line
+// on a real guest, though plutil and encoding/xml read it whole), so the
+// plist holds none, and a reader that knows only &amp;, &lt; and &gt; reads
+// the stub back whole.
 func TestDaemonPlist(t *testing.T) {
-	dec := xml.NewDecoder(strings.NewReader(daemonPlist()))
+	plist := daemonPlist()
+	stub := stubScript("/Volumes/"+driveLabel, "/dev/disk[0-9]*", agentRunDir)
+	if strings.Contains(plist, "&#") {
+		t.Fatalf("the plist holds a character reference, at which launchd ends a string:\n%s", plist)
+	}
+	_, raw, ok := strings.Cut(plist, "<string>-c</string>")
+	if ok {
+		_, raw, ok = strings.Cut(raw, "<string>")
+	}
+	if ok {
+		raw, _, ok = strings.Cut(raw, "</string>")
+	}
+	if got := strings.NewReplacer("&lt;", "<", "&gt;", ">", "&amp;", "&").Replace(raw); !ok || got != stub {
+		t.Fatalf("the stub read back with only &amp;, &lt; and &gt; is\n%s\nwant\n%s", got, stub)
+	}
+	if !strings.Contains(stub, "\n\t") || !strings.ContainsAny(stub, "&<>") {
+		t.Fatal("the stub no longer has newlines, tabs, and characters to escape, so this test proves nothing")
+	}
+
+	dec := xml.NewDecoder(strings.NewReader(plist))
 	dec.Strict = false
 	var strs []string
 	inString := false
