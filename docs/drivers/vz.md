@@ -241,13 +241,18 @@ reinstall.
 - **Signing:** the agent is ad hoc signed, as Go's linker signs every
   darwin/arm64 executable, and needs no notarization, entitlement, or TCC
   grant: nothing copied off a local volume by a root shell is quarantined.
-- **Not yet booted on a real guest** (the proof table's row): this stub,
-  this Go-built image, its `diskutil mount`, automatic login off, and a
-  protocol mismatch refused. A spike's hdiutil ISO and a stub much like
-  this one did boot (2026-11-13, macOS 27.0 guest): Disk Arbitration had
-  mounted the drive before launchd first ran the stub, or 1.2 s later, with
-  no one logged in; the drive may take `disk0`, pushing the boot disk to
-  `disk1`, so nothing assumes the boot disk's number.
+- **Measured on a real Mac** (2026-11-14, macOS 27.2 host, 27.2.1 guests
+  installed fresh): an install took 4m40s with automatic login and 4m03s
+  without, and a clone's first boot 1m26s. The agent ran from
+  `/var/run/disco-vm`, the host's byte for byte; the drive was `disk0`,
+  read-only media, unmounted by the stub, and refused a write as root, and
+  the boot disk was the root disk. A changed `macosAgent`, a cross-compiled
+  `CGO_ENABLED=0` build, reached a committed VM's clone at its next boot,
+  and an agent of another protocol was refused. Before `plistEscape`,
+  launchd ran the stub as its first line alone (see `pkg/machine/REVIEW.md`).
+- **Not yet seen on a guest:** the stub mounting the drive itself (Disk
+  Arbitration had always mounted it first), and a base installed before
+  this design.
 
 ## Linux guests
 
