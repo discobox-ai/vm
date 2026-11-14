@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -191,10 +192,17 @@ func autologonUser(ctx context.Context, g machine.Guest) string {
 // with its name for a password, as Install sets it.
 func viewRDP(ctx context.Context, g machine.Guest, title string) error {
 	user := autologonUser(ctx, g)
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	// The guest's own account, named by its computer name: a bare name, as
+	// mstsc completes it, would be the host's account of that name.
+	account := user
+	if info, err := g.Info(ctx); err == nil && info.Hostname != "" {
+		account = info.Hostname + `\` + user
+	}
+	listener, forget, err := listenRDP(ctx, account, user)
 	if err != nil {
 		return err
 	}
+	defer forget()
 	defer listener.Close()
 	go func() {
 		for {
@@ -205,20 +213,6 @@ func viewRDP(ctx context.Context, g machine.Guest, title string) error {
 			go func() { _ = pipe(ctx, g, rdpAddress, conn) }()
 		}
 	}()
-	// The guest's own account, named by its computer name: a bare name, as
-	// mstsc completes it, would be the host's account of that name.
-	account := user
-	if info, err := g.Info(ctx); err == nil && info.Hostname != "" {
-		account = info.Hostname + `\` + user
-	}
-	// mstsc takes a password from the credential manager, not from the
-	// file: one for the loopback address, for as long as mstsc is open.
-	forget, err := rememberRDPCredential("127.0.0.1", account, user)
-	if err != nil {
-		return err
-	}
-	defer forget()
-
 	dir, err := os.MkdirTemp("", "disco-vm-rdp-")
 	if err != nil {
 		return err
@@ -289,17 +283,55 @@ type credential struct {
 	UserName       *uint16
 }
 
+// listenRDP listens on a loopback address of this window's own, and stores
+// user (COMPUTER\name) and password for Remote Desktop to it, for as long as
+// the window is open: mstsc takes a password from the credential manager,
+// not from the .rdp file, and finds it by the host alone (TERMSRV/HOST, no
+// port), so windows sharing 127.0.0.1 would share one sign-in, the first
+// window's, and lose it when that window closed. It returns the listener
+// and what forgets the sign-in.
+func listenRDP(ctx context.Context, user, password string) (net.Listener, func(), error) {
+	for range 16 {
+		var b [3]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return nil, nil, err
+		}
+		if b[2] == 0 || b[2] == 255 {
+			continue
+		}
+		host := fmt.Sprintf("127.%d.%d.%d", b[0], b[1], b[2])
+		forget, err := rememberRDPCredential(host, user, password)
+		if errors.Is(err, errCredentialTaken) {
+			continue
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", host+":0")
+		if err != nil {
+			forget()
+			return nil, nil, err
+		}
+		return listener, forget, nil
+	}
+	return nil, nil, errors.New("hcs: no free loopback address for a Remote Desktop sign-in")
+}
+
+// errCredentialTaken is a Remote Desktop sign-in already stored for a host:
+// someone's own, or another window's.
+var errCredentialTaken = errors.New("hcs: a Remote Desktop sign-in is already stored for the host")
+
 // rememberRDPCredential stores user (COMPUTER\name) and password for Remote
 // Desktop to host in this logon session's credential manager, as mstsc's own
 // "Remember me" does, and returns what forgets it again. One already stored
-// for host is someone's own, and is left as it is.
+// for host is left as it is, and is errCredentialTaken.
 func rememberRDPCredential(host, user, password string) (func(), error) {
 	const credTypeDomainPassword, credPersistSession = 2, 1
 	target, _ := windows.UTF16PtrFromString("TERMSRV/" + host)
 	var existing uintptr
 	if ok, _, _ := credRead.Call(uintptr(unsafe.Pointer(target)), credTypeDomainPassword, 0, uintptr(unsafe.Pointer(&existing))); ok != 0 {
 		_, _, _ = credFree.Call(existing)
-		return func() {}, nil
+		return nil, errCredentialTaken
 	}
 	userp, _ := windows.UTF16PtrFromString(user)
 	secret := windows.StringToUTF16(password)
