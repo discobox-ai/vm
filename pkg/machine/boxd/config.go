@@ -77,6 +77,9 @@ func Definition() machine.Definition {
 					Header: "authorization", ValuePrefix: "Bearer "},
 			},
 		}},
+		// The metadata adapter (vmToken) on the machine's default gateway.
+		InMachine: &machine.InMachineAuth{Field: "inMachine",
+			Endpoints: []machine.MachineEndpoint{{Gateway: true, Port: metadataPortNumber}}},
 	}
 }
 

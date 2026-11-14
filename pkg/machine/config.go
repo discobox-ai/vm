@@ -90,6 +90,10 @@ type Definition struct {
 	// configuration (ADR 26-11-12-461): today at most one, its key, which
 	// Config.Keys carries.
 	Secrets []SecretField `json:"secrets,omitempty"`
+	// InMachine declares that the driver can authenticate as the machine
+	// it runs on, which field turns that on, and the endpoints a process on
+	// the machine reaches for the credential. Nil is a driver that cannot.
+	InMachine *InMachineAuth `json:"inMachine,omitempty"`
 }
 
 // TakesBase reports whether the driver makes a fresh VM from a base
@@ -132,8 +136,8 @@ func (d Definition) Keys() []string {
 // check refuses a definition a driver should never register: a field with
 // no key, a key twice, a type that is not one of the three, a retired field
 // whose replacement is missing, retired, of another type, or more
-// privileged than it, a base described with a key, or a secret malformed,
-// more than one, or with a field's key.
+// privileged than it, a base described with a key, a secret malformed,
+// more than one, or with a field's key, or in-machine auth malformed.
 func (d Definition) check() error {
 	seen := map[string]bool{}
 	for _, f := range d.ConfigFields {
@@ -183,6 +187,9 @@ func (d Definition) check() error {
 		if err := s.check(d.ConfigFields); err != nil {
 			return err
 		}
+	}
+	if d.InMachine != nil {
+		return d.InMachine.check(d.ConfigFields)
 	}
 	return nil
 }

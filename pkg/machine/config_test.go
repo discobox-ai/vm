@@ -347,6 +347,30 @@ func TestRegistration(t *testing.T) {
 			Definition: machine.Definition{ConfigFields: []machine.ConfigField{{Key: "a", Type: machine.ConfigString, Privileged: true, Default: "/x", DefaultExecutable: true}}}},
 		"a send to a relative path": {New: newFn, Validate: validate,
 			Definition: secretSentTo(machine.SecretSend{Protocol: machine.SendHTTPS, Endpoint: "url", Path: "api/", Header: "A"})},
+		"in-machine auth by an unknown field": {New: newFn, Validate: validate,
+			Definition: inMachine("nope", machine.MachineEndpoint{Gateway: true, Port: 1})},
+		"in-machine auth by a string": {New: newFn, Validate: validate,
+			Definition: inMachine("name", machine.MachineEndpoint{Gateway: true, Port: 1})},
+		"in-machine auth by a field not privileged": {New: newFn, Validate: validate,
+			Definition: inMachine("plain", machine.MachineEndpoint{Gateway: true, Port: 1})},
+		"in-machine auth by a field on by default": {New: newFn, Validate: validate,
+			Definition: inMachine("default", machine.MachineEndpoint{Gateway: true, Port: 1})},
+		"in-machine auth by a field on by default as 1": {New: newFn, Validate: validate,
+			Definition: inMachine("one", machine.MachineEndpoint{Gateway: true, Port: 1})},
+		"in-machine auth by a retired field": {New: newFn, Validate: validate,
+			Definition: inMachine("retired", machine.MachineEndpoint{Gateway: true, Port: 1})},
+		"in-machine auth from no endpoint": {New: newFn, Validate: validate,
+			Definition: inMachine("on")},
+		"in-machine auth from the gateway and a host": {New: newFn, Validate: validate,
+			Definition: inMachine("on", machine.MachineEndpoint{Gateway: true, Host: "10.0.0.1", Port: 1})},
+		"in-machine auth from neither": {New: newFn, Validate: validate,
+			Definition: inMachine("on", machine.MachineEndpoint{Port: 1})},
+		"in-machine auth from no port": {New: newFn, Validate: validate,
+			Definition: inMachine("on", machine.MachineEndpoint{Gateway: true})},
+		"in-machine auth from a port out of range": {New: newFn, Validate: validate,
+			Definition: inMachine("on", machine.MachineEndpoint{Host: "h", Port: 65536})},
+		"in-machine auth from a host with a port": {New: newFn, Validate: validate,
+			Definition: inMachine("on", machine.MachineEndpoint{Host: "h:80", Port: 80})},
 	} {
 		func() {
 			defer func() {
@@ -357,6 +381,22 @@ func TestRegistration(t *testing.T) {
 			// Each panics before it registers, so a rerun registers none.
 			machine.Register("bad-"+strings.ReplaceAll(name, " ", "-"), r)
 		}()
+	}
+}
+
+// inMachine is a definition whose in-machine auth is turned on by field and
+// fetched from endpoints.
+func inMachine(field string, endpoints ...machine.MachineEndpoint) machine.Definition {
+	return machine.Definition{
+		ConfigFields: []machine.ConfigField{
+			{Key: "on", Type: machine.ConfigBoolean, Privileged: true},
+			{Key: "name", Type: machine.ConfigString, Privileged: true},
+			{Key: "plain", Type: machine.ConfigBoolean},
+			{Key: "retired", Type: machine.ConfigBoolean, Privileged: true, Retired: true},
+			{Key: "default", Type: machine.ConfigBoolean, Privileged: true, Default: "true"},
+			{Key: "one", Type: machine.ConfigBoolean, Privileged: true, Default: "1"},
+		},
+		InMachine: &machine.InMachineAuth{Field: field, Endpoints: endpoints},
 	}
 }
 
