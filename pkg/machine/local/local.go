@@ -33,6 +33,7 @@ package local
 import (
 	"context"
 	"io"
+	"net"
 
 	"github.com/discobox-ai/vm/pkg/machine"
 )
@@ -111,19 +112,6 @@ type BootOptions struct {
 	Console io.Writer
 }
 
-// MachineViewer is a hypervisor that opens a window on a running machine's
-// desktop from any process, given the machine as an attached one reaches it
-// (Driver.View), and on an install in progress (Driver.ViewInstall).
-type MachineViewer interface {
-	View(ctx context.Context, m machine.Machine, title string) error
-	// ViewInstall opens a window on the install Install is making into dst,
-	// in another process, and returns once someone closes it, ctx is done,
-	// or the install's machine stops. One with no machine running is
-	// machine.ErrNotRunning. Progress, such as waiting for a desktop to
-	// show, goes to log.
-	ViewInstall(ctx context.Context, dst Layer, title string, log io.Writer) error
-}
-
 // Hypervisor is what runs on this host's disk: hcs, vz, libkrun, and fake.
 type Hypervisor interface {
 	Name() string
@@ -178,6 +166,20 @@ type Hypervisor interface {
 	SaveCache(ctx context.Context, inst InstanceSpec, dst Layer) error
 	// Destroy removes everything Prepare and Boot created for the instance.
 	Destroy(ctx context.Context, inst InstanceSpec) error
+	// View opens a window on running machine m's desktop in this process
+	// (machine.Driver's View), titled title, and returns once someone
+	// closes it, ctx is done, or m stops. display opens a stream to the
+	// guest's display (guest.DisplayPort), which m's Dial refuses to a
+	// process that attached it: the shim's /display. A hypervisor that does
+	// not report Capabilities.View returns machine.ErrUnsupported.
+	View(ctx context.Context, m machine.Machine, display func(context.Context) (net.Conn, error), title string) error
+	// ViewInstall opens a window on the install Install is making into dst,
+	// in another process, and returns once someone closes it, ctx is done,
+	// or the install's machine stops. One with no machine running is
+	// machine.ErrNotRunning. Progress, such as waiting for a desktop to
+	// show, goes to log. A hypervisor that does not report
+	// Capabilities.View returns machine.ErrUnsupported.
+	ViewInstall(ctx context.Context, dst Layer, title string, log io.Writer) error
 	// Service is where a prepared instance's service listens in its guest
 	// (machine.Service.Listen), and the guest port the shim dials it on.
 	Service(inst InstanceSpec) (listen string, port uint32, err error)

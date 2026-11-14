@@ -103,8 +103,14 @@ type Capabilities struct {
 	MaxRunning map[OS]int `json:"maxRunning,omitempty"`
 	// SharedDirectories reports host directory sharing (virtiofs, Plan9).
 	SharedDirectories bool `json:"sharedDirectories"`
-	// Display reports a viewable guest framebuffer.
+	// Display reports a viewable guest framebuffer, which a boot shows in a
+	// window when asked (BootOptions.GUI).
 	Display bool `json:"display"`
+	// View reports that a window opens on a running instance's desktop from
+	// any process (Driver.View), and on an install in progress
+	// (Driver.ViewInstall), not only from the process that booted it. It
+	// implies Display.
+	View bool `json:"view"`
 	// Ports reports that an instance's guest ports reach past its one
 	// service, in three directions, all through the process that holds the
 	// machine: a caller dials the agent's port or the service's
@@ -788,6 +794,20 @@ type Driver interface {
 	// data volume: Upgrade again with the same from finishes it, Destroy
 	// removes it, and Boot and Start refuse it until one of them has.
 	Upgrade(ctx context.Context, inst Instance, from *Instance) (Instance, error)
+	// View opens a window in this process on running inst's desktop,
+	// titled title, and returns once someone closes it, ctx is done, or the
+	// instance stops: from any process, not only the one that booted it
+	// with BootOptions.GUI. A driver that does not report Capabilities.View
+	// returns ErrUnsupported.
+	View(ctx context.Context, inst Instance, title string) error
+	// ViewInstall opens a window in this process on an install in progress
+	// in another (Install), from its first logon on: the install of the VM
+	// name, or, when name is empty, the only one. It returns once someone
+	// closes it, ctx is done, or the install stops booting its guest. None
+	// in progress is ErrNotFound; one not booted yet, or done booting, is
+	// ErrNotRunning. Waiting for a desktop to show is reported to log. A
+	// driver that does not report Capabilities.View returns ErrUnsupported.
+	ViewInstall(ctx context.Context, name, title string, log io.Writer) error
 	// Service is the instance's service. A URL that exists only while the
 	// instance runs (a port the daemon publishes, a shim's) is asked for
 	// while it is stopped: then the driver returns ErrNotRunning. A URL
@@ -825,24 +845,6 @@ type Driver interface {
 	// driver did not issue for this pool is refused. A driver with no
 	// keys returns ErrNoKey.
 	RevokeKey(ctx context.Context, key Key) error
-}
-
-// Viewer is a driver that opens a window on a running instance's desktop
-// from any process, not only from the one that booted it with
-// BootOptions.GUI. A driver that lists Capabilities.Display may implement
-// it.
-type Viewer interface {
-	// View opens a window on the instance's desktop, titled title, and
-	// returns once someone closes it, ctx is done, or the instance stops.
-	View(ctx context.Context, inst Instance, title string) error
-	// ViewInstall opens a window on an install in progress in another
-	// process (Driver.Install), from its first logon on: the install of the
-	// VM name, or, when name is empty, the only one. It returns once
-	// someone closes it, ctx is done, or the install stops booting its
-	// guest. None in progress is ErrNotFound; one not booted yet, or done
-	// booting, is ErrNotRunning. Waiting for a desktop to show is reported
-	// to log.
-	ViewInstall(ctx context.Context, name, title string, log io.Writer) error
 }
 
 // HostListener is a running machine whose guest processes can connect out to

@@ -15,7 +15,6 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/discobox-ai/vm/pkg/guest"
-	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // The window that shows the agent's display stream (guest.DisplayPort): the
@@ -174,12 +173,12 @@ var (
 
 // viewDisplay opens the agent's display stream and shows it in a window
 // until the window closes, the stream ends, or ctx is done.
-func viewDisplay(ctx context.Context, m machine.Machine, title string) error {
+func viewDisplay(ctx context.Context, display func(context.Context) (net.Conn, error), title string) error {
 	if !viewing.TryLock() {
 		return errors.New("hcs: a window is already open in this process")
 	}
 	defer viewing.Unlock()
-	conn, err := m.Dial(ctx, guest.DisplayPort)
+	conn, err := display(ctx)
 	if err != nil {
 		return fmt.Errorf("hcs: reach the guest's display: %w", err)
 	}

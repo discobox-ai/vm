@@ -391,14 +391,13 @@ func (e *Engine) GUI(ctx context.Context, inst Instance) error {
 	if err := e.CheckGUI(true); err != nil {
 		return err
 	}
-	viewer, ok := e.Driver.(machine.Viewer)
-	if !ok {
+	if !e.Driver.Capabilities().View {
 		return fmt.Errorf("driver %s opens no window on a running instance: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
 	if e.State(ctx, inst) != Running {
 		return fmt.Errorf("instance %s is not running", inst.Name)
 	}
-	if err := viewer.View(ctx, inst, "disco-vm: "+inst.Name); err != nil {
+	if err := e.Driver.View(ctx, inst, "disco-vm: "+inst.Name); err != nil {
 		return fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
 	return nil
@@ -413,11 +412,10 @@ func (e *Engine) GUIInstall(ctx context.Context, name string, log io.Writer) err
 	if err := e.CheckGUI(true); err != nil {
 		return err
 	}
-	viewer, ok := e.Driver.(machine.Viewer)
-	if !ok {
+	if !e.Driver.Capabilities().View {
 		return fmt.Errorf("driver %s opens no window on an install: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
-	return viewer.ViewInstall(ctx, name, "disco-vm: install", log)
+	return e.Driver.ViewInstall(ctx, name, "disco-vm: install", log)
 }
 
 // Dial opens a stream to a guest port of a running instance, through the

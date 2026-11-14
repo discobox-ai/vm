@@ -19,7 +19,6 @@ import (
 
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
-	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // A window on a running VM shows its logged-on desktop, from whichever process
@@ -32,9 +31,10 @@ import (
 //     own 127.0.0.1:3389 through the agent, signed in as the image's user.
 //     The guest's firewall stays closed: nothing reaches it from the network.
 //   - Otherwise (Home, or Remote Desktop off) the agent streams the desktop
-//     on guest.DisplayPort, and a window of disco-vm's own shows it.
-
-var _ local.MachineViewer = (*Hypervisor)(nil)
+//     on guest.DisplayPort, and a window of disco-vm's own shows it. A
+//     process that attached the machine reaches the stream through the
+//     shim's /display, since the machine's Dial reaches the agent's and the
+//     service's ports alone (guest.DialablePort).
 
 // agentPath is where Install puts the agent in the guest; `pipe` relays a
 // guest address from there.
@@ -46,8 +46,8 @@ const rdpAddress = "tcp:127.0.0.1:3389"
 
 // View opens a window on the running machine's desktop, titled title, and
 // returns once it is closed, or once ctx is done or the machine stops, which
-// close it.
-func (d *Hypervisor) View(ctx context.Context, m machine.Machine, title string) error {
+// close it. display opens the guest's display stream.
+func (d *Hypervisor) View(ctx context.Context, m machine.Machine, display func(context.Context) (net.Conn, error), title string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
@@ -57,22 +57,25 @@ func (d *Hypervisor) View(ctx context.Context, m machine.Machine, title string) 
 		case <-ctx.Done():
 		}
 	}()
-	if os.Getenv(ViewEnv) != "display" && servesRDP(ctx, m) {
+	if d.view != ViewDisplay && servesRDP(ctx, m) {
 		return viewRDP(ctx, m, title)
 	}
-	return viewDisplay(ctx, m, title)
+	return viewDisplay(ctx, display, title)
 }
-
-// ViewEnv set to "display" makes View use the agent's display stream even
-// where the guest serves Remote Desktop: what a Home guest gets, tried on
-// any guest.
-const ViewEnv = "DISCO_VM_HCS_VIEW"
 
 // watch keeps a window open on a machine the shim booted with GUI: opened
 // once the desktop can be shown, and again after the guest restarts, until
-// someone closes it or the machine stops.
+// someone closes it or the machine stops. The shim holds the machine, so it
+// dials the display itself.
 func (d *Hypervisor) watch(m machine.Machine, title string, log io.Writer) {
-	keepOpen(context.Background(), m, log, func(ctx context.Context) error { return d.View(ctx, m, title) })
+	keepOpen(context.Background(), m, log, func(ctx context.Context) error {
+		return d.View(ctx, m, dialDisplay(m), title)
+	})
+}
+
+// dialDisplay opens the display stream of a machine this process holds.
+func dialDisplay(m machine.Machine) func(context.Context) (net.Conn, error) {
+	return func(ctx context.Context) (net.Conn, error) { return m.Dial(ctx, guest.DisplayPort) }
 }
 
 // keepOpen keeps a window that open shows on m: open again when it fails (no

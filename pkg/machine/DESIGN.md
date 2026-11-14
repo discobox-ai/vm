@@ -46,7 +46,8 @@ a `Capabilities` field, never a faked method:
 | guest OS | windows | darwin, and linux (ADR 26-10-31-990) | linux | linux | linux (ADR 26-11-03-530) | host's | linux, amd64 |
 | max running | none | **2 macOS guests** (framework limit); Linux guests do not count | none (the org's quota) | none | none | none | none (the plan's quota) |
 | shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | virtiofs | no | no |
-| display | the guest's Remote Desktop in mstsc, or the agent's stream on 7301 in a window (ADR 26-11-02-274); also on a running VM (`Viewer`) | framework view in a native window, at boot only | no | no | no | no | no |
+| display | the guest's Remote Desktop in mstsc, or the agent's stream on 7301 in a window (ADR 26-11-02-274) | framework view in a native window, at boot only | no | no | no | no | no |
+| view (`View`: a window from any process, on a running VM or an install) | yes (ADR 26-11-11-746) | no | no | no | no | no | no |
 | ports (`Ports`: `Machine.Dial`, `Forwards` to a socket or a peer) | hvsocket, through the shim | vsock, through the shim | no | no | vsock, through the shim: the agent's and service's ports, and the forwards, mapped at boot; the host's half-close is not passed on | loopback, through the shim | no |
 | agent (`disco-vm guest` in the guest) | yes, from Install | yes: handed it at every boot, macOS on a read-only drive its launch daemon copies it off (the configured `macosAgent`, the CLI's own executable), Linux in the initrd | **no**: boxd's Exec | yes, from Create of a base | yes: the running disco-vm (or `$DISCO_VM_AGENT`), handed it in the initrd at every boot | yes | **no**: Archil's process API |
 | install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest` | **none** | **none** | **none** | the host's | **none** |
@@ -322,32 +323,35 @@ a sandbox on its pool's network instead. On hcs, whose disks chain, a VM
 of any pool created from a committed VM keeps it from removal
 (`ErrInUse`), as one of its own pool does.
 
-## A window is per boot, and lives with the VM
+## A window shows a guest's desktop, and closing it leaves the VM running
 
-`run --gui`, `start --gui`, and `install --gui` ask for a window on the guest's
-display. It is a property of one boot, not of the instance: the engine passes
-`BootOptions.GUI` (and `InstallSpec.GUI` for an install's boots), and the
-driver opens the window in the process that called `Boot`, which is the one
-that owns the VM. For `run` and `start` that is the shim (`shim --gui`); for
-an install it is the CLI. The window closes when the VM stops, and closing it leaves
-the VM running. A driver without `Capabilities.Display` refuses GUI with
-`ErrUnsupported` rather than ignoring it.
+A window is never the VM's owner: it closes when the VM stops, and closing it
+leaves the VM running. Two kinds open one:
 
-A driver that can also open a window on a running instance from any process
-implements `machine.Viewer`, which `disco-vm gui` (`Engine.GUI`) calls. The
-local driver gives it through the shim to a hypervisor that is a
-`local.MachineViewer`: hcs, whose window needs only the machine's guest
-operations and `Dial`. vz's window needs the VM object the shim holds, so it
-refuses `gui` as `ErrNotImplemented`.
+- **A boot.** `run --gui`, `start --gui`, and `install --gui` ask for a window
+  on that boot: the engine passes `BootOptions.GUI` (and `InstallSpec.GUI`
+  for an install's boots), and the driver opens it in the process that
+  called `Boot`, which owns the VM: the shim (`shim --gui`) for `run` and
+  `start`, the CLI for an install. A driver without `Capabilities.Display`
+  refuses GUI with `ErrUnsupported` rather than ignoring it.
+- **Any process, later** (`Capabilities.View`, ADR 26-11-11-746).
+  `disco-vm gui INSTANCE` (`Engine.GUI`, `Driver.View`) opens a window on a
+  running instance, and `disco-vm gui --install [NAME]`
+  (`Engine.GUIInstall`, `Driver.ViewInstall`) one on an install another
+  process runs, named by the VM it makes, or the only one. Every driver has
+  both methods; one without `View` returns `ErrUnsupported`, and the engine
+  refuses before calling it. hcs reports it; vz's window needs the VM object
+  the shim holds, so it opens only at boot.
 
-`Viewer.ViewInstall` (`disco-vm gui --install [NAME]`, `Engine.GUIInstall`)
-opens a window on an install another process is running, named by the VM
-it makes, or the only one. The local driver marks an install's VM directory
-with `installing.json` (its record) while it runs, and hands its machine
-directory to the hypervisor's `MachineViewer.ViewInstall`,
-which finds the install's machine itself: hcs by a record its install
-writes beside the disk. The window is never the install's owner: it closes
-when the install's machine stops, and stopping is the install's.
+The local driver gives `View` through the shim to the hypervisor's
+`Hypervisor.View`, with a function that opens the guest's display stream:
+the shim's `/display`, a route of its own that takes no port, since an
+attached machine's `Dial` reaches the agent's and the service's ports alone.
+It marks an install's VM directory with `installing.json` (its record and the
+installing process) while it runs, skips one whose process is gone, and
+hands its machine directory to `Hypervisor.ViewInstall`, which finds the
+install's machine itself: hcs by a record its install writes beside the
+disk.
 
 A native window on macOS must run on the process's main thread, which only
 `main` can give away. So `main` locks its goroutine to the main thread and runs

@@ -58,7 +58,7 @@ func recordInstall(dir string, m *vm) (func(), error) {
 // showInstall keeps a window open on the install's guest desktop from its
 // first logon, until someone closes it or the VM stops.
 func showInstall(ctx context.Context, m machine.Machine, log io.Writer) {
-	keepOpen(ctx, m, log, func(ctx context.Context) error { return viewDisplay(ctx, m, installTitle) })
+	keepOpen(ctx, m, log, func(ctx context.Context) error { return viewDisplay(ctx, dialDisplay(m), installTitle) })
 }
 
 // ViewInstall opens a window on the install in progress into dst, from its
@@ -70,7 +70,7 @@ func (*Hypervisor) ViewInstall(ctx context.Context, dst local.Layer, title strin
 	if err != nil {
 		return err
 	}
-	keepOpen(ctx, m, log, func(ctx context.Context) error { return viewDisplay(ctx, m, title) })
+	keepOpen(ctx, m, log, func(ctx context.Context) error { return viewDisplay(ctx, dialDisplay(m), title) })
 	return ctx.Err()
 }
 

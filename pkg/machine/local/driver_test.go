@@ -3,8 +3,11 @@ package local_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -220,7 +223,15 @@ func (v *viewing) Install(ctx context.Context, spec local.InstallSpec, dst local
 	return v.Hypervisor.Install(ctx, spec, dst)
 }
 
-func (*viewing) View(context.Context, machine.Machine, string) error { return nil }
+func (v *viewing) Capabilities() machine.Capabilities {
+	caps := v.Hypervisor.Capabilities()
+	caps.Display, caps.View = true, true
+	return caps
+}
+
+func (*viewing) View(context.Context, machine.Machine, func(context.Context) (net.Conn, error), string) error {
+	return nil
+}
 
 func (v *viewing) ViewInstall(_ context.Context, dst local.Layer, _ string, _ io.Writer) error {
 	v.viewed <- dst
@@ -315,4 +326,50 @@ func TestCreateRefusesMalformedForwards(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = d.Destroy(ctx, inst)
+}
+
+// A record a crashed install left (installing.json, its process gone) is no
+// install in progress, and a hypervisor without View opens no window on one.
+func TestViewInstallSkipsACrashedInstall(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	hv := &viewing{Hypervisor: &fake.Hypervisor{}, viewed: make(chan local.Layer, 1)}
+	d, err := local.New(machine.Config{Dir: dir}, hv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := exec.CommandContext(ctx, "go", "version")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range []struct {
+		id  string
+		pid int
+	}{{"crashed0001", gone.Process.Pid}, {"oldrecord01", 0}} {
+		path := filepath.Join(dir, "instances", rec.id, "installing.json")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		data := fmt.Sprintf(`{"id":%q,"name":"crashed","guestOS":%q,"pool":"default","pid":%d}`, rec.id, runtime.GOOS, rec.pid)
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.ViewInstall(ctx, "crashed", "t", io.Discard); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("view a crashed install: %v, want ErrNotFound", err)
+	}
+	if err := d.ViewInstall(ctx, "", "t", io.Discard); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("view the only install, with a crashed one alone: %v, want ErrNotFound", err)
+	}
+
+	plain, err := local.New(machine.Config{Dir: t.TempDir()}, &fake.Hypervisor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.ViewInstall(ctx, "", "t", io.Discard); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("view an install without View: %v, want ErrUnsupported", err)
+	}
+	if err := plain.View(ctx, machine.Instance{Name: "x"}, "t"); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("view an instance without View: %v, want ErrUnsupported", err)
+	}
 }

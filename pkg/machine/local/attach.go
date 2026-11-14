@@ -42,39 +42,45 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 }
 
 // View opens a window on the instance's desktop in this process, through its
-// shim, on a hypervisor that can (MachineViewer). One that shows a window
-// only from the process that booted it refuses it as not implemented yet.
+// shim, which reaches the guest's display for it (/display), on a
+// hypervisor that reports Capabilities.View.
 func (d *Driver) View(ctx context.Context, inst machine.Instance, title string) error {
-	viewer, ok := d.hv.(MachineViewer)
-	if !ok {
-		return fmt.Errorf("%s opens a window only when it boots an instance (start --gui): %w", d.hv.Name(), machine.ErrNotImplemented)
+	if !d.hv.Capabilities().View {
+		return fmt.Errorf("%s opens a window only when it boots an instance (start --gui): %w", d.hv.Name(), machine.ErrUnsupported)
 	}
 	m, err := d.Attach(ctx, inst)
 	if err != nil {
 		return err
 	}
-	return viewer.View(ctx, m, title)
+	switch m := m.(type) {
+	case *shimMachine:
+		return d.hv.View(ctx, m, m.shim.display, title)
+	case *staleMachine:
+		return m.err
+	default:
+		return fmt.Errorf("instance %s: no window through a %T", inst.Name, m)
+	}
 }
 
 // ViewInstall opens a window in this process on the pool's install in
 // progress of the VM name, or on its only one when name is empty, on a
-// hypervisor that can (MachineViewer).
+// hypervisor that reports Capabilities.View. An install whose process is
+// gone (a crash left its record) is not in progress.
 func (d *Driver) ViewInstall(ctx context.Context, name, title string, log io.Writer) error {
 	if err := d.authorize(ctx); err != nil {
 		return err
 	}
-	viewer, ok := d.hv.(MachineViewer)
-	if !ok {
-		return fmt.Errorf("%s opens a window on an install only from the install (install --gui): %w", d.hv.Name(), machine.ErrNotImplemented)
+	if !d.hv.Capabilities().View {
+		return fmt.Errorf("%s opens a window on an install only from the install (install --gui): %w", d.hv.Name(), machine.ErrUnsupported)
 	}
 	paths, _ := filepath.Glob(filepath.Join(d.instancesDir(), "*", installingFile))
 	var found []instanceRecord
 	for _, path := range paths {
-		var rec instanceRecord
-		if fsutil.ReadJSON(path, &rec) != nil || rec.Pool != d.pool || name != "" && rec.Name != name {
+		var rec installingRecord
+		if fsutil.ReadJSON(path, &rec) != nil || rec.Pool != d.pool || name != "" && rec.Name != name || !proc.Alive(rec.PID) {
 			continue
 		}
-		found = append(found, rec)
+		found = append(found, rec.instanceRecord)
 	}
 	switch len(found) {
 	case 0:
@@ -96,7 +102,7 @@ func (d *Driver) ViewInstall(ctx context.Context, name, title string, log io.Wri
 	if err != nil {
 		return err
 	}
-	if err := viewer.ViewInstall(ctx, Layer{ID: rec.ID, Dir: hs.Dir}, title, log); err != nil {
+	if err := d.hv.ViewInstall(ctx, Layer{ID: rec.ID, Dir: hs.Dir}, title, log); err != nil {
 		return fmt.Errorf("install of %s: %w", rec.Name, err)
 	}
 	return nil

@@ -281,26 +281,16 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 		if target == guest.ServicePort {
 			target = servicePort
 		}
-		dialCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		upstream, err := m.Dial(dialCtx, target)
-		cancel()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		conn, rw, err := http.NewResponseController(w).Hijack()
-		if err != nil {
-			_ = upstream.Close()
-			return
-		}
-		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + dialUpgrade + "\r\n\r\n")
-		if err := rw.Flush(); err != nil {
-			_ = conn.Close()
-			_ = upstream.Close()
-			return
-		}
-		go netutil.Splice(&netutil.BufConn{Conn: conn, R: rw.Reader}, upstream)
+		spliceDial(w, r, m, target)
 	})
+	// A window another process opens on the guest's desktop (View) reaches
+	// the guest's display stream here, and nothing else does: it is no port
+	// a caller dials (guest.DialablePort), and the route takes no port.
+	if d.hv.Capabilities().View {
+		mux.HandleFunc("GET /display", func(w http.ResponseWriter, r *http.Request) {
+			spliceDial(w, r, m, guest.DisplayPort)
+		})
+	}
 	statePath := filepath.Join(d.instanceDir(id), shimStateName)
 	state, closeControl, err := serveControl(listener, socket, mux, statePath, serviceListener.Addr().String())
 	if err != nil {
@@ -477,6 +467,30 @@ func serveControl(listener net.Listener, socket string, mux *http.ServeMux, stat
 		defer cancel()
 		_ = server.Shutdown(ctx)
 	}, nil
+}
+
+// spliceDial dials port on m and, once it answers, upgrades the request's
+// connection and splices the two.
+func spliceDial(w http.ResponseWriter, r *http.Request, m machine.Machine, port uint32) {
+	dialCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	upstream, err := m.Dial(dialCtx, port)
+	cancel()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	conn, rw, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		_ = upstream.Close()
+		return
+	}
+	_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + dialUpgrade + "\r\n\r\n")
+	if err := rw.Flush(); err != nil {
+		_ = conn.Close()
+		_ = upstream.Close()
+		return
+	}
+	go netutil.Splice(&netutil.BufConn{Conn: conn, R: rw.Reader}, upstream)
 }
 
 // ShimMain is the body of a shim, given the arguments Start appends to the
@@ -852,6 +866,12 @@ func (c *shimClient) dial(ctx context.Context, port uint32) (net.Conn, error) {
 		return nil, fmt.Errorf("guest port %d: a caller reaches the agent's port (%d) and the service's (%d) alone: %w", port, guest.AgentPort, guest.ServicePort, machine.ErrUnsupported)
 	}
 	return c.upgrade(ctx, "/dial?port="+strconv.FormatUint(uint64(port), 10), dialUpgrade)
+}
+
+// display opens a stream to the guest's display (guest.DisplayPort) of the
+// shim's machine, on a hypervisor that lists Capabilities.View.
+func (c *shimClient) display(ctx context.Context) (net.Conn, error) {
+	return c.upgrade(ctx, "/display", dialUpgrade)
 }
 
 // upgrade asks the shim to upgrade a connection to one of its streams, and
