@@ -1,6 +1,7 @@
 package hcs
 
 import (
+	"errors"
 	"net"
 	"testing"
 )
@@ -40,5 +41,23 @@ func TestRDPWindowsClaimAddressesOfTheirOwn(t *testing.T) {
 			t.Fatalf("a window claimed %s, held by another or by the other window (%v)", host, hosts)
 		}
 		hosts[host] = true
+	}
+}
+
+// A window on an account whose password is the person's own stores no
+// sign-in, so mstsc asks for it, and still claims an address of its own.
+func TestRDPWindowWithoutAPasswordStoresNoSignIn(t *testing.T) {
+	l, forget, err := listenRDP(t.Context(), `TEST\disco-vm-test`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	defer forget()
+	host, _, _ := net.SplitHostPort(l.Addr().String())
+	if _, err := rememberRDPCredential(host, `TEST\disco-vm-test`, ""); !errors.Is(err, errNoCredential) {
+		t.Fatalf("a sign-in is stored for %s: %v", host, err)
+	}
+	if _, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", l.Addr().String()); err == nil {
+		t.Fatalf("%s is not claimed", l.Addr())
 	}
 }

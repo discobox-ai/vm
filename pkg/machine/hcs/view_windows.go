@@ -188,18 +188,46 @@ func autologonUser(ctx context.Context, g machine.Guest) string {
 	return defaultUser
 }
 
+// passwordIsName asks the guest's agent whether its account user still has
+// its own name for a password, as Install sets it unless --option password
+// gave it one of the person's own. The agent only tries the logon; no
+// password leaves the guest. An agent too old to answer, or any other
+// failure, is no answer: known is false.
+func passwordIsName(ctx context.Context, g machine.Guest, user string) (same, known bool) {
+	var out bytes.Buffer
+	code, err := machine.Run(ctx, g, machine.ExecRequest{Argv: []string{agentPath, "password-is-name", user}}, nil, &out, io.Discard)
+	if err != nil || code != 0 {
+		return false, false
+	}
+	switch strings.TrimSpace(out.String()) {
+	case guest.PasswordName:
+		return true, true
+	case guest.PasswordOther:
+		return false, true
+	}
+	return false, false
+}
+
 // viewRDP opens mstsc on the guest's Remote Desktop, through a loopback port
 // that relays every connection mstsc makes, signed in as the image's user
-// with its name for a password, as Install sets it.
+// with its name for a password, as Install sets it. Where the guest says the
+// account has a password of the person's own (--option password), the
+// window stores no sign-in and mstsc asks the person for it; where the guest
+// cannot say (an agent from before it could), the name is stored as before,
+// and a wrong one has mstsc ask all the same.
 func viewRDP(ctx context.Context, g machine.Guest, title string) error {
 	user := autologonUser(ctx, g)
+	password := user
+	if same, known := passwordIsName(ctx, g, user); known && !same {
+		password = ""
+	}
 	// The guest's own account, named by its computer name: a bare name, as
 	// mstsc completes it, would be the host's account of that name.
 	account := user
 	if info, err := g.Info(ctx); err == nil && computerName.MatchString(info.Hostname) {
 		account = info.Hostname + `\` + user
 	}
-	listener, forget, err := listenRDP(ctx, account, user)
+	listener, forget, err := listenRDP(ctx, account, password)
 	if err != nil {
 		return err
 	}
@@ -294,8 +322,10 @@ type credential struct {
 // records stay a fixed few. The claim is the listener on rdpRelayPort, which
 // a second bind of the same address fails, so two windows opening at once
 // never share one, and a sign-in stored there already (the user's own) is
-// skipped, never written over. It returns the listener and what forgets the
-// sign-in and mstsc's record of the host.
+// skipped, never written over. An empty password stores no sign-in, so mstsc
+// asks for one, but the address is claimed all the same, so a sign-in the
+// person has mstsc remember there is never another window's. It returns the
+// listener and what forgets the sign-in and mstsc's record of the host.
 func listenRDP(ctx context.Context, user, password string) (net.Listener, func(), error) {
 	for n := 1; n < 255; n++ {
 		host := fmt.Sprintf("127.77.0.%d", n)
@@ -304,6 +334,9 @@ func listenRDP(ctx context.Context, user, password string) (net.Listener, func()
 			continue // another window's, or another program's
 		}
 		forget, err := rememberRDPCredential(host, user, password)
+		if errors.Is(err, errNoCredential) {
+			forget, err = func() {}, nil
+		}
 		if errors.Is(err, errCredentialTaken) {
 			_ = listener.Close()
 			continue
@@ -341,10 +374,15 @@ var computerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,62}$`)
 // someone's own, or another window's.
 var errCredentialTaken = errors.New("hcs: a Remote Desktop sign-in is already stored for the host")
 
+// errNoCredential is an empty password, which rememberRDPCredential stores
+// nothing for once it has found the host has no sign-in stored.
+var errNoCredential = errors.New("hcs: no password to store for Remote Desktop")
+
 // rememberRDPCredential stores user (COMPUTER\name) and password for Remote
 // Desktop to host in this logon session's credential manager, as mstsc's own
 // "Remember me" does, and returns what forgets it again. One already stored
-// for host is left as it is, and is errCredentialTaken.
+// for host is left as it is, and is errCredentialTaken; an empty password is
+// stored as nothing, and is errNoCredential.
 func rememberRDPCredential(host, user, password string) (func(), error) {
 	const credTypeDomainPassword, credPersistSession = 2, 1
 	target, _ := windows.UTF16PtrFromString("TERMSRV/" + host)
@@ -352,6 +390,9 @@ func rememberRDPCredential(host, user, password string) (func(), error) {
 	if ok, _, _ := credRead.Call(uintptr(unsafe.Pointer(target)), credTypeDomainPassword, 0, uintptr(unsafe.Pointer(&existing))); ok != 0 {
 		_, _, _ = credFree.Call(existing)
 		return nil, errCredentialTaken
+	}
+	if password == "" {
+		return nil, errNoCredential
 	}
 	userp, _ := windows.UTF16PtrFromString(user)
 	secret := windows.StringToUTF16(password)

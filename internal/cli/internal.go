@@ -95,6 +95,34 @@ func pipeCommand() *cobra.Command {
 	}
 }
 
+// passwordIsNameCommand prints "name" when a local account of a Windows
+// guest still has its own name for a password, and "other" when it has one of
+// the person's own (an image installed with --option password). A host's
+// Remote Desktop window runs it through the agent's exec to know whether it
+// may sign in by itself; the logon is only tried, and no password leaves the
+// guest. Anything else, an older agent's unknown command among them, is no
+// answer.
+func passwordIsNameCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "password-is-name USER",
+		Short:  "Print whether a Windows guest's account still has its name for a password (run by the host's window)",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			same, err := guest.PasswordIsName(args[0])
+			if err != nil {
+				return err
+			}
+			answer := guest.PasswordOther
+			if same {
+				answer = guest.PasswordName
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), answer)
+			return err
+		},
+	}
+}
+
 // consoleHostCommand makes a Windows pseudo console as the account it runs as
 // and runs a command on it. The agent starts it for a TTY session as another
 // account, whose console must be that account's own (guest.ConsoleHost).

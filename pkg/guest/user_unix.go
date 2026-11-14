@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 // withLogin adds the HOME, USER, and LOGNAME of the agent's own account to env
@@ -50,4 +52,10 @@ func runAs(cmd *exec.Cmd, name string) ([]string, func(), error) {
 	}
 	cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
 	return []string{"HOME=" + u.HomeDir, "USER=" + u.Username, "LOGNAME=" + u.Username}, func() {}, nil
+}
+
+// PasswordIsName is a Windows guest's alone: elsewhere the agent runs as
+// another account without its password.
+func PasswordIsName(string) (bool, error) {
+	return false, fmt.Errorf("guest: a password check: %w", machine.ErrUnsupported)
 }

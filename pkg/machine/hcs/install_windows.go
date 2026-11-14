@@ -48,7 +48,9 @@ const (
 //
 // Options: user and password name the local administrator Setup creates and
 // logs on automatically (default "disco", and the user's own name for a
-// password, which the agent and `disco-vm gui` sign in with).
+// password, which the agent and `disco-vm gui` sign in with). A password of
+// the person's own is kept nowhere: `gui` asks for it, and running as the
+// account is unsupported (ADR 26-11-14-593).
 func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) (*machine.Release, error) {
 	log := spec.Log
 	if log == nil {
