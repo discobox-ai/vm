@@ -73,9 +73,12 @@ func (h *Hypervisor) Prepare(ctx context.Context, inst local.InstanceSpec) error
 // no disk to boot.
 const pendingName = "resume.pending"
 
-// Boot starts a prepared instance from power-off and waits for its agent. A
-// Linux guest's agent is the one this boot handed it, and one that speaks
-// another protocol is killed and refused.
+// Boot starts a prepared instance from power-off and waits for its agent.
+// The agent is the one this boot handed the guest: a Linux guest's in its
+// initrd, a macOS guest's on a read-only drive. One that speaks another
+// protocol is killed and refused, which a macOS guest installed before its
+// agent came on a drive, and so still runs the one it was installed with,
+// is once the protocol moves (ADR 26-11-13-318 §5).
 func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
 	m, err := bundle(inst.Dir).readMeta()
 	if err != nil {
@@ -85,7 +88,7 @@ func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 	if m.guestOS() == machine.Linux {
 		vm, err = bootLinux(inst, m, opts, h.agent)
 	} else {
-		vm, err = bootInstance(inst, opts)
+		vm, err = bootInstance(inst, opts, h.macosAgent)
 	}
 	if err != nil {
 		return nil, err
@@ -94,20 +97,43 @@ func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 		_ = vm.Kill(context.Background())
 		return nil, err
 	}
-	if m.guestOS() == machine.Linux {
-		if err := guest.CheckProtocol(ctx, vm); err != nil {
-			_ = vm.Kill(context.Background())
-			return nil, err
+	if err := guest.CheckProtocol(ctx, vm); err != nil {
+		_ = vm.Kill(context.Background())
+		if m.guestOS() == machine.Darwin {
+			return nil, fmt.Errorf("vz: %w; the macOS agent is the one macosAgent ($%s) names, %s, unless the VM was installed before its agent came on a drive, when it keeps the agent it was installed with and has to be installed again", err, MacOSAgentEnv, h.macosAgent)
 		}
+		return nil, err
 	}
 	return vm, nil
+}
+
+// agentDrive clones the agent's drive, from the cache, into the bundle for
+// one boot, in place of the last boot's, and names it: each VM has its own
+// file, and the cache can be pruned while VMs run. A commit never keeps it
+// (layerFiles).
+func (b bundle) agentDrive(cacheDir, agent string) (string, error) {
+	if err := checkMacOSAgent(agent, runtime.GOARCH); err != nil {
+		return "", err
+	}
+	iso, err := agentDrive(cacheDir, agent)
+	if err != nil {
+		return "", err
+	}
+	drive := b.path(agentDriveName)
+	if err := os.Remove(drive); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("vz: %w", err)
+	}
+	if err := clonefile(iso, drive); err != nil {
+		return "", err
+	}
+	return drive, nil
 }
 
 // fenced reports that the instance was created fenced to nothing beyond its
 // networks, which vz holds as no network device.
 func fenced(inst local.InstanceSpec) bool { return inst.Egress != nil && len(inst.Egress.Allow) == 0 }
 
-func bootInstance(inst local.InstanceSpec, opts local.BootOptions) (*vmMachine, error) {
+func bootInstance(inst local.InstanceSpec, opts local.BootOptions, agent string) (*vmMachine, error) {
 	b := bundle(inst.Dir)
 	console := opts.Console
 	if console == nil {
@@ -135,8 +161,12 @@ func bootInstance(inst local.InstanceSpec, opts local.BootOptions) (*vmMachine, 
 			return nil, err
 		}
 	}
+	drive, err := b.agentDrive(inst.CacheDir, agent)
+	if err != nil {
+		return nil, err
+	}
 	cpus, memory := size(m, opts.CPUs, opts.Memory)
-	vm, err := start(b, cpus, memory, opts.Shares, !fenced(inst), nil)
+	vm, err := start(b, cpus, memory, opts.Shares, !fenced(inst), drive, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -167,14 +197,14 @@ func (m *vmMachine) display(opts local.BootOptions) error {
 	return nil
 }
 
-// start boots a macOS bundle from power-off, with a network device when nic,
-// provisioning its first account if asked.
-func start(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool, provision *vz.MacGuestProvisioningOptions) (*vmMachine, error) {
+// start boots a macOS bundle from power-off, with a network device when nic
+// and the agent's drive, provisioning its first account if asked.
+func start(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool, drive string, provision *vz.MacGuestProvisioningOptions) (*vmMachine, error) {
 	var options []vz.VirtualMachineStartOption
 	if provision != nil {
 		options = append(options, vz.WithMacGuestProvisioning(*provision))
 	}
-	vm, err := unlocked(b, cpus, memory, shares, nic, func(vm *vz.VirtualMachine) error { return vm.Start(options...) })
+	vm, err := unlocked(b, cpus, memory, shares, nic, drive, func(vm *vz.VirtualMachine) error { return vm.Start(options...) })
 	if err != nil {
 		return nil, entitlementHint(fmt.Errorf("vz: start: %w", err))
 	}
@@ -188,10 +218,10 @@ func start(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool,
 // install's provisioning boot, a build's reboot step) waits for a garbage
 // collection. A VM whose start failed is not started again: it would stop at
 // once in the error state. Each attempt gets a new one.
-func unlocked(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool, run func(*vz.VirtualMachine) error) (*vz.VirtualMachine, error) {
+func unlocked(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool, drive string, run func(*vz.VirtualMachine) error) (*vz.VirtualMachine, error) {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		vm, err := newVM(b, cpus, memory, shares, nic)
+		vm, err := newVM(b, cpus, memory, shares, nic, drive)
 		if err != nil {
 			return nil, err
 		}
@@ -207,8 +237,8 @@ func unlocked(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bo
 	}
 }
 
-func newVM(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool) (*vz.VirtualMachine, error) {
-	config, err := b.configuration(cpus, memory, shares, nic)
+func newVM(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool, drive string) (*vz.VirtualMachine, error) {
+	config, err := b.configuration(cpus, memory, shares, nic, drive)
 	if err != nil {
 		return nil, err
 	}

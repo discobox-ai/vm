@@ -77,10 +77,11 @@ func (b bundle) macAddress() (*vz.MACAddress, error) {
 }
 
 // configuration is a macOS bundle's machine. It is the same set of devices
-// at install and at every boot, so the guest never sees its hardware change;
-// only shares are optional, and the network device, which an instance fenced
-// to nothing has none of.
-func (b bundle) configuration(cpus uint, memory uint64, shares []machine.Share, nic bool) (*vz.VirtualMachineConfiguration, error) {
+// at install and at every boot, so the guest never sees its hardware change:
+// its disk, then the agent's drive, read-only; only shares are optional, and
+// the network device, which an instance fenced to nothing has none of. The
+// installer alone runs with no drive.
+func (b bundle) configuration(cpus uint, memory uint64, shares []machine.Share, nic bool, drive string) (*vz.VirtualMachineConfiguration, error) {
 	platform, err := b.platform()
 	if err != nil {
 		return nil, err
@@ -92,12 +93,14 @@ func (b bundle) configuration(cpus uint, memory uint64, shares []machine.Share, 
 	if !nic {
 		address = nil
 	}
-	return configure(platform, cpus, memory, b.path(diskName), address, shares)
+	return configure(platform, cpus, memory, b.path(diskName), drive, address, shares)
 }
 
 // configure is a macOS guest's machine, with a NAT network device at address,
-// or none when address is nil.
-func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk string, address *vz.MACAddress, shares []machine.Share) (*vz.VirtualMachineConfiguration, error) {
+// or none when address is nil. The agent's drive comes after the disk, which
+// stays the boot disk, and is attached read-only (ADR 26-11-13-318 §1); only
+// the installer, which boots no macOS of the disk's, has none ("").
+func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk, drive string, address *vz.MACAddress, shares []machine.Share) (*vz.VirtualMachineConfiguration, error) {
 	// No kernel, no initrd: a Mac's boot loader is the platform's own, and
 	// everything it needs is in the auxiliary storage.
 	loader, err := vz.NewMacOSBootLoader()
@@ -110,11 +113,19 @@ func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk
 	}
 	config.SetPlatformVirtualMachineConfiguration(platform)
 
-	block, err := diskDevice(disk)
+	block, err := diskDevice(disk, false)
 	if err != nil {
 		return nil, err
 	}
-	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{block})
+	storage := []vz.StorageDeviceConfiguration{block}
+	if drive != "" {
+		device, err := diskDevice(drive, true)
+		if err != nil {
+			return nil, err
+		}
+		storage = append(storage, device)
+	}
+	config.SetStorageDevicesVirtualMachineConfiguration(storage)
 
 	if address != nil {
 		network, err := natDevice(address)
@@ -179,14 +190,16 @@ func configure(platform vz.PlatformConfiguration, cpus uint, memory uint64, disk
 	return config, nil
 }
 
-// diskDevice is the virtio block device of a guest's writable disk, on either
-// guest OS. The disk is attached cached, with fsync synchronization, not the
+// diskDevice is the virtio block device of a guest's disk, on either guest
+// OS: its writable disk, or a macOS guest's read-only agent drive, which is
+// attached the same way though it is never written. The disk is attached
+// cached, with fsync synchronization, not the
 // framework's default (automatic caching, full synchronization), which
 // corrupts ext4 on Apple silicon (lima-vm/lima#1957, crc-org/vfkit#447) and is
 // what Lima, UTM and vfkit moved off. A guest's flush is then an fsync, not an
 // F_FULLFSYNC: it outlives the shim and the guest, not the host losing power.
-func diskDevice(path string) (*vz.VirtioBlockDeviceConfiguration, error) {
-	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(path, false, vz.DiskImageCachingModeCached, vz.DiskImageSynchronizationModeFsync)
+func diskDevice(path string, readOnly bool) (*vz.VirtioBlockDeviceConfiguration, error) {
+	attachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(path, readOnly, vz.DiskImageCachingModeCached, vz.DiskImageSynchronizationModeFsync)
 	if err != nil {
 		return nil, fmt.Errorf("vz: attach disk %s: %w", path, err)
 	}

@@ -140,7 +140,7 @@ func (b bundle) linuxConfiguration(cpus uint, memory uint64, cmdline string, nic
 		return nil, entitlementHint(fmt.Errorf("vz: machine configuration: %w", err))
 	}
 
-	block, err := diskDevice(b.path(diskName))
+	block, err := diskDevice(b.path(diskName), false)
 	if err != nil {
 		return nil, err
 	}

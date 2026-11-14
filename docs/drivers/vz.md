@@ -64,6 +64,7 @@ A macOS guest is a **bundle**: files that belong together in one directory.
 | `vz.json` (version, size, account) | ✓ | ✓ |
 | `machineidentifier` | | its own |
 | `macaddress` | | its own, from its first boot |
+| `agent.iso` | | made by each boot ([The macOS agent](#the-macos-agent)) |
 
 There are no chains (`Chains` is false). A VM created from a committed VM is
 a full APFS clone (`clonefile`) of its layer files (`layerFiles`), and a
@@ -94,19 +95,22 @@ directory:
 2. The hardware model is the restore image's. The machine identifier, the aux
    storage, and a disk are created (raw by default, `disk-format: asif` for
    ASIF), and the installer runs. That took 3 minutes on an M-series Mac.
-3. **The agent goes in on the first boot**, over SSH. An IPSW install leaves
-   no way to write to the Data volume, and before macOS 27 the first boot is
-   Setup Assistant, which needs a person at a window. So Install refuses a
-   restore image older than 27. The first boot is started with guest
-   provisioning (the account, auto-login, Remote Login on). The driver finds
-   the guest's address in the NAT's DHCP leases (`/var/db/dhcpd_leases`, by
-   MAC), logs in with `x/crypto/ssh`, copies `spec.Agent` to
-   `/usr/local/libexec/disco-vm`, and installs
-   `/Library/LaunchDaemons/ai.discobox.vm.guest.plist` (root, RunAtLoad,
-   KeepAlive, `disco-vm guest`, logging to `/var/log/disco-vm-guest.log`). It
-   also sets `pmset -a sleep 0`, because a sleeping guest's agent answers
-   nothing. Then it waits for the agent on vsock 7300 and shuts down through
-   it. That took 45 seconds.
+3. **The agent's launch daemon goes in on the first boot**, over SSH. An
+   IPSW install leaves no way to write to the Data volume, and before macOS
+   27 the first boot is Setup Assistant, which needs a person at a window. So
+   Install refuses a restore image older than 27. The first boot is started
+   with guest provisioning (the account, auto-login, Remote Login on) and,
+   as every boot, the agent's drive ([The macOS agent](#the-macos-agent));
+   the installer before it has no drive. The driver finds the guest's
+   address in the NAT's DHCP leases (`/var/db/dhcpd_leases`, by MAC), logs
+   in with `x/crypto/ssh`, and installs
+   `/Library/LaunchDaemons/ai.discobox.vm.guest.plist`, whose program is
+   `/bin/sh` with the stub. It also sets `pmset -a sleep 0`, because a
+   sleeping guest's agent answers nothing. Then it waits for the agent the
+   stub runs off the drive on vsock 7300, and shuts down through it. Install
+   refuses to start without a valid `macosAgent`, and does not read
+   `spec.Agent`. With the agent baked in, this step took 45 seconds; with
+   the drive it is not timed yet.
 4. **The account moves off uid 501.** Provisioning always makes the first
    account 501, which is also the first account on the host, so the bootstrap
    moves it to `uid` (default 600) and chowns its files. That freed 501 for
@@ -146,20 +150,22 @@ machine identifier. The MAC is created on the first boot. A fresh VM (no
 `Chain`) is a Linux guest from the base ([Linux guests](#linux-guests)).
 
 **Boot(inst, opts):** one configuration for install and every boot: the Mac
-platform, virtio block (cached, fsync: see [Disks](#disks)), NAT with the
-bundle's MAC, the Mac framebuffer (always attached, so opening a window never
-changes the hardware), keyboard and pointer, a virtio socket device, and
-optional virtiofs shares. There is **no memory balloon**: a macOS guest
-ignores its target. Every boot starts from power-off. A resume clone from
-before resume clones were removed (ADR 26-10-15-851) is handled as its own:
-one that resumed once still has its template's identity, so its next boot
-first gives it a new machine identifier and MAC, and one never booted
-(`resume.pending`) is refused. `Dial` is the
+platform, virtio block for the disk and then the agent's drive (read-only;
+see [The macOS agent](#the-macos-agent)), both cached with fsync (see
+[Disks](#disks)), NAT with the bundle's MAC, the Mac framebuffer (always
+attached, so opening a window never changes the hardware), keyboard and
+pointer, a virtio socket device, and optional virtiofs shares. There is **no
+memory balloon**: a macOS guest ignores its target. Every boot starts from
+power-off. A resume clone from before resume clones were removed (ADR
+26-10-15-851) is handled as its own: one that resumed once still has its
+template's identity, so its next boot first gives it a new machine identifier
+and MAC, and one never booted (`resume.pending`) is refused. `Dial` is the
 socket device's `Connect`, with the caller's deadline enforced around it, and
 `Listen` (`machine.HostListener`, for an instance's forwards) is the socket
 device's `Listen`: a guest process connects to the host at CID 2. Connections
 both ways can half-close, which a request piped in and its answer read back
-need; the bindings keep the connection's Unix-domain socket unexported, so
+need; once the agent answers, a guest whose `guest.Protocol` is not this
+host's is killed and refused, on either OS; the bindings keep the connection's Unix-domain socket unexported, so
 `CloseWrite` reaches it by reflection and falls back to a full close if their
 layout changes. `Done` follows the VM's state channel. `Kill` is `Stop`.
 
@@ -195,6 +201,53 @@ the same machine identifier and MAC ("invalid argument" otherwise), at the
 same memory size, on the same host build; and a restore needs the console
 session unlocked ("permission denied" on a locked Mac, while a save still
 works).
+
+## The macOS agent
+
+ADR 26-11-13-318. A macOS guest keeps no agent: every boot, the install's
+first among them, attaches the host's on a drive, so a VM made from any
+base runs the host's agent from its next boot, and an agent change needs no
+reinstall.
+
+- **The agent** is vz's privileged `macosAgent` field
+  (`--vz-macos-agent`, `$DISCO_VM_MACOS_AGENT`): a disco-vm built for darwin
+  on this Mac's architecture, which a boot refuses unless it is a Mach-O
+  executable for it, naming the field. The command line sets the field to
+  its own executable (`ConfigField.DefaultExecutable`); an embedder whose
+  program is not disco-vm names one. A shim is given it in the driver's
+  configuration.
+- **The drive** is an ISO 9660 image with Rock Ridge names and modes, label
+  `DISCO_VM_AGENT`, holding `disco-vm` (0755) and `disco-vm.sha256`, its
+  digest in hex. It is built in Go (`writeISO`), with every timestamp fixed,
+  so the same agent gives the same bytes, and kept in
+  `<root>/cache/vz/agent/<the agent's SHA-256>.iso`, beside a
+  `<name>.sha256` of the image itself; an image that does not match it is
+  built again. Each boot clones it (`clonefile`) into the bundle as
+  `agent.iso` and attaches that, read-only, after the disk, which stays the
+  boot disk. A commit never keeps it.
+- **The base** holds only the launch daemon `ai.discobox.vm.guest` (root,
+  RunAtLoad, KeepAlive, logging to `/var/log/ai.discobox.vm.guest.log`),
+  whose program is `/bin/sh -c` with the stub inline (`daemonPlist`), so no
+  executable of disco-vm's is on the disk. The stub waits up to a minute for
+  the drive at `/Volumes/DISCO_VM_AGENT`, read-only `cd9660`, asking
+  `diskutil mount readOnly` for it each second where Disk Arbitration has
+  not mounted it; copies `disco-vm` into `/var/run/disco-vm` (0700), checks
+  it against the drive's digest, unmounts the drive, and execs the copy as
+  `disco-vm guest`. Any failure exits, and launchd starts it again.
+- **A base installed before** runs `/usr/local/libexec/disco-vm`, the agent
+  it was installed with, and ignores the drive. It works while its protocol
+  is the host's; once that moves, the boot refuses it, saying to install it
+  again. Nothing moves it forward.
+- **Signing:** the agent is ad hoc signed, as Go's linker signs every
+  darwin/arm64 executable, and needs no notarization, entitlement, or TCC
+  grant: nothing copied off a local volume by a root shell is quarantined.
+- **Not yet booted on a real guest** (the proof table's row): this stub,
+  this Go-built image, its `diskutil mount`, automatic login off, and a
+  protocol mismatch refused. A spike's hdiutil ISO and a stub much like
+  this one did boot (2026-11-13, macOS 27.0 guest): Disk Arbitration had
+  mounted the drive before launchd first ran the stub, or 1.2 s later, with
+  no one logged in; the drive may take `disk0`, pushing the boot disk to
+  `disk1`, so nothing assumes the boot disk's number.
 
 ## Linux guests
 
@@ -279,6 +332,10 @@ The cost is durability against the host: a guest's flush is an `fsync`,
 not the `F_FULLFSYNC` full synchronization issues, so what the guest flushed
 survives the shim or the guest dying but not the host losing power or
 panicking before the drive's own cache is written.
+
+A macOS guest's agent drive goes through `diskDevice` too, read-only, so
+every disk is attached one way; it is never written, so its synchronization
+does nothing.
 
 ## Measured on real hardware
 

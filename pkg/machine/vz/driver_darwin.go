@@ -40,6 +40,9 @@ type Hypervisor struct {
 	// agent is the disco-vm built for linux that a Linux guest's boot hands
 	// it (Config.Agent).
 	agent string
+	// macosAgent is the disco-vm built for darwin that every boot of a
+	// macOS guest attaches on a read-only drive (Config.MacOSAgent).
+	macosAgent string
 	// transport calls a registry for the Linux base and downloads the
 	// macOS restore image (machine.Config.HTTPTransport): through an
 	// embedder's dialer, where one is set.
@@ -49,7 +52,7 @@ type Hypervisor struct {
 // newHypervisor is the Hypervisor cfg and its decoded driver configuration
 // describe.
 func newHypervisor(cfg machine.Config, conf Config) *Hypervisor {
-	return &Hypervisor{base: cfg.Base, agent: conf.Agent, transport: cfg.HTTPTransport()}
+	return &Hypervisor{base: cfg.Base, agent: conf.Agent, macosAgent: conf.MacOSAgent, transport: cfg.HTTPTransport()}
 }
 
 var _ local.Hypervisor = (*Hypervisor)(nil)

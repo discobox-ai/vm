@@ -87,3 +87,9 @@
   and the capability table and the driver's DESIGN.md say when. Why: the
   engine passes such a request, so a reach stated as unconditional would
   promise what the driver then refuses.
+- **A test that checks a file's owner-only mode skips the check on
+  Windows**, which reports no owner-only mode: 0666 for a writable file,
+  0444 for a read-only one (`linuximage` TestPullAgent,
+  `local` TestShimSocket, `vz` TestAgentDrive). A test in a file with no
+  build tag runs in the `windows` CI job, and a review found one that would
+  fail there on every run.

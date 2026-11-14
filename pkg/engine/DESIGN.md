@@ -118,8 +118,10 @@ three ways:
   copy of its disk, on a driver that reports `Capabilities.Commit`. A
   running VM is refused as a `From`.
 - **By installing** (`Engine.Install`, `install NAME`), on a driver that
-  lists `Capabilities.Install` (hcs, vz, fake): an OS from media, with the
-  agent, this binary, baked in, left committed.
+  lists `Capabilities.Install` (hcs, vz, fake): an OS from media, left
+  committed with the agent, this binary, baked in (hcs, fake), or with a
+  launch daemon that runs the agent each boot attaches on a drive (vz's
+  macOS, ADR 26-11-13-318).
 
 `Engine.Commit` (`commit VM`) freezes a stopped VM under its name: its data
 volume and cache clone go, and its disk is what VMs are created from. A

@@ -24,6 +24,11 @@ type Config struct {
 	// carries no linux one: `go tool task build` builds it beside the
 	// darwin one, and a release ships both.
 	Agent string `json:"agent,omitempty"`
+	// MacOSAgent is the disco-vm built for darwin on this Mac's
+	// architecture, which every boot of a macOS guest attaches on a
+	// read-only drive as its agent (ADR 26-11-13-318 §3). The command line
+	// sets it to itself; an embedder names one.
+	MacOSAgent string `json:"macosAgent,omitempty"`
 }
 
 // Definition describes the vz driver and its configuration.
@@ -35,6 +40,8 @@ func Definition() machine.Definition {
 		ConfigFields: []machine.ConfigField{
 			{Key: "agent", Label: "Agent", Type: machine.ConfigString, Env: AgentEnv, Placeholder: "/path/to/build/linux-arm64/disco-vm", Privileged: true,
 				Description: "The absolute path of the disco-vm built for linux on this Mac's architecture, which every boot of a Linux guest hands the guest as its agent. A Linux guest needs it."},
+			{Key: "macosAgent", Label: "macOS agent", Type: machine.ConfigString, Env: MacOSAgentEnv, Placeholder: "/path/to/build/disco-vm", Privileged: true, DefaultExecutable: true,
+				Description: "The absolute path of the disco-vm built for darwin on this Mac's architecture, which every boot of a macOS guest, and its install, attaches on a read-only drive as its agent. A macOS guest needs it; the command line is one, and sets it to itself."},
 		},
 	}
 }
@@ -49,6 +56,9 @@ func decode(config json.RawMessage) (Config, error) {
 	cfg, err := machine.DecodeConfig[Config]("vz", config)
 	if err == nil && cfg.Agent != "" && !filepath.IsAbs(cfg.Agent) {
 		err = errors.New("vz: configuration: agent: not an absolute path")
+	}
+	if err == nil && cfg.MacOSAgent != "" && !filepath.IsAbs(cfg.MacOSAgent) {
+		err = errors.New("vz: configuration: macosAgent: not an absolute path")
 	}
 	return cfg, err
 }
