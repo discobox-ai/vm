@@ -105,6 +105,51 @@ the linux agents alone.
 A driver that reaches its guest without the agent (boxd, archil) does not
 list `Capabilities.Agent`, and puts nothing of disco-vm's in the guest.
 
+## Releases
+
+A `vX.Y.Z` tag, or `vX.Y.Z-alpha.N` / `-rc.N` for a prerelease, is one
+version three ways (ADR 26-11-13-679): the module embedders require, what
+`disco-vm --version` prints (linked into `internal/version`), and the tag of
+the agent index (above). The guest image (`linux/v*`) and the libkrun runtime
+(`krun/v*`) keep their own lines, pinned in code by digest.
+
+The tag's `Release` workflow runs `go tool task release:build` on a Mac and
+on Linux, then `release:publish`:
+
+- **Binaries**, uploaded bare: `disco-vm-darwin-arm64` built with cgo,
+  ad-hoc signed with `cmd/disco-vm/disco-vm.entitlements`, and checked for
+  `com.apple.security.virtualization`; and static `disco-vm-linux-amd64`,
+  `disco-vm-linux-arm64`, and `disco-vm-windows-amd64.exe`. Each that the
+  builder can run answers `--version` with the tag before it is kept.
+  darwin/amd64 is not built, because vz's macOS guests need Apple silicon.
+- **`checksums.txt`** (`sha256sum`'s format), and **`install.sh` and
+  `install.ps1`**, stamped with the tag and each binary's SHA-256
+  ([internal/release](internal/release)). A stamped installer installs its
+  own release and checks its digest and its `--version`; asked for another
+  version, it hands over to that release's installer; the copy in the tree
+  is not stamped, so it hands over to the newest full release. It installs
+  to `/usr/local/bin` as root and `~/.local/bin` otherwise, or on Windows to
+  `%LOCALAPPDATA%\Programs\disco-vm`, which it puts on the user's `PATH`.
+- **The GitHub Release** (`internal/cmd/disco-vm-release`): made a draft,
+  given every file, and only then published, so the newest release never
+  lacks one, and a prerelease for an `-alpha`/`-rc` tag, which GitHub's
+  `latest` never resolves to. A full release becomes `latest` only when no
+  published full release has a higher version, so a fix on an older line
+  never takes it. A draft left by a failed run is finished; a published
+  release is never changed.
+- **The Homebrew formula** `Formula/disco-vm.rb` in `discobox-ai/homebrew-tap`
+  (`brew install discobox-ai/tap/disco-vm`), for a full release only, written
+  from the published `checksums.txt` and committed with `HOMEBREW_TAP_TOKEN`,
+  unless a published full release has a higher version. It makes the bare
+  download executable and has no post-install step, so nothing rewrites the
+  signed binary. A full release without the token fails before it publishes
+  anything.
+
+Neither channel quarantines what it downloads, so the ad-hoc signed darwin
+binary runs a vz VM as installed. A Linux guest on vz, or a Docker guest from
+a Mac, needs a linux agent of the same version as its driver's `agent`: the
+release's `disco-vm-linux-arm64` (or `-amd64`) is that agent.
+
 ## The engine keeps no state, and a driver keeps it in its provider
 
 disco-vm's core keeps nothing: no database, no root, and no files (ADR
@@ -270,6 +315,8 @@ docker and archil) are theirs, not built here.
 | the Linux base carries nftables (discobox ADR 26-11-11-963 §6): `nft`, nf_tables with connection tracking, and `nftables.service` enabled, so a rule set saved in `/etc/nftables.conf` loads before `network-pre.target` on every boot (`verify` in the image's build) | n/a | n/a | ⬜ on vz; Debian's `linux/amd64` kernel, the one vz boots on an Intel Mac, booted under QEMU/KVM by hand (2026-11-12): a fence saved in `/etc/nftables.conf` loaded at boot, `nf_tables`, `nft_ct` and `nf_conntrack` loaded on demand; `linux/arm64` not booted | n/a | n/a | n/a | ✅ by hand (2026-11-12), a VM of `linux/amd64` built from the checkout: `nft` 1.1.3, the unit enabled and active, ordered before `network-pre.target`; an `inet` rule set with `policy drop` and `ct state established,related accept` saved there, then `stop` and `start`: listed again by `nft list ruleset`, loaded before `systemd-networkd` started, and `exec` still answering over vsock; a broken rule set fails the unit and leaves `eth0` up, and a unit that requires it does not start; ⬜ `DefaultBase`, until a `linux/v*` release carries it |
 | a wedged Linux guest resets: `nmi_watchdog=panic,1` on the command line (`linuximage.Cmdline`) panics a hard lockup, which `panic=5` resets, and libkrun's kernel carries the buddy hard-lockup detector (`krun-kernel.config`, checked in the image's build); soft lockups stay warnings (`TestLinuxCmdline`) | n/a | n/a | ⬜ on vz; Debian's `linux/amd64` kernel, the one vz boots on an Intel Mac, booted under QEMU/KVM by hand (2026-11-13): `hardlockup_panic` 1, `nmi_watchdog` 1 (the perf detector, a PMU counter), `softlockup_panic` 0; no real lockup provoked (no `lkdtm`); `linux/arm64` not booted, its config (`linux-image-6.12.116+deb13-arm64`) builds the buddy detector alone; ⬜ whether Virtualization.framework gives an amd64 guest the PMU its perf detector needs | n/a | n/a | n/a | ✅ by hand (2026-11-13), a VM of `linux/amd64` built from the checkout with 2 CPUs: `hardlockup_panic` 1, `nmi_watchdog` 1, `softlockup_panic` 0; vCPU 1's thread stopped from the host for 40 s: `Watchdog detected hard LOCKUP on cpu 1`, `Kernel panic - not syncing: Hard LOCKUP`, and the VM stopped; with `nmi_watchdog=panic` alone the detector stayed off (Linux turns it off in a KVM guest) and the VM ran on; ⬜ `DefaultBase`, until a `linux/v*` release carries it |
 | the agent published per module version and pulled by its digest (`agent.Pull`; `go tool task test:agent`, the `agent` CI job; the `Agent` workflow): an index per module version of linux/amd64, linux/arm64, and darwin/arm64, each platform's agent pulled into an owner-only cache once, used with no registry, and a tag, an OS published for none, a platform the index lacks, a single image for another platform, no agent, or one that is not an executable for its platform (another architecture's ELF, an ELF or a script as darwin's, a Mach-O library or another architecture's Mach-O) refused (`TestPull`, `TestCheck`, every OS); what a push published pulled back anonymously by digest, every platform it lists checked, and the host's run at its version (`TestPullPublishedAgent`), and every commit of a push published once, one published before darwin checked for its linux agents (`scripts/release-agent.sh`) | ✅ `TestPull`, `TestCheck`; ✅ `test:agent`, a registry on localhost, darwin/arm64 a Mach-O arm64 executable (2026-11-14); ✅ two commits published to a local registry and a second run skipping both, by hand (2026-11-12); ⬜ a release to ghcr | n/a | ⬜ a Linux guest booted on a pulled agent; ⬜ a macOS guest's drive carrying the pulled darwin agent | n/a | ✅ a VM of `debian:trixie` run with an agent pulled by digest from a local registry, `exec` served by it at its module version, by hand (2026-11-12) | n/a | ✅ a VM booted with `$DISCO_VM_AGENT` the linux/amd64 agent `agent.Pull` took from a local registry, the guest running it at its pushed version, and the darwin/arm64 one from the same index refused at start as no linux executable, by hand (2026-11-14) |
+| a tag publishes the release (ADR 26-11-13-679): the four binaries, each that the builder runs answering `--version` with the tag, darwin's signature checked for its entitlement; `checksums.txt`; stamped installers; a release made a draft, given every file, then published, a prerelease for an `-alpha`/`-rc` tag, a draft left by a failed run finished, and a published release left alone; a full release's formula written from the published checksums and committed to the tap once, a prerelease's never (`go tool task release:build`, the `release` and `macos` CI jobs; `internal/release` `TestPublish*`, `TestTheTapIsToldWhatTheReleaseUploaded`, against a fake of GitHub's API) | ✅ the units; ✅ `release:build` on Linux amd64, by hand in a discobox (2026-11-14); ⬜ a tag's `Release` workflow | n/a | ⬜ `release:build` on a Mac (the `macos` CI job) | n/a | n/a | n/a | n/a |
+| each channel installs a release (ADR 26-11-13-679): the stamped installer installs its own release, checked by digest and by `--version`; hands another version, with or without its `v`, to that release's installer; from the tree hands over to the newest full release; refuses a binary of another digest, a second hand-over, and a version that is not one (`internal/release` installer tests: `install.sh` off Windows, `install.ps1` under every PowerShell on Windows); `brew install discobox-ai/tap/disco-vm` | ✅ `install.sh` on Linux against a fake of GitHub's release downloads; ✅ by hand in a discobox (2026-11-14): a `v9.9.9` built by `release:build` and `assets` (a stand-in for darwin), served as GitHub lays a release out, installed by `curl .../latest/download/install.sh \| sh` and by the tree's installer with `--version 9.9.9`, its `checksums.txt` passing `sha256sum -c`; ⬜ `install.ps1` (the `windows` CI job); ⬜ a published release, by either installer or by Homebrew | ⬜ a release installed by `install.ps1` runs | ⬜ a release installed by `install.sh` and by Homebrew runs a vz VM without re-signing | n/a | ✅ by hand in a discobox (2026-11-14): the `linux/amd64` binary that `install.sh` installed from that stand-in `v9.9.9` ran a `debian:trixie` VM as its own agent, and `exec` reached it | n/a | n/a |
 | a libkrun runtime that verifies itself in its build (its launcher run through its own loader in an empty filesystem), pulled by digest and run before it is cached, a broken one refused, and one for another launch configuration refused naming both (`go tool task build:krun-runtime`; `pkg/machine/libkrun` TestPullRuntime, TestCheckRuntime) | n/a | n/a | n/a | n/a | n/a | n/a | ✅ `linux/amd64` built and verified by hand (2026-11-03); ✅ the pull and refusals by unit; ⬜ a published `krun/v*` release |
 | a libkrun VM powers off through its agent, dies with its shim, and on passt takes a DHCP lease for `eth0`, and DNS from a host resolver off its loopback (ADR 26-11-03-530 Consequences; since discobox ADR 26-11-11-963 §11, none from one on it) | n/a | n/a | n/a | n/a | n/a | n/a | ✅ by hand (2026-11-03): `stop` in 0.4 s, the kernel's power-off a reset libkrun exits on; the launcher gone 0.2 s after the shim's SIGKILL; 10.0.2.15/24, its route, and DNS 10.0.2.3 in a network namespace with a default route (the discobox host has none, so passt offers no lease there); again on passt's new arguments by hand (2026-11-12): 10.77.0.2/24 and its route in such a namespace, DNS 10.77.0.1 from a host resolver at 10.77.0.1, and none from one at 127.0.0.53 |
 | a libkrun VM on passt reaches nothing on the host's loopback and is forwarded no host port (discobox ADR 26-11-11-963 §11; `pkg/machine/libkrun` TestPasstReachesNoHostLoopback) | n/a | n/a | n/a | n/a | n/a | n/a | ✅ `TestPasstReachesNoHostLoopback` on Linux amd64 with KVM, in a network namespace with a default route, in a discobox (2026-11-12): its gateway refuses a port the host serves on 127.0.0.1, and the host's 127.0.0.1 refuses a port the guest serves; the same test fails on passt's old arguments (the guest read the host's loopback service through its gateway) and on `--tcp-ports all`; by hand, a host resolver on loopback gives the guest no DNS server, and one off it is the guest's; ⬜ a published `krun/v*` runtime, and `DefaultRuntime` pinned by digest |

@@ -44,6 +44,9 @@ brief is [docs/drivers/hcs.md](docs/drivers/hcs.md),
   hypervisor makes of one, and `machinetest` the conformance suite.
 - `pkg/guest`: the guest agent.
 - `internal/cli`: the command line. `internal/e2e`: the CLI lifecycle test.
+- `internal/release`: what a release publishes beside its binaries (checksums,
+  the stamped `install.sh` and `install.ps1`, the Homebrew formula), and
+  `internal/cmd/disco-vm-release`, the repo-only tool that publishes it.
 - `scripts/codesign-exec`: the `go test -exec` wrapper vz tests need.
 - `docs`: driver briefs (`docs/drivers`) and ADRs (`docs/adr`).
 - `DESIGN.md` / `REVIEW.md`: package-local design and review notes.
@@ -79,6 +82,7 @@ go tool task test:vz    # vz conformance on a Mac (DISCO_VM_VZ_BASE)
 go tool task test:libkrun  # libkrun conformance and e2e on Linux amd64 with KVM
 go tool task test:boxd     # boxd conformance and e2e against boxd itself (BOXD_API_KEY)
 go tool task test:e2e:vz
+RELEASE_TAG=v0.0.0-alpha.0 go tool task release:build  # this platform's release binaries
 ```
 
 At the end of a code-changing task, run `go tool task ci`. Add Taskfile

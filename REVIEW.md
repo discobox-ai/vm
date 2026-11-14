@@ -108,3 +108,9 @@
   it is given; a behaviour that needs a parameter `Cmdline` does not pass
   (`nmi_watchdog=panic`) is not one disco-vm's guests have. The first sid
   kernel row claimed a lockup reset that only an added parameter gave.
+- **"The newest release" is the highest version, not the last published.**
+  GitHub makes whichever full release is published last its `latest` unless
+  told otherwise, and both installers and the Homebrew tap serve whatever is
+  newest. Anything that moves a channel (`make_latest`, the tap's formula)
+  first checks that no published full release has a higher version, or a fix
+  tagged on an older line downgrades every user. (ADR 26-11-13-679.)

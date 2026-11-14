@@ -190,6 +190,78 @@ tasks:
       - printenv GITHUB_TOKEN | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - scripts/release-agent.sh "{{.BEFORE}}"
 
+  # disco-vm's release (ADR 26-11-13-679): a vX.Y.Z tag is the binaries'
+  # version, the module's, and the agent index's. Each platform builds what
+  # only it can: darwin on a Mac, because vz is cgo and codesign is native,
+  # and the static linux and windows binaries on Linux. release:publish then
+  # uploads build/release, whichever machines filled it.
+  release:build:
+    desc: Build this platform's release binaries of RELEASE_TAG into build/release (darwin/arm64 signed on a Mac; linux/amd64, linux/arm64, and windows/amd64 static on Linux)
+    requires:
+      vars: [RELEASE_TAG]
+    cmds:
+      - go run ./internal/cmd/disco-vm-release tag -tag {{.RELEASE_TAG}}
+      - mkdir -p build/release
+      - task: release:build:linux
+      - task: release:build:darwin
+
+  release:build:linux:
+    internal: true
+    platforms: [linux]
+    cmds:
+      - task: release:binary
+        vars: { TARGET_OS: linux, TARGET_ARCH: amd64 }
+      - task: release:binary
+        vars: { TARGET_OS: linux, TARGET_ARCH: arm64 }
+      - task: release:binary
+        vars: { TARGET_OS: windows, TARGET_ARCH: amd64 }
+      - test "$(build/release/disco-vm-linux-{{ARCH}} --version)" = "disco-vm version {{.RELEASE_TAG}}"
+
+  # Signed as build signs it, and checked to carry the Virtualization
+  # entitlement before anything uploads it: neither channel quarantines what
+  # it downloads, so this signature is what runs a vz VM.
+  release:build:darwin:
+    internal: true
+    platforms: [darwin]
+    vars:
+      OUT: build/release/disco-vm-darwin-arm64
+    cmds:
+      - task: release:binary
+        vars: { TARGET_OS: darwin, TARGET_ARCH: arm64 }
+      - codesign --force --sign - --entitlements {{.ENTITLEMENTS}} {{.OUT}}
+      - codesign --verify --strict {{.OUT}}
+      - codesign -d --entitlements - --xml {{.OUT}} 2>&1 | grep -q com.apple.security.virtualization
+      - test "$({{.OUT}} --version)" = "disco-vm version {{.RELEASE_TAG}}"
+
+  release:binary:
+    internal: true
+    requires:
+      vars: [RELEASE_TAG, TARGET_OS, TARGET_ARCH]
+    vars:
+      EXT: '{{if eq .TARGET_OS "windows"}}.exe{{end}}'
+    env:
+      CGO_ENABLED: '{{if eq .TARGET_OS "darwin"}}1{{else}}0{{end}}'
+      GOOS: "{{.TARGET_OS}}"
+      GOARCH: "{{.TARGET_ARCH}}"
+    cmds:
+      - go build -trimpath -ldflags '-X github.com/discobox-ai/vm/internal/version.Version={{.RELEASE_TAG}}' -o build/release/disco-vm-{{.TARGET_OS}}-{{.TARGET_ARCH}}{{.EXT}} {{.MAIN}}
+
+  # Checksums and installers are written here rather than in release:build,
+  # because they name every platform's binary, and only this job has them
+  # all. A full release fails before anything is published when it could not
+  # update the tap, so the tap never falls behind with nobody told.
+  release:publish:
+    desc: Publish build/release as the GitHub Release of RELEASE_TAG with its checksums and installers, then commit a full release's Homebrew formula to discobox-ai/homebrew-tap (CI, on a v* tag; needs GITHUB_TOKEN, and HOMEBREW_TAP_TOKEN for a full release)
+    requires:
+      vars: [RELEASE_TAG]
+    preconditions:
+      - sh: 'case "{{.RELEASE_TAG}}" in *-*) ;; *) [ -n "${HOMEBREW_TAP_TOKEN:-}" ] ;; esac'
+        msg: a full release updates the Homebrew tap; set HOMEBREW_TAP_TOKEN to a token that can write discobox-ai/homebrew-tap
+    cmds:
+      - go run ./internal/cmd/disco-vm-release assets -tag {{.RELEASE_TAG}} -dir build/release
+      - go run ./internal/cmd/disco-vm-release publish -tag {{.RELEASE_TAG}} -dir build/release
+      - go run ./internal/cmd/disco-vm-release tap -tag {{.RELEASE_TAG}}
+
   # A GitHub-hosted Linux runner has /dev/kvm, but only root may open it, and
   # restricts user namespaces.
   ci:kvm:
