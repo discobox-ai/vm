@@ -13,6 +13,9 @@ func Detach(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
+// NoWindow does nothing: a console window is a Windows host's alone.
+func NoWindow(*exec.Cmd) {}
+
 // Alive reports whether a process of the PID runs.
 func Alive(pid int) bool {
 	if pid <= 0 {

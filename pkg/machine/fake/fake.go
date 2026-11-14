@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
+	hostproc "github.com/discobox-ai/vm/internal/proc"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/local"
@@ -254,6 +255,9 @@ func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 		console = io.Discard
 	}
 	cmd.Stdout, cmd.Stderr = console, console
+	// The guest is a background process: no console window for it, which a
+	// shim's child would otherwise get on Windows.
+	hostproc.NoWindow(cmd)
 	hostPorts := filepath.Join(inst.Dir, hostPortsName)
 	_ = os.RemoveAll(hostPorts)
 	if err := os.MkdirAll(hostPorts, 0o755); err != nil {
