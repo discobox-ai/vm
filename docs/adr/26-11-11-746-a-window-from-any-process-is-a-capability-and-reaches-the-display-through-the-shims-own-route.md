@@ -1,9 +1,11 @@
 # 26-11-11-746 — A window from any process is a capability, and reaches the guest's display through the shim's own route
 
-- **Status**: Proposed (supersedes in part 26-11-02-274 §1, its one sign-in
+- **Status**: Accepted (supersedes in part 26-11-02-274 §1, its one sign-in
   for `TERMSRV/127.0.0.1`, and §3 and §5, the optional `machine.Viewer` and
   `local.MachineViewer`)
 - **Date**: 2026-11-11
+
+Accepted by the owner by merging #132, 2026-11-14.
 
 ## Context
 
