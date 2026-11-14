@@ -39,7 +39,8 @@ disco-vm on any Windows host running Defender.
    has mstsc ask all the same.
 3. **`exec --user` as such an account stays unsupported**, with an error
    that says the password is neither the name nor blank and disco-vm keeps
-   no other (`machine.ErrUnsupported` in the agent).
+   no other. The refusal comes after the exec stream has started, so it
+   reaches the caller as that text, not as `machine.ErrUnsupported`.
 4. **`--option password` stays.** Install writes no password file to the
    guest.
 
@@ -60,8 +61,9 @@ disco-vm on any Windows host running Defender.
 ## Consequences
 
 - A `gui` window on a `--option password` image asks for its password each
-  time it opens, unless the person has mstsc remember it; that sign-in is
-  then the person's own, and later windows skip its address.
+  time it opens. A sign-in the person has mstsc remember lasts as long as
+  the window: it is removed with the window's address, so no guest's
+  password stays on the host.
 - Running as such an account (`exec --user`) needs its password given by
   some later change; none is planned.
 - The check is a logon attempt: a wrong one counts toward the guest's

@@ -2,6 +2,8 @@ package guest
 
 import (
 	"crypto/rand"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -15,5 +17,16 @@ func TestPasswordIsNameOfNoSuchAccount(t *testing.T) {
 	}
 	if same {
 		t.Fatalf("%s: its password is its name", name)
+	}
+}
+
+// Running as an account neither its name nor a blank password logs on to,
+// as an image installed with --option password has it, is refused, and the
+// error says so.
+func TestRunAsAnAccountWithAPasswordOfItsOwnIsUnsupported(t *testing.T) {
+	name := "dvm-" + rand.Text()[:12]
+	_, _, err := runAs(exec.CommandContext(t.Context(), "cmd.exe", "/c", "exit"), name)
+	if err == nil || !strings.Contains(err.Error(), "unsupported") || !strings.Contains(err.Error(), "--option password") {
+		t.Fatalf("runAs(%s) = %v, want it refused as unsupported", name, err)
 	}
 }

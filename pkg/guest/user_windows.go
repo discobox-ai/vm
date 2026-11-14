@@ -9,8 +9,6 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
-
-	"github.com/discobox-ai/vm/pkg/machine"
 )
 
 var (
@@ -44,17 +42,9 @@ func runAs(cmd *exec.Cmd, name string) ([]string, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	var token windows.Token
-	for _, password := range []string{name, ""} {
-		if token, err = logOn(name, password); err == nil {
-			break
-		}
-	}
-	if errors.Is(err, windows.ERROR_LOGON_FAILURE) {
-		return nil, nil, fmt.Errorf("guest: run as %q: no such account, or its password is neither its name nor blank, as an image installed with --option password has it, and disco-vm keeps no other: %w", name, machine.ErrUnsupported)
-	}
+	token, err := logOnAs(name)
 	if err != nil {
-		return nil, nil, fmt.Errorf("guest: log on as %q (the account the image made has its name for a password, or, made before that, a blank one): %w", name, err)
+		return nil, nil, err
 	}
 	// UAC hands an administrator's interactive logon a filtered token; the
 	// full one is linked to it, and steps that install software need it.
@@ -106,6 +96,28 @@ func runAs(cmd *exec.Cmd, name string) ([]string, func(), error) {
 		token.Close()
 	}
 	return env, release, nil
+}
+
+// logOnAs logs the local account name on with its name for a password, then
+// a blank one. Windows checks the password before the account's state, so
+// the first failure that is not a wrong password (a disabled account, an
+// expired password) is the one returned; only when every password is wrong
+// is it the account's own, which disco-vm cannot run as.
+func logOnAs(name string) (windows.Token, error) {
+	var first error
+	for _, password := range []string{name, ""} {
+		token, err := logOn(name, password)
+		if err == nil {
+			return token, nil
+		}
+		if first == nil && !errors.Is(err, windows.ERROR_LOGON_FAILURE) {
+			first = err
+		}
+	}
+	if first != nil {
+		return 0, fmt.Errorf("guest: log on as %q (the account the image made has its name for a password, or, made before that, a blank one): %w", name, first)
+	}
+	return 0, fmt.Errorf("guest: running as %q is unsupported: there is no such account, or its password is neither its name nor blank, as an image installed with --option password has it, and disco-vm keeps no other", name)
 }
 
 // logOn logs the local account name on interactively with password.

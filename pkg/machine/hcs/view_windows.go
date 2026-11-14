@@ -323,9 +323,11 @@ type credential struct {
 // a second bind of the same address fails, so two windows opening at once
 // never share one, and a sign-in stored there already (the user's own) is
 // skipped, never written over. An empty password stores no sign-in, so mstsc
-// asks for one, but the address is claimed all the same, so a sign-in the
-// person has mstsc remember there is never another window's. It returns the
-// listener and what forgets the sign-in and mstsc's record of the host.
+// asks for one, but the address is claimed all the same: one the person has
+// mstsc remember there can only be this window's, and is forgotten with it,
+// so no guest's password stays on the host or holds an address once the
+// window is closed. It returns the listener and what forgets the sign-in and
+// mstsc's record of the host.
 func listenRDP(ctx context.Context, user, password string) (net.Listener, func(), error) {
 	for n := 1; n < 255; n++ {
 		host := fmt.Sprintf("127.77.0.%d", n)
@@ -335,7 +337,7 @@ func listenRDP(ctx context.Context, user, password string) (net.Listener, func()
 		}
 		forget, err := rememberRDPCredential(host, user, password)
 		if errors.Is(err, errNoCredential) {
-			forget, err = func() {}, nil
+			forget, err = func() { forgetRDPCredential(host) }, nil
 		}
 		if errors.Is(err, errCredentialTaken) {
 			_ = listener.Close()
@@ -404,7 +406,15 @@ func rememberRDPCredential(host, user, password string) (func(), error) {
 	if ok, _, e := credWrite.Call(uintptr(unsafe.Pointer(&c)), 0); ok == 0 {
 		return nil, fmt.Errorf("hcs: store the guest's sign-in for mstsc: %w", e)
 	}
-	return func() { _, _, _ = credDelete.Call(uintptr(unsafe.Pointer(target)), credTypeDomainPassword, 0) }, nil
+	return func() { forgetRDPCredential(host) }, nil
+}
+
+// forgetRDPCredential removes the Remote Desktop sign-in stored for host,
+// whether this window stored it or the person had mstsc remember it there.
+func forgetRDPCredential(host string) {
+	const credTypeDomainPassword = 2
+	target, _ := windows.UTF16PtrFromString("TERMSRV/" + host)
+	_, _, _ = credDelete.Call(uintptr(unsafe.Pointer(target)), credTypeDomainPassword, 0)
 }
 
 // hostScreen is the host's primary screen in physical pixels.
