@@ -60,4 +60,13 @@ func TestRDPWindowWithoutAPasswordStoresNoSignIn(t *testing.T) {
 	if _, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", l.Addr().String()); err == nil {
 		t.Fatalf("%s is not claimed", l.Addr())
 	}
+
+	// The person has mstsc remember the password: it goes with the window.
+	if _, err := rememberRDPCredential(host, `TEST\disco-vm-test`, "remembered"); err != nil {
+		t.Fatal(err)
+	}
+	forget()
+	if _, err := rememberRDPCredential(host, `TEST\disco-vm-test`, ""); !errors.Is(err, errNoCredential) {
+		t.Fatalf("a sign-in stays stored for %s once the window is gone: %v", host, err)
+	}
 }
