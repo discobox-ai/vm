@@ -126,6 +126,9 @@ type Driver struct {
 	// Root is where the driver keeps volumes and caches on the daemon's host
 	// (ADR 26-11-03-782): Config.Root, or DefaultRoot.
 	Root string
+	// remote is a daemon on another host (Daemon.Remote), whose published
+	// port is no ingress URL of this process's.
+	remote bool
 }
 
 var _ machine.Driver = (*Driver)(nil)
@@ -174,21 +177,26 @@ func newDriver(cfg machine.Config, conf Config, d Daemon) *Driver {
 	if pool == "" {
 		pool = machine.DefaultPool
 	}
-	return &Driver{api: newAPI(d), pool: pool, base: cfg.Base, Agent: conf.Agent, Root: conf.Root}
+	return &Driver{api: newAPI(d), pool: pool, base: cfg.Base, Agent: conf.Agent, Root: conf.Root, remote: d.Remote}
 }
 
 func (*Driver) Name() string { return "docker" }
 
-func (*Driver) Capabilities() machine.Capabilities {
+func (d *Driver) Capabilities() machine.Capabilities {
+	ingress := machine.URLAlways
+	if d.remote {
+		ingress = machine.URLNever
+	}
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.Linux},
 		Agent:   true,
 		Commit:  true,
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
 		Volumes: []machine.Volume{machine.VolumeData, machine.VolumeCache},
-		// The container's address on its network; its URL is a port the
-		// daemon publishes on the host's loopback, never public.
-		URLs: machine.URLCapabilities{Private: machine.URLAlways},
+		// Ingress is the port the daemon publishes on its host's loopback,
+		// where the daemon is this host's; pool the container's address on
+		// its network.
+		URLs: machine.URLCapabilities{Ingress: ingress, Pool: machine.URLAlways},
 	}
 }
 
@@ -802,10 +810,11 @@ var servicePortKey = fmt.Sprintf("%d/tcp", guest.ServicePort)
 
 // Service is guest.ServicePort on the container's network, published on the
 // host's loopback at a port the daemon picked when the container started, so
-// its URL lasts only as long as the container runs. The daemon is the
-// host's own: one reached over tcp:// publishes on its own loopback. Its
-// PrivateURL is the port at the container's address on its network, which
-// another container there dials, as it does every other port.
+// its ingress URL lasts only as long as the container runs. A daemon on
+// another host (Daemon.Remote) publishes on its own loopback, which this
+// process does not reach, so its instances have no ingress URL. Its PoolURL
+// is the port at the container's address on its network, which another
+// container there dials, as it does every other port.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	service := machine.Service{Listen: fmt.Sprintf("tcp:0.0.0.0:%d", guest.ServicePort)}
 	if image(inst) {
@@ -823,17 +832,20 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 	}
 	for _, b := range c.NetworkSettings.Ports[servicePortKey] {
 		if b.HostPort != "" {
-			service.URL = "http://" + net.JoinHostPort("127.0.0.1", b.HostPort)
+			service.IngressURL = "http://" + net.JoinHostPort("127.0.0.1", b.HostPort)
 			break
 		}
 	}
-	if service.URL == "" {
+	if service.IngressURL == "" {
 		return service, fmt.Errorf("docker: container %s publishes no service port; create the instance again", ref.Name)
 	}
+	if d.remote {
+		service.IngressURL = ""
+	}
 	// A container with no IPv4 address on its network (an IPv6-only one) has
-	// no private URL, and its URL still serves.
+	// no pool URL, and its ingress URL still serves.
 	if addr := containerAddress(c); addr != "" {
-		service.PrivateURL = "http://" + net.JoinHostPort(addr, strconv.FormatUint(uint64(guest.ServicePort), 10))
+		service.PoolURL = "http://" + net.JoinHostPort(addr, strconv.FormatUint(uint64(guest.ServicePort), 10))
 	}
 	return service, nil
 }

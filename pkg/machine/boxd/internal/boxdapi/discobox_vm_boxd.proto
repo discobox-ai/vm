@@ -51,7 +51,7 @@ service BoxdApi {
   rpc SetProxyPort(SetProxyPortRequest)     returns (SetProxyPortResponse);
   // Removes a proxy and its domain (docs.boxd.sh/guides/proxies, "Remove a
   // proxy"). The docs show it on a subdomain proxy; that it takes a
-  // machine's default one too is what TestNoPublicURL checks on boxd.
+  // machine's default one too is what TestNoIngressURL checks on boxd.
   rpc DeleteProxy(DeleteProxyRequest)       returns (DeleteProxyResponse);
   // Bot protection challenges an HTTPS request that would wake a sleeping
   // machine on <machine>.<zone>. On by default.

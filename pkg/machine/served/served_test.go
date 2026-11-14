@@ -467,37 +467,37 @@ func TestURLRequests(t *testing.T) {
 	if got, want := c.Capabilities().URLs, driver.Capabilities().URLs; got != want {
 		t.Fatalf("the client reports URL reach %+v, want the driver's %+v", got, want)
 	}
-	if _, err := c.Create(ctx, machine.InstanceSpec{Name: "kept", URLs: machine.URLRequests{Private: machine.URLRequest{Mode: machine.URLOff, Strict: true}}}); !errors.Is(err, machine.ErrUnsupported) {
-		t.Fatalf("a strict private URL off of a driver that always gives one: %v, want ErrUnsupported", err)
+	if _, err := c.Create(ctx, machine.InstanceSpec{Name: "kept", URLs: machine.URLRequests{Pool: machine.URLRequest{Mode: machine.URLOff, Strict: true}}}); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("a strict pool URL off of a driver that always gives one: %v, want ErrUnsupported", err)
 	}
-	// The fake never gives a public URL, so asking it off is met, and not
+	// The fake always gives an ingress URL, so asking it on is met, and not
 	// sent, though FieldURLs is not listed.
-	inst, err := c.Create(ctx, machine.InstanceSpec{Name: "private", URLs: machine.URLRequests{Public: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
+	inst, err := c.Create(ctx, machine.InstanceSpec{Name: "ingress", URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOn, Strict: true}}})
 	if err != nil {
-		t.Fatalf("a strict public URL off of a driver that never gives one: %v", err)
+		t.Fatalf("a strict ingress URL on of a driver that always gives one: %v", err)
 	}
 	t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
-	if status := raw(t, dial, http.MethodPost, "/v1/vms", "v1", []byte(`{"name":"refused","urls":{"public":{"mode":"off"}}}`)); status != http.StatusForbidden {
+	if status := raw(t, dial, http.MethodPost, "/v1/vms", "v1", []byte(`{"name":"refused","urls":{"ingress":{"mode":"off"}}}`)); status != http.StatusForbidden {
 		t.Fatalf("a create carrying URL requests with FieldURLs not listed: %d, want refused", status)
 	}
 }
 
-// optionalPublic is a driver whose public URL is given or withheld as asked,
-// as boxd's is: it records the URL requests each create reaches it with.
-type optionalPublic struct {
+// optionalIngress is a driver whose ingress URL is given or withheld as
+// asked, as boxd's is: it records the URL requests each create reaches it with.
+type optionalIngress struct {
 	machine.Driver
 	asked []machine.URLRequests
 }
 
-func (d *optionalPublic) Capabilities() machine.Capabilities {
+func (d *optionalIngress) Capabilities() machine.Capabilities {
 	caps := d.Driver.Capabilities()
-	caps.URLs.Public = machine.URLOptional
+	caps.URLs.Ingress = machine.URLOptional
 	return caps
 }
 
-func (d *optionalPublic) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
+func (d *optionalIngress) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	d.asked = append(d.asked, spec.URLs)
-	spec.URLs.Public = machine.URLRequest{}
+	spec.URLs.Ingress = machine.URLRequest{}
 	return d.Driver.Create(ctx, spec)
 }
 
@@ -508,11 +508,11 @@ func (d *optionalPublic) Create(ctx context.Context, spec machine.InstanceSpec) 
 func TestOptionalURLRequests(t *testing.T) {
 	ctx := t.Context()
 	bin := agent(t)
-	off := machine.URLRequests{Public: machine.URLRequest{Mode: machine.URLOff, Strict: true}}
-	on := machine.URLRequests{Public: machine.URLRequest{Mode: machine.URLOn}}
+	off := machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}
+	on := machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOn}}
 	ops := []served.Op{served.OpCapabilities, served.OpCreate, served.OpGet, served.OpRemove}
 
-	unlisted := &optionalPublic{Driver: fakeDriver(t, bin, t.TempDir(), "p")}
+	unlisted := &optionalIngress{Driver: fakeDriver(t, bin, t.TempDir(), "p")}
 	c := client(t, serve(t, unlisted, served.Options{Version: "v1", Allow: ops}), "v1")
 	inst, err := c.Create(ctx, machine.InstanceSpec{Name: "lax", URLs: on})
 	if err != nil {
@@ -526,7 +526,7 @@ func TestOptionalURLRequests(t *testing.T) {
 		t.Fatalf("FieldURLs unlisted, the driver was asked %+v, want one create with the default", unlisted.asked)
 	}
 
-	listed := &optionalPublic{Driver: fakeDriver(t, bin, t.TempDir(), "p")}
+	listed := &optionalIngress{Driver: fakeDriver(t, bin, t.TempDir(), "p")}
 	c = client(t, serve(t, listed, served.Options{Version: "v1", Allow: ops, Fields: []served.Field{served.FieldURLs}}), "v1")
 	if inst, err = c.Create(ctx, machine.InstanceSpec{Name: "asked", URLs: off}); err != nil {
 		t.Fatalf("a strict request, FieldURLs listed: %v", err)
@@ -536,14 +536,14 @@ func TestOptionalURLRequests(t *testing.T) {
 		t.Fatalf("FieldURLs listed, the driver was asked %+v, want %+v", listed.asked, off)
 	}
 
-	forced := &optionalPublic{Driver: fakeDriver(t, bin, t.TempDir(), "p")}
+	forced := &optionalIngress{Driver: fakeDriver(t, bin, t.TempDir(), "p")}
 	c = client(t, serve(t, forced, served.Options{Version: "v1", Allow: ops, Fields: []served.Field{served.FieldURLs},
-		Create: func(_ context.Context, spec *machine.InstanceSpec) error { spec.URLs.Public = off.Public; return nil }}), "v1")
+		Create: func(_ context.Context, spec *machine.InstanceSpec) error { spec.URLs.Ingress = off.Ingress; return nil }}), "v1")
 	if inst, err = c.Create(ctx, machine.InstanceSpec{Name: "forced", URLs: on}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = forced.Destroy(context.Background(), inst) })
 	if len(forced.asked) != 1 || forced.asked[0] != off {
-		t.Fatalf("the hook forced the public URL off, and the driver was asked %+v", forced.asked)
+		t.Fatalf("the hook forced the ingress URL off, and the driver was asked %+v", forced.asked)
 	}
 }

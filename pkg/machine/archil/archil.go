@@ -81,8 +81,8 @@ func (*Driver) Capabilities() machine.Capabilities {
 		// A committed VM is its stopped sandbox, and a copy a fork of it.
 		Commit: true,
 		// Archil reaches a sandbox only at its exposed port's hostname,
-		// public, which is its private URL too.
-		URLs: machine.URLCapabilities{Private: machine.URLAlways, Public: machine.URLAlways},
+		// its ingress URL, which is its pool URL too.
+		URLs: machine.URLCapabilities{Ingress: machine.URLAlways, Pool: machine.URLAlways},
 	}
 }
 
@@ -762,8 +762,9 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 }
 
 // Service is guest.ServicePort, exposed at Create, at the hostname Archil
-// gives it, which lasts across stop and start. Archil gives sandboxes no path
-// to each other, and the URL reaches them, so it is the private URL too.
+// gives it, which lasts across stop and start: its ingress URL. Archil gives
+// sandboxes no path to each other, and that URL reaches them, so it is the
+// pool URL too.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	service := machine.Service{Listen: fmt.Sprintf("tcp:0.0.0.0:%d", guest.ServicePort)}
 	sb, err := d.sandboxOf(ctx, inst)
@@ -774,8 +775,8 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 	if err != nil {
 		return service, fmt.Errorf("archil: %s's service: %w", inst.Name, err)
 	}
-	service.URL = "https://" + host
-	service.PrivateURL = service.URL
+	service.IngressURL = "https://" + host
+	service.PoolURL = service.IngressURL
 	return service, nil
 }
 

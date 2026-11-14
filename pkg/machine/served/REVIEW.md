@@ -35,8 +35,8 @@
 - **What must not reach the guest is forced in `Options.Create`, never left
   to the allow-list.** A listed field lets a client ask, in any direction,
   and an unlisted one leaves the driver's default: neither withholds what the
-  default gives. A public URL is the case: unlisted, a served boxd's default
-  pins one, so an embedder that serves a driver which can give one sets
-  `spec.URLs.Public` off, strictly, in its hook. Why: a public URL is an
-  inbound path to the guest that its egress fence never sees (ADR
+  default gives. An ingress URL is the case: unlisted, a served boxd's default
+  pins one on the internet, so an embedder that serves a driver which can
+  give one sets `spec.URLs.Ingress` off, strictly, in its hook. Why: such a
+  URL is an inbound path to the guest that its egress fence never sees (ADR
   26-11-12-604).

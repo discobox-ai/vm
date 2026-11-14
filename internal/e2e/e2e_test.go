@@ -661,7 +661,7 @@ func TestDriverConfig(t *testing.T) {
 		fake("--driver-config", "@"+config, "info"),
 	} {
 		out := e.ok(args...)
-		mustContain(t, out, `"commit": false`, `config:   {"noCommit":true}`)
+		mustContain(t, out, `"commit": false`, `config:   {"noCommit":true,"noLoopback":false}`)
 		if strings.Contains(out, "warning") {
 			t.Fatalf("disco-vm %s warned of nothing set:\n%s", strings.Join(args, " "), out)
 		}
@@ -670,7 +670,7 @@ func TestDriverConfig(t *testing.T) {
 	withEnv.extra = append(slices.Clone(unset), "DISCO_VM_FAKE_NO_COMMIT=1")
 	mustContain(t, withEnv.ok(fake("info")...), `"commit": false`)
 	mustContain(t, withEnv.ok(fake("--fake-no-commit=false", "info")...), `"commit": true`)
-	mustContain(t, e.ok(fake("info")...), `"commit": true`, `config:   {"noCommit":false}`)
+	mustContain(t, e.ok(fake("info")...), `"commit": true`, `config:   {"noCommit":false,"noLoopback":false}`)
 	// A whole configuration reads no variable, and names one it ignores
 	// that says otherwise, never with its value.
 	mustContain(t, withEnv.ok(fake("--driver-config", "{}", "info")...), `"commit": true`,
@@ -697,7 +697,7 @@ func TestDriverConfig(t *testing.T) {
 		args []string
 		want string
 	}{
-		{fake("--driver-config", `{"noComit":true}`, "ls"), `unknown field "noComit" (the driver takes agent, noCommit, maxRunning)`},
+		{fake("--driver-config", `{"noComit":true}`, "ls"), `unknown field "noComit" (the driver takes agent, noCommit, maxRunning, noLoopback)`},
 		{fake("--driver-config", `{"noCommit":"yes"}`, "ls"), "noCommit: not a bool"},
 		{fake("--fake-agent", "disco-vm", "ls"), "agent: not an absolute path"},
 		{fake("--driver-config", `not json`, "ls"), "not JSON"},
@@ -784,34 +784,38 @@ func driverSelected(out, name string) bool {
 	return false
 }
 
-// Every instance has one service. Its URL is served while it runs, or, on a
-// driver whose URL outlives a stop (boxd), is the same whether it runs or
+// Every instance has one service. Its URLs are served while it runs, or, on
+// a driver whose URL outlives a stop (boxd), are the same whether it runs or
 // not; and the guest finds where to listen in its service file. On the fake
 // driver the guest is a host process, so the service is this test's server.
+// The ingress URL is where this caller reaches it, and the pool URL where
+// its peers do (ADR 26-11-14-610).
 func TestURL(t *testing.T) {
 	e := newEnv(t)
 	e.ok(append([]string{"create", "svc"}, e.base()...)...)
 	t.Cleanup(func() { e.run("rm", "-f", "svc") })
-	// stopped is what url and url --private answer while svc is stopped,
-	// on a driver whose URL outlives a stop.
-	stopped := map[bool]string{}
-	for _, private := range []bool{false, true} {
-		args := []string{"url", "svc"}
-		if private {
-			args = []string{"url", "--private", "svc"}
+	for _, args := range [][]string{{"url", "--scope", "public", "svc"}, {"url", "--private", "svc"}} {
+		if out, code := e.run(args...); code == 0 {
+			t.Fatalf("%s: exit 0, want refused\n%s", strings.Join(args, " "), out)
 		}
+	}
+	// stopped is what url --scope SCOPE answers while svc is stopped, on a
+	// driver whose URL outlives a stop.
+	stopped := map[machine.URLScope]string{}
+	for _, scope := range machine.URLScopes {
+		args := []string{"url", "--scope", string(scope), "svc"}
 		out, code := e.run(args...)
 		switch {
 		case tg.lastingURL && (code != 0 || !strings.HasPrefix(out, "http")):
 			t.Fatalf("%s of a stopped instance on %s: exit %d, want its URL\n%s", strings.Join(args, " "), tg.driver, code, out)
 		case tg.lastingURL:
-			stopped[private] = strings.TrimSpace(out)
+			stopped[scope] = strings.TrimSpace(out)
 		case code == 0 || !strings.Contains(out, "not running"):
 			t.Fatalf("%s of a stopped instance: exit %d\n%s", strings.Join(args, " "), code, out)
 		}
 	}
-	if tg.lastingURL && !strings.HasPrefix(stopped[false], "https://") {
-		t.Fatalf("url svc of a stopped instance on %s = %q, want https", tg.driver, stopped[false])
+	if tg.lastingURL && !strings.HasPrefix(stopped[machine.URLIngress], "https://") {
+		t.Fatalf("url svc of a stopped instance on %s = %q, want https", tg.driver, stopped[machine.URLIngress])
 	}
 	e.ok("start", "svc")
 	// A guest port is reached through the instance's shim: the agent's,
@@ -827,33 +831,48 @@ func TestURL(t *testing.T) {
 	} else if code != 0 || !strings.Contains(answer, " 200 ") {
 		t.Fatalf("dial svc %d: exit %d\n%s", guest.AgentPort, code, answer)
 	}
+	// The ingress URL: boxd's lasting HTTPS URL; a loopback port fake's
+	// shim serves, or the Docker daemon publishes; or, on vz, libkrun, and
+	// hcs, an owner-only socket the shim serves.
 	url := strings.TrimSpace(e.ok("url", "svc"))
-	switch {
-	case tg.lastingURL && url != stopped[false]:
-		t.Fatalf("url svc = %q running, and %q stopped", url, stopped[false])
-	case !tg.lastingURL && !strings.HasPrefix(url, "http://127.0.0.1:"):
-		t.Fatalf("url svc = %q", url)
-	}
-	// A fake guest's peers share its loopback, a container's dial its
-	// address on its network, a boxd machine on no network is reached by
-	// its peers at its URL, and a vz or hcs guest has no peers.
-	private, code := e.run("url", "--private", "svc")
-	private = strings.TrimSpace(private)
-	if tg.lastingURL && private != stopped[true] {
-		t.Fatalf("url --private svc = %q running, and %q stopped", private, stopped[true])
+	if scoped := strings.TrimSpace(e.ok("url", "--scope", "ingress", "svc")); scoped != url {
+		t.Fatalf("url --scope ingress svc = %q, and url svc %q", scoped, url)
 	}
 	switch tg.driver {
-	case "fake", "boxd":
-		if code != 0 || private != url {
-			t.Fatalf("url --private svc = %q, exit %d; want the URL, %s", private, code, url)
+	case "boxd":
+		if url != stopped[machine.URLIngress] {
+			t.Fatalf("url svc = %q running, and %q stopped", url, stopped[machine.URLIngress])
 		}
-	case "docker":
-		if code != 0 || !strings.HasPrefix(private, "http://") || !strings.HasSuffix(private, ":7302") || private == url {
-			t.Fatalf("url --private svc = %q, exit %d; want the container's address at 7302", private, code)
+	case "fake", "docker":
+		if !strings.HasPrefix(url, "http://127.0.0.1:") {
+			t.Fatalf("url svc = %q", url)
+		}
+	case "hcs":
+		if !strings.HasPrefix(url, "npipe:////./pipe/") {
+			t.Fatalf("url svc = %q, want a named pipe", url)
 		}
 	default:
-		if code == 0 {
-			t.Fatalf("url --private svc on %s = %q, want none", tg.driver, private)
+		if !strings.HasPrefix(url, "unix:///") {
+			t.Fatalf("url svc = %q, want a Unix socket", url)
+		}
+	}
+	// A container's peers dial its address on its network; a boxd machine
+	// on no network is reached by its peers at its ingress URL, a fake
+	// guest's share its loopback, and a vz, libkrun, or hcs guest's reach it
+	// through the shims, at its socket.
+	pool, code := e.run("url", "--scope", "pool", "svc")
+	pool = strings.TrimSpace(pool)
+	if tg.lastingURL && pool != stopped[machine.URLPool] {
+		t.Fatalf("url --scope pool svc = %q running, and %q stopped", pool, stopped[machine.URLPool])
+	}
+	switch tg.driver {
+	case "docker":
+		if code != 0 || !strings.HasPrefix(pool, "http://") || !strings.HasSuffix(pool, ":7302") || pool == url {
+			t.Fatalf("url --scope pool svc = %q, exit %d; want the container's address at 7302", pool, code)
+		}
+	default:
+		if code != 0 || pool != url {
+			t.Fatalf("url --scope pool svc = %q, exit %d; want the ingress URL, %s", pool, code, url)
 		}
 	}
 

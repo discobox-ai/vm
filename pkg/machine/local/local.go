@@ -187,9 +187,11 @@ type Hypervisor interface {
 	// (machine.Service.Listen), and the guest port the shim dials it on.
 	Service(inst InstanceSpec) (listen string, port uint32, err error)
 	// SharesLoopback reports that the hypervisor's guests are processes on
-	// the host's own loopback (fake's), so an instance's peers reach its
-	// service at the shim's URL, which is then its PrivateURL. One whose
-	// guests reach neither each other nor the host's loopback (vz's, hcs's)
-	// reports false, and its instances have no PrivateURL.
+	// the host's own loopback (fake's), so the shim serves an instance's
+	// service on a loopback port, its ingress URL and its pool URL. One
+	// whose guests reach neither each other nor the host's loopback (vz's,
+	// libkrun's, hcs's) reports false, and the shim serves the service on
+	// an owner-only local socket instead (Driver.Capabilities). The driver
+	// reports the URLs, whatever the hypervisor's Capabilities say.
 	SharesLoopback() bool
 }

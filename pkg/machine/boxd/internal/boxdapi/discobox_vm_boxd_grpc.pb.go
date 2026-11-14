@@ -104,7 +104,7 @@ type BoxdApiClient interface {
 	SetProxyPort(ctx context.Context, in *SetProxyPortRequest, opts ...grpc.CallOption) (*SetProxyPortResponse, error)
 	// Removes a proxy and its domain (docs.boxd.sh/guides/proxies, "Remove a
 	// proxy"). The docs show it on a subdomain proxy; that it takes a
-	// machine's default one too is what TestNoPublicURL checks on boxd.
+	// machine's default one too is what TestNoIngressURL checks on boxd.
 	DeleteProxy(ctx context.Context, in *DeleteProxyRequest, opts ...grpc.CallOption) (*DeleteProxyResponse, error)
 	// Bot protection challenges an HTTPS request that would wake a sleeping
 	// machine on <machine>.<zone>. On by default.
@@ -494,7 +494,7 @@ type BoxdApiServer interface {
 	SetProxyPort(context.Context, *SetProxyPortRequest) (*SetProxyPortResponse, error)
 	// Removes a proxy and its domain (docs.boxd.sh/guides/proxies, "Remove a
 	// proxy"). The docs show it on a subdomain proxy; that it takes a
-	// machine's default one too is what TestNoPublicURL checks on boxd.
+	// machine's default one too is what TestNoIngressURL checks on boxd.
 	DeleteProxy(context.Context, *DeleteProxyRequest) (*DeleteProxyResponse, error)
 	// Bot protection challenges an HTTPS request that would wake a sleeping
 	// machine on <machine>.<zone>. On by default.

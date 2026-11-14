@@ -88,8 +88,15 @@ type shimState struct {
 	Addr  string `json:"addr,omitempty"`
 	Token string `json:"token"`
 	// Service is the loopback address where the shim serves the instance's
-	// service, with no token: the service authenticates its callers.
+	// service, with no token (the service authenticates its callers), for
+	// a hypervisor whose guests share the host's loopback (fake). A shim
+	// from before ServiceURL served one for every hypervisor.
 	Service string `json:"service,omitempty"`
+	// ServiceURL is where the shim serves the instance's service, as
+	// machine.Service gives it: http:// at Service, or the owner-only local
+	// socket of a hypervisor whose guests do not share the host's loopback
+	// (unix:///PATH, npipe:////./pipe/NAME).
+	ServiceURL string `json:"serviceURL,omitempty"`
 	// Protocol is the shim's shimProtocol, and GuestProtocol the
 	// guest.Protocol its relay speaks. A shim from before they were
 	// written is protocol 1, and its relay speaks guest protocol 1.
@@ -123,18 +130,19 @@ func (s shimState) dial(ctx context.Context) (net.Conn, error) {
 	return d.DialContext(ctx, "tcp", s.Addr)
 }
 
-// listenControl listens on the Unix socket a shim serves its control API on,
-// readable and writable by the owner alone. The returned func removes what
-// it made.
-func listenControl(ctx context.Context, dir string) (net.Listener, string, func(), error) {
-	path := filepath.Join(dir, shimSocketName)
+// listenSocket listens on a Unix socket named name in dir (the control API's,
+// shim.sock, or the service's), or in a private
+// temporary directory where that path is too long for a socket, readable
+// and writable by the owner alone. The returned func removes what it made.
+func listenSocket(ctx context.Context, dir, name string) (net.Listener, string, func(), error) {
+	path := filepath.Join(dir, name)
 	cleanup := func() { _ = os.Remove(path) }
 	if len(path) > maxSocketPath {
 		tmp, err := os.MkdirTemp("", "dvm-shim-")
 		if err != nil {
 			return nil, "", nil, err
 		}
-		path = filepath.Join(tmp, shimSocketName)
+		path = filepath.Join(tmp, name)
 		cleanup = func() { _ = os.RemoveAll(tmp) }
 	}
 	_ = os.Remove(path)
@@ -151,6 +159,28 @@ func listenControl(ctx context.Context, dir string) (net.Listener, string, func(
 		return nil, "", nil, err
 	}
 	return l, path, cleanup, nil
+}
+
+// listenService listens where the shim serves the instance's service, and
+// returns its URL (machine.Service): for a hypervisor whose guests share
+// the host's loopback (fake), a loopback port, its address returned too,
+// for shimState.Service; for any other (vz, libkrun, hcs), an owner-only
+// local socket spliced into the guest's vsock (ADR 26-11-14-610),
+// service.sock in the instance's directory, or a named pipe on Windows
+// (listenServiceSocket). The returned func removes what it made.
+func (d *Driver) listenService(ctx context.Context, id string) (l net.Listener, url, loopback string, cleanup func(), err error) {
+	if d.hv.SharesLoopback() {
+		l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, "", "", nil, err
+		}
+		return l, "http://" + l.Addr().String(), l.Addr().String(), func() { _ = l.Close() }, nil
+	}
+	l, url, cleanup, err = listenServiceSocket(ctx, d.instanceDir(id), id)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	return l, url, "", func() { _ = l.Close(); cleanup() }, nil
 }
 
 // runShim is the body of a shim: boot the instance, serve its control API,
@@ -204,14 +234,14 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 		return err
 	}
 	defer forwards()
-	serviceListener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	serviceListener, serviceURL, loopback, removeService, err := d.listenService(ctx, id)
 	if err != nil {
 		_ = m.Kill(context.Background())
 		return err
 	}
-	defer serviceListener.Close()
+	defer removeService()
 	go serveService(serviceListener, m, servicePort)
-	listener, socket, removeSocket, err := listenControl(ctx, d.instanceDir(id))
+	listener, socket, removeSocket, err := listenSocket(ctx, d.instanceDir(id), shimSocketName)
 	if err != nil {
 		_ = m.Kill(context.Background())
 		return err
@@ -294,7 +324,7 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 		})
 	}
 	statePath := filepath.Join(d.instanceDir(id), shimStateName)
-	state, closeControl, err := serveControl(listener, socket, mux, statePath, serviceListener.Addr().String())
+	state, closeControl, err := serveControl(listener, socket, mux, statePath, loopback, serviceURL)
 	if err != nil {
 		_ = m.Kill(context.Background())
 		return err
@@ -345,7 +375,7 @@ func shutdown(ctx context.Context, m machine.Machine, timeout time.Duration) err
 	return fmt.Errorf("forced off: %w", err)
 }
 
-// serveService splices every connection to the instance's loopback URL into
+// serveService splices every connection to the instance's service URL into
 // the service's guest port, until the listener is closed. A guest with nothing
 // listening yet closes the connection.
 func serveService(l net.Listener, m machine.Machine, port uint32) {
@@ -441,11 +471,12 @@ func (d *Driver) dialForward(ctx context.Context, f machine.Forward) (net.Conn, 
 
 // serveControl serves a shim's control API on listener, the Unix socket at
 // socket, behind a bearer token, and publishes it at statePath with the
-// address of the instance's service, if it serves one. The returned func
+// URL of the instance's service, and its loopback address if it serves one
+// there. The returned func
 // unpublishes and stops it.
-func serveControl(listener net.Listener, socket string, mux *http.ServeMux, statePath, service string) (shimState, func(), error) {
+func serveControl(listener net.Listener, socket string, mux *http.ServeMux, statePath, service, serviceURL string) (shimState, func(), error) {
 	state := shimState{
-		PID: os.Getpid(), Socket: socket, Token: fsutil.RandomHex(16), Service: service,
+		PID: os.Getpid(), Socket: socket, Token: fsutil.RandomHex(16), Service: service, ServiceURL: serviceURL,
 		Protocol: shimProtocol, GuestProtocol: guest.Protocol, Build: version.String(),
 	}
 	server := &http.Server{

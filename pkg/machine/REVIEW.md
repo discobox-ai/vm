@@ -98,10 +98,16 @@
   driver's Create, and documented as conditional.** `Capabilities.URLs` is
   one value a scope, which `URLRequests.Check` reads alone; where a driver can
   meet a strict request only with some networks or another URL's mode (boxd's
-  private URL is its public one on no networks), its Create refuses the rest,
+  pool URL is its ingress one on no networks), its Create refuses the rest,
   and the capability table and the driver's DESIGN.md say when. Why: the
   engine passes such a request, so a reach stated as unconditional would
   promise what the driver then refuses.
+- **A URL or name built from a host path is exercised on Windows.** A
+  Windows path starts with its drive and holds backslashes, so a
+  `url.URL{Path: p}` of it does not parse back (`SocketURL` once made
+  `unix://C:%5C…`); a test that builds one from `t.TempDir()` runs in the
+  `windows` CI job, which is where it fails. Why: a review found one that
+  would have failed there on every run.
 - **A test that checks a file's owner-only mode skips the check on
   Windows**, which reports no owner-only mode: 0666 for a writable file,
   0444 for a read-only one (`agent` TestPull,

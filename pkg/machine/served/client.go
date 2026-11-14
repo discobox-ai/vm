@@ -102,7 +102,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 			// The embedder lets no create ask, so the driver's default is
 			// what the instance gets, and a strict request of it is one
 			// the client cannot meet, as a narrowed capability is.
-			return machine.Instance{}, fmt.Errorf("served: the embedder lets no create ask for a %s URL: %w", strings.Join(asked, " or "), machine.ErrUnsupported)
+			return machine.Instance{}, fmt.Errorf("served: the embedder lets no create ask for a %s URL: %w", joinScopes(asked), machine.ErrUnsupported)
 		}
 		// Not strict: the driver's default, which the caller takes.
 	}
@@ -187,8 +187,10 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 	return upgraded, d.call(ctx, http.MethodPost, vmPath(inst.Name, "/upgrade"), req, &upgraded)
 }
 
-// Service is the served driver's. Its URLs are where the server's host
-// reaches the service; a client reaches it by Dial.
+// Service is the served driver's, unnarrowed (ADR 26-11-14-610): its URLs
+// are where the server's host and the instance's peers reach the service,
+// and a client of another host reaches it by Dial. An embedder that must
+// withhold an ingress URL forces it off in Options.Create.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	var service machine.Service
 	return service, d.call(ctx, http.MethodGet, vmPath(inst.Name, "/service"), nil, &service)
@@ -439,27 +441,26 @@ func (m *remoteMachine) Err() error {
 // asked is each scope whose request the server's driver acts on: a mode of
 // a URL it gives or withholds as asked. Any other is met already, or refused
 // by URLRequests.Check, and is not sent.
-func asked(urls machine.URLRequests, reach machine.URLCapabilities) []string {
-	var scopes []string
-	for _, c := range []struct {
-		name  string
-		req   machine.URLRequest
-		reach machine.URLReach
-	}{{"internal", urls.Internal, reach.Internal}, {"private", urls.Private, reach.Private}, {"public", urls.Public, reach.Public}} {
-		if c.req.Mode != machine.URLDefault && c.reach == machine.URLOptional {
-			scopes = append(scopes, c.name)
+func asked(urls machine.URLRequests, reach machine.URLCapabilities) []machine.URLScope {
+	var scopes []machine.URLScope
+	for _, scope := range machine.URLScopes {
+		if urls.Of(scope).Mode != machine.URLDefault && reach.Of(scope) == machine.URLOptional {
+			scopes = append(scopes, scope)
 		}
 	}
 	return scopes
 }
 
 // strict reports whether any of the scopes' requests is strict.
-func strict(urls machine.URLRequests, scopes []string) bool {
-	for _, scope := range scopes {
-		switch {
-		case scope == "internal" && urls.Internal.Strict, scope == "private" && urls.Private.Strict, scope == "public" && urls.Public.Strict:
-			return true
-		}
+func strict(urls machine.URLRequests, scopes []machine.URLScope) bool {
+	return slices.ContainsFunc(scopes, func(scope machine.URLScope) bool { return urls.Of(scope).Strict })
+}
+
+// joinScopes names scopes for an error, "ingress or pool".
+func joinScopes(scopes []machine.URLScope) string {
+	names := make([]string, len(scopes))
+	for i, scope := range scopes {
+		names[i] = string(scope)
 	}
-	return false
+	return strings.Join(names, " or ")
 }

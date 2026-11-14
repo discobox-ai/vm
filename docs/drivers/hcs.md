@@ -196,8 +196,8 @@ unusably slow).
 List `00001C84-FACB-11E6-BD58-64006A7986D3` (port 7300, via
 `winio.VsockServiceID`) in the HvSocket `ServiceTable`, or the agent's bind is
 refused. List 7302 (`guest.ServicePort`, `00001C86-…`) too: it is every
-instance's service, which the shim serves on the host's loopback by dialing
-it over hvsocket. List 7301 (`guest.DisplayPort`, `00001C85-…`), the
+instance's service, which the shim serves on an owner-only named pipe by
+dialing it over hvsocket. List 7301 (`guest.DisplayPort`, `00001C85-…`), the
 agent's display stream.
 
 `Machine.Dial(port)` is `winio.Dial` of an `HvsockAddr{VMID: <RuntimeId>,

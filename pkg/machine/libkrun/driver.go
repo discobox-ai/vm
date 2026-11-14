@@ -127,7 +127,7 @@ func (*Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {
 }
 
 // Service is guest.ServicePort over vsock; the instance's shim serves it on
-// the host's loopback.
+// an owner-only Unix socket.
 func (*Hypervisor) Service(local.InstanceSpec) (string, uint32, error) {
 	return fmt.Sprintf("vsock:%d", guest.ServicePort), guest.ServicePort, nil
 }

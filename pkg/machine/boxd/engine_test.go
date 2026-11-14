@@ -205,7 +205,7 @@ func TestEngineCommitsAVM(t *testing.T) {
 	if got := e.State(ctx, inst); got != engine.Stopped {
 		t.Fatalf("state before the first start = %s", got)
 	}
-	if _, err := e.URL(ctx, inst); err != nil {
+	if _, err := e.URL(ctx, inst, machine.URLIngress); err != nil {
 		t.Fatalf("the URL of a stopped VM: %v", err)
 	}
 	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
@@ -234,7 +234,7 @@ func TestEngineCommitsAVM(t *testing.T) {
 		t.Fatalf("start of a committed VM: %v, want ErrCommitted", err)
 	}
 
-	from, err := e.Create(ctx, engine.CreateOptions{Name: "again", From: "fresh", CPUs: 4, Memory: 16 << 30, URLs: machine.URLRequests{Public: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
+	from, err := e.Create(ctx, engine.CreateOptions{Name: "again", From: "fresh", CPUs: 4, Memory: 16 << 30, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
 	if err != nil {
 		t.Fatalf("create from the committed VM: %v", err)
 	}
@@ -242,9 +242,9 @@ func TestEngineCommitsAVM(t *testing.T) {
 	if v := machineOf("again"); v.vcpu != 4 || v.memory != 16<<30 {
 		t.Fatalf("the copy's machine = %+v; want it made at 4 CPUs and 16 GiB", v)
 	}
-	// Its public URL asked off, it has no URL, and the engine says why.
-	if _, err := e.URL(ctx, from); !errors.Is(err, machine.ErrUnsupported) {
-		t.Fatalf("the URL of a VM whose public URL is asked off: %v, want ErrUnsupported", err)
+	// Its ingress URL asked off, it has no URL, and the engine says why.
+	if _, err := e.URL(ctx, from, machine.URLIngress); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("the URL of a VM whose ingress URL is asked off: %v, want ErrUnsupported", err)
 	}
 	if err := e.Start(ctx, from, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
 		t.Fatalf("start the copy: %v", err)

@@ -121,6 +121,8 @@ func TestConformanceFakeAPI(t *testing.T) {
 				Memory:     16 << 30,
 				Timeout:    30 * time.Second,
 				ScratchDir: "/scratch",
+				// The stand-in's proxies are at names under boxd.test.
+				UnreachedIngress: true,
 				Keyed: func(keys machine.KeySource) machine.Driver {
 					return fakeIn(t, home, region, machine.DefaultPool, keys)
 				},
@@ -452,7 +454,7 @@ func TestCreateUndone(t *testing.T) {
 		t.Fatalf("the next create: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
-	if svc, err := d.Service(ctx, inst); err != nil || svc.URL == "" {
+	if svc, err := d.Service(ctx, inst); err != nil || svc.IngressURL == "" {
 		t.Fatalf("the next create's service = %+v, %v", svc, err)
 	}
 	if _, err := d.Create(ctx, spec); !errors.Is(err, machine.ErrExists) {

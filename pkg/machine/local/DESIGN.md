@@ -16,8 +16,9 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
 
 - `instances/<id>/machine` (the hypervisor's) and `instance.json` (pool,
   name, the name and ID of the VM it was created from, guest OS, size,
-  forwards, fence, volumes), and while a shim holds it, `shim.json`,
-  `shim.sock`, and `shim.log`, and `shim.refused` once a shim was refused
+  forwards, fence, volumes, and `noIngress` for a VM whose ingress URL was
+  asked off), and while a shim holds it, `shim.json`, `shim.sock`,
+  `service.sock` (vz and libkrun), and `shim.log`, and `shim.refused` once a shim was refused
   for capacity. A committed VM (ADR 26-11-03-606) is the
   same, left where it is with its volumes gone: nothing marks it committed,
   which is the caller's to record. A record from before that ADR, of an
@@ -208,9 +209,26 @@ instead, which `shim.json` names. The API is:
   spliced into the machine's `Dial(guest.DisplayPort)`: the guest's display
   for a window another process opens (`View`). It takes no port.
 
-It also serves the instance's URL on a loopback TCP port spliced into the
-machine's `Dial(service port)`, since ADR 0005 makes that an HTTP URL any
-process reaches; and the instance's forwards, each guest port accepted
+It also serves the instance's service, spliced into the machine's
+`Dial(service port)` connection by connection (ADR 26-11-14-610), and
+names where in `shim.json` (`serviceURL`):
+
+- **Where the hypervisor's guests share the host's loopback** (fake), on a
+  loopback TCP port (`service`, too), the instance's ingress and pool URL,
+  `http://127.0.0.1:N`, which any local process reaches, as its peers do.
+- **Elsewhere** (vz, libkrun, hcs, and fake with `noLoopback`), on a socket
+  only the owner opens: `service.sock` beside `shim.sock`, owner-only, or one
+  in a private temporary directory when that path is too long, as
+  `unix:///PATH`; on Windows, a named pipe whose security descriptor admits
+  the shim's user alone, `\\.\pipe\disco-vm-<id>-<random>`, as
+  `npipe:////./pipe/NAME`, its random part so no other user can take the
+  name first. It is the pool URL always and the ingress URL unless the
+  record says `noIngress`: the local driver reports ingress optional and pool
+  always (`Driver.Capabilities`, whatever the hypervisor's say). No loopback
+  port is served, so the service is the owner's, as `shim.sock` is (discobox
+  ADR 26-11-11-963 §4).
+
+It serves the instance's forwards too, each guest port accepted
 (`machine.HostListener`) and spliced into its Unix socket, or into its peer's
 guest port through the peer's shim's `/dial`, the peer found by name at each
 connection in the forward's pool (`Forward.Pool`), its own by default.
@@ -244,5 +262,7 @@ port unmapped before 2026-11-03), so it is never taken for this build's.
   forwarding shim logs why. A stop and a start replace the shim, and the
   instance boots again on its own disk.
 
-The instance's URL is a loopback TCP port, which lasts, so it is served
-through a shim of any protocol.
+The instance's service URL is part of what lasts, so it is served through a
+shim of any protocol: `serviceURL`, or, from a shim before it, `service`, a
+loopback port, which is fake's URL and which vz, libkrun, and hcs no longer
+give (`Service` is `ErrStale`, to stop and start it).

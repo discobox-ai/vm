@@ -65,10 +65,14 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
 - **The guest's operations are the agent's**, reached by a docker exec of
   `disco-vm pipe` for each connection, on the container's side of the
   namespace, which reaches the agent's root-only socket through the guest's
-  root directory. No other guest port is dialed: the service's URL is a port
-  the daemon publishes, and its private URL is the service port at the
-  container's IPv4 address on its network, where another container dials it,
-  and none for a container with no IPv4 address (ADR 26-10-29-129). There is no egress fence.
+  root directory. No other guest port is dialed: the service's ingress URL
+  is a port the daemon publishes on its host's loopback, and none for a
+  daemon reached over `tcp://` at a host that is not a loopback one, whose
+  loopback this process does not reach (`Daemon.Remote`; ingress then
+  `URLNever`),
+  and its pool URL is the service port at the container's IPv4 address on
+  its network, where another container dials it, and none for a container
+  with no IPv4 address (ADR 26-10-29-129, ADR 26-11-14-610). There is no egress fence.
 - **A volume is a directory on the daemon's host** (ADR 26-11-03-782 §6),
   under the driver's root (`Driver.Root`, the configuration's `root`, `$DISCO_VM_DOCKER_ROOT`, default
   `/var/lib/discobox`), laid out as discobox's own docker driver lays out
