@@ -314,7 +314,10 @@ type Config struct {
 	// which the shim's own are appended. Empty is this executable's `shim`
 	// subcommand. A program that embeds the engine points it at a
 	// subcommand of its own that calls local.ShimMain, so it ships no second
-	// binary.
+	// binary. The command is given its stdin and environment as they are:
+	// until the shim is up, its stdin is a pipe from the start that spawned
+	// it, which its environment names, and a shim whose start gives up
+	// gives its boot up too.
 	ShimCommand []string
 	// Keys is the key the driver calls its provider with, asked on every
 	// call. Nil is none: a driver whose provider needs a key (boxd) fails

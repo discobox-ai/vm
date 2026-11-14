@@ -50,10 +50,23 @@ const (
 	// port with the service's unmapped before 2026-11-03), so none of them
 	// is used beyond the part that lasts.
 	shimProtocol = 2
+	// shimStarterEnv, set in a shim's environment, says its stdin is its
+	// starter's lifeline (holdStarter): the shim gives its boot up if the
+	// pipe closes before the Start that spawned it says it is started. A
+	// shim of a build before it ignores it, and holds its machine whatever
+	// becomes of its starter.
+	shimStarterEnv = "DISCO_VM_SHIM_STARTER"
+	// abandonWait is how long a Start that gave up waits for its shim to
+	// cancel its boot and exit.
+	abandonWait = 30 * time.Second
 	// maxSocketPath is the longest path a Unix socket may have on every host
 	// a shim runs on: macOS's sun_path holds 104 bytes, Linux's 108.
 	maxSocketPath = 103
 )
+
+// errStarterGaveUp is the cause of a shim's context once the Start that
+// spawned it gave up before it came up.
+var errStarterGaveUp = errors.New("shim: the start that spawned it gave up")
 
 // shimState is how other processes find a running instance's shim. It exists
 // only while the shim is serving, and is private to the owner, as is the
@@ -168,6 +181,9 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 	}
 	_, servicePort, err := d.hv.Service(hs)
 	if err != nil {
+		return err
+	}
+	if err := context.Cause(ctx); err != nil {
 		return err
 	}
 	m, err := d.boot(ctx, inst, machine.BootOptions{Console: os.Stderr, GUI: gui})
@@ -296,7 +312,12 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 	select {
 	case <-m.Done():
 	case <-ctx.Done():
-		_ = stop(time.Minute)
+		if errors.Is(context.Cause(ctx), errStarterGaveUp) {
+			// No caller was handed the machine: nothing in it to keep.
+			_ = m.Kill(context.Background())
+		} else {
+			_ = stop(time.Minute)
+		}
 	}
 	closeControl()
 	err = m.Err()
@@ -479,6 +500,8 @@ func ShimMain(ctx context.Context, driver machine.Driver, args []string) error {
 	if !ok {
 		return fmt.Errorf("shim: the %s driver runs no shims", driver.Name())
 	}
+	ctx, cancel := holdStarter(ctx)
+	defer cancel(nil)
 	return d.runShim(ctx, rest[0], gui)
 }
 
@@ -540,26 +563,97 @@ func (d *Driver) checkShimConfig(id string) error {
 	return nil
 }
 
+// startedShim is a shim Start spawned and waits on.
+type startedShim struct {
+	cmd *exec.Cmd
+	// exited is closed once the shim exits, and err is then how.
+	exited chan struct{}
+	err    error
+	// lifeline is the write end of the shim's stdin (shimStarterEnv): one
+	// byte on it tells the shim it is started, and closing it without one
+	// tells the shim its start gave up.
+	lifeline *os.File
+}
+
 // spawnShim starts a shim with args, detached from this process, so the VM
-// outlives the command that started it. The returned channel yields once,
-// when the shim exits.
-func (d *Driver) spawnShim(config string, args []string, log *os.File) (<-chan error, error) {
+// outlives the command that started it once the shim is up. Until then its
+// stdin is the returned shim's lifeline.
+func (d *Driver) spawnShim(config string, args []string, log *os.File) (*startedShim, error) {
 	argv, err := d.shimCommand(config)
 	if err != nil {
 		return nil, err
 	}
+	stdin, lifeline, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer stdin.Close()
 	// Not tied to a ctx: the shim outlives the command that spawned it.
 	cmd := exec.CommandContext(context.Background(), argv[0], append(slices.Clone(argv[1:]), args...)...) //nolint:gosec // G204: argv is this executable or its configured shim command
-	cmd.Stdout, cmd.Stderr = log, log
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, log, log
 	// The shim holds the machine as the directory's owner, with no key.
-	cmd.Env = machine.WithoutKeys(os.Environ())
+	cmd.Env = append(machine.WithoutKeys(os.Environ()), shimStarterEnv+"=1")
 	proc.Detach(cmd)
 	if err := cmd.Start(); err != nil {
+		_ = lifeline.Close()
 		return nil, fmt.Errorf("start shim: %w", err)
 	}
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	return exited, nil
+	s := &startedShim{cmd: cmd, exited: make(chan struct{}), lifeline: lifeline}
+	go func() {
+		s.err = cmd.Wait()
+		close(s.exited)
+	}()
+	return s, nil
+}
+
+// started tells the shim it is started, so it holds its machine from now on
+// whatever becomes of this process. It fails if the shim has exited.
+func (s *startedShim) started() error {
+	_, err := s.lifeline.Write([]byte{1})
+	if closeErr := s.lifeline.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+// abandon tells the shim its start gave up, so it cancels its boot, or
+// kills the machine it booted, and exits; and waits up to abandonWait for it
+// to, so its admission is free once this returns. It never kills the shim:
+// an HCS VM, or a fake guest, outlives its shim's process, and a shim of a
+// build before the lifeline would leave its VM with no shim at all. One that
+// has not exited is described in the error returned; it holds the
+// instance's boot lock until it does, and a shim that comes up after all
+// is listed running, and is stopped as any other.
+func (s *startedShim) abandon() error {
+	_ = s.lifeline.Close()
+	select {
+	case <-s.exited:
+		return nil
+	case <-time.After(abandonWait):
+		return fmt.Errorf("its shim (pid %d) has not given its boot up after %s", s.cmd.Process.Pid, abandonWait)
+	}
+}
+
+// holdStarter returns ctx canceled, with errStarterGaveUp as its cause, if
+// the shim's stdin closes before its starter says it is started: the Start
+// that spawned it gave up, or its process died. A shim no Start spawned
+// (shimStarterEnv unset), as one run by hand, has no starter to wait on.
+// The variable is taken out of the shim's environment, so nothing the shim
+// starts, a fake guest included, inherits it.
+func holdStarter(ctx context.Context) (context.Context, context.CancelCauseFunc) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	if os.Getenv(shimStarterEnv) == "" {
+		return ctx, cancel
+	}
+	_ = os.Unsetenv(shimStarterEnv)
+	go func() {
+		var b [1]byte
+		if n, _ := os.Stdin.Read(b[:]); n == 0 {
+			cancel(errStarterGaveUp)
+		}
+		_ = os.Stdin.Close()
+	}()
+	return ctx, cancel
 }
 
 // Start boots the instance under a shim of its own, and returns once the shim
@@ -605,22 +699,33 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 	if opts.GUI {
 		args = []string{"--gui", inst.ID}
 	}
-	exited, err := d.spawnShim(config, args, logFile)
+	shim, err := d.spawnShim(config, args, logFile)
 	if err != nil {
 		return nil, err
 	}
 	for {
 		if m, err := d.Attach(ctx, inst); err == nil {
+			if err := shim.started(); err != nil {
+				_ = shim.abandon()
+				return nil, fmt.Errorf("instance %s failed to start: its shim exited once up: %w\n%s", inst.Name, err, tail(filepath.Join(dir, "shim.log")))
+			}
 			return m, nil
 		}
 		select {
-		case err := <-exited:
+		case <-shim.exited:
+			err := shim.err
+			_ = shim.lifeline.Close()
 			if why, readErr := os.ReadFile(refused); readErr == nil {
 				_ = os.Remove(refused)
 				return nil, fmt.Errorf("instance %s failed to start: %s: %w", inst.Name, strings.TrimSpace(string(why)), machine.ErrCapacity)
 			}
 			return nil, fmt.Errorf("instance %s failed to start: %w\n%s", inst.Name, err, tail(filepath.Join(dir, "shim.log")))
 		case <-ctx.Done():
+			// The shim cancels its boot, and stops the machine it may
+			// already hold, once its lifeline closes unanswered.
+			if err := shim.abandon(); err != nil {
+				return nil, fmt.Errorf("instance %s: shim did not come up: %w; %w", inst.Name, ctx.Err(), err)
+			}
 			return nil, fmt.Errorf("instance %s: shim did not come up: %w", inst.Name, ctx.Err())
 		case <-time.After(50 * time.Millisecond):
 		}
