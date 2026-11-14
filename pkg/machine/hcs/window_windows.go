@@ -393,16 +393,19 @@ func (s *screen) layout(cw, ch int32) (dx, dy, dw, dh int32) {
 	return (cw - dw) / 2, (ch - dh) / 2, dw, dh
 }
 
-func (s *screen) client() (int32, int32) {
+// client is hwnd's client area, at least 1x1 so it can be divided by. It is
+// given the window rather than reading s.hwnd, which CreateWindowEx has not
+// returned yet when it sends the window its first WM_SIZE.
+func client(hwnd uintptr) (int32, int32) {
 	var r rect
-	_, _, _ = getClientRect.Call(s.hwnd.Load(), uintptr(unsafe.Pointer(&r)))
+	_, _, _ = getClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
 	return max(r.Right-r.Left, 1), max(r.Bottom-r.Top, 1)
 }
 
 // toGuest is a point in the window as a pixel of the guest's desktop.
-func (s *screen) toGuest(lParam uintptr) (uint32, uint32) {
+func (s *screen) toGuest(hwnd, lParam uintptr) (uint32, uint32) {
 	cx, cy := int32(int16(lParam&0xFFFF)), int32(int16((lParam>>16)&0xFFFF))
-	cw, ch := s.client()
+	cw, ch := client(hwnd)
 	s.mu.Lock()
 	dx, dy, dw, dh := s.layout(cw, ch)
 	w, h := int32(s.width), int32(s.height)
@@ -415,9 +418,14 @@ func (s *screen) toGuest(lParam uintptr) (uint32, uint32) {
 	return uint32(gx), uint32(gy)
 }
 
-func (s *screen) requestResolution() {
-	cw, ch := s.client()
-	s.send(guest.InputResolution, uint32(cw), uint32(ch), 0)
+// requestResolution asks the guest for a desktop the size of hwnd's client
+// area. One too small to be a desktop (a window not laid out yet, or rolled
+// up to its title) asks nothing: the guest would take its smallest mode.
+func (s *screen) requestResolution(hwnd uintptr) {
+	const smallest = 200
+	if cw, ch := client(hwnd); cw >= smallest && ch >= smallest {
+		s.send(guest.InputResolution, uint32(cw), uint32(ch), 0)
+	}
 }
 
 // standardCursors are the IDC_* resource IDs, by guest cursor shape.
@@ -444,11 +452,11 @@ func wndProc(hwnd, message, wParam, lParam uintptr) uintptr {
 		_, _, _ = invalidateRect.Call(hwnd, 0, 0)
 		return 0
 	case wmMouseMove:
-		x, y := s.toGuest(lParam)
+		x, y := s.toGuest(hwnd, lParam)
 		s.send(guest.InputMove, x, y, 0)
 		return 0
 	case wmLButtonDown, wmLButtonUp, wmRButtonDown, wmRButtonUp, wmMButtonDown, wmMButtonUp:
-		x, y := s.toGuest(lParam)
+		x, y := s.toGuest(hwnd, lParam)
 		s.send(guest.InputMove, x, y, 0)
 		button, down := guest.ButtonLeft, uint32(0)
 		switch message {
@@ -483,13 +491,13 @@ func wndProc(hwnd, message, wParam, lParam uintptr) uintptr {
 		return 0
 	case wmExitSizeMove:
 		s.inSizeMove = false
-		s.requestResolution()
+		s.requestResolution(hwnd)
 		return 0
 	case wmSize:
 		// Once a drag ends (wmExitSizeMove), or at once for a maximize or a
 		// restore that is not part of one.
 		if wParam == sizeMaximized || (wParam == sizeRestored && !s.inSizeMove) {
-			s.requestResolution()
+			s.requestResolution(hwnd)
 		}
 		return 0
 	case wmDestroy:
@@ -506,7 +514,7 @@ func (s *screen) paint(hwnd uintptr) {
 	var ps paintStruct
 	hdc, _, _ := beginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 	defer func() { _, _, _ = endPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps))) }()
-	cw, ch := s.client()
+	cw, ch := client(hwnd)
 	mem, _, _ := createCompatibleDC.Call(hdc)
 	bmp, _, _ := createCompatibleBitmap.Call(hdc, uintptr(cw), uintptr(ch))
 	old, _, _ := selectObject.Call(mem, bmp)
