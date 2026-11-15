@@ -334,7 +334,7 @@ install's own numbers in `docs/drivers/hcs.md` stand in for it.
   - a UDF reader for the retail ISO;
   - a reader for install.wim's XML;
   - an ISO 9660 writer (shared with ADR 26-11-13-318's agent drive if that
-    lands);
+    lands; amended: not yet, see Deferred's Settled list);
   - for shape (b), a VHD, GPT, and FAT writer.
   Whether any of these belongs in `github.com/discobox-ai/x` is the
   implementation's call.

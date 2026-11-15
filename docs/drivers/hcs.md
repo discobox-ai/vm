@@ -214,8 +214,8 @@ What booting the DVDs took:
 - Install grants the VM's throwaway identity access to the person's ISO
   (`HcsGrantVmAccess`), so the ISO must be on NTFS and theirs to change. An
   install killed before its cleanup leaves that entry behind; it names a SID
-  nothing else holds, and `icacls <iso> /remove "NT VIRTUAL MACHINE\<id>"`
-  removes it.
+  nothing else holds. `icacls <iso>` lists it as `NT VIRTUAL MACHINE\<id>`,
+  and `icacls <iso> /remove "NT VIRTUAL MACHINE\<id>"` removes it.
 - A COM1 on a named pipe (`Devices.ComPorts`) carries installed Windows's
   `echo ...> COM1` to the host, but nothing from WinPE or specialize, so
   install has no serial log; `C:\disco-vm\specialize.log` is the record.
