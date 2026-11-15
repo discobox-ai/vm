@@ -47,12 +47,14 @@ machines and snapshots (the root
   a browser challenge in front of a request that wakes the machine. Pinning
   it also stops the proxy forwarding to whichever common port the guest
   listens on (80, 443, 8080, 8000, 3000, 5000, 5173). Asked off, strictly or
-  not, Create removes every proxy boxd gave the machine (`DeleteProxy`) and
-  reads back that none is left, or destroys the machine and fails; it has no
-  ingress URL (`Capabilities.URLs`: ingress when asked, pool always; ADR
-  26-11-12-604, ADR 26-11-14-610). A strict pool URL on no networks with
+  not, Create closes it: boxd never deletes a default proxy, so Create locks
+  it to port 0, which no guest can listen on (boxd answers 502), removes
+  every other proxy (`DeleteProxy`), and reads back the default one alone and
+  closed, or destroys the machine and fails; it has no ingress URL
+  (`Capabilities.URLs`: ingress when asked, pool always; ADR 26-11-12-604,
+  ADR 26-11-14-610, ADR 26-11-14-454). A strict pool URL on no networks with
   ingress off is refused: peers reach such a machine at nothing. An
-  isolated machine has no in-VM CLI to make a proxy again. The pool URL of a
+  isolated machine has no in-VM CLI to open or add a proxy again. The pool URL of a
   machine on networks is `http://<machine>.boxd:7302`, its name on boxd's
   internal DNS, where its peers reach every port directly; on none it is the
   ingress URL, if it has one (ADR 26-10-29-129).

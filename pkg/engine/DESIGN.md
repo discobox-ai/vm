@@ -84,7 +84,7 @@ whose URLs last), and an instance with no URL in the scope asked is
 **Each URL is asked for, on or off, strictly or not** (`CreateOptions.URLs`,
 `disco-vm create --url SCOPE=on|off[,strict]`; ADR 26-11-12-604), one
 request for each of ingress and pool. Unset is the driver's default. A
-driver honors a request where it can (boxd removes its proxies, and vz,
+driver honors a request where it can (boxd closes its proxies, and vz,
 libkrun, and hcs withhold the socket as ingress, when asked off); without
 `strict` the instance gets what the driver gives either way, and with it
 the driver gives exactly that or the create is refused

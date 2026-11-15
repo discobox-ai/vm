@@ -111,9 +111,11 @@ sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, port)
 }
 
 // TestNoIngressURL makes a VM whose ingress URL is asked off, strictly, as a
-// sandbox's is (isolated), and checks on boxd itself that boxd removes its default proxy,
-// that none comes back across two boots, and that a server on the service
-// port answers at no <machine>.<zone> URL. It makes billable machines, so it
+// sandbox's is (isolated), and checks on boxd itself that its default proxy,
+// which boxd keeps, stays locked to port 0 and is its only one across two
+// boots, and that servers on the service port and the ports boxd's proxy
+// picks on its own answer at no <machine>.<zone> URL, with bot protection
+// off so its browser check hides nothing. It makes billable machines, so it
 // runs only when asked for and given an account.
 func TestNoIngressURL(t *testing.T) {
 	if os.Getenv(IntegrationEnv) != "1" || (os.Getenv(APIKeyEnv) == "" && os.Getenv(TokenEnv) == "") {
@@ -127,19 +129,14 @@ func TestNoIngressURL(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
 	api, _ := d.api.API(ctx)
-	// The URL its default proxy had: <machine>.<zone>, where the zone is
-	// the region's, as a VM's with an ingress URL in the same region shows.
-	public, err := d.Create(ctx, machine.InstanceSpec{Name: "public-" + randomID()[:8]})
-	if err != nil {
+	def, err := defaultProxy(ctx, api, inst.ID)
+	if err != nil || def == nil || def.GetDomain() == "" {
+		t.Fatalf("default proxy %v, %v", def, err)
+	}
+	url := "https://" + def.GetDomain()
+	if _, err := api.SetBotProtection(ctx, &boxdapi.SetBotProtectionRequest{VmId: inst.ID, Enabled: false}); err != nil {
 		t.Fatal(err)
 	}
-	service, err := d.Service(ctx, public)
-	_ = d.Destroy(context.Background(), public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, zone, _ := strings.Cut(strings.TrimPrefix(service.IngressURL, "https://"), ".")
-	url := "https://" + d.machineName(inst.Name) + "." + zone
 	for boot := 1; boot <= 2; boot++ {
 		m, err := d.Boot(ctx, inst, machine.BootOptions{})
 		if err != nil {
@@ -148,22 +145,22 @@ func TestNoIngressURL(t *testing.T) {
 		marker := fmt.Sprintf("disco-vm private %s boot %d", inst.ID, boot)
 		serve := fmt.Sprintf(`set -e
 mkdir -p /tmp/www && echo '%s' > /tmp/www/index.html
-sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, guest.ServicePort)
+for port in %d 80 8000 8080; do sudo systemd-run python3 -m http.server $port --directory /tmp/www; done`, marker, guest.ServicePort)
 		if out, code, err := run(ctx, api, inst.ID, serve); err != nil || code != 0 {
 			t.Fatalf("serve: exit %d, %v: %s", code, err, out)
 		}
 		list, err := api.ListProxies(ctx, &boxdapi.ListProxiesRequest{Vm: inst.ID})
-		if err != nil || len(list.GetProxies()) > 0 {
-			t.Fatalf("boot %d: proxies %v, %v; want none", boot, list.GetProxies(), err)
+		if err != nil || len(list.GetProxies()) != 1 || !list.GetProxies()[0].GetIsDefault() || !closed(list.GetProxies()[0]) {
+			t.Fatalf("boot %d: proxies %v, %v; want the default one alone, locked to port 0", boot, list.GetProxies(), err)
 		}
 		if service, err := d.Service(ctx, inst); err != nil || service.IngressURL != "" {
 			t.Fatalf("boot %d: service %+v, %v; want no URL", boot, service, err)
 		}
-		// Long enough for a proxy boxd made again at boot to answer.
+		// Long enough for a proxy that would forward to answer.
 		deadline := time.Now().Add(time.Minute)
 		for time.Now().Before(deadline) {
 			if body, _ := httpGet(ctx, url); strings.TrimSpace(body) == marker {
-				t.Fatalf("boot %d: %s serves the guest's port", boot, url)
+				t.Fatalf("boot %d: %s serves the guest", boot, url)
 			}
 			time.Sleep(5 * time.Second)
 		}

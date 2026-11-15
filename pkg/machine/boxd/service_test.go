@@ -61,7 +61,12 @@ func TestServiceFakeAPI(t *testing.T) {
 	}
 
 	// A sandbox's shape: isolated, on a network, its ingress URL off. Its peers
-	// reach it directly, and nothing reaches it from the internet.
+	// reach it directly, and nothing reaches it from the internet: its
+	// default proxy, which boxd keeps, is locked to port 0, and any other
+	// proxy is removed.
+	fake.mu.Lock()
+	fake.namedProxy = "extra"
+	fake.mu.Unlock()
 	for _, from := range []*machine.Instance{&base, nil} {
 		peer, err := d.Create(ctx, machine.InstanceSpec{Name: "peer", From: from, Isolated: true, Networks: []string{"pool"}, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
 		if err != nil {
@@ -72,15 +77,19 @@ func TestServiceFakeAPI(t *testing.T) {
 			t.Errorf("an instance on a network, ingress URL off (from %v): %+v, %v", from != nil, service, err)
 		}
 		fake.mu.Lock()
-		removed, bots := fake.vms[peer.ID].proxyRemoved, fake.vms[peer.ID].botProtection
+		pv := fake.vms[peer.ID]
+		locked, port, named, bots := pv.proxyLocked, pv.proxyPort, len(pv.named), pv.botProtection
 		fake.mu.Unlock()
-		if !removed || !bots {
-			t.Errorf("a machine whose ingress URL is off kept its default proxy (%v) or had bot protection turned off (%v)", !removed, !bots)
+		if !locked || port != 0 || named != 0 || !bots {
+			t.Errorf("a machine whose ingress URL is off: default proxy locked %v to port %d, %d named proxies left, bot protection %v; want locked to 0, none, on", locked, port, named, bots)
 		}
 		if err := d.Destroy(ctx, peer); err != nil {
 			t.Fatal(err)
 		}
 	}
+	fake.mu.Lock()
+	fake.namedProxy = ""
+	fake.mu.Unlock()
 
 	// On no networks and its ingress URL off, nothing reaches the service.
 	alone, err := d.Create(ctx, machine.InstanceSpec{Name: "alone", From: &base, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
@@ -93,24 +102,30 @@ func TestServiceFakeAPI(t *testing.T) {
 	if err := d.Destroy(ctx, alone); err != nil {
 		t.Fatal(err)
 	}
-	// A machine gone is no service, though boxd lists it no proxies, as it
-	// lists one whose ingress URL is off none.
+	// A machine gone is no service, though boxd lists it no proxies.
 	if service, err := d.Service(ctx, alone); !errors.Is(err, machine.ErrNotFound) {
 		t.Errorf("the service of a machine gone: %+v, %v; want ErrNotFound", service, err)
 	}
 
-	// A proxy the API cannot find, one boxd will not remove, or one that is
-	// still there once removed fails the create, which leaves no machine.
+	// A proxy the API cannot find or lock, a port it does not keep, or a
+	// named proxy boxd will not remove or keeps once removed fails the
+	// create, which leaves no machine.
 	for _, c := range []struct {
 		name string
 		mode machine.URLMode
 		set  func(bool)
 	}{
 		{"noproxy", machine.URLDefault, func(on bool) { fake.proxyErr = errOn(on, status.Error(codes.NotFound, "no such proxy")) }},
+		{"unlockable", machine.URLOff, func(on bool) { fake.proxyErr = errOn(on, status.Error(codes.InvalidArgument, "invalid port")) }},
+		{"open", machine.URLOff, func(on bool) { fake.portIgnored.Store(on) }},
 		{"undeletable", machine.URLOff, func(on bool) {
-			fake.deleteProxyErr = errOn(on, status.Error(codes.FailedPrecondition, "the default proxy cannot be removed"))
+			fake.namedProxy = map[bool]string{true: "extra"}[on]
+			fake.deleteProxyErr = errOn(on, status.Error(codes.PermissionDenied, "not yours"))
 		}},
-		{"kept", machine.URLOff, func(on bool) { fake.proxyKept.Store(on) }},
+		{"kept", machine.URLOff, func(on bool) {
+			fake.namedProxy = map[bool]string{true: "extra"}[on]
+			fake.proxyKept.Store(on)
+		}},
 	} {
 		fake.mu.Lock()
 		c.set(true)
