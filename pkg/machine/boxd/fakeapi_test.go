@@ -49,6 +49,11 @@ type fakeAPI struct {
 	// snapshotIDRefused makes GetVm of a snapshot's ID fail with
 	// InvalidArgument, not NotFound: what boxd answers is not proven.
 	snapshotIDRefused atomic.Bool
+	// snapshotGets counts GetSnapshot's answers that found a snapshot.
+	snapshotGets atomic.Int32
+	// snapshotOnDestroy makes DestroyVm find a ready snapshot of the
+	// machine's name, as a Commit's taken just before the destroy is.
+	snapshotOnDestroy atomic.Bool
 	// proxyErr, when set, is SetProxyPort's answer.
 	proxyErr error
 	// deleteProxyErr, when set, is DeleteProxy's answer for a named proxy.
@@ -217,6 +222,16 @@ type fakeSnapshot struct {
 	memory   uint64
 	// isolated is its machine's, which a restore inherits.
 	isolated bool
+	// status is boxd's, "ready" when empty.
+	status string
+}
+
+// state is the snapshot's status as boxd answers it.
+func (s *fakeSnapshot) state() string {
+	if s.status == "" {
+		return "ready"
+	}
+	return s.status
 }
 
 func newFakeAPI(dir string) *fakeAPI {
@@ -435,6 +450,14 @@ func (f *fakeAPI) DestroyVm(_ context.Context, req *boxdapi.DestroyVmRequest) (*
 		return nil, err
 	}
 	f.halt(v)
+	// boxd finishes a pending snapshot of a machine it destroys: one taken
+	// of a machine then destroyed was ready a moment later (2026-11-15).
+	if snap := f.snapshots[v.name]; snap != nil && snap.state() == "pending" {
+		snap.status = ""
+	}
+	if f.snapshotOnDestroy.Load() {
+		f.snapshots[v.name] = &fakeSnapshot{id: "snap_" + fsutil.RandomHex(4), name: v.name, dir: filepath.Join(f.dir, "snap_"+v.id)}
+	}
 	delete(f.vms, v.id)
 	f.org().machines.Add(-1)
 	return &boxdapi.DestroyVmResponse{}, os.RemoveAll(v.dir)
@@ -632,8 +655,9 @@ func (f *fakeAPI) GetSnapshot(_ context.Context, req *boxdapi.GetSnapshotRequest
 	if err != nil {
 		return nil, err
 	}
+	f.snapshotGets.Add(1)
 	return &boxdapi.GetSnapshotResponse{Snapshot: &boxdapi.SnapshotInfo{
-		SnapshotId: snap.id, Name: snap.name, Version: 1, Status: "ready", Vcpu: snap.vcpu, MemoryBytes: snap.memory,
+		SnapshotId: snap.id, Name: snap.name, Version: 1, Status: snap.state(), Vcpu: snap.vcpu, MemoryBytes: snap.memory,
 	}}, nil
 }
 
@@ -643,7 +667,7 @@ func (f *fakeAPI) ListSnapshots(context.Context, *boxdapi.ListSnapshotsRequest) 
 	out := &boxdapi.ListSnapshotsResponse{}
 	for _, snap := range f.snapshots {
 		out.Snapshots = append(out.Snapshots, &boxdapi.SnapshotInfo{
-			SnapshotId: snap.id, Name: snap.name, Version: 1, Status: "ready", Vcpu: snap.vcpu, MemoryBytes: snap.memory,
+			SnapshotId: snap.id, Name: snap.name, Version: 1, Status: snap.state(), Vcpu: snap.vcpu, MemoryBytes: snap.memory,
 		})
 	}
 	return out, nil

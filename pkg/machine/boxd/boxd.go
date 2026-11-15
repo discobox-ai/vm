@@ -479,11 +479,11 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	case isNotFound(err):
 		return nil, fmt.Errorf("boxd: machine %s is gone: %w", ref.Name, machine.ErrNotRunning)
 	case err != nil:
-		// A committed VM's ID is its snapshot's, which GetVm need not
-		// answer NotFound for: it has no machine, so it is not running,
-		// whatever boxd says of the ID.
-		if snap, snapErr := d.snapshotOf(ctx, api, inst); snapErr == nil && snap != nil {
-			return nil, fmt.Errorf("boxd: %s is a committed VM: %w", inst.Name, machine.ErrNotRunning)
+		// A committed VM's ID is its snapshot's (a failed snapshot listed
+		// in its place's too), which GetVm need not answer NotFound for: it
+		// has no machine, so it is not running, whatever boxd says of the ID.
+		if snap, snapErr := snapshotNamed(ctx, api, ref.Name); snapErr == nil && snap != nil && snap.GetSnapshotId() == inst.ID {
+			return nil, fmt.Errorf("boxd: %s is a snapshot: %w", inst.Name, machine.ErrNotRunning)
 		}
 		return nil, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
 	}
@@ -541,20 +541,30 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 	return d.committed(snap), nil
 }
 
-// Destroy removes a VM's machine, or a committed VM's snapshot and any
-// machine of its name a Commit left. A machine restored from the snapshot
-// has a disk of its own, and outlives it.
+// Destroy removes a VM's machine, or a committed VM's snapshot (or a failed
+// one listed in its place) and any machine of its name a Commit left. A
+// machine restored from the snapshot has a disk of its own, and outlives it.
+//
+// A machine's Destroy takes the snapshot of its name with it unless that was
+// ready before the machine was destroyed: that one is a Commit that
+// finished, the committed VM, which stays, even for a caller still holding
+// the machine. Anything else is the machine's own Commit in flight, which
+// nothing lists: a pending or failed snapshot is deleted first, since boxd
+// makes a pending one ready once its machine is destroyed, and one that
+// appears while the machine is destroyed is deleted after. A Commit racing
+// its own VM's Destroy fails, or, in the moment between its snapshot's
+// ready and the delete, reports a VM the Destroy has removed.
 func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	api, err := d.api.API(ctx)
 	if err != nil {
 		return err
 	}
 	name := d.machineName(inst.Name)
-	snap, err := d.snapshotOf(ctx, api, inst)
+	before, err := snapshotNamed(ctx, api, name)
 	if err != nil {
 		return err
 	}
-	if snap != nil {
+	if before != nil && before.GetSnapshotId() == inst.ID {
 		listed, err := api.ListVms(ctx, &boxdapi.ListVmsRequest{})
 		if err != nil {
 			return fmt.Errorf("boxd: list machines: %w", err)
@@ -567,24 +577,51 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 				return fmt.Errorf("boxd: destroy %s: %w", name, err)
 			}
 		}
-		if _, err := api.DeleteSnapshot(ctx, &boxdapi.DeleteSnapshotRequest{Name: name}); err != nil && !isNotFound(err) {
-			return fmt.Errorf("boxd: delete snapshot %s: %w", name, err)
+		return deleteSnapshot(ctx, api, name)
+	}
+	finished := before.GetStatus() == "ready"
+	if before != nil && !finished {
+		if err := deleteSnapshot(ctx, api, name); err != nil {
+			return err
 		}
-		return nil
 	}
 	if _, err := api.DestroyVm(ctx, &boxdapi.DestroyVmRequest{VmId: inst.ID}); err != nil && !isNotFound(err) {
 		return fmt.Errorf("boxd: destroy %s: %w", name, err)
 	}
+	if finished {
+		return nil
+	}
+	after, err := snapshotNamed(ctx, api, name)
+	if err != nil || after == nil {
+		return err
+	}
+	return deleteSnapshot(ctx, api, name)
+}
+
+// deleteSnapshot deletes the snapshot of a name; one already gone is not an
+// error.
+func deleteSnapshot(ctx context.Context, api boxdapi.BoxdApiClient, name string) error {
+	if _, err := api.DeleteSnapshot(ctx, &boxdapi.DeleteSnapshotRequest{Name: name}); err != nil && !isNotFound(err) {
+		return fmt.Errorf("boxd: delete snapshot %s: %w", name, err)
+	}
 	return nil
 }
 
-// waitSnapshot waits until a snapshot can be restored.
+// waitSnapshot waits until a snapshot can be restored. One that is gone once
+// boxd has answered for it was deleted (a Destroy of its machine), and the
+// wait fails.
 func waitSnapshot(ctx context.Context, api boxdapi.BoxdApiClient, name string, version uint64) (*boxdapi.SnapshotInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, waitLimit)
 	defer cancel()
+	seen := false
 	for {
 		got, err := api.GetSnapshot(ctx, &boxdapi.GetSnapshotRequest{Name: name})
-		if err != nil && !isNotFound(err) {
+		switch {
+		case isNotFound(err) && seen:
+			return nil, fmt.Errorf("boxd: snapshot %s was deleted", name)
+		case err == nil:
+			seen = true
+		case !isNotFound(err):
 			return nil, fmt.Errorf("boxd: snapshot %s: %w", name, err)
 		}
 		info := got.GetSnapshot()

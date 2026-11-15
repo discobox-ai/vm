@@ -531,3 +531,145 @@ func fakeIn(t *testing.T, home *fakeAPI, region, pool string, keys machine.KeySo
 	})
 	return &Driver{api: c, pool: pool}
 }
+
+// TestDestroyRemovesItsMachinesSnapshot checks that destroying a machine also
+// removes a snapshot of its name that is not ready, so a pool can be emptied
+// while a Commit is in flight: pending, which nothing lists and boxd makes
+// ready once the machine is destroyed, and failed, which nothing lists
+// either.
+func TestDestroyRemovesItsMachinesSnapshot(t *testing.T) {
+	for _, status := range []string{"pending", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			d, fake := fakeDriver(t, t.TempDir())
+			ctx := context.Background()
+			inst, err := d.Create(ctx, machine.InstanceSpec{Name: "build"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := "dvm-default--build"
+			fake.mu.Lock()
+			fake.snapshots[name] = &fakeSnapshot{id: "snap_build", name: name, dir: t.TempDir(), status: status}
+			fake.mu.Unlock()
+			if err := d.Destroy(ctx, inst); err != nil {
+				t.Fatal(err)
+			}
+			fake.mu.Lock()
+			_, left := fake.snapshots[name]
+			machines := len(fake.vms)
+			fake.mu.Unlock()
+			if left || machines != 0 {
+				t.Fatalf("a %s snapshot left: %v, machines left: %d, after the machine's Destroy", status, left, machines)
+			}
+		})
+	}
+}
+
+// TestDestroyRemovesASnapshotTakenMeanwhile checks that a snapshot of the
+// machine's name that appears while Destroy destroys it, its Commit's, goes
+// too.
+func TestDestroyRemovesASnapshotTakenMeanwhile(t *testing.T) {
+	d, fake := fakeDriver(t, t.TempDir())
+	ctx := context.Background()
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "build"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.snapshotOnDestroy.Store(true)
+	if err := d.Destroy(ctx, inst); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	left := len(fake.snapshots)
+	fake.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d snapshots left after a Destroy during which one was taken", left)
+	}
+}
+
+// TestDestroyOfAMachineKeepsAFinishedCommit checks that destroying a machine
+// leaves a snapshot of its name that was ready before: a Commit that
+// finished, whether or not it has deleted the machine yet, whose committed VM
+// Instances lists.
+func TestDestroyOfAMachineKeepsAFinishedCommit(t *testing.T) {
+	d, fake := fakeDriver(t, t.TempDir())
+	ctx := context.Background()
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "build"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "dvm-default--build"
+	fake.mu.Lock()
+	fake.snapshots[name] = &fakeSnapshot{id: "snap_build", name: name, dir: t.TempDir()}
+	fake.mu.Unlock()
+	if err := d.Destroy(ctx, inst); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	_, left := fake.snapshots[name]
+	machines := len(fake.vms)
+	fake.mu.Unlock()
+	if !left || machines != 0 {
+		t.Fatalf("snapshot kept: %v, machines left: %d; want the snapshot kept and the machine gone", left, machines)
+	}
+}
+
+// TestDestroyOfACommittedMachineKeepsTheSnapshot checks that destroying a
+// machine a Commit has already deleted leaves the committed VM, its snapshot.
+func TestDestroyOfACommittedMachineKeepsTheSnapshot(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	d, _ := fakeDriver(t, t.TempDir())
+	ctx := context.Background()
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "build"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := d.Commit(ctx, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Destroy(ctx, inst); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.Instance(ctx, "build")
+	if err != nil || got.ID != committed.ID {
+		t.Fatalf("the committed VM after its old machine's Destroy = %+v, %v; want %s", got, err, committed.ID)
+	}
+}
+
+// TestCommitFailsWhenItsSnapshotIsDeleted checks that a Commit's wait for its
+// snapshot ends, failing, once the snapshot is deleted under it (a Destroy of
+// its machine), rather than waiting out its limit.
+func TestCommitFailsWhenItsSnapshotIsDeleted(t *testing.T) {
+	d, fake := fakeDriver(t, t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	api, err := d.api.API(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "dvm-default--build"
+	fake.mu.Lock()
+	fake.snapshots[name] = &fakeSnapshot{id: "snap_build", name: name, dir: t.TempDir(), status: "pending"}
+	fake.mu.Unlock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := waitSnapshot(ctx, api, name, 1)
+		done <- err
+	}()
+	// Delete it once the wait has seen it.
+	for fake.snapshotGets.Load() == 0 {
+		select {
+		case err := <-done:
+			t.Fatalf("waitSnapshot of a pending snapshot ended: %v", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	fake.mu.Lock()
+	delete(fake.snapshots, name)
+	fake.mu.Unlock()
+	if err := <-done; err == nil || ctx.Err() != nil {
+		t.Fatalf("waitSnapshot of a deleted snapshot = %v (context %v), want a failure before the deadline", err, ctx.Err())
+	}
+}

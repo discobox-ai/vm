@@ -71,6 +71,9 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type BoxdApiClient interface {
 	CreateVm(ctx context.Context, in *CreateVmRequest, opts ...grpc.CallOption) (*CreateVmResponse, error)
+	// A snapshot of the machine still pending is finished, not abandoned: one
+	// destroyed 0.2 s into its snapshot's pending had it ready a moment later
+	// (region fra, 2026-11-15).
 	DestroyVm(ctx context.Context, in *DestroyVmRequest, opts ...grpc.CallOption) (*DestroyVmResponse, error)
 	StartVm(ctx context.Context, in *StartVmRequest, opts ...grpc.CallOption) (*StartVmResponse, error)
 	StopVm(ctx context.Context, in *StopVmRequest, opts ...grpc.CallOption) (*StopVmResponse, error)
@@ -95,6 +98,8 @@ type BoxdApiClient interface {
 	// Memory + disk of a running VM, replicated and versioned (latest-only).
 	CreateSnapshot(ctx context.Context, in *CreateSnapshotRequest, opts ...grpc.CallOption) (*CreateSnapshotResponse, error)
 	GetSnapshot(ctx context.Context, in *GetSnapshotRequest, opts ...grpc.CallOption) (*GetSnapshotResponse, error)
+	// Deletes a pending snapshot too, at once: GetSnapshot answered NOT_FOUND
+	// straight after, and still did seconds later (region fra, 2026-11-15).
 	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
 	// Every snapshot in the caller's context, with no paging.
 	ListSnapshots(ctx context.Context, in *ListSnapshotsRequest, opts ...grpc.CallOption) (*ListSnapshotsResponse, error)
@@ -488,6 +493,9 @@ func (c *boxdApiClient) GetOrgMachineLimit(ctx context.Context, in *GetOrgMachin
 // for forward compatibility.
 type BoxdApiServer interface {
 	CreateVm(context.Context, *CreateVmRequest) (*CreateVmResponse, error)
+	// A snapshot of the machine still pending is finished, not abandoned: one
+	// destroyed 0.2 s into its snapshot's pending had it ready a moment later
+	// (region fra, 2026-11-15).
 	DestroyVm(context.Context, *DestroyVmRequest) (*DestroyVmResponse, error)
 	StartVm(context.Context, *StartVmRequest) (*StartVmResponse, error)
 	StopVm(context.Context, *StopVmRequest) (*StopVmResponse, error)
@@ -512,6 +520,8 @@ type BoxdApiServer interface {
 	// Memory + disk of a running VM, replicated and versioned (latest-only).
 	CreateSnapshot(context.Context, *CreateSnapshotRequest) (*CreateSnapshotResponse, error)
 	GetSnapshot(context.Context, *GetSnapshotRequest) (*GetSnapshotResponse, error)
+	// Deletes a pending snapshot too, at once: GetSnapshot answered NOT_FOUND
+	// straight after, and still did seconds later (region fra, 2026-11-15).
 	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
 	// Every snapshot in the caller's context, with no paging.
 	ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error)

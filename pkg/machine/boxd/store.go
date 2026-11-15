@@ -66,7 +66,8 @@ func (d *Driver) instance(vm *boxdapi.GetVmResponse) machine.Instance {
 	}
 }
 
-// committed is a ready snapshot as a committed VM, its ID the snapshot's.
+// committed is a snapshot as a VM, its ID the snapshot's: a ready one is a
+// committed VM.
 // That it is committed is the caller's to record; the driver tells it from a
 // machine by its kind (snapshotOf).
 func (d *Driver) committed(snap *boxdapi.SnapshotInfo) machine.Instance {
@@ -82,28 +83,34 @@ func (d *Driver) committed(snap *boxdapi.SnapshotInfo) machine.Instance {
 	}
 }
 
-// snapshotOf is the committed VM's snapshot when inst is one: the ready
-// snapshot of its name whose ID is inst's. It is nil for a machine.
-func (d *Driver) snapshotOf(ctx context.Context, api boxdapi.BoxdApiClient, inst machine.Instance) (*boxdapi.SnapshotInfo, error) {
-	got, err := api.GetSnapshot(ctx, &boxdapi.GetSnapshotRequest{Name: d.machineName(inst.Name)})
+// snapshotNamed is boxd's snapshot of a name, whatever its status, or nil
+// when it has none.
+func snapshotNamed(ctx context.Context, api boxdapi.BoxdApiClient, name string) (*boxdapi.SnapshotInfo, error) {
+	got, err := api.GetSnapshot(ctx, &boxdapi.GetSnapshotRequest{Name: name})
 	if isNotFound(err) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("boxd: snapshot %s: %w", d.machineName(inst.Name), err)
+		return nil, fmt.Errorf("boxd: snapshot %s: %w", name, err)
 	}
-	snap := got.GetSnapshot()
-	if snap.GetStatus() != "ready" || snap.GetSnapshotId() != inst.ID {
-		return nil, nil
+	return got.GetSnapshot(), nil
+}
+
+// snapshotOf is the committed VM's snapshot when inst is one: the ready
+// snapshot of its name whose ID is inst's. It is nil for a machine.
+func (d *Driver) snapshotOf(ctx context.Context, api boxdapi.BoxdApiClient, inst machine.Instance) (*boxdapi.SnapshotInfo, error) {
+	snap, err := snapshotNamed(ctx, api, d.machineName(inst.Name))
+	if err != nil || snap.GetStatus() != "ready" || snap.GetSnapshotId() != inst.ID {
+		return nil, err
 	}
 	return snap, nil
 }
 
-// refuseCommitted is ErrCommitted when inst is a committed VM, which boxd
-// keeps as a snapshot with no machine to run, and err otherwise: why a
-// machine call on inst's ID failed.
+// refuseCommitted is ErrCommitted when inst is a snapshot, which has no
+// machine to run: a committed VM, or a failed snapshot listed in its place.
+// It is err otherwise: why a machine call on inst's ID failed.
 func (d *Driver) refuseCommitted(ctx context.Context, api boxdapi.BoxdApiClient, inst machine.Instance, err error) error {
-	if snap, _ := d.snapshotOf(ctx, api, inst); snap != nil {
+	if snap, _ := snapshotNamed(ctx, api, d.machineName(inst.Name)); snap != nil && snap.GetSnapshotId() == inst.ID {
 		return fmt.Errorf("boxd: VM %s is a snapshot: %w", inst.Name, machine.ErrCommitted)
 	}
 	return err
@@ -112,7 +119,10 @@ func (d *Driver) refuseCommitted(ctx context.Context, api boxdapi.BoxdApiClient,
 // Instances lists the pool's VMs: its machines, then its ready snapshots
 // as committed VMs. A snapshot that shares its name with a machine is a
 // Commit that has not deleted the machine yet: it is listed, committed, and
-// the machine is not, and Destroy removes both.
+// the machine is not, and Destroy removes both. A snapshot boxd failed with
+// no machine of its name, left by a Destroy before it took such a snapshot
+// with its machine, is listed too, as a VM nothing runs, so that it can be
+// removed.
 func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 	api, err := d.api.API(ctx)
 	if err != nil {
@@ -126,16 +136,32 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 	if err != nil {
 		return nil, err
 	}
+	var vms []*boxdapi.GetVmResponse
+	machines := map[string]bool{}
+	for _, vm := range listed.GetVms() {
+		if _, ok := d.instanceName(vm.GetName()); ok && vm.GetStatus() != "destroying" {
+			vms = append(vms, vm)
+			machines[vm.GetName()] = true
+		}
+	}
 	var out []machine.Instance
 	committed := map[string]bool{}
 	for _, snap := range snaps {
-		if _, ok := d.instanceName(snap.GetName()); ok && snap.GetStatus() == "ready" {
+		if _, ok := d.instanceName(snap.GetName()); !ok {
+			continue
+		}
+		switch snap.GetStatus() {
+		case "ready":
 			out = append(out, d.committed(snap))
 			committed[snap.GetName()] = true
+		case "failed":
+			if !machines[snap.GetName()] {
+				out = append(out, d.committed(snap))
+			}
 		}
 	}
-	for _, vm := range listed.GetVms() {
-		if _, ok := d.instanceName(vm.GetName()); ok && vm.GetStatus() != "destroying" && !committed[vm.GetName()] {
+	for _, vm := range vms {
+		if !committed[vm.GetName()] {
 			out = append(out, d.instance(vm))
 		}
 	}

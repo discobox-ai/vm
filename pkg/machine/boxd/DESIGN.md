@@ -17,8 +17,17 @@ machines and snapshots (the root
   own name, and deletes it. The snapshot is still cut from an orderly
   shutdown: its disk is the one the guest flushed. A listing that finds a
   snapshot and a machine of one name is a Commit that has not deleted the
-  machine yet: it lists the committed VM, and Destroy removes both. That a
-  VM is committed is the caller's to record (ADR 26-11-03-606); the driver
+  machine yet: it lists the committed VM, and Destroy removes both. Destroy
+  of a machine judges the snapshot of its name by what it was before the
+  machine was destroyed: ready is a Commit that finished, the committed VM,
+  and stays, even for a caller still holding the machine; pending or failed
+  is deleted first, since boxd finishes a pending snapshot of a machine it
+  destroys; and one that appears meanwhile, the machine's own Commit's, is
+  deleted after. That Commit then fails, since a snapshot gone once seen was
+  deleted. A failed snapshot with no machine of its name (one an earlier
+  Destroy left) is listed as a VM, which is refused like a committed one
+  (`ErrCommitted`) and which Destroy removes.
+  That a VM is committed is the caller's to record (ADR 26-11-03-606); the driver
   tells one by its kind, the ready snapshot of its name whose ID is the
   VM's, and refuses to boot, start, serve, or commit it (`ErrCommitted`),
   or to restore from a machine. There is no install.
