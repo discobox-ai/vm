@@ -19,6 +19,10 @@ vars:
   # disco-vm is also the guest agent, which install copies into a guest that
   # has its own libc or none, so it is built static. vz is cgo, so not on macOS.
   CGO: '{{if eq OS "darwin"}}1{{else}}0{{end}}'
+  # The oldest macOS the released darwin binary runs on: its LC_BUILD_VERSION
+  # minos, which release:build:darwin checks. cgo's clang takes it from
+  # MACOSX_DEPLOYMENT_TARGET, so the runner's macOS and SDK cannot raise it.
+  MACOS_MIN: "14.0"
   VERSION:
     sh: git describe --tags --always --dirty 2>/dev/null || echo dev
   LDFLAGS: -X github.com/discobox-ai/vm/internal/version.Version={{.VERSION}}
@@ -266,7 +270,8 @@ tasks:
   # it downloads, so this signature is what runs a vz VM. It carries the
   # linux/arm64 disco-vm built here as the Linux job builds it (ADR
   # 26-11-14-352 §1), which build/carry keeps out of what is uploaded, and
-  # says so in --help=vz.
+  # says so in --help=vz. Its minos is checked to be MACOS_MIN, whichever
+  # macOS the runner is.
   release:build:darwin:
     internal: true
     platforms: [darwin]
@@ -280,6 +285,8 @@ tasks:
       - codesign --force --sign - --entitlements {{.ENTITLEMENTS}} {{.OUT}}
       - codesign --verify --strict {{.OUT}}
       - codesign -d --entitlements - --xml {{.OUT}} 2>&1 | grep -q com.apple.security.virtualization
+      - otool -l {{.OUT}} | grep -A4 LC_BUILD_VERSION
+      - test "$(otool -l {{.OUT}} | awk '$1 == "minos" {print $2}')" = "{{.MACOS_MIN}}"
       - test "$({{.OUT}} --version)" = "disco-vm version {{.RELEASE_TAG}}"
       - '{{.OUT}} --help=vz | grep -q "default: the linux/arm64 disco-vm this one carries"'
 
@@ -297,6 +304,7 @@ tasks:
       TAGS: '{{if .CARRY}}-tags carryagent{{end}}'
     env:
       CGO_ENABLED: '{{if eq .TARGET_OS "darwin"}}1{{else}}0{{end}}'
+      MACOSX_DEPLOYMENT_TARGET: '{{if eq .TARGET_OS "darwin"}}{{.MACOS_MIN}}{{end}}'
       GOOS: "{{.TARGET_OS}}"
       GOARCH: "{{.TARGET_ARCH}}"
     cmds:

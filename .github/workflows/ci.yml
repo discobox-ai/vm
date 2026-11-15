@@ -132,8 +132,8 @@ jobs:
       - uses: ./.github/actions/task
         with:
           target: test
-      # The darwin release binary, signed and checked for its entitlement as
-      # a tag's release builds it (release.yml).
+      # The darwin release binary, signed and checked for its entitlement and
+      # its minos as a tag's release builds it (release.yml).
       - uses: ./.github/actions/task
         env:
           RELEASE_TAG: v0.0.0-alpha.0
