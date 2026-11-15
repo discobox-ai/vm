@@ -28,8 +28,10 @@ const (
 	// answerFileName is where Setup looks for its answers on removable
 	// media: the root.
 	answerFileName = "autounattend.xml"
-	// maxBootTree bounds the files the medium copies from the boot tree.
-	maxBootTree = 512
+	// maxBootTree and maxBootDepth bound the files the medium copies from
+	// the boot tree, and how deep it walks, against a hostile ISO.
+	maxBootTree  = 512
+	maxBootDepth = 16
 )
 
 // retailImage reads the retail ISO's editions and picks the one to install:
@@ -47,9 +49,9 @@ func retailImage(iso *udf.FS, edition string) (string, wim.Image, error) {
 		if err != nil {
 			return "", wim.Image{}, fmt.Errorf("hcs: %s: %w", name, err)
 		}
-		im, err := wim.Choose(images, edition)
+		im, err := chooseEdition(images, edition)
 		if err != nil {
-			return "", wim.Image{}, fmt.Errorf("hcs: %w", err)
+			return "", wim.Image{}, err
 		}
 		return name, im, nil
 	}
@@ -60,8 +62,11 @@ func retailImage(iso *udf.FS, edition string) (string, wim.Image, error) {
 // through its UDF tree, and the answer file, the agent, and the scripts.
 func mediumFiles(iso *udf.FS, answerFile []byte, agent string) ([]iso9660.File, error) {
 	var files []iso9660.File
-	var walk func(dir string) error
-	walk = func(dir string) error {
+	var walk func(dir string, depth int) error
+	walk = func(dir string, depth int) error {
+		if depth > maxBootDepth {
+			return fmt.Errorf("hcs: the ISO's %s nests deeper than %d directories", retailBootTree, maxBootDepth)
+		}
 		names, err := iso.ReadDir(dir)
 		if err != nil {
 			return fmt.Errorf("hcs: the ISO's %s: %w", dir, err)
@@ -73,7 +78,7 @@ func mediumFiles(iso *udf.FS, answerFile []byte, agent string) ([]iso9660.File, 
 				return fmt.Errorf("hcs: the ISO's %s: %w", p, err)
 			}
 			if f.Dir {
-				if err := walk(p); err != nil {
+				if err := walk(p, depth+1); err != nil {
 					return err
 				}
 				continue
@@ -85,7 +90,7 @@ func mediumFiles(iso *udf.FS, answerFile []byte, agent string) ([]iso9660.File, 
 		}
 		return nil
 	}
-	if err := walk(retailBootTree); err != nil {
+	if err := walk(retailBootTree, 0); err != nil {
 		return nil, err
 	}
 	for _, p := range []string{bootManager, bootSDI, bootWIM} {
