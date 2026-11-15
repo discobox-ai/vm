@@ -88,6 +88,11 @@ func pinProxy(ctx context.Context, api boxdapi.BoxdApiClient, vm string, port ui
 // removes every proxy but the default one, which boxd keeps, closes that by
 // locking it to closedPort, and reads back that it is the only one and is
 // closed. An isolated machine has no in-VM CLI to open or add one again.
+// Once they are read back closed, and not before, bot protection is turned
+// off, as pinProxy does: port 0 is what keeps the guest unreached, and boxd's
+// browser challenge in front of it would answer 503 in place of the closed
+// proxy's 502, hiding that it is closed. Until then the guest, which runs,
+// may still be reached through a proxy, and the challenge stays in front.
 func closeProxies(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 	list, err := api.ListProxies(ctx, &boxdapi.ListProxiesRequest{Vm: vm})
 	if err != nil {
@@ -120,6 +125,9 @@ func closeProxies(ctx context.Context, api boxdapi.BoxdApiClient, vm string) err
 	}
 	if len(open) > 0 {
 		return fmt.Errorf("boxd: %s still has proxies open at %v once they were closed", vm, open)
+	}
+	if _, err := api.SetBotProtection(ctx, &boxdapi.SetBotProtectionRequest{VmId: vm, Enabled: false}); err != nil {
+		return fmt.Errorf("boxd: turn off bot protection on %s: %w", vm, err)
 	}
 	return nil
 }

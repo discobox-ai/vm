@@ -115,7 +115,8 @@ sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, port)
 // which boxd keeps, stays locked to port 0 and is its only one across two
 // boots, and that servers on the service port and the ports boxd's proxy
 // picks on its own answer at no <machine>.<zone> URL, where boxd answers
-// 502 instead, with bot protection off so its browser check hides nothing.
+// 502 instead: Create turned bot protection off, so no browser challenge's
+// 503 hides it.
 // It makes billable machines, so it runs only when asked for and given an
 // account.
 func TestNoIngressURL(t *testing.T) {
@@ -135,9 +136,6 @@ func TestNoIngressURL(t *testing.T) {
 		t.Fatalf("default proxy %v, %v", def, err)
 	}
 	url := "https://" + def.GetDomain()
-	if _, err := api.SetBotProtection(ctx, &boxdapi.SetBotProtectionRequest{VmId: inst.ID, Enabled: false}); err != nil {
-		t.Fatal(err)
-	}
 	for boot := 1; boot <= 2; boot++ {
 		m, err := d.Boot(ctx, inst, machine.BootOptions{})
 		if err != nil {

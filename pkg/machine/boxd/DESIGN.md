@@ -66,7 +66,9 @@ machines and snapshots (the root
   it also stops the proxy forwarding to whichever common port the guest
   listens on (80, 443, 8080, 8000, 3000, 5000, 5173). Asked off, strictly or
   not, Create closes it: boxd never deletes a default proxy, so Create locks
-  it to port 0, which no guest can listen on (boxd answers 502), removes
+  it to port 0, which no guest can listen on (boxd answers 502; once every
+  proxy reads back closed, Create turns bot protection off so its challenge
+  does not answer in its place), removes
   every other proxy (`DeleteProxy`), and reads back the default one alone and
   closed, or destroys the machine and fails; it has no ingress URL
   (`Capabilities.URLs`: ingress when asked, pool always; ADR 26-11-12-604,
