@@ -20,7 +20,8 @@ embedder authenticates the channel; the handler authenticates no one.
   `ErrRefused`, a body field the protocol does not know included.
   `GET /v1/driver` reports the driver's capabilities narrowed to the list,
   so an engine on the client refuses up front most of what the server
-  would. A capability that covers two listed things is reported only where
+  would. The client reads it when it is made and again after each `Check`,
+  where a driver may learn a cap from its provider (`MaxMachines`). A capability that covers two listed things is reported only where
   the first is allowed, and the server refuses the second: `Ports` is
   dial and forwards, reported where `OpDial` is, and a forward is refused
   unless `FieldForwards` is listed too.

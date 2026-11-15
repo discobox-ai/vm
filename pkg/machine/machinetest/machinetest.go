@@ -9,7 +9,9 @@
 // not; a booted machine's guest operations answer, and exec carries stdin,
 // stdout, stderr, the environment, the working directory, and the exit code;
 // an orderly shutdown stops the machine; a driver that caps running guests
-// of an OS boots that many and refuses one more until one stops; on a driver that reports
+// of an OS boots that many and refuses one more until one stops; a driver
+// that caps the VMs its provider has refuses a create past the cap until one
+// is destroyed; on a driver that reports
 // Capabilities.Commit, a committed VM carries its writes to VMs created from
 // it and to no one else, and a copy of a copy outlives the first's removal,
 // or the driver refuses the removal with ErrInUse, while a driver that does
@@ -84,6 +86,10 @@ type Config struct {
 	// same provider (root). A driver that lists Capabilities.AcrossPools
 	// needs it.
 	Pool func(pool string) machine.Driver
+	// SkipMaxMachines, when set, says why the suite must not fill the
+	// provider's Capabilities.MaxMachines: a cap others share, such as an
+	// account's, would refuse their creates while the suite holds it.
+	SkipMaxMachines string
 }
 
 // Run runs the suite. The driver is one pool's, and the suite makes and
@@ -94,6 +100,11 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		cfg.Timeout = 10 * time.Minute
 	}
 	ctx := context.Background()
+	// Check first: a driver may learn a cap from its provider there
+	// (Capabilities.MaxMachines).
+	if err := driver.Check(ctx); err != nil {
+		t.Fatalf("check: %v", err)
+	}
 	caps := driver.Capabilities()
 
 	t.Run("capabilities", func(t *testing.T) {
@@ -106,9 +117,6 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("the driver installs %v, and does not report Commit", caps.Install)
 		}
 	})
-	if err := driver.Check(ctx); err != nil {
-		t.Fatalf("check: %v", err)
-	}
 
 	suite := t
 	run := randomHex(4)
@@ -433,6 +441,61 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		for _, m := range running[1:] {
 			shutdown(t, m)
 		}
+	})
+
+	// A driver that caps the VMs its provider has (Capabilities.MaxMachines)
+	// refuses a create past the cap with ErrCapacity, and a destroy makes
+	// room. The provider may count VMs the suite does not see, so it creates
+	// until refused, never more than the cap.
+	t.Run("max-machines", func(t *testing.T) {
+		limit := caps.MaxMachines[guestOS]
+		switch {
+		case limit == 0:
+			t.Skipf("no cap on %s VMs", guestOS)
+		case cfg.SkipMaxMachines != "":
+			t.Skip(cfg.SkipMaxMachines)
+		}
+		// Each VM's cleanup is the subtest's own, not create's, since one
+		// is refused.
+		next := func() (machine.Instance, error) {
+			spec := start
+			spec.Name = newName()
+			if spec.CPUs == 0 {
+				spec.CPUs, spec.Memory = cfg.CPUs, cfg.Memory
+			}
+			return driver.Create(ctx, spec)
+		}
+		var made []machine.Instance
+		t.Cleanup(func() {
+			for _, inst := range made {
+				_ = driver.Destroy(context.Background(), inst)
+			}
+		})
+		for {
+			inst, err := next()
+			if errors.Is(err, machine.ErrCapacity) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("create under a cap of %d %s VMs: %v", limit, guestOS, err)
+			}
+			made = append(made, inst)
+			if len(made) > limit {
+				t.Fatalf("created %d VMs past a cap of %d %s VMs", len(made), limit, guestOS)
+			}
+		}
+		if len(made) == 0 {
+			t.Fatalf("the provider is at its cap of %d %s VMs before the suite made one", limit, guestOS)
+		}
+		if err := driver.Destroy(ctx, made[0]); err != nil {
+			t.Fatalf("destroy: %v", err)
+		}
+		made = made[1:]
+		inst, err := next()
+		if err != nil {
+			t.Fatalf("create once a destroy made room: %v", err)
+		}
+		made = append(made, inst)
 	})
 
 	t.Run("kill", func(t *testing.T) {

@@ -145,13 +145,14 @@ func (s *server) find(ctx context.Context, name string) (machine.Instance, error
 func (s *server) capabilities() machine.Capabilities {
 	caps := s.driver.Capabilities()
 	out := machine.Capabilities{
-		GuestOS:    caps.GuestOS,
-		MaxRunning: caps.MaxRunning,
-		Agent:      caps.Agent,
-		Keys:       machine.KeyCapabilities{Mode: machine.KeysNone},
-		Ports:      caps.Ports && s.allowed(OpDial),
-		Commit:     caps.Commit && s.allowed(OpCommit) && s.field(FieldFrom),
-		Isolation:  caps.Isolation && s.field(FieldIsolated) && s.field(FieldNetworks),
+		GuestOS:     caps.GuestOS,
+		MaxRunning:  caps.MaxRunning,
+		MaxMachines: caps.MaxMachines,
+		Agent:       caps.Agent,
+		Keys:        machine.KeyCapabilities{Mode: machine.KeysNone},
+		Ports:       caps.Ports && s.allowed(OpDial),
+		Commit:      caps.Commit && s.allowed(OpCommit) && s.field(FieldFrom),
+		Isolation:   caps.Isolation && s.field(FieldIsolated) && s.field(FieldNetworks),
 		// What the driver gives is what an instance gets, whatever a client
 		// may ask; FieldURLs only lets it ask of an optional one.
 		URLs: caps.URLs,
