@@ -26,7 +26,8 @@
   boxd answer there.** A request that fails because the name does not resolve
   yet, or its certificate is not issued, passes the check and proves nothing;
   `TestNoIngressURL` waits for boxd's 502 before it counts the guest as
-  unreachable.
+  unreachable. A proxy that forwards can answer 502 too while it warms up, so
+  the watch also lasts the whole time a new proxy is given to come up.
 - **A driver's `Machine.Shutdown` returns once the stop is accepted, not
   before.** A caller may exit after it, and a stop left in a goroutine of its
   own dies with that process, leaving the machine running. Work before the
