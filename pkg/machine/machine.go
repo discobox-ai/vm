@@ -672,6 +672,11 @@ type Instance struct {
 	// was when it was installed. Nil where the driver resolved none, and
 	// for a fresh VM.
 	Release *Release `json:"release,omitempty"`
+	// Interrupted is an install whose process ended before it finished: a
+	// disk that is no committed VM, listed so it can be removed, and
+	// refused a boot, a commit, an upgrade, and a VM created from it. A
+	// driver that installs nothing never sets it.
+	Interrupted bool `json:"interrupted,omitempty"`
 }
 
 // Release is a guest OS release: macOS's product version and build, as an

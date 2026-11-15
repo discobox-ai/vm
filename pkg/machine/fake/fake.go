@@ -190,13 +190,18 @@ func freshDir(dir string) error {
 
 // Install creates an empty root. The media is not read; it is recorded, so a
 // test can see what the spec asked for, and resolved to FakeRelease, as a
-// driver that fetches `latest` resolves it to a concrete build.
-func (d *Hypervisor) Install(_ context.Context, spec local.InstallSpec, dst local.Layer) (*machine.Release, error) {
+// driver that fetches `latest` resolves it to a concrete build. HangMedia
+// waits instead, until ctx is done.
+func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst local.Layer) (*machine.Release, error) {
 	if spec.GuestOS != machine.OS(runtime.GOOS) {
 		return nil, fmt.Errorf("fake: a %s host can only fake %s guests, not %s", runtime.GOOS, runtime.GOOS, spec.GuestOS)
 	}
 	if err := os.MkdirAll(rootfs(dst.Dir), 0o755); err != nil {
 		return nil, err
+	}
+	if filepath.Base(spec.Media) == HangMedia {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	if spec.Log != nil {
 		fmt.Fprintf(spec.Log, "fake: installed %s from %q\n", spec.GuestOS, spec.Media)
@@ -208,6 +213,12 @@ func (d *Hypervisor) Install(_ context.Context, spec local.InstallSpec, dst loca
 	release := FakeRelease
 	return &release, nil
 }
+
+// HangMedia names media (the file's name; the command line makes the path
+// absolute) whose install lays its root and then waits until it is
+// canceled, as a long install does: a test of an install interrupted
+// midway.
+const HangMedia = "hang"
 
 // Release is nil: a fake VM's release is only ever in its record.
 func (*Hypervisor) Release(local.Layer) *machine.Release { return nil }

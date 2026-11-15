@@ -28,8 +28,20 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   its chain is read and its record written;
 - while an install runs, `instances/<id>/installing.json`, the VM's record
   and the installing process's PID, which `ViewInstall` finds it by and
-  skips once that process is gone (a crash left it); `instance.json` is
-  written once it is done;
+  skips once that process is gone (a crash left it), and
+  `instances/<id>/install.lock`, locked from before that record is written
+  until `instance.json` is, which is written before the record goes, so the
+  VM never has neither. With no `instance.json`, the record is read from
+  `installing.json`: while the lock is held and its process alive, the VM
+  is being installed, unlisted and its name held however old the claim;
+  otherwise it is an interrupted install (`machine.Instance.Interrupted`),
+  listed, found by its name while the name's claim is its own, refused a
+  boot, a commit, an upgrade, and a VM created from it (`whole`), and
+  removed by `Destroy` like any other. An install an older disco-vm killed
+  may have lost its name to a later VM, which took the stale claim: it is
+  listed under the name beside that VM, and removed by its ID. An install
+  an older disco-vm is still running holds no lock, and reads as
+  interrupted, but its boot lock refuses its removal;
 - while an upgrade runs, `instances/<id>/machine.next` (the new disk),
   `next.ready` (written once it is whole), and `machine.old` (the old disk,
   once the new one is in place), [below](#an-upgrade-swaps-a-vms-disk-in-its-directory);

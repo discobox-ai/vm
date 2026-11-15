@@ -34,3 +34,23 @@ func TryLock(path string) (func(), error) {
 	}
 	return func() { _ = f.Close() }, nil
 }
+
+// Held reports whether another open of path, in this process or another,
+// holds the lock TryLock takes on it. It never creates path: a file that is
+// not there is held by nobody. Its own check takes the lock for a moment, so
+// another Held or TryLock at that instant sees it held.
+func Held(path string) (bool, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	got, err := tryLock(f)
+	if err != nil {
+		return false, fmt.Errorf("lock %s: %w", path, err)
+	}
+	return !got, nil
+}

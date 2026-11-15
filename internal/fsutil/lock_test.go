@@ -80,3 +80,31 @@ func TestTryLock(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// Held sees a lock another open holds, and none once it is released; a file
+// that is not there is held by nobody, and is not made.
+func TestHeld(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock")
+	if held, err := fsutil.Held(path); err != nil || held {
+		t.Fatalf("held of a missing file = %v, %v; want false", held, err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("held made the file: %v", err)
+	}
+	release, err := fsutil.TryLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held, err := fsutil.Held(path); err != nil || !held {
+		t.Fatalf("held while locked = %v, %v; want true", held, err)
+	}
+	release()
+	if held, err := fsutil.Held(path); err != nil || held {
+		t.Fatalf("held once released = %v, %v; want false", held, err)
+	}
+	again, err := fsutil.TryLock(path)
+	if err != nil {
+		t.Fatalf("lock after held: %v", err)
+	}
+	again()
+}

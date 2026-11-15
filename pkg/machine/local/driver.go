@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/discobox-ai/vm/internal/fsutil"
+	"github.com/discobox-ai/vm/internal/proc"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
@@ -111,6 +112,10 @@ const (
 	// installingFile is the record of a VM an install is making, in its
 	// directory while the install runs, before instance.json is written.
 	installingFile = "installing.json"
+	// installLockName is the file whose lock an install holds from before
+	// it writes installingFile until it has written instance.json: a
+	// process ID is reused, a lock dies with its holder.
+	installLockName = "install.lock"
 	// fromName holds the ID of the VM an instance is created from, written
 	// before its disk is, for the moment before its record is.
 	fromName   = "from"
@@ -183,7 +188,7 @@ func (d *Driver) readRecord(id string) (instanceRecord, error) {
 	}
 	if err := fsutil.ReadJSON(d.recordFile(id), &rec); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return instanceRecord{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
+			return d.readInstalling(id)
 		}
 		return instanceRecord{}, err
 	}
@@ -205,6 +210,38 @@ func (d *Driver) readRecord(id string) (instanceRecord, error) {
 	return rec, nil
 }
 
+// errInstalling is a VM an install in progress is making: not one yet, and
+// its name not to be taken.
+var errInstalling = errors.New("being installed")
+
+// readInstalling reads the VM an install makes, by its ID, where it has no
+// instance.json: one whose install still holds its lock, from a process that
+// is still alive, is errInstalling, any other an interrupted install
+// (machine.Instance.Interrupted), and a directory with neither record is not
+// found. Both are asked since another reader's check holds the lock for a
+// moment, and a dead install's process ID can be reused.
+func (d *Driver) readInstalling(id string) (instanceRecord, error) {
+	var rec installingRecord
+	if err := fsutil.ReadJSON(filepath.Join(d.instanceDir(id), installingFile), &rec); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return instanceRecord{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
+		}
+		return instanceRecord{}, err
+	}
+	if rec.ID != id || machine.ValidatePool(rec.Pool) != nil || machine.ValidateName(rec.Name) != nil {
+		return instanceRecord{}, fmt.Errorf("instance %s: %w", id, machine.ErrNotFound)
+	}
+	held, err := fsutil.Held(filepath.Join(d.instanceDir(id), installLockName))
+	if err != nil {
+		return instanceRecord{}, err
+	}
+	if held && proc.Alive(rec.PID) {
+		return instanceRecord{}, fmt.Errorf("instance %s is being installed by process %d; interrupt that install to remove it: %w", rec.Name, rec.PID, errInstalling)
+	}
+	rec.Interrupted = true
+	return rec.instanceRecord, nil
+}
+
 // readPool reads a VM of the driver's pool by its ID.
 func (d *Driver) readPool(id string) (instanceRecord, error) {
 	rec, err := d.readRecord(id)
@@ -220,6 +257,9 @@ func (d *Driver) readFrom(from machine.Instance) (instanceRecord, error) {
 	rec, err := d.readRecord(from.ID)
 	if err == nil && (rec.Pool != cmp.Or(from.Pool, d.pool) || rec.Name != from.Name) {
 		err = fmt.Errorf("instance %s: %w", from.Name, machine.ErrNotFound)
+	}
+	if err == nil {
+		err = rec.whole()
 	}
 	return rec, err
 }
@@ -459,6 +499,9 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, name str
 	rec := instanceRecord{
 		Pool: d.pool, ID: fsutil.RandomHex(6), Name: name, GuestOS: spec.GuestOS,
 		CPUs: spec.CPUs, Memory: spec.Memory,
+		// When the install began, which an interrupted one is listed by,
+		// until it finishes.
+		Created: time.Now().UTC(),
 	}
 	if err := d.claim(rec.Name, rec.ID); err != nil {
 		return machine.Instance{}, err
@@ -466,6 +509,13 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, name str
 	hs, err := d.spec(rec)
 	if err == nil {
 		err = os.MkdirAll(hs.Dir, 0o755)
+	}
+	// Held from before its record is written until instance.json is, so
+	// a record whose lock nobody holds is an interrupted install.
+	lock := filepath.Join(d.instanceDir(rec.ID), installLockName)
+	unlockInstall := func() {}
+	if err == nil {
+		unlockInstall, err = fsutil.TryLock(lock)
 	}
 	// The install's record says, while it runs, which pool's VM it
 	// makes, so another process can find it (ViewInstall).
@@ -483,11 +533,17 @@ func (d *Driver) Install(ctx context.Context, spec machine.InstallSpec, name str
 		}
 	}
 	if err == nil {
-		err = os.Remove(marker)
-	}
-	if err == nil {
+		// Written before the install's record goes, so that at no moment
+		// the VM has neither and its name looks unclaimed. An install's
+		// record left beside it is not read.
 		rec.Created = time.Now().UTC()
 		err = d.writeRecord(rec)
+	}
+	// Released first: Windows removes no file a process holds open.
+	unlockInstall()
+	_ = os.Remove(lock)
+	if err == nil {
+		_ = os.Remove(marker)
 	}
 	if err != nil {
 		if hs.Dir != "" {
@@ -707,6 +763,8 @@ func (d *Driver) inUse(committed instanceRecord) error {
 			if info, err := os.Stat(d.fromFile(entry.Name())); err == nil && time.Since(info.ModTime()) < staleClaim {
 				return fmt.Errorf("instance %s: a VM is being created from it in %s; try again once it is: %w", committed.Name, d.instanceDir(entry.Name()), machine.ErrInUse)
 			}
+		case errors.Is(err, errInstalling):
+			// An install's disk differences over no other.
 		case err != nil:
 			return err
 		case rec.FromID == committed.ID:
