@@ -31,11 +31,13 @@ Hyper-V role needed) with a Windows 11 Pro 25H2 guest:
 
 - (1) passed before ADR 26-10-23-417: the suite ran in about 45 s. Since, it
   is `DISCO_VM_HCS_BASE=<a committed VM an install made> DISCO_VM_TEST_BINARY=<a
-  disco-vm.exe> go test ./pkg/machine/hcs`, and has not run.
+  disco-vm.exe> go test ./pkg/machine/hcs`, and passed in 109 s from an
+  install with Setup inside the VM (2026-11-15).
 - (2) passed before ADR 26-10-23-417: `DISCO_VM_DRIVER=hcs DISCO_VM_E2E_ROOT=<root>
   DISCO_VM_E2E_ISO=<iso> go test ./internal/e2e` from an elevated shell. The
   first run installs and tags `e2e/base` (about 15 min in all); later runs
-  reuse it.
+  reuse it. It passed again on 2026-11-15, its base installed with Setup
+  inside the VM, in 851 s in all.
 - (3) `disco-vm install NAME` from a retail Windows 11 ISO, Setup running
   inside the VM with nothing attached to or mounted on the host (ADR
   26-11-14-816), committed a VM in about 11 minutes, which `run --from`
@@ -203,6 +205,17 @@ What booting the DVDs took:
 - Secure Boot passes the retail ISO's PCA-2011-signed boot files under the
   Microsoft Windows template; the Microsoft UEFI CA template refuses them
   (18604, 0x00020006/0xF).
+- A specialize step that fails leaves the guest without its agent, and the
+  install waits out its 90-minute timeout: Setup does not stop on a failed
+  `RunSynchronous`, and a `shutdown /s` from the specialize script only
+  restarts the guest into Setup's next pass (Hyper-V-Worker 18514; tried
+  2026-11-15). The script's log on the guest's C: goes with the failed
+  install's disk.
+- Install grants the VM's throwaway identity access to the person's ISO
+  (`HcsGrantVmAccess`), so the ISO must be on NTFS and theirs to change. An
+  install killed before its cleanup leaves that entry behind; it names a SID
+  nothing else holds, and `icacls <iso> /remove "NT VIRTUAL MACHINE\<id>"`
+  removes it.
 - A COM1 on a named pipe (`Devices.ComPorts`) carries installed Windows's
   `echo ...> COM1` to the host, but nothing from WinPE or specialize, so
   install has no serial log; `C:\disco-vm\specialize.log` is the record.
