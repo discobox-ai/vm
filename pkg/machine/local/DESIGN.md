@@ -46,7 +46,8 @@ directory) is the driver's, as `/var/lib/docker` is Docker's:
   `next.ready` (written once it is whole), and `machine.old` (the old disk,
   once the new one is in place), [below](#an-upgrade-swaps-a-vms-disk-in-its-directory);
 - `instances/<id>/boot.lock`, locked by the process holding the VM's
-  machine, and `running/<hypervisor>/<os>/<n>`, a slot of a capped guest
+  machine, `shim.lock`, locked by a shim from its machine's boot until the
+  shim exits, and `running/<hypervisor>/<os>/<n>`, a slot of a capped guest
   OS, [below](#a-boot-is-admitted-across-every-pool);
 - `instances/.names/<pool>/<name>`, the name's claim, holding the ID;
 - `caches/<pool>/<key>.json`, a cache key, naming its current
@@ -201,7 +202,14 @@ be stopped. A boot holds the instance's `boot.lock` from its admission, in
 the shim, so a second `Start` is refused as running, and `Destroy` refuses
 the instance rather than remove its disk from under the boot, as it does
 one a process booted outside a shim; `Destroy` holds the lock itself while
-it removes the instance, so no boot is admitted halfway. Between `Start`
+it removes the instance, so no boot is admitted halfway. A shim gives up
+the boot lock once its machine stops, and `shim.json` after it, yet holds
+`shim.log` (its stdout and stderr) open until it exits, which Windows will
+not remove; so once booted it locks `shim.lock` too, never releasing it
+but by exiting (the unlock is kept reachable, or the garbage collector
+would close the file). `Destroy` waits up to 30 s for that lock before it
+removes a file, and `Start` before it spawns the next shim, which would
+otherwise boot and find the lock taken (vm#166). Between `Start`
 spawning the shim and the shim's admission nothing holds it, and a removal
 in that moment is not refused. Once the machine answers it writes
 `shim.json` (PID, socket, bearer token, service address), private to the

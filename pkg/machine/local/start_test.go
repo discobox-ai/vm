@@ -109,6 +109,114 @@ func TestDestroyLeavesABootThatHoldsTheVM(t *testing.T) {
 	}
 }
 
+// A started VM's shim holds its lock until it exits, and a removal waits
+// for that: a shim whose machine has stopped gives up its boot lock and
+// shim.json and still holds shim.log open as it exits, which Windows will
+// not remove (vm#166).
+func TestDestroyWaitsForItsShimToExit(t *testing.T) {
+	// The shim collects garbage all the time, which must not release its
+	// lock.
+	t.Setenv("GOGC", "1")
+	ctx := context.Background()
+	c := capped{t: t, root: t.TempDir(), agent: buildAgent(t), limit: 1}
+	d := c.driver("a")
+	inst := c.create(d, "one")
+	shimLock := filepath.Join(c.root, "instances", inst.ID, "shim.lock")
+	m, err := d.Start(ctx, inst, machine.BootOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		if _, err := m.Info(ctx); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := fsutil.TryLock(shimLock); !errors.Is(err, fsutil.ErrLocked) {
+		t.Fatalf("the shim lock of a running VM: %v, want ErrLocked", err)
+	}
+	if err := m.Shutdown(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	<-m.Done()
+	// A shim still exiting, as the lock's holder.
+	var unlock func()
+	deadline := time.Now().Add(30 * time.Second)
+	for unlock == nil {
+		if unlock, err = fsutil.TryLock(shimLock); err != nil && time.Now().After(deadline) {
+			t.Fatalf("the shim lock once the shim exited: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	destroyed := make(chan error, 1)
+	go func() { destroyed <- d.Destroy(ctx, inst) }()
+	select {
+	case err := <-destroyed:
+		unlock()
+		t.Fatalf("a removal while the shim lock is held returned %v, want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, err := d.Instance(ctx, "one"); err != nil {
+		t.Errorf("the VM while its removal waits on its shim: %v", err)
+	}
+	unlock()
+	select {
+	case err := <-destroyed:
+		if err != nil {
+			t.Fatalf("a removal once the shim lock is released: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a removal did not finish once the shim lock was released")
+	}
+	if _, err := d.Instance(ctx, "one"); !errors.Is(err, machine.ErrNotFound) {
+		t.Errorf("the VM once removed: %v, want ErrNotFound", err)
+	}
+}
+
+// A start waits for the shim of the VM's last boot to exit, which holds its
+// lock for a moment after the VM is found stopped (Attach refuses once the
+// shim unpublishes shim.json), rather than spawn a shim that boots and then
+// finds the lock taken.
+func TestAStartWaitsForTheLastShimToExit(t *testing.T) {
+	ctx := context.Background()
+	c := capped{t: t, root: t.TempDir(), agent: buildAgent(t), limit: 1}
+	d := c.driver("a")
+	inst := c.create(d, "one")
+	// The last boot's shim, still exiting, as the lock's holder.
+	unlock, err := fsutil.TryLock(filepath.Join(c.root, "instances", inst.ID, "shim.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type started struct {
+		m   machine.Machine
+		err error
+	}
+	starts := make(chan started, 1)
+	go func() {
+		m, err := d.Start(ctx, inst, machine.BootOptions{})
+		starts <- started{m, err}
+	}()
+	select {
+	case s := <-starts:
+		unlock()
+		if s.err == nil {
+			kill(t, s.m)
+		}
+		t.Fatalf("a start while the last shim holds its lock returned %v, want it to wait", s.err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case s := <-starts:
+		if s.err != nil {
+			t.Fatalf("a start once the last shim exited: %v", s.err)
+		}
+		kill(t, s.m)
+	case <-time.After(30 * time.Second):
+		t.Fatal("a start did not finish once the last shim exited")
+	}
+}
+
 // hanging is a root whose fake guests never answer: the agent its driver,
 // and every shim of it, boots is a script that writes its PID and sleeps,
 // so a boot waits on it until its context ends.
