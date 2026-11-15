@@ -1,9 +1,11 @@
 # 26-11-14-454 — boxd closes a default proxy it cannot remove, by locking it to port 0
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-14
 - **Supersedes in part**: 26-11-12-604 §3, that boxd removes every proxy of a
   VM whose public (now ingress) URL is asked off
+
+Accepted by the owner by merging #155, 2026-11-15.
 
 ## Context
 
