@@ -30,12 +30,13 @@ const FromEnv = "DISCO_VM_BOXD_FROM"
 const livePool = "conformance"
 
 // TestConformance runs the conformance suite against boxd itself. It needs an
-// account, so it runs only where BOXD_API_KEY or BOXD_TOKEN is set. A key
+// account, so it runs only where BOXD_API_KEY or BOXD_TOKEN is set, and a
+// region, BOXD_REGION. A key
 // that issues keys (a `boxd login` session's) runs the issued-key case too;
 // an API key cannot issue, and the suite skips it.
 func TestConformance(t *testing.T) {
-	if os.Getenv(APIKeyEnv) == "" && os.Getenv(TokenEnv) == "" {
-		t.Skipf("set %s to run the conformance suite against boxd", APIKeyEnv)
+	if !live() {
+		t.Skipf("set %s and %s to run the conformance suite against boxd", APIKeyEnv, RegionEnv)
 	}
 	machinetest.Run(t, envDriver(t, machine.KeyFromEnv("boxd")), machinetest.Config{
 		From:    os.Getenv(FromEnv),
@@ -49,6 +50,13 @@ func TestConformance(t *testing.T) {
 		// TestConformanceFakeAPI runs it against the fake.
 		SkipMaxMachines: "filling the org's machine limit would refuse every other member's machines while the suite holds it",
 	})
+}
+
+// live reports whether the environment names an account and a region, all
+// a test against boxd itself needs; without both it skips, before it
+// requires anything.
+func live() bool {
+	return (os.Getenv(APIKeyEnv) != "" || os.Getenv(TokenEnv) != "") && os.Getenv(RegionEnv) != ""
 }
 
 // envDriver is the driver the command line would make in livePool: its
@@ -68,14 +76,14 @@ func envDriver(t *testing.T, keys machine.KeySource) *Driver {
 
 // TestConformanceFakeAPI runs the conformance suite against an in-process fake
 // of boxd's API, which proves the driver's use of the API and the command
-// lines it sends, not boxd: with no region, at the home endpoint, and in
+// lines it sends, not boxd: in the home region, at the home endpoint, and in
 // another region, at its own. Its guests' commands run on this host, and the
 // suite checks that a guest reports linux, so it runs on Linux.
 func TestConformanceFakeAPI(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
 	}
-	for _, region := range []string{"", "nyc"} {
+	for _, region := range []string{"fra", "nyc"} {
 		t.Run("region="+region, func(t *testing.T) {
 			// A short directory: unix socket paths are limited to about 100
 			// bytes.
@@ -88,7 +96,7 @@ func TestConformanceFakeAPI(t *testing.T) {
 			// Small, so the suite fills it: the org's, in every region.
 			home.maxVMs.Store(4)
 			served := home
-			if region != "" {
+			if region != "fra" {
 				served = fakeRegion(t, home, dir, region, "enabled")
 				d = fakeIn(t, home, region, machine.DefaultPool, d.api.keys)
 			}
@@ -108,7 +116,7 @@ func TestConformanceFakeAPI(t *testing.T) {
 			})
 			// Every machine and snapshot is the region's.
 			t.Cleanup(func() {
-				if region == "" {
+				if region == "fra" {
 					return
 				}
 				home.mu.Lock()
@@ -467,7 +475,7 @@ func TestCreateUndone(t *testing.T) {
 }
 
 // fakeDriver serves a fake boxd API on loopback, the home region "fra", and
-// returns a driver bound to it with no region, which calls it as the owner's
+// returns a driver bound to it in fra, which calls it as the owner's
 // interactive session.
 func fakeDriver(t *testing.T, dir string) (*Driver, *fakeAPI) {
 	t.Helper()
@@ -513,11 +521,11 @@ func serveFake(t *testing.T, fake *fakeAPI) {
 // home's own region.
 func fakeKeyed(t *testing.T, home *fakeAPI, pool string, keys machine.KeySource) *Driver {
 	t.Helper()
-	return fakeIn(t, home, "", pool, keys)
+	return fakeIn(t, home, home.region, pool, keys)
 }
 
 // fakeIn is a driver of the fake boxd whose home endpoint is home, in a
-// region (home's own for ""), for a pool, with a key. It dials in plain text
+// region, for a pool, with a key. It dials in plain text
 // and through no proxy.
 func fakeIn(t *testing.T, home *fakeAPI, region, pool string, keys machine.KeySource) *Driver {
 	t.Helper()

@@ -101,6 +101,7 @@ go tool task build                                      # or go build -o disco-v
 
 export BOXD_API_KEY=$(boxd auth keys create disco-vm)   # once; keep it somewhere safe
 export DISCO_VM_DRIVER=boxd
+export BOXD_REGION=fra                                  # or nyc: required, where the VMs live
 
 ./disco-vm info                                         # check: ok means the key works
 ./disco-vm run stock                                    # a fresh VM of boxd's default image
@@ -135,7 +136,7 @@ reads.
 | `BOXD_GRPC_ADDR` | `boxd.sh:9443` | another cluster: the configuration's `addr` (`--boxd-addr`; ADR 26-11-11-215), always over TLS, which the command line reads from it and the driver never does. `addr` and `tokenUrl` are privileged: they are sent the key |
 | `BOXD_TOKEN_URL` | `https://app.boxd.sh/api/v1/auth/token` | its key exchange: the configuration's `tokenUrl` (`--boxd-token-url`), `https`, or `http` to a loopback address |
 | `BOXD_IN_MACHINE` | `false` | the configuration's `inMachine` (`--boxd-in-machine`): with no key, authenticate as the boxd machine the driver runs on ([On a boxd machine](#on-a-boxd-machine)). Privileged: it acts as the machine's owner |
-| `BOXD_REGION` | the home region | the configuration's `region` (`--boxd-region`): the boxd region the driver's machines and snapshots live in, such as `nyc` ([Regions](#regions)) |
+| `BOXD_REGION` | none: required | the configuration's `region` (`--boxd-region`): the boxd region the driver's machines and snapshots live in, such as `fra` or `nyc` ([Regions](#regions)) |
 | `HTTPS_PROXY` | | gRPC goes through it with HTTP CONNECT, as does the key exchange. A proxy that intercepts TLS has to offer HTTP/2 (ALPN `h2`) for gRPC to work through it. A discobox's egress proxy does, and the conformance suite passes through it (2026-10-08). |
 | `DISCO_VM_DEBUG` | | any value is `disco-vm --debug`: one line on stderr for every API call, when it finished, how long it took, and its request and answer. A stream (Exec, an upload) is one line when it ends. |
 | `ALL_PROXY` | | a `socks5://` or `socks5h://` proxy carries the gRPC connection instead, for an HTTP proxy without HTTP/2. The key exchange still goes through `HTTPS_PROXY`. |
@@ -325,12 +326,18 @@ names them, with each one's `api_endpoint` and whether the key's org has it
 and API key calls, and the key exchange, to the home endpoint.
 
 A driver is given its region in its configuration, the field `region`
-(`--boxd-region`, `$BOXD_REGION`; ADR 26-11-11-215). With none it calls the home endpoint, as before regions, and
-boxd places its machines there. With one it asks `ListRegions` once, the
-first time it needs the region, and sends every machine and snapshot call to
-that region's endpoint (the home endpoint itself, for the home region); a
-region boxd does not list, or one the org has not enabled, fails `Check` and
-every call, naming why, and is asked again next time. Since a region's
+(`--boxd-region`, `$BOXD_REGION`; ADR 26-11-11-215), and it is required: a
+configuration with none is refused. It does not follow boxd's own default,
+the org's default region set in the console, which `boxd new` uses: that
+default can change under a pool, which would then lose sight of the VMs it
+made in the old one while they are still billed, and not every credential
+may read it, so two drivers of one pool could land in two regions. A pool
+made before the region was required, with none, has its VMs at the home
+endpoint: `fra`. The driver asks `ListRegions` once, the first time it needs
+the region, and sends every machine and snapshot call to that region's
+endpoint (the home endpoint itself, for the home region); a region boxd does
+not list, or one the org has not enabled, fails `Check` and every call,
+naming why, and is asked again next time. Since a region's
 endpoint lists only that region's machines and snapshots, a pool sees its
 region's VMs alone: the same pool in two regions is two pools, and a name
 can be used in both, as boxd's names can. Keys are the account's, so a key

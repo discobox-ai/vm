@@ -51,7 +51,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   starts with `dvm-` too (`run dvm-dev`), although the machine is named
   `dvm-<pool>--...` either way.
 - Isolate state: `export DISCO_VM_POOL=<a scratch pool, e.g. vtest>
-  DISCO_VM_DRIVER=boxd`. boxd keeps
+  DISCO_VM_DRIVER=boxd BOXD_REGION=fra` (or `nyc`: the region is required). boxd keeps
   everything (ADR 26-10-23-417): a committed VM is a snapshot and a VM a
   machine, both named `dvm-<pool>--<name>`, so the pool is what keeps
   a run apart.

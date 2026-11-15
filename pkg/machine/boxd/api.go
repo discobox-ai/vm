@@ -51,7 +51,7 @@ type client struct {
 	addr     string
 	tokenURL string
 	// region is the boxd region ID the driver's machines and snapshots live
-	// in; empty is the home endpoint's own.
+	// in, which the configuration requires.
 	region string
 	// keys is asked for the key on every call, so a key replaced where it
 	// reads is used from the next one. With none, vm, the in-machine token,
@@ -111,12 +111,9 @@ func newClient(conf Config, cfg machine.Config) *client {
 func (c *client) Account() (boxdapi.BoxdApiClient, error) { return c.dial(c.addr) }
 
 // API is the API at the region's endpoint, where calls on machines and
-// snapshots go: the home endpoint's for no region, and otherwise the one
-// ListRegions names for it, asked once it answers.
+// snapshots go: the one ListRegions names for it (the home endpoint itself
+// for the home region), asked once it answers.
 func (c *client) API(ctx context.Context) (boxdapi.BoxdApiClient, error) {
-	if c.region == "" {
-		return c.Account()
-	}
 	c.dialMu.Lock()
 	api := c.regional
 	c.dialMu.Unlock()

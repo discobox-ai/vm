@@ -705,7 +705,8 @@ func TestDriverConfig(t *testing.T) {
 		{fake("--docker-host", "unix:///x", "ls"), "--docker-host configures the docker driver, and the driver is fake"},
 		{fake("--driver-config", "{}", "--fake-no-commit", "ls"), "--driver-config cannot be combined with --fake-no-commit"},
 		{[]string{"--driver", "docker", "--docker-host", "ssh://h", "ls"}, "host: only unix:// and tcp://"},
-		{[]string{"--driver", "boxd", "--boxd-token-url", "http://example.com/t", "ls"}, "tokenUrl: a URL the key is sent to is https"},
+		{[]string{"--driver", "boxd", "--boxd-region", "fra", "--boxd-token-url", "http://example.com/t", "ls"}, "tokenUrl: a URL the key is sent to is https"},
+		{[]string{"--driver", "boxd", "ls"}, "fra, the home region, is where a pool made before it was required keeps its VMs"},
 	} {
 		if out, code := e.run(c.args...); code == 0 || !strings.Contains(out, c.want) {
 			t.Errorf("disco-vm %s: exit %d, want %q:\n%s", strings.Join(c.args, " "), code, c.want, out)

@@ -367,12 +367,14 @@ tasks:
   # VM of boxd's default image (DISCO_VM_E2E_IMAGE names another for e2e).
   # Both make billable machines, and remove them.
   test:boxd:
-    desc: Run the boxd conformance suite and internal/e2e against boxd itself (needs BOXD_API_KEY or BOXD_TOKEN)
+    desc: Run the boxd conformance suite and internal/e2e against boxd itself (needs BOXD_API_KEY or BOXD_TOKEN, and BOXD_REGION)
     deps:
       - build
     preconditions:
       - sh: '[ -n "${BOXD_API_KEY}${BOXD_TOKEN}" ]'
         msg: set BOXD_API_KEY (or BOXD_TOKEN) to a key of the boxd account to run VMs in
+      - sh: '[ -n "${BOXD_REGION}" ]'
+        msg: set BOXD_REGION to the boxd region to run VMs in, such as fra or nyc
     env:
       DISCO_VM_TEST_BINARY: '{{.ROOT_DIR}}/{{.BINARY}}'
     cmds:

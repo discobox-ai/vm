@@ -65,11 +65,14 @@ machines and snapshots (the root
   supported: boxd leaves it `running`, and so does disco-vm, until `disco-vm
   stop`. An image built before this has a shutdown hook that nothing reads.
 - **A driver is one region's**: its configuration's `region`, a boxd region
-  ID (ADR 26-11-11-215).
+  ID (ADR 26-11-11-215), which is required. boxd's own default, the org's
+  default region, is not followed: it can change under a pool, leaving the
+  pool's VMs unlisted and billed in the old one, and a credential may not be
+  allowed to read it. A pool made before it was required is at `fra`.
   boxd gives each region its own API endpoint, so the region is where calls
-  on machines and snapshots go: the home endpoint (`boxd.sh:9443`) for none,
-  and otherwise the endpoint `ListRegions` names for the region, asked there
-  once it answers (a failure is asked again). A region boxd does not list,
+  on machines and snapshots go: the endpoint `ListRegions` names for the
+  region (the home endpoint, `boxd.sh:9443`, for the home region), asked
+  there once it answers (a failure is asked again). A region boxd does not list,
   or one the key's org has not `enabled`, is an error naming why. Account and
   key calls (`Whoami`, the API keys, the key exchange) always go to the home
   endpoint. A region's endpoint lists that region's machines and snapshots

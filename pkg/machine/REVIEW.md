@@ -80,7 +80,11 @@
   lists with another region, or none, never sees them and they are billed
   forever. A new setting that narrows what `Instances` returns updates the
   reaping paragraph of `pkg/engine/DESIGN.md` in the same change. A review
-  found the region added without it.
+  found the region added without it. Such a setting never defaults to
+  something the provider can change or a credential may not read (boxd's
+  org default region): a driver that followed it would list somewhere other
+  than where it made its VMs. Make it required instead. A change proposed
+  it for boxd's region (vm#161).
 - **A cache keyed by digest replaces only an entry that is broken.**
   `linuximage.Pull` and `agent.Pull` let a boot read an entry another pull
   has just returned, so a pull that finds a good entry at its key when it is

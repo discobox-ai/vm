@@ -131,7 +131,7 @@ func TestTheDialerCanRefuse(t *testing.T) {
 	refused := errors.New("not a host this embedder lets the driver reach")
 	dial := func(context.Context, string, string) (net.Conn, error) { return nil, refused }
 	for _, key := range []string{"bxd_k", fakeSession} {
-		d := configured(t, json.RawMessage(`{"addr":"127.0.0.1:9","tokenUrl":"http://127.0.0.1:9/t"}`),
+		d := configured(t, json.RawMessage(`{"addr":"127.0.0.1:9","tokenUrl":"http://127.0.0.1:9/t","region":"fra"}`),
 			machine.StaticKey(machine.Key{Driver: "boxd", Secret: key}), dial)
 		if err := d.Check(t.Context()); err == nil || !strings.Contains(err.Error(), refused.Error()) {
 			t.Fatalf("%s: Check through a refusing dialer: %v", key, err)

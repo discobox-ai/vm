@@ -15,7 +15,9 @@ import (
 
 // TestEveryDriverDecodesItsDefinition sets every field each driver in this
 // build declares, as its type's zero value, which every driver reads as its
-// default, and then as its Default: a field the definition lists and the
+// default, and then as its Default, a required field at its placeholder in
+// both; a configuration with none is refused exactly where a field is
+// required. A field the definition lists and the
 // driver's own Config does not decode, of another type, or whose default
 // the driver refuses, fails here.
 func TestEveryDriverDecodesItsDefinition(t *testing.T) {
@@ -31,9 +33,23 @@ func TestEveryDriverDecodesItsDefinition(t *testing.T) {
 			t.Errorf("%s has no description, or its base none", name)
 		}
 		zero, defaults := map[string]any{}, map[string]any{}
+		required := false
 		for _, f := range def.ConfigFields {
 			if f.Label == "" || f.Description == "" {
 				t.Errorf("%s: %s has no label or description", name, f.Key)
+			}
+			if f.Required {
+				// A required field has no default, and its placeholder is a
+				// value it takes.
+				required = true
+				if f.Default != "" || f.Placeholder == "" {
+					t.Errorf("%s: %s is required, so it has a placeholder and no default", name, f.Key)
+				}
+				if zero[f.Key], err = f.Parse(f.Placeholder); err != nil {
+					t.Errorf("%s: %s's placeholder is not a %s", name, f.Key, f.Type)
+				}
+				defaults[f.Key] = zero[f.Key]
+				continue
 			}
 			zero[f.Key] = map[string]any{machine.ConfigString: "", machine.ConfigBoolean: false, machine.ConfigNumber: 0}[f.Type]
 			if f.Default != "" {
@@ -51,8 +67,8 @@ func TestEveryDriverDecodesItsDefinition(t *testing.T) {
 				t.Errorf("%s: every field at %s: %v", name, what, err)
 			}
 		}
-		if err := machine.Validate(name, nil); err != nil {
-			t.Errorf("%s: no configuration: %v", name, err)
+		if err := machine.Validate(name, nil); required != (err != nil) {
+			t.Errorf("%s: no configuration: %v; a required field is %v", name, err, required)
 		}
 	}
 }
@@ -106,8 +122,9 @@ func TestValidateRefusesWhatTheDriverDoesNotTake(t *testing.T) {
 		{"fake", `{} {}`, "not one JSON object"},
 		{"docker", `{"host":"ssh://h"}`, "host: only unix:// and tcp://"},
 		{"docker", `{"root":"relative"}`, "root: not an absolute path"},
-		{"boxd", `{"addr":"no-port"}`, "addr: not HOST:PORT"},
-		{"boxd", `{"tokenUrl":"http://example.com/t"}`, "tokenUrl: a URL the key is sent to is https"},
+		{"boxd", `{"region":"fra","addr":"no-port"}`, "addr: not HOST:PORT"},
+		{"boxd", `{"region":"fra","tokenUrl":"http://example.com/t"}`, "tokenUrl: a URL the key is sent to is https"},
+		{"boxd", `{}`, "region is required"},
 		{"boxd", `{"region":"New York"}`, "region: not a boxd region ID"},
 		{"archil", `{"region":"mars"}`, "region: not one that runs sandboxes"},
 		{"archil", `{"baseUrl":"https://h/?k=v"}`, "baseUrl: a URL the key is sent to has no userinfo, query"},
