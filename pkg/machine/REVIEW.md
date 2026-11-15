@@ -108,6 +108,12 @@
   `unix://C:%5C…`); a test that builds one from `t.TempDir()` runs in the
   `windows` CI job, which is where it fails. Why: a review found one that
   would have failed there on every run.
+- **A test that reads a peer's reply on Windows reads the bytes it
+  expects, not to EOF, under a deadline.** When the peer writes its last
+  bytes and closes at once, a Windows read can get the bytes and then never
+  see the close, so `io.ReadAll` waits for an EOF that never comes. Why:
+  `TestDialURL` read "hi" and then hung the `windows` job to the 10-minute
+  test timeout that way.
 - **A test that checks a file's owner-only mode skips the check on
   Windows**, which reports no owner-only mode: 0666 for a writable file,
   0444 for a read-only one (`agent` TestPull,
