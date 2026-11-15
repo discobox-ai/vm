@@ -1,6 +1,6 @@
 # 26-11-14-816 — hcs installs Windows inside the VM from the ISO, and attaches and mounts nothing on the host
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-14
 
 ## Context
