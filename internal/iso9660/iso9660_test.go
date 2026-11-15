@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -168,6 +169,57 @@ func readTree(t *testing.T, img, rec []byte, prefix string, joliet bool, got map
 			}
 			fat := int(binary.LittleEndian.Uint32(r[2:])) * sector
 			got[path] = string(img[fat : fat+int(binary.LittleEndian.Uint32(r[10:]))])
+		}
+	}
+}
+
+// Each tree's path table lists directories by its own names: "a-z" sorts
+// before "aa" in Joliet, and after it as the primary tree's "A_Z".
+func TestPathTableOrder(t *testing.T) {
+	var buf bytes.Buffer
+	files := []File{file("aa/x", "1"), file("a-z/y", "2"), file("aa/sub/z", "3")}
+	if err := Write(&buf, Image{VolumeID: "V", Files: files}); err != nil {
+		t.Fatal(err)
+	}
+	img := buf.Bytes()
+	for _, tc := range []struct {
+		desc   int
+		joliet bool
+		want   []string
+	}{
+		{16, false, []string{"", "AA", "A_Z", "SUB"}},
+		{17, true, []string{"", "a-z", "aa", "sub"}},
+	} {
+		d := img[tc.desc*sector:]
+		size := binary.LittleEndian.Uint32(d[132:])
+		at := binary.LittleEndian.Uint32(d[140:])
+		table := img[int(at)*sector : int(at)*sector+int(size)]
+		var got []string
+		var parents []uint16
+		for p := 0; p < len(table); {
+			n := int(table[p])
+			id := table[p+8 : p+8+n]
+			parents = append(parents, binary.LittleEndian.Uint16(table[p+6:]))
+			name := string(id)
+			if tc.joliet {
+				u := make([]uint16, n/2)
+				for i := range u {
+					u[i] = binary.BigEndian.Uint16(id[2*i:])
+				}
+				name = string(utf16.Decode(u))
+			}
+			if n == 1 && id[0] == 0 {
+				name = ""
+			}
+			got = append(got, name)
+			p += 8 + n + n%2
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("joliet=%v: the path table lists %q, want %q", tc.joliet, got, tc.want)
+		}
+		// sub's parent is aa: the second entry in the primary table, the third in Joliet's.
+		if want := map[bool]uint16{false: 2, true: 3}[tc.joliet]; parents[3] != want {
+			t.Errorf("joliet=%v: sub's parent is %d, want %d", tc.joliet, parents[3], want)
 		}
 	}
 }

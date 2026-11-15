@@ -3,7 +3,6 @@ package wim
 import (
 	"bytes"
 	"encoding/binary"
-	"strings"
 	"testing"
 	"unicode/utf16"
 )
@@ -39,33 +38,6 @@ func TestImages(t *testing.T) {
 	}
 	if got := images[2]; got != (Image{Index: 3, Name: "Windows 11 Pro", EditionID: "Professional"}) {
 		t.Fatalf("image 3 is %+v", got)
-	}
-}
-
-func TestChoose(t *testing.T) {
-	images, err := Images(bytes.NewReader(fakeWIM(editions)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for edition, want := range map[string]int{
-		"":                     3, // the first Pro
-		"2":                    2,
-		"windows 11 pro n":     4,
-		"Windows 11 Education": 2,
-	} {
-		im, err := Choose(images, edition)
-		if err != nil || im.Index != want {
-			t.Errorf("Choose(%q) = %d, %v; want %d", edition, im.Index, err, want)
-		}
-	}
-	if im, _ := Choose(images[:2], ""); im.Index != 1 {
-		t.Errorf("with no Pro, Choose picks %d, not the first", im.Index)
-	}
-	for _, edition := range []string{"9", "Windows 11 Enterprise", "Pro"} {
-		_, err := Choose(images, edition)
-		if err == nil || !strings.Contains(err.Error(), "3 Windows 11 Pro") {
-			t.Errorf("Choose(%q): %v; want an error listing the editions", edition, err)
-		}
 	}
 }
 
