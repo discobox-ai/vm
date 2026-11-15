@@ -274,3 +274,35 @@ func commitBase(t *testing.T, e *engine.Engine, name string) engine.Instance {
 	t.Cleanup(func() { _ = e.Remove(context.Background(), committed, true) })
 	return committed
 }
+
+// TestAFailedSnapshotIsRemovable checks that a failed snapshot with no
+// machine of its name, which an earlier Destroy left, is listed, and that
+// the engine removes it.
+func TestAFailedSnapshotIsRemovable(t *testing.T) {
+	d, fake := fakeDriver(t, t.TempDir())
+	ctx := context.Background()
+	name := "dvm-default--build"
+	fake.mu.Lock()
+	fake.snapshots[name] = &fakeSnapshot{id: "snap_build", name: name, dir: t.TempDir(), status: "failed"}
+	fake.mu.Unlock()
+	e, err := engine.Open(d, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := e.Get(ctx, "build")
+	if err != nil {
+		t.Fatalf("the failed snapshot is not listed: %v", err)
+	}
+	if err := e.Start(ctx, inst, engine.StartOptions{}); !errors.Is(err, machine.ErrCommitted) {
+		t.Fatalf("a start of the failed snapshot: %v, want ErrCommitted", err)
+	}
+	if err := e.Remove(ctx, inst, false); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	_, left := fake.snapshots[name]
+	fake.mu.Unlock()
+	if left {
+		t.Fatal("the failed snapshot is left after its Remove")
+	}
+}

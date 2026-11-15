@@ -16,6 +16,9 @@ option go_package = "github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi
 
 service BoxdApi {
   rpc CreateVm(CreateVmRequest)             returns (CreateVmResponse);
+  // A snapshot of the machine still pending is finished, not abandoned: one
+  // destroyed 0.2 s into its snapshot's pending had it ready a moment later
+  // (region fra, 2026-11-15).
   rpc DestroyVm(DestroyVmRequest)           returns (DestroyVmResponse);
   rpc StartVm(StartVmRequest)               returns (StartVmResponse);
   rpc StopVm(StopVmRequest)                 returns (StopVmResponse);
@@ -40,6 +43,8 @@ service BoxdApi {
   // Memory + disk of a running VM, replicated and versioned (latest-only).
   rpc CreateSnapshot(CreateSnapshotRequest)   returns (CreateSnapshotResponse);
   rpc GetSnapshot(GetSnapshotRequest)         returns (GetSnapshotResponse);
+  // Deletes a pending snapshot too, at once: GetSnapshot answered NOT_FOUND
+  // straight after, and still did seconds later (region fra, 2026-11-15).
   rpc DeleteSnapshot(DeleteSnapshotRequest)   returns (DeleteSnapshotResponse);
   // Every snapshot in the caller's context, with no paging.
   rpc ListSnapshots(ListSnapshotsRequest)     returns (ListSnapshotsResponse);
