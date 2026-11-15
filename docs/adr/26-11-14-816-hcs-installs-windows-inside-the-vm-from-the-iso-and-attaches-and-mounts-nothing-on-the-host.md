@@ -118,7 +118,8 @@ disco-vm writes a second, small medium in the install's directory. It holds:
 
 - `autounattend.xml` at its root, where Setup looks on removable media;
 - the agent (`spec.Agent`), as `disco-vm.exe`;
-- the specialize script (§5).
+- the specialize script (§6), and (amended) the windowsPE script this
+  section describes below.
 
 It is built in Go, in process, from bytes disco-vm has. No host tool runs,
 and nothing is mounted. It is attached read-only to the install's boot and
@@ -264,6 +265,10 @@ made for the host's safety. A slower install that cannot freeze its host
 is the better one. The implementation PR states both totals, so the owner
 can see the cost before merging it.
 
+(Amended:) the owner chose on discobox-ai/vm#127 to skip the baseline,
+which attaches a disk to the host, so only this design is timed. The old
+install's own numbers in `docs/drivers/hcs.md` stand in for it.
+
 ## Alternatives rejected
 
 - **Keep the host-side install and harden it further.** Examples: throttle
@@ -320,7 +325,7 @@ can see the cost before merging it.
   asks for 32 GiB instead of the disk's size plus 30 GiB.
 - (Amended) hcs VMs still have no TPM, and `guest.vmgs` is still scratch.
   Install depends on `LabConfig`'s TPM bypass, a switch Microsoft could stop
-  honouring; the rejected alternative below names that cost.
+  honouring; the rejected alternative above names that cost.
 - Install now depends on Setup inside the guest: the answer file and the
   boot medium. A change in a future Windows release to how Setup
   finds its answer file or checks hardware breaks install, where DISM did
@@ -341,7 +346,7 @@ can see the cost before merging it.
   - its committed VM passes `machinetest` and `internal/e2e`;
   - `install --gui` shows the first logon;
   - an edition by name, by index, and a missing one;
-  - both installs timed per §8.
+  - this install timed per §8 (amended: the baseline is skipped).
   The baseline run attaches a disk to its host. It runs only on a host
   whose owner has agreed to that, never on the host that froze.
 - `docs/drivers/hcs.md` (Hard rules, Install, Boot, Commit, Known numbers),
@@ -365,10 +370,20 @@ can see the cost before merging it.
     and the retail DVD `subst`ed to `Z:` in WinPE for `InstallFrom`.
   - §4 is the Deferred fallback: no vTPM, and `LabConfig` bypasses the TPM
     check, because HCS gives no vTPM without the Hyper-V role.
-  - Setup needs no installation key: the answer file's product key is empty.
-  - The answer file runs each script from whichever drive holds it under
-    `disco-vm\`; the medium's volume label is `DISCOVM`.
+  - Setup needs no installation key for the editions tried (Pro and
+    Education).
+  - The scripts are the medium's marker: the answer file runs each from
+    whichever drive holds it under `disco-vm\`.
   - `sweepAttached` goes with the attach, with nothing to sweep: the old
     attach was never permanent, so it ended with the process that held it.
   - The UDF and WIM readers and the ISO 9660 writer are `internal/udf`,
-    `internal/wim`, and `internal/iso9660`, in this repository.
+    `internal/wim`, and `internal/iso9660`, in this repository and not in
+    `github.com/discobox-ai/x`: each reads or writes only what a retail
+    Windows ISO and this medium need (one type 1 partition, 2048-byte
+    blocks, no Rock Ridge), so none is yet the general library `x` holds.
+    They move there when something outside disco-vm needs them.
+  - vz's agent drive keeps its own writer (`pkg/machine/vz/iso.go`, ADR
+    26-11-13-318) for now: a flat Rock Ridge image whose bytes are its cache
+    key, proven on a Mac. Moving it onto `internal/iso9660` means giving that
+    Rock Ridge and a fixed epoch and proving the drive again on a Mac, so it
+    is deferred until the next change to either writer.
