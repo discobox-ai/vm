@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -545,5 +546,41 @@ func TestOptionalURLRequests(t *testing.T) {
 	t.Cleanup(func() { _ = forced.Destroy(context.Background(), inst) })
 	if len(forced.asked) != 1 || forced.asked[0] != off {
 		t.Fatalf("the hook forced the ingress URL off, and the driver was asked %+v", forced.asked)
+	}
+}
+
+// checkedCap is a driver that learns a cap from its provider at Check, as
+// boxd learns its org's machine limit.
+type checkedCap struct {
+	machine.Driver
+	checked atomic.Bool
+}
+
+func (d *checkedCap) Check(ctx context.Context) error {
+	d.checked.Store(true)
+	return d.Driver.Check(ctx)
+}
+
+func (d *checkedCap) Capabilities() machine.Capabilities {
+	caps := d.Driver.Capabilities()
+	if d.checked.Load() {
+		caps.MaxMachines = map[machine.OS]int{machine.Linux: 7}
+	}
+	return caps
+}
+
+// A client's capabilities are read again after its Check, so a cap the
+// served driver learns there reaches it.
+func TestCheckReadsCapabilitiesAgain(t *testing.T) {
+	driver := &checkedCap{Driver: fakeDriver(t, agent(t), t.TempDir(), "p")}
+	c := client(t, serve(t, driver, served.Options{Version: "v1", Allow: []served.Op{served.OpCapabilities}}), "v1")
+	if caps := c.Capabilities(); caps.MaxMachines != nil {
+		t.Fatalf("MaxMachines before Check: %v, want none", caps.MaxMachines)
+	}
+	if err := c.Check(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Capabilities().MaxMachines[machine.Linux]; got != 7 {
+		t.Fatalf("MaxMachines[linux] after Check = %d, want the served driver's, 7", got)
 	}
 }

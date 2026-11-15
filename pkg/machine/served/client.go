@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/discobox-ai/vm/internal/netutil"
@@ -35,12 +36,16 @@ type Config struct {
 }
 
 // Driver is a machine.Driver whose every call is a served driver's. Its
-// name, capabilities, and allow-list are the server's, read once when it is
-// made; every VM is read from the server on every call.
+// name, capabilities, and allow-list are the server's, read when it is made,
+// and its capabilities again after each Check, since a driver may learn a
+// cap from its provider there (Capabilities.MaxMachines); every VM is read
+// from the server on every call.
 type Driver struct {
 	cfg  Config
 	http *http.Client
 	info driverInfo
+	// caps is info.Capabilities, as last read.
+	caps atomic.Pointer[machine.Capabilities]
 }
 
 var _ machine.Driver = (*Driver)(nil)
@@ -60,6 +65,7 @@ func New(ctx context.Context, cfg Config) (*Driver, error) {
 	if err := d.call(ctx, http.MethodGet, "/v1/driver", nil, &d.info); err != nil {
 		return nil, err
 	}
+	d.caps.Store(&d.info.Capabilities)
 	return d, nil
 }
 
@@ -68,11 +74,19 @@ func (d *Driver) Name() string { return d.info.Name }
 
 // Capabilities are the served driver's, narrowed to what the server
 // allows.
-func (d *Driver) Capabilities() machine.Capabilities { return d.info.Capabilities }
+func (d *Driver) Capabilities() machine.Capabilities { return *d.caps.Load() }
 
-// Check is the served driver's.
+// Check is the served driver's, and then reads its capabilities again.
 func (d *Driver) Check(ctx context.Context) error {
-	return d.call(ctx, http.MethodPost, "/v1/check", nil, nil)
+	if err := d.call(ctx, http.MethodPost, "/v1/check", nil, nil); err != nil {
+		return err
+	}
+	var info driverInfo
+	if err := d.call(ctx, http.MethodGet, "/v1/driver", nil, &info); err != nil {
+		return err
+	}
+	d.caps.Store(&info.Capabilities)
+	return nil
 }
 
 // Install is never served.

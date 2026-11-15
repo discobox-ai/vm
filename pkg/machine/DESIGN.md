@@ -44,7 +44,8 @@ a `Capabilities` field, never a faked method:
 | capability | hcs | vz | boxd | docker | libkrun | fake | archil |
 |---|---|---|---|---|---|---|---|
 | guest OS | windows | darwin, and linux (ADR 26-10-31-990) | linux | linux | linux (ADR 26-11-03-530) | host's | linux, amd64 |
-| max running | none | **2 macOS guests** (framework limit); Linux guests do not count | none (the org's quota) | none | none | none | none (the plan's quota) |
+| max running | none | **2 macOS guests** (framework limit); Linux guests do not count | none | none | none | none | none (the plan's quota) |
+| max machines (`MaxMachines`: VMs at once, stopped ones counted, committed ones not) | none | none | **the org's machine limit** (`GetOrgMachineLimit`'s `max_vms`, every member's machines counted), read at `Check`; boxd refuses a create past it | none | none | none | none |
 | shared dirs | (Plan9, later) | virtiofs | no | no (needs an idmapped mount) | virtiofs | no | no |
 | display | the guest's Remote Desktop in mstsc, or the agent's stream on 7301 in a window (ADR 26-11-02-274) | framework view in a native window, at boot only | no | no | no | no | no |
 | view (`View`: a window from any process, on a running VM or an install) | yes (ADR 26-11-11-746) | no | no | no | no | no | no |
@@ -67,7 +68,11 @@ a `Capabilities` field, never a faked method:
 A driver enforces `MaxRunning` across every pool it keeps, and refuses a
 boot past it with `ErrCapacity`; `local` does for hcs, vz, libkrun, and fake
 ([pkg/machine/local](local/DESIGN.md#a-boot-is-admitted-across-every-pool)).
-The engine counts nothing. Every driver clones the same way: cold
+`MaxMachines` is a provider's cap on the VMs that exist, which the provider
+enforces: a create past it is `ErrCapacity`, and it may count VMs the pool
+does not see (boxd's counts the org's). A driver that reads a cap from its
+provider reads it at `Check`, so `Capabilities` does no I/O and reports none
+before (ADR 26-11-15-274). The engine counts nothing. Every driver clones the same way: cold
 ([below](#every-copy-is-cold-and-a-vm-is-made-fast-by-what-is-in-it)).
 
 ## Commit is a capability, and a driver without it makes every VM fresh

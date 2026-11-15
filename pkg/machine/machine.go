@@ -68,9 +68,11 @@ var ErrCommitted = errors.New("the VM is committed, and its provider has nothing
 
 // ErrCapacity reports a boot refused because the host already runs as many
 // guests of the instance's OS as Capabilities.MaxRunning allows, counting
-// every pool and every process (Driver.Boot and Start). It is the
-// hypervisor's limit, not a policy: one stopping makes room.
-var ErrCapacity = errors.New("machine: the host runs as many guests of this OS as the hypervisor allows")
+// every pool and every process (Driver.Boot and Start), or a create refused
+// because the provider already has as many VMs as Capabilities.MaxMachines
+// allows (Driver.Create). It is the provider's limit, not a policy: one
+// stopping, or one destroyed, makes room.
+var ErrCapacity = errors.New("machine: the provider already runs, or holds, as many VMs of this OS as it allows")
 
 // ErrNotRunning reports that an instance has no running machine to attach to.
 var ErrNotRunning = errors.New("machine: the instance is not running")
@@ -103,6 +105,14 @@ type Capabilities struct {
 	// driver enforces it, across every pool it keeps, and refuses a boot past
 	// it with ErrCapacity.
 	MaxRunning map[OS]int `json:"maxRunning,omitempty"`
+	// MaxMachines caps the VMs of a guest OS that may exist at once, running
+	// or stopped, committed VMs aside. Zero means no cap. It is the
+	// provider's, so it counts what the provider counts, which may be more
+	// than this pool's VMs (boxd's org machine limit counts every member's
+	// machines). The provider enforces it: Create past it is refused with
+	// ErrCapacity, and a destroy makes room. A driver that reads it from its
+	// provider knows it once Check has answered, and reports none before.
+	MaxMachines map[OS]int `json:"maxMachines,omitempty"`
 	// SharedDirectories reports host directory sharing (virtiofs, Plan9).
 	SharedDirectories bool `json:"sharedDirectories"`
 	// Display reports a viewable guest framebuffer, which a boot shows in a
