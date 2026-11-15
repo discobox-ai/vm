@@ -2,6 +2,12 @@
 
 - **Status**: Accepted
 - **Date**: 2026-11-14
+- **Amended**: 2026-11-15, by the implementation (discobox-ai/vm#127), before
+  anything shipped against it: §3 is shape (a), with what it took to boot;
+  §4 is the Deferred fallback, no vTPM, because HCS gives none on a host
+  without the Hyper-V role; §5 bypasses the TPM check with the CPU check;
+  §6 says how the scripts find the medium. See
+  Deferred's last item.
 
 ## Context
 
@@ -122,13 +128,16 @@ VM.
 This medium also makes the first boot prompt-free. It boots WinPE from the
 retail ISO's own boot files, which disco-vm reads from the ISO's UDF tree
 in Go. Then WinPE's Setup applies `install.wim` from the retail DVD. No key
-is sent. Which shape boots is left to the implementation's spike (open
-below). The candidates are:
+is sent. The implementation took shape (a) (amended; the candidates were):
 
 - **(a) An ISO** whose El Torito image is the retail ISO's
   `efi\microsoft\boot\efisys_noprompt.bin`, and which carries the ISO's
   `efi\microsoft\boot\bcd`, `boot\boot.sdi`, and `sources\boot.wim`. This is
-  oscdimg's own no-prompt recipe.
+  oscdimg's own no-prompt recipe. **Taken.** The medium is ISO 9660 with
+  Joliet (no UDF), and carries the ISO's whole `efi` tree and its root
+  `bootmgr.efi` too: the El Torito image's `cdboot` loads `\bootmgr.efi`
+  from the disc's root, and without it fails back to the firmware at once
+  (Hyper-V-Worker 18603, status 0x00010003/0x13, for every El Torito entry).
 - **(b) A small VHD** with an ESP holding the ISO's `efi\boot\bootx64.efi`
   (Boot Manager, which never prompts; a USB stick boots the same way), the
   BCD, `boot.sdi`, and `boot.wim`. It has to enumerate after the target
@@ -137,36 +146,36 @@ below). The candidates are:
 
 Either way, the spike has to show that Setup finds `install.wim` on the
 retail DVD, with `InstallFrom` pointing there if it does not find it on its
-own. After Setup's first reboot, it has put Windows Boot Manager first in
+own. (Amended:) it does not look there on its own, and in WinPE the DVDs'
+letters follow no rule. So a windowsPE `RunSynchronous` script on the medium
+finds the DVD that holds `sources\install.wim` (or `install.esd`) and none of
+disco-vm's files, and `subst`s it to `Z:`. `InstallFrom` names
+`Z:\sources\install.wim`. Setup runs `RunSynchronous` before it reads the
+image. After Setup's first reboot, it has put Windows Boot Manager first in
 the firmware's order. Even if the retail DVD comes first, its prompt times
 out to the disk.
 
-### 4. Every hcs VM has a vTPM, and its state is the VM's own
+### 4. No hcs VM has a vTPM; install bypasses Setup's TPM check (amended)
 
-`newDocument` enables a vTPM (HCS's `SecuritySettings.EnableTpm`) for every
-boot: the install's and every instance's. Its state lives in the VM's guest
-state file, so the file's lifetime changes:
+As proposed, every hcs VM was to have a vTPM (`SecuritySettings.EnableTpm`)
+kept in its own `guest.vmgs`. The Deferred section said what to do if HCS
+gives no vTPM on a host without the Hyper-V role: drop this section and
+bypass the TPM check with `LabConfig`. That is the case, so this section is
+now the fallback.
 
-- **A VM keeps its `guest.vmgs` across its own boots.** It is created at the
-  VM's first boot and kept until the VM is destroyed. `Boot` stops
-  replacing it, though it still replaces the runtime state file
-  (`runtime.vmrs`) every time. A guest therefore sees the same TPM, and the
-  same firmware variables, every time it boots.
-- **Commit still removes it,** so a committed VM carries no TPM. Every VM
-  created from it gets a TPM of its own, and no two VMs ever share one.
-- **Install's TPM is discarded** with the first boot's working directory,
-  as its guest state is today.
-
-A TPM that stays with its VM but is never committed is safe only if the
-committed disk is sealed to nothing. So install turns off automatic device
-encryption (`PreventDeviceEncryption` set to 1, in specialize, §5). With
-Secure Boot and a TPM, Windows 11 can otherwise encrypt the OS volume to the
-install's TPM. A clone, which has its own TPM, could then not unlock it.
-
-VMs from before this change get a TPM at their next boot. Nothing on their
-disks is sealed to one. A `guest.vmgs` an older binary left in a VM's
-directory is a fresh one from its last boot, and is kept as the VM's from
-then on.
+- **The evidence.** On a Windows 11 Pro host with Virtual Machine Platform
+  and without the Hyper-V role (no `vmms` service, no `vmsp.exe`), a
+  document with `EnableTpm: true` fails to start: HRESULT 0x80070002, and
+  Hyper-V-Worker event 3040 ("could not initialize"). The same document
+  without it starts. `HcsCreateEmptyGuestStateFile` works elevated, so the
+  state file is not what is missing; the TPM's isolated worker is.
+- **What install does.** The windowsPE script sets
+  `HKLM\SYSTEM\Setup\LabConfig\BypassTPMCheck` with `BypassCPUCheck` (§5).
+  Secure Boot stays on, as every hcs VM has it.
+- **What stays as today.** `Boot` replaces `guest.vmgs` at every boot, and
+  `Commit` removes it. A VM has no TPM, so nothing on its disk can be sealed
+  to one. Install still sets `PreventDeviceEncryption` to 1, so a host that
+  does give a TPM later cannot have the committed disk encrypted to it.
 
 ### 5. The answer file does what install.ps1 did, through Setup
 
@@ -189,10 +198,12 @@ The answer file's passes:
   - `ImageInstall/OSImage/InstallFrom/MetaData` names `/IMAGE/INDEX`, and
     `InstallTo` names the Windows partition.
   - The EULA is accepted. No page of Setup shows.
-  - The VM meets the TPM, Secure Boot, and RAM checks itself (§4). Only the
-    CPU check is bypassed (`HKLM\SYSTEM\Setup\LabConfig\BypassCPUCheck`).
-    A VM's processor is the host's, which the VM cannot change, and today's
-    install runs on hosts whose CPU Windows 11 does not list.
+  - The VM meets the Secure Boot and RAM checks itself. The TPM check is
+    bypassed (`HKLM\SYSTEM\Setup\LabConfig\BypassTPMCheck`, §4, amended),
+    and so is the CPU check (`BypassCPUCheck`): a VM's processor is the
+    host's, which the VM cannot change, and today's install runs on hosts
+    whose CPU Windows 11 does not list. The windowsPE script on the medium
+    sets both, with the DVD's letter (§3).
 - **specialize:** today's `ComputerName` and `TimeZone`, and the specialize
   script (§6) through `Microsoft-Windows-Deployment/RunSynchronous`.
 - **oobeSystem:** today's settings unchanged: the hidden OOBE pages, the
@@ -200,8 +211,10 @@ The answer file's passes:
 
 ### 6. The agent is installed inside the guest, during specialize
 
-The specialize script runs as SYSTEM in the new Windows. It finds the
-medium by a marker file and copies `disco-vm.exe` to
+The specialize script runs as SYSTEM in the new Windows. (Amended:) the
+answer file runs each script from whichever drive holds it, under
+`disco-vm\`, so the scripts are the medium's marker. It copies
+`disco-vm.exe` from beside itself to
 `C:\disco-vm\disco-vm.exe`. Then it makes, online, what `install.ps1` made
 in the offline hive, with the same values:
 
@@ -214,6 +227,11 @@ in the offline hive, with the same values:
 It also sets `PreventDeviceEncryption` (§4). It logs to a file under
 `C:\disco-vm`, so a failed install can be read from a committed disk or
 from the agent.
+
+(Amended:) the log file is all the scripts report to. A COM1 on a named
+pipe, which install read into its log, was tried and dropped: nothing the
+scripts wrote to it in WinPE or in specialize reached the host, though
+installed Windows's writes do.
 
 The agent runs from the boot after specialize. `waitSetup` already
 tolerates no agent at first, and its stages do not change: `ImageState`,
@@ -268,7 +286,8 @@ can see the cost before merging it.
   anything that wants one: BitLocker, Windows Hello, measured boot, or
   software that checks for one. And install depends on a registry switch
   Microsoft could stop honouring. A vTPM makes the VM what Windows 11
-  expects.
+  expects. (Amended: taken after all, as §4 says, because HCS gives no vTPM
+  without the Hyper-V role; these costs stand.)
 - **A vTPM with a fresh guest state file at every boot, as today.** The
   guest would see a new TPM each boot. Anything sealed to it, such as
   BitLocker or a Hello key, would be lost at the next boot.
@@ -299,13 +318,11 @@ can see the cost before merging it.
   `Get-DiskImage` show nothing of disco-vm's during or after an install.
   The fixed-disk allocation and the compaction go, and the free-space check
   asks for 32 GiB instead of the disk's size plus 30 GiB.
-- Every hcs VM has a TPM that lasts as long as the VM, and every clone gets
-  a new one. A `guest.vmgs` is now state a VM keeps, not scratch.
-- A guest that turns on BitLocker itself seals its disk to its own TPM. A
-  VM committed after that gives its clones a disk they cannot unlock.
-  Whether Commit refuses such a VM is open below.
-- Install now depends on Setup inside the guest: the answer file, the boot
-  medium, and the vTPM. A change in a future Windows release to how Setup
+- (Amended) hcs VMs still have no TPM, and `guest.vmgs` is still scratch.
+  Install depends on `LabConfig`'s TPM bypass, a switch Microsoft could stop
+  honouring; the rejected alternative below names that cost.
+- Install now depends on Setup inside the guest: the answer file and the
+  boot medium. A change in a future Windows release to how Setup
   finds its answer file or checks hardware breaks install, where DISM did
   not care.
 - disco-vm gains, in Go and tested on every OS in CI:
@@ -317,12 +334,9 @@ can see the cost before merging it.
   Whether any of these belongs in `github.com/discobox-ai/x` is the
   implementation's call.
 - The proof this needs, on a real Windows host:
-  - HCS gives a VM a vTPM on a Home host without the Hyper-V role, and on a
-    Pro host. The guest sees TPM 2.0 (`Get-Tpm`), and the same TPM after a
-    stop and a start. A VM created from a committed VM sees a different TPM;
-  - a Windows 11 Pro install from a retail ISO completes on both hosts with
-    no TPM or Secure Boot bypass, and `Get-Disk` and `Get-DiskImage` are
-    checked during and after;
+  - (amended) a Windows 11 Pro install from a retail ISO completes with the
+    TPM and CPU checks bypassed and Secure Boot on, and `Get-Disk` and
+    `Get-DiskImage` are checked during and after;
   - the OS volume of the committed VM is not encrypted;
   - its committed VM passes `machinetest` and `internal/e2e`;
   - `install --gui` shows the first logon;
@@ -340,21 +354,21 @@ can see the cost before merging it.
   for macOS.** Windows guests still keep the agent install gave them.
   Revisit as that ADR's Deferred says. The specialize script would then
   install a stub instead of the agent.
-- **If HCS gives no vTPM on a Home host without the Hyper-V role**, this ADR
-  is amended before anything ships against it. Bypassing the TPM check with
-  `LabConfig` is then the fallback, and §4 is dropped.
+- **A vTPM**, where the host gives one (a host with the Hyper-V role), with
+  the lifetime the proposed §4 gave it. Revisit when hcs can tell such a
+  host from one without, at `Check`.
 - **Left to implementation**, none of it decided here:
-  - the HCS schema version and fields the vTPM needs, and any key protector
-    for its guest state;
-  - which shape in §3 boots without a prompt, (a) or (b), or failing both,
-    the cached remaster;
-  - whether Setup needs a generic installation key for the chosen edition
-    (Microsoft publishes them; they do not activate), and which option
-    carries one;
-  - how the specialize script finds the medium (a marker file, a volume
-    label);
-  - whether `sweepAttached` stays for one release, for an install a
-    previous binary interrupted;
-  - whether Commit refuses a VM whose OS volume BitLocker protects;
-  - the medium's file names and volume label;
-  - the UDF, WIM, and ISO 9660 libraries.
+  - whether Commit refuses a VM whose OS volume BitLocker protects.
+- **Settled by the implementation** (discobox-ai/vm#127, amended
+  2026-11-15), of what was left to it:
+  - §3 is shape (a), with the retail ISO's root `bootmgr.efi` on the medium,
+    and the retail DVD `subst`ed to `Z:` in WinPE for `InstallFrom`.
+  - §4 is the Deferred fallback: no vTPM, and `LabConfig` bypasses the TPM
+    check, because HCS gives no vTPM without the Hyper-V role.
+  - Setup needs no installation key: the answer file's product key is empty.
+  - The answer file runs each script from whichever drive holds it under
+    `disco-vm\`; the medium's volume label is `DISCOVM`.
+  - `sweepAttached` goes with the attach, with nothing to sweep: the old
+    attach was never permanent, so it ended with the process that held it.
+  - The UDF and WIM readers and the ISO 9660 writer are `internal/udf`,
+    `internal/wim`, and `internal/iso9660`, in this repository.
