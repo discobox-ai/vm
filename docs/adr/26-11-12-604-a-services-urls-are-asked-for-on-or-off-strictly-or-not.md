@@ -4,7 +4,9 @@
   discobox-ai/discobox#1049; §1 and §2's scope names, internal, private
   and public, §2's reach table, and that a URL on the engine's host alone
   is not public, superseded by
-  [26-11-14-610](26-11-14-610-a-services-urls-are-named-by-who-reaches-them-ingress-and-pool-and-a-caller-asks-for-the-one-it-means.md))
+  [26-11-14-610](26-11-14-610-a-services-urls-are-named-by-who-reaches-them-ingress-and-pool-and-a-caller-asks-for-the-one-it-means.md);
+  §3, that boxd removes every proxy, superseded by
+  [26-11-14-454](26-11-14-454-boxd-closes-a-default-proxy-it-cannot-remove-by-locking-it-to-port-0.md))
 - **Date**: 2026-11-12
 - **Supersedes in part**: 26-10-29-129 §1, that `Service.URL` is every
   instance's public URL; 0005, that every instance has one HTTP URL
