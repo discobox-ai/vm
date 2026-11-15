@@ -51,11 +51,15 @@ type fakeAPI struct {
 	snapshotIDRefused atomic.Bool
 	// proxyErr, when set, is SetProxyPort's answer.
 	proxyErr error
-	// deleteProxyErr, when set, is DeleteProxy's answer: whether boxd
-	// removes a machine's default proxy is not proven.
+	// deleteProxyErr, when set, is DeleteProxy's answer for a named proxy.
 	deleteProxyErr error
-	// proxyKept makes DeleteProxy answer and keep the proxy.
+	// proxyKept makes DeleteProxy answer and keep a named proxy.
 	proxyKept atomic.Bool
+	// portIgnored makes SetProxyPort answer and leave the port as it was.
+	portIgnored atomic.Bool
+	// namedProxy, when set, is a named proxy every new machine has, as one
+	// made in the guest by boxd's in-VM CLI would be.
+	namedProxy string
 	// syncFails makes the guest's sync exit 1.
 	syncFails atomic.Bool
 	// egressIgnored makes SetVmEgressAllow answer and keep nothing, so
@@ -106,12 +110,14 @@ type fakeVM struct {
 	memory   uint64
 	// reboots counts RebootVm calls.
 	reboots int
-	// proxyPort is the port the default proxy is pinned to, zero for auto;
-	// botProtection is on for a new machine, as on boxd.
+	// proxyPort is the port the default proxy is locked to, when
+	// proxyLocked, which port 0 can be; botProtection is on for a new
+	// machine, as on boxd.
 	proxyPort     uint32
+	proxyLocked   bool
 	botProtection bool
-	// proxyRemoved is set once DeleteProxy removed the default proxy.
-	proxyRemoved bool
+	// named are the machine's proxies other than its default one.
+	named []string
 	// isolated is immutable, and networks set at create or by
 	// SetVmNetworks.
 	isolated bool
@@ -181,6 +187,9 @@ func (f *fakeAPI) newVM(name string, vcpu uint32, memory uint64) *fakeVM {
 		vcpu, memory = 2, 8<<30
 	}
 	v := &fakeVM{id: id, name: name, dir: filepath.Join(f.dir, id), status: "running", vcpu: vcpu, memory: memory, botProtection: true}
+	if f.namedProxy != "" {
+		v.named = []string{f.namedProxy}
+	}
 	f.vms[id] = v
 	return v
 }
@@ -430,15 +439,17 @@ func (f *fakeAPI) ListProxies(_ context.Context, req *boxdapi.ListProxiesRequest
 		// caller can least tell from a machine with no proxies.
 		return &boxdapi.ListProxiesResponse{}, nil
 	}
-	if v.proxyRemoved {
-		return &boxdapi.ListProxiesResponse{}, nil
-	}
-	// boxd's default proxy is not named "default", so neither is this one.
-	p := &boxdapi.ProxyInfo{Name: v.name, VmName: v.name, VmId: v.id, Domain: v.name + ".boxd.test", IsDefault: true, PortMode: "auto", EffectivePort: 8000}
-	if v.proxyPort != 0 {
+	// boxd lists a machine's default proxy with an empty name, and always
+	// lists one.
+	p := &boxdapi.ProxyInfo{VmName: v.name, VmId: v.id, Domain: v.name + ".boxd.test", IsDefault: true, PortMode: "auto", EffectivePort: 8000}
+	if v.proxyLocked {
 		p.PortMode, p.EffectivePort = "locked", v.proxyPort
 	}
-	return &boxdapi.ListProxiesResponse{Proxies: []*boxdapi.ProxyInfo{p}}, nil
+	list := []*boxdapi.ProxyInfo{p}
+	for _, n := range v.named {
+		list = append(list, &boxdapi.ProxyInfo{Name: n, VmName: v.name, VmId: v.id, Domain: n + ".boxd.test", PortMode: "auto", EffectivePort: 8000})
+	}
+	return &boxdapi.ListProxiesResponse{Proxies: list}, nil
 }
 
 func (f *fakeAPI) SetProxyPort(_ context.Context, req *boxdapi.SetProxyPortRequest) (*boxdapi.SetProxyPortResponse, error) {
@@ -451,14 +462,19 @@ func (f *fakeAPI) SetProxyPort(_ context.Context, req *boxdapi.SetProxyPortReque
 	if f.proxyErr != nil {
 		return nil, f.proxyErr
 	}
-	if req.GetName() != v.name {
+	// An empty name is the default proxy, which the fake alone sets a
+	// port on.
+	if req.GetName() != "" {
 		return nil, status.Errorf(codes.NotFound, "%s has no proxy %q", v.name, req.GetName())
 	}
+	// boxd locks a proxy to port 0, and takes no port past 65535.
 	port, err := strconv.ParseUint(req.GetPort(), 10, 16)
-	if err != nil || port == 0 {
-		return nil, status.Errorf(codes.InvalidArgument, "port %q", req.GetPort())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid port: %s", req.GetPort())
 	}
-	v.proxyPort = uint32(port)
+	if !f.portIgnored.Load() {
+		v.proxyPort, v.proxyLocked = uint32(port), true
+	}
 	return &boxdapi.SetProxyPortResponse{}, nil
 }
 
@@ -469,13 +485,21 @@ func (f *fakeAPI) DeleteProxy(_ context.Context, req *boxdapi.DeleteProxyRequest
 	if err != nil {
 		return nil, err
 	}
+	// As boxd answers: the default proxy, "@", is never removed, and its
+	// empty name is no proxy.
+	if req.GetName() == "@" {
+		return nil, status.Error(codes.FailedPrecondition, "cannot delete the default proxy")
+	}
+	i := slices.Index(v.named, req.GetName())
+	if i < 0 {
+		return nil, status.Errorf(codes.NotFound, "proxy '%s' not found for VM '%s'", req.GetName(), v.name)
+	}
 	if f.deleteProxyErr != nil {
 		return nil, f.deleteProxyErr
 	}
-	if v.proxyRemoved || req.GetName() != v.name {
-		return nil, status.Errorf(codes.NotFound, "%s has no proxy %q", v.name, req.GetName())
+	if !f.proxyKept.Load() {
+		v.named = slices.Delete(v.named, i, i+1)
 	}
-	v.proxyRemoved = !f.proxyKept.Load()
 	return &boxdapi.DeleteProxyResponse{}, nil
 }
 

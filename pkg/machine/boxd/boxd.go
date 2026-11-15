@@ -100,7 +100,7 @@ func (*Driver) Capabilities() machine.Capabilities {
 		Keys:      keyCapabilities,
 		Isolation: true,
 		Egress:    []machine.EgressFence{machine.EgressNone, machine.EgressAllow},
-		// Ingress is the default proxy, removed for a VM whose ingress URL
+		// Ingress is the default proxy, closed for a VM whose ingress URL
 		// is asked off; the pool URL is the direct one on networks, else
 		// the ingress one.
 		URLs: machine.URLCapabilities{Ingress: machine.URLOptional, Pool: machine.URLAlways},
@@ -171,7 +171,7 @@ func (d *Driver) baseImage(ctx context.Context, api boxdapi.BoxdApiClient) (stri
 // Create makes the VM's machine: restored from the committed VM's snapshot,
 // or made fresh from the driver's image, at the size it asks for, fenced as
 // it asks the moment boxd answers, with its default proxy pinned to the
-// service port, or every proxy removed if its ingress URL is asked off; then
+// service port, or closed if its ingress URL is asked off; then
 // powered off in order, so its first boot is a cold boot.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	if err := machine.ValidateName(spec.Name); err != nil {
@@ -273,7 +273,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		_, err = waitVM(ctx, api, vm, "running")
 	}
 	if err == nil && spec.URLs.Ingress.Mode == machine.URLOff {
-		err = dropProxies(ctx, api, vm)
+		err = closeProxies(ctx, api, vm)
 	} else if err == nil {
 		_, err = pinProxy(ctx, api, vm, guest.ServicePort)
 	}

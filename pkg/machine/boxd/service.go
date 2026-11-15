@@ -17,10 +17,11 @@ var serviceListen = "tcp:0.0.0.0:" + strconv.FormatUint(uint64(guest.ServicePort
 
 // Service is the guest's TCP port behind the HTTPS URL of the machine's
 // default proxy, which Create pinned to it unless its ingress URL was asked
-// off: its ingress URL, the same across stop and start. A machine with no
-// default proxy has none. A machine on networks is reached by its peers
-// there directly, at its name on boxd's internal DNS, <machine>.boxd, on
-// every port: its pool URL; one on none, by its ingress URL, if it has one.
+// off: its ingress URL, the same across stop and start. A machine whose
+// default proxy is closed (locked to closedPort), or that has none, has no
+// ingress URL. A machine on networks is reached by its peers there directly,
+// at its name on boxd's internal DNS, <machine>.boxd, on every port: its pool
+// URL; one on none, by its ingress URL, if it has one.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	api, err := d.api.API(ctx)
 	if err != nil {
@@ -42,7 +43,7 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 		}
 	}
 	service := machine.Service{Listen: serviceListen}
-	if def != nil {
+	if def != nil && !closed(def) {
 		if def.GetDomain() == "" {
 			return machine.Service{}, fmt.Errorf("boxd: %s's proxy has no domain", d.machineName(inst.Name))
 		}
@@ -55,6 +56,13 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 	return service, nil
 }
 
+// closedPort is the port a closed default proxy is locked to. boxd will not
+// delete a machine's default proxy (DeleteProxy answers FailedPrecondition
+// for it, and NotFound for its empty name), but it locks one to port 0, and
+// answers 502 there: no guest can listen on TCP port 0, so nothing the
+// guest's root runs answers at <machine>.<zone>, across stop and start.
+const closedPort = 0
+
 // pinProxy points the machine's default proxy at the service port and returns
 // its URL, https://<machine>.<zone>. boxd terminates TLS there and forwards
 // HTTP to the port. Pinning the port also stops the proxy forwarding to
@@ -65,55 +73,83 @@ func pinProxy(ctx context.Context, api boxdapi.BoxdApiClient, vm string, port ui
 	if _, err := api.SetBotProtection(ctx, &boxdapi.SetBotProtectionRequest{VmId: vm, Enabled: false}); err != nil {
 		return "", fmt.Errorf("boxd: turn off bot protection on %s: %w", vm, err)
 	}
-	def, err := defaultProxy(ctx, api, vm)
+	def, err := lockProxy(ctx, api, vm, port)
 	if err != nil {
 		return "", err
 	}
-	if def == nil {
-		return "", fmt.Errorf("boxd: %s has no default proxy", vm)
-	}
-	if _, err := api.SetProxyPort(ctx, &boxdapi.SetProxyPortRequest{Name: def.GetName(), Vm: vm, Port: strconv.FormatUint(uint64(port), 10)}); err != nil {
-		return "", fmt.Errorf("boxd: point %s's proxy %q at port %d: %w", vm, def.GetName(), port, err)
-	}
-	if def, err = defaultProxy(ctx, api, vm); err != nil {
-		return "", err
-	}
-	if def == nil || def.GetPortMode() != "locked" || def.GetEffectivePort() != port || def.GetDomain() == "" {
-		return "", fmt.Errorf("boxd: %s's proxy forwards %q to port %d (%s), not locked to %d", vm, def.GetDomain(), def.GetEffectivePort(), def.GetPortMode(), port)
+	if def.GetDomain() == "" {
+		return "", fmt.Errorf("boxd: %s's proxy has no domain", vm)
 	}
 	return "https://" + def.GetDomain(), nil
 }
 
-// dropProxies removes every proxy boxd gave the machine, its default one at
-// <machine>.<zone> among them, and reads back that none is left: a VM not
-// whose ingress URL is asked off is reached from the internet at no URL, since whatever
-// answers there is the guest root's choice, not the service's. An isolated
-// machine has no in-VM CLI to make one again.
-func dropProxies(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
+// closeProxies leaves the machine reached from the internet at no URL, since
+// whatever answers there is the guest root's choice, not the service's: it
+// removes every proxy but the default one, which boxd keeps, closes that by
+// locking it to closedPort, and reads back that it is the only one and is
+// closed. An isolated machine has no in-VM CLI to open or add one again.
+func closeProxies(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 	list, err := api.ListProxies(ctx, &boxdapi.ListProxiesRequest{Vm: vm})
 	if err != nil {
 		return fmt.Errorf("boxd: proxies of %s: %w", vm, err)
 	}
 	for _, p := range list.GetProxies() {
+		if p.GetIsDefault() {
+			continue
+		}
 		if _, err := api.DeleteProxy(ctx, &boxdapi.DeleteProxyRequest{Name: p.GetName(), Vm: vm}); err != nil {
 			return fmt.Errorf("boxd: remove %s's proxy %q (%s): %w", vm, p.GetName(), p.GetDomain(), err)
 		}
 	}
+	if _, err := lockProxy(ctx, api, vm, closedPort); err != nil {
+		return err
+	}
 	if list, err = api.ListProxies(ctx, &boxdapi.ListProxiesRequest{Vm: vm}); err != nil {
 		return fmt.Errorf("boxd: read back %s's proxies: %w", vm, err)
 	}
-	if left := list.GetProxies(); len(left) > 0 {
-		var domains []string
-		for _, p := range left {
-			domains = append(domains, p.GetDomain())
+	var open []string
+	for _, p := range list.GetProxies() {
+		if !p.GetIsDefault() || !closed(p) {
+			open = append(open, fmt.Sprintf("%s (port %d, %s)", p.GetDomain(), p.GetEffectivePort(), p.GetPortMode()))
 		}
-		return fmt.Errorf("boxd: %s still has proxies at %v once they were removed", vm, domains)
+	}
+	if len(open) > 0 {
+		return fmt.Errorf("boxd: %s still has proxies open at %v once they were closed", vm, open)
 	}
 	return nil
 }
 
+// lockProxy locks the machine's default proxy to port, and reads it back
+// locked there.
+func lockProxy(ctx context.Context, api boxdapi.BoxdApiClient, vm string, port uint32) (*boxdapi.ProxyInfo, error) {
+	def, err := defaultProxy(ctx, api, vm)
+	if err != nil {
+		return nil, err
+	}
+	if def == nil {
+		return nil, fmt.Errorf("boxd: %s has no default proxy", vm)
+	}
+	// The default proxy's name is empty, which SetProxyPort takes as the
+	// default proxy.
+	if _, err := api.SetProxyPort(ctx, &boxdapi.SetProxyPortRequest{Name: def.GetName(), Vm: vm, Port: strconv.FormatUint(uint64(port), 10)}); err != nil {
+		return nil, fmt.Errorf("boxd: lock %s's proxy %s to port %d: %w", vm, def.GetDomain(), port, err)
+	}
+	if def, err = defaultProxy(ctx, api, vm); err != nil {
+		return nil, err
+	}
+	if def == nil || def.GetPortMode() != "locked" || def.GetEffectivePort() != port {
+		return nil, fmt.Errorf("boxd: %s's proxy forwards %q to port %d (%s), not locked to %d", vm, def.GetDomain(), def.GetEffectivePort(), def.GetPortMode(), port)
+	}
+	return def, nil
+}
+
+// closed is whether a proxy is locked to closedPort.
+func closed(p *boxdapi.ProxyInfo) bool {
+	return p.GetPortMode() == "locked" && p.GetEffectivePort() == closedPort
+}
+
 // defaultProxy is the proxy boxd gives every machine at <machine>.<zone>, nil
-// once it is removed.
+// for an ID boxd lists none for.
 func defaultProxy(ctx context.Context, api boxdapi.BoxdApiClient, vm string) (*boxdapi.ProxyInfo, error) {
 	list, err := api.ListProxies(ctx, &boxdapi.ListProxiesRequest{Vm: vm})
 	if err != nil {

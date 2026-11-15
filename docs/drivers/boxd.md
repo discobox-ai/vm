@@ -60,7 +60,7 @@ use. The parts that matter here:
 | seam | boxd |
 |---|---|
 | `Install` | not offered (`Capabilities.Install` is off): a fresh VM starts from boxd's image. No agent either: `Capabilities.Agent` is off. |
-| `Create` | the machine `dvm-<pool>--<name>`, at most 63 characters: fresh, with `CreateVm` (restart policy `never`) of the driver's base (`machine.Config.Base`), or of `GetConfig`'s `default_image` when it has none; or, from a committed VM, restored from its snapshot by name (`CreateVmFromSnapshot`, at the VM's size when it asks for one); a `From` that is no ready snapshot of its name and ID, a machine or a snapshot gone, is `ErrNotFound`, since boxd restores only a snapshot. An `Egress` set at once and read back ([Egress](#egress)), idle timers off, then, unless its ingress URL is asked off, the proxy pinned (`SetBotProtection` off, `SetProxyPort` pins the default proxy, the one `ListProxies` marks `is_default`, to 7302), and for one asked off every proxy removed (`DeleteProxy`) and `ListProxies` read back empty, then `sync` in the guest, `StopVm`, and wait for `stopped`: the first boot is a cold boot of the disk. A step that fails destroys the machine. A name the pool has, as a machine or a committed VM's snapshot, is `ErrExists`. |
+| `Create` | the machine `dvm-<pool>--<name>`, at most 63 characters: fresh, with `CreateVm` (restart policy `never`) of the driver's base (`machine.Config.Base`), or of `GetConfig`'s `default_image` when it has none; or, from a committed VM, restored from its snapshot by name (`CreateVmFromSnapshot`, at the VM's size when it asks for one); a `From` that is no ready snapshot of its name and ID, a machine or a snapshot gone, is `ErrNotFound`, since boxd restores only a snapshot. An `Egress` set at once and read back ([Egress](#egress)), idle timers off, then, unless its ingress URL is asked off, the proxy pinned (`SetBotProtection` off, `SetProxyPort` pins the default proxy, the one `ListProxies` marks `is_default`, to 7302), and for one asked off the default proxy closed, locked to port 0 (`SetProxyPort`), every other proxy removed (`DeleteProxy`), and `ListProxies` read back with the default one alone and closed, then `sync` in the guest, `StopVm`, and wait for `stopped`: the first boot is a cold boot of the disk. A step that fails destroys the machine. A name the pool has, as a machine or a committed VM's snapshot, is `ErrExists`. |
 | VM | `Instances` is `ListVms` and `ListSnapshots`, keeping the pool's names whose rest is a VM name (`machine.ValidateName`). That a VM is committed is the caller's to record (ADR 26-11-03-606); the driver tells a committed VM by its kind, the ready snapshot of its name whose ID is the VM's, when a call on it as a machine fails. A VM is its machine: its ID, its name less the pool's prefix, its size, when it was made, and its isolation, networks, and egress allowlist. boxd does not say which snapshot a machine was restored from, so `From` is empty. A committed VM is a `ready` snapshot of the same name: its ID is the snapshot's, its size and creation the snapshot's. A snapshot and a machine of one name are a `Commit` that has not deleted the machine yet: the committed VM is listed, and the machine is not. `Instance` finds a name among them. |
 | `Boot`, `Start` | a committed VM, a snapshot with no machine, is `ErrCommitted`. `StartVm` (after `ResizeVm` when the instance asks for another size), `ResumeVm`, or `WakeVm`, by state. A machine still `stopping` is waited out first. Returns once the guest answers: an Exec of `sudo -n systemctl is-system-running --wait` returns, once a second, for up to 5 minutes. A machine that stops meanwhile (`GetVm` every 2s) ends the wait. boxd owns the machine, so `Start` is `Boot`. |
 | `Attach` | a committed VM is `ErrNotRunning`. `GetVm`: `running` or `starting` is the machine; not found, `stopped`, or any other state is `ErrNotRunning`. |
@@ -73,7 +73,7 @@ use. The parts that matter here:
 | `Machine.Shutdown` | a power-off is an Exec of `sync` as root, then `StopVm`; the watcher sees `stopped`. A reboot is `RebootVm`. Nothing in the guest is asked to power off. |
 | `Commit` | a committed VM is `ErrCommitted`, and the machine must be `stopped`, after an orderly shutdown. Start it, wait for the guest, snapshot it as `dvm-<pool>--<name>`, the machine's own name, wait for the snapshot `ready`, and destroy the machine: boxd snapshots only a running machine. The snapshot's disk is the one the guest flushed. The committed VM keeps nothing else. |
 | `Destroy` | `DestroyVm`; one already gone is not an error. A committed VM, the ready snapshot of its name and ID: `DeleteSnapshot`, and `DestroyVm` of any machine of its name a `Commit` left. A machine restored from the snapshot has a disk of its own, and outlives it. |
-| `Service` | a committed VM is `ErrCommitted`. Listen on `tcp:0.0.0.0:7302`; the ingress URL is `https://` and the default proxy's domain, `ListProxies`, the same across stop and start, and none for a machine with no default proxy (one whose ingress URL was asked off). The pool URL is `http://<machine>.boxd:7302` for a machine on networks, and the ingress URL for one on none. |
+| `Service` | a committed VM is `ErrCommitted`. Listen on `tcp:0.0.0.0:7302`; the ingress URL is `https://` and the default proxy's domain, `ListProxies`, the same across stop and start, and none for a machine whose default proxy is closed, locked to port 0 (one whose ingress URL was asked off), or that has none. The pool URL is `http://<machine>.boxd:7302` for a machine on networks, and the ingress URL for one on none. |
 
 Exec runs as boxd's `boxd` user, who has passwordless sudo, so every guest
 operation goes through `sudo -n`, as root by default. An image installed
@@ -315,15 +315,21 @@ included, to one port of the machine. Left alone, it forwards to the first of
 Unless an instance's ingress URL is asked off, Create pins it to 7302, the port every
 instance's service listens on (`tcp:0.0.0.0:7302` in the guest's service
 file), so the service is the only thing it reaches, and turns bot protection
-off. For one asked off, Create removes it with `DeleteProxy`, with any other proxy
-the machine has, and reads back that `ListProxies` lists none; a refusal, or a
-proxy still listed, destroys the machine and fails the create. Such an
-instance has no ingress URL (ADR 26-11-12-604, ADR 26-11-14-610). The
+off. For one asked off, Create closes it. boxd never deletes a default proxy
+(`DeleteProxy` answers `FailedPrecondition` for it, by its name `@`, and
+`NotFound` for the empty name `ListProxies` gives it), so Create locks it to
+port 0 with `SetProxyPort`: no guest can listen on TCP port 0, and boxd
+answers 502 there, across stop and start. Create removes any other proxy the
+machine has with `DeleteProxy`, and reads back that `ListProxies` lists the
+default one alone, locked to 0; a refusal, or a proxy still open, destroys the
+machine and fails the create. Such an instance has no ingress URL (ADR
+26-11-12-604, ADR 26-11-14-610, ADR 26-11-14-454). The
 service port belongs to the guest's root, not the service, so the proxy is
 an inbound path from the
 internet that the egress allowlist never sees; a caller that must not have
-one asks for it off, strictly. Whether boxd removes a default proxy, and whether one comes
-back at boot, is `TestNoIngressURL`'s to confirm against boxd. The URL is recorded with the
+one asks for it off, strictly. That a closed default proxy stays closed, and answers for no
+port the guest listens on, across boots, is `TestNoIngressURL`'s to confirm
+against boxd. The URL is recorded with the
 instance, so `disco-vm url` and `Engine.URL` answer without a credential, and
 it stays the same across stop and start. Anyone who has it reaches the
 service, which authenticates its callers itself (discobox ADR 26-10-09-143
