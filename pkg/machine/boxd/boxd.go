@@ -60,6 +60,14 @@ const (
 	maxMachineName = 63
 )
 
+// appearLimit bounds the wait for boxd to find a machine it has just made,
+// and appearEvery is how often a call boxd answered NotFound is made again
+// meanwhile.
+var (
+	appearLimit = time.Minute
+	appearEvery = 250 * time.Millisecond
+)
+
 // Driver is the boxd driver.
 type Driver struct {
 	api  *client
@@ -278,37 +286,48 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("boxd: create %s: %w", name, err)
 	}
 	vm := created.GetVmId()
+	fresh := newlyMade{deadline: time.Now().Add(appearLimit)}
 	if spec.Egress != nil {
 		// Neither create takes an allowlist, and the machine runs until it
 		// is set, so it is set before anything else.
-		err = fence(ctx, api, vm, *spec.Egress)
+		err = fresh.step(ctx, func() error { return fence(ctx, api, vm, *spec.Egress) })
 	}
 	if err == nil && restore && len(spec.Networks) > 0 {
 		// A restore takes no networks of its own. It is isolated, so it has
 		// no peers until they are set.
-		_, err = api.SetVmNetworks(ctx, &boxdapi.SetVmNetworksRequest{VmId: vm, Networks: spec.Networks})
-		if err != nil {
-			err = fmt.Errorf("boxd: networks of %s: %w", name, err)
-		}
+		err = fresh.step(ctx, func() error {
+			if _, err := api.SetVmNetworks(ctx, &boxdapi.SetVmNetworksRequest{VmId: vm, Networks: spec.Networks}); err != nil {
+				return fmt.Errorf("boxd: networks of %s: %w", name, err)
+			}
+			return nil
+		})
 	}
 	if err == nil {
-		err = d.settle(ctx, api, vm)
+		err = fresh.step(ctx, func() error { return d.settle(ctx, api, vm) })
 	}
 	if err == nil {
-		_, err = waitVM(ctx, api, vm, "running")
+		err = fresh.step(ctx, func() error {
+			_, err := waitVM(ctx, api, vm, "running")
+			return err
+		})
 	}
 	if err == nil && spec.URLs.Ingress.Mode == machine.URLOff {
-		err = closeProxies(ctx, api, vm)
+		err = fresh.step(ctx, func() error { return closeProxies(ctx, api, vm) })
 	} else if err == nil {
-		_, err = pinProxy(ctx, api, vm, guest.ServicePort)
+		err = fresh.step(ctx, func() error {
+			_, err := pinProxy(ctx, api, vm, guest.ServicePort)
+			return err
+		})
 	}
 	if err == nil {
 		// A snapshot is of a running guest, and a new machine runs. Stop
 		// it, so the first boot is a cold boot of its disk.
-		err = powerOff(ctx, api, vm)
+		err = fresh.step(ctx, func() error { return powerOff(ctx, api, vm) })
 	}
 	if err != nil {
-		d.destroyVM(vm)
+		if undo := d.destroyVM(vm, fresh.seen); undo != nil {
+			err = errors.Join(err, fmt.Errorf("boxd: undo the create of %s: %w", name, undo))
+		}
 		return machine.Instance{}, err
 	}
 	info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: vm})
@@ -316,6 +335,37 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("boxd: machine %s: %w", name, err)
 	}
 	return d.instance(info), nil
+}
+
+// newlyMade is a machine boxd has just made, which boxd may answer NotFound
+// for a moment: right after CreateVm answered, SetAutoSuspendTimeout did
+// (region fra, 2026-11-15), and boxd does not say that every call sees a new
+// machine at once. Each step of its create is made again while it fails on a
+// NotFound, until deadline.
+type newlyMade struct {
+	deadline time.Time
+	// seen is whether a step has succeeded: boxd has shown the machine.
+	seen bool
+}
+
+// step runs one step of the create, again after a NotFound until the
+// deadline. Each step is one that can be made twice.
+func (m *newlyMade) step(ctx context.Context, do func() error) error {
+	for {
+		err := do()
+		if err == nil {
+			m.seen = true
+			return nil
+		}
+		if !isNotFound(err) || !time.Now().Before(m.deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(appearEvery):
+		}
+	}
 }
 
 // fence sets the machine's egress allowlist, and reads it back: a machine
@@ -537,7 +587,7 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 	}
 	// The snapshot is the VM now. A machine left by a delete that fails is
 	// removed with it (Destroy).
-	d.destroyVM(ref.ID)
+	_ = d.destroyVM(ref.ID, true)
 	return d.committed(snap), nil
 }
 
@@ -671,16 +721,54 @@ func syncDisks(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error 
 	return nil
 }
 
-// destroyVM is best-effort cleanup of a machine the driver made and will not
-// hand out.
-func (d *Driver) destroyVM(vm string) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+// destroyVM destroys a machine the driver made and will not hand out, and
+// fails, naming it, if the machine may be left. boxd's NotFound is not proof
+// that a machine is gone, since boxd has answered it for a machine it had just
+// made: a machine DestroyVm does not find is gone only once ListVms does not
+// list it either (or lists it destroying), and a machine no call has found yet
+// (seen false) is waited for until appearLimit.
+func (d *Driver) destroyVM(vm string, seen bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), appearLimit)
 	defer cancel()
 	api, err := d.api.API(ctx)
 	if err != nil {
-		return
+		return fmt.Errorf("boxd: machine %s is left: %w", vm, err)
 	}
-	_, _ = api.DestroyVm(ctx, &boxdapi.DestroyVmRequest{VmId: vm})
+	for {
+		_, err := api.DestroyVm(ctx, &boxdapi.DestroyVmRequest{VmId: vm})
+		switch {
+		case err == nil:
+			return nil
+		case !isNotFound(err):
+			return fmt.Errorf("boxd: machine %s is left: destroy: %w", vm, err)
+		}
+		state, err := listedState(ctx, api, vm)
+		switch {
+		case err != nil:
+			return fmt.Errorf("boxd: machine %s may be left: %w", vm, err)
+		case state == "destroying", state == "" && seen:
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("boxd: machine %s may be left: boxd answers NotFound to its destroy, and lists it %q: %w", vm, state, ctx.Err())
+		case <-time.After(appearEvery):
+		}
+	}
+}
+
+// listedState is the state ListVms lists a machine in, or "" for none.
+func listedState(ctx context.Context, api boxdapi.BoxdApiClient, vm string) (string, error) {
+	listed, err := api.ListVms(ctx, &boxdapi.ListVmsRequest{})
+	if err != nil {
+		return "", fmt.Errorf("boxd: list machines: %w", err)
+	}
+	for _, v := range listed.GetVms() {
+		if v.GetVmId() == vm {
+			return v.GetStatus(), nil
+		}
+	}
+	return "", nil
 }
 
 // waitVM polls until the machine reaches one of the given states, and fails
@@ -693,7 +781,7 @@ func waitVM(ctx context.Context, api boxdapi.BoxdApiClient, vm string, want ...s
 		info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: vm})
 		switch {
 		case isNotFound(err):
-			return "", fmt.Errorf("boxd: machine %s is gone", vm)
+			return "", fmt.Errorf("boxd: machine %s is gone: %w", vm, err)
 		case err == nil:
 			last = info.GetStatus()
 			if slices.Contains(want, last) {

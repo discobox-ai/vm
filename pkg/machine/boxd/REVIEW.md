@@ -12,3 +12,10 @@
   unverified, and the fake refuses it where a test says so. (A `Check` that
   failed on a refused `GetOrgMachineLimit` would have broken every
   in-machine driver.)
+- **A NotFound for a machine the driver has just made, or is cleaning up
+  after, is not proof that it is gone.** boxd answered one to a call on a
+  machine `CreateVm` had just made (region fra, 2026-11-15), so a create
+  that counted it final, or a cleanup that counted a destroy's NotFound as
+  done, left the machine running unseen with its default proxy open. Retry
+  a create's steps on NotFound, and confirm a destroy's NotFound against
+  `ListVms`. (vm#169.)
