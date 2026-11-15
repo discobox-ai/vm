@@ -160,9 +160,11 @@ for port in %d 80 8000 8080; do sudo systemd-run python3 -m http.server $port --
 		// Nothing answering proves nothing: the name may not resolve yet, or
 		// its certificate not be issued. So boxd has to be seen refusing,
 		// 502, within the three minutes TestService gives a new proxy to
-		// come up, and then for a minute more; the guest, at no time.
+		// come up; the guest, at no time. A proxy that forwards can also
+		// answer 502 while it warms up, so the watch lasts those whole three
+		// minutes, and a minute past the first 502.
 		deadline, refused := time.Now().Add(3*time.Minute), time.Time{}
-		for refused.IsZero() || time.Since(refused) < time.Minute {
+		for refused.IsZero() || time.Now().Before(deadline) || time.Since(refused) < time.Minute {
 			code, body, err := httpGet(ctx, url)
 			if strings.TrimSpace(body) == marker {
 				t.Fatalf("boot %d: %s serves the guest", boot, url)
