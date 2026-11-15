@@ -185,15 +185,24 @@ func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, work, disk st
 		return err
 	}
 	id := newID()
-	paths := append([]string{dir, disk, work, filepath.Join(work, guestFileName), filepath.Join(work, stateFileName)}, media...)
-	if err := grantAll(id, paths); err != nil {
-		return err
-	}
+	paths := []string{dir, disk, work, filepath.Join(work, guestFileName), filepath.Join(work, stateFileName)}
+	// Revoke whatever was granted, the person's ISO included: a grant that
+	// fails partway leaves no entry behind.
 	defer func() {
-		for _, path := range paths {
+		for _, path := range append(paths, media...) {
 			revokeVMAccess(id, path)
 		}
 	}()
+	if err := grantAll(id, paths); err != nil {
+		return err
+	}
+	for _, path := range media {
+		// HCS opens the ISO as the VM, so its file must take an access entry
+		// for it: NTFS, and the person's to change.
+		if err := grantVMAccess(id, path); err != nil {
+			return fmt.Errorf("hcs: give the VM read access to %s (%w); an ISO on FAT, exFAT, or a network share cannot take it, so copy it to an NTFS volume of your own", path, err)
+		}
+	}
 	nic, err := createEndpoint("")
 	if err != nil {
 		return err
