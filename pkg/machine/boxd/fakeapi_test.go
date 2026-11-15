@@ -56,6 +56,8 @@ type fakeAPI struct {
 	snapshotOnDestroy atomic.Bool
 	// proxyErr, when set, is SetProxyPort's answer.
 	proxyErr error
+	// botProtectionErr, when set, is SetBotProtection's answer.
+	botProtectionErr error
 	// deleteProxyErr, when set, is DeleteProxy's answer for a named proxy.
 	deleteProxyErr error
 	// proxyKept makes DeleteProxy answer and keep a named proxy.
@@ -641,6 +643,9 @@ func (f *fakeAPI) SetBotProtection(_ context.Context, req *boxdapi.SetBotProtect
 	v, err := f.vm(req.GetVmId())
 	if err != nil {
 		return nil, err
+	}
+	if f.botProtectionErr != nil {
+		return nil, f.botProtectionErr
 	}
 	v.botProtection = req.GetEnabled()
 	return &boxdapi.SetBotProtectionResponse{}, nil

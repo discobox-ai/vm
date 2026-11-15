@@ -16,7 +16,8 @@ import (
 
 // TestServiceFakeAPI checks what Create sets up for the service: by default,
 // the default proxy pinned to guest.ServicePort, bot protection off, and the
-// URL; for a VM whose ingress URL is asked off, no proxy and no URL. And the
+// URL; for a VM whose ingress URL is asked off, no proxy open, bot protection
+// off, and no URL. And the
 // pool URL: the URL on no networks, and the machine's internal DNS name on
 // some.
 func TestServiceFakeAPI(t *testing.T) {
@@ -80,8 +81,8 @@ func TestServiceFakeAPI(t *testing.T) {
 		pv := fake.vms[peer.ID]
 		locked, port, named, bots := pv.proxyLocked, pv.proxyPort, len(pv.named), pv.botProtection
 		fake.mu.Unlock()
-		if !locked || port != 0 || named != 0 || !bots {
-			t.Errorf("a machine whose ingress URL is off: default proxy locked %v to port %d, %d named proxies left, bot protection %v; want locked to 0, none, on", locked, port, named, bots)
+		if !locked || port != 0 || named != 0 || bots {
+			t.Errorf("a machine whose ingress URL is off: default proxy locked %v to port %d, %d named proxies left, bot protection %v; want locked to 0, none, off", locked, port, named, bots)
 		}
 		if err := d.Destroy(ctx, peer); err != nil {
 			t.Fatal(err)
@@ -107,14 +108,17 @@ func TestServiceFakeAPI(t *testing.T) {
 		t.Errorf("the service of a machine gone: %+v, %v; want ErrNotFound", service, err)
 	}
 
-	// A proxy the API cannot find or lock, a port it does not keep, or a
-	// named proxy boxd will not remove or keeps once removed fails the
-	// create, which leaves no machine.
+	// Bot protection the API will not turn off, a proxy the API cannot find
+	// or lock, a port it does not keep, or a named proxy boxd will not
+	// remove or keeps once removed fails the create, which leaves no
+	// machine.
 	for _, c := range []struct {
 		name string
 		mode machine.URLMode
 		set  func(bool)
 	}{
+		{"unprotectable", machine.URLDefault, func(on bool) { fake.botProtectionErr = errOn(on, status.Error(codes.Unavailable, "try again")) }},
+		{"unprotectable-closed", machine.URLOff, func(on bool) { fake.botProtectionErr = errOn(on, status.Error(codes.Unavailable, "try again")) }},
 		{"noproxy", machine.URLDefault, func(on bool) { fake.proxyErr = errOn(on, status.Error(codes.NotFound, "no such proxy")) }},
 		{"unlockable", machine.URLOff, func(on bool) { fake.proxyErr = errOn(on, status.Error(codes.InvalidArgument, "invalid port")) }},
 		{"open", machine.URLOff, func(on bool) { fake.portIgnored.Store(on) }},

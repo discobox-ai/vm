@@ -19,3 +19,10 @@
   done, left the machine running unseen with its default proxy open. Retry
   a create's steps on NotFound, and confirm a destroy's NotFound against
   `ListVms`. (vm#169.)
+- **On a machine whose ingress URL is off, nothing that loosens access to
+  its proxies runs until they read back closed.** Create closes them with
+  the guest already running, a restore's servers already listening, so a
+  step that loosens first (bot protection off before the port is locked to
+  0) leaves an open proxy unguarded, and a failed create whose destroy
+  fails too can leave it so. (Bot protection was first turned off before
+  the close.)
