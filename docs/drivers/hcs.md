@@ -55,7 +55,17 @@ What building it found, beyond the recipes below:
   no orphan sweep is needed.
 - **Every VM gets a NIC** on an HNS network of the driver's own (`disco-vm`,
   ICS, Flags 35, as sandboxi measured), since the example builds download.
-  An instance asks for the same MAC on every boot.
+  An instance asks for the same MAC on every boot. An endpoint outlives a
+  process killed while its VM runs, and HNS refuses its MAC to another
+  (`0x803B002F`), so the next boot could not start: every boot, an
+  install's first boot too, records its endpoint's ID in `state.json` before
+  HNS makes it, and the next boot, Commit, and Destroy delete a recorded one.
+  A boot whose MAC HNS refuses all the same (an endpoint leaked before the ID
+  was recorded, or another VM's, which HNS gave the MAC once the instance's
+  endpoint freed it) takes another MAC: nothing tells the two apart, and a
+  guest with a second adapter beats one that cannot boot. A killed install's endpoint is freed once its
+  directory is destroyed, which nothing does yet: removing a killed install
+  is vm#165.
 - **Commit freezes the disk where it is**, so its parent locator, written
   when Prepare made it over its parent's final path, is never rewritten; a
   committed VM keeps `disk.vhdx` alone, its guest and runtime state and its
@@ -255,12 +265,13 @@ notification, not from polling.
 
 **Commit(inst):** the VM is stopped (the engine has already shut it down
 through the agent). Freeze it in place: refuse a running system and a fork
-clone, and remove its guest and runtime state and `state.json`. Its
+clone, delete the HNS endpoint `state.json` records (a killed shim's), and
+remove its guest and runtime state and `state.json`. Its
 differencing VHDX stays where Prepare made it, so the rename rule above never
 applies.
 
 **Destroy:** remove files. For a running or orphaned compute system,
-terminate it by ID first. A crashed shim can orphan a registered system, so
+terminate it by ID first, then delete the HNS endpoint `state.json` records. A crashed shim can orphan a registered system, so
 do an orphan sweep in Check or at shim start. The local driver refuses to
 destroy a committed VM while another VM's disk differences over it.
 

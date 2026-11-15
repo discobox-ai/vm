@@ -105,6 +105,12 @@ func imageDisk(vm local.Layer) string { return filepath.Join(vm.Dir, diskName) }
 type instanceState struct {
 	// MAC is asked for again on every boot, so the guest keeps one adapter.
 	MAC string `json:"mac,omitempty"`
+	// NIC is the ID of the HNS endpoint of the latest boot, or of the
+	// install's first boot, recorded before the endpoint is made. The
+	// process holding the VM frees it when the VM stops, but one killed
+	// first does not, and HNS keeps the endpoint and its MAC: the next boot,
+	// Commit, and Destroy free it.
+	NIC string `json:"nic,omitempty"`
 	// Fork is a fork clone's claim on its template, set from its Prepare
 	// until its first boot, from before fork clones were removed. Such an
 	// instance has no disk to boot.
@@ -220,6 +226,46 @@ func terminateStale(id string) {
 	}
 }
 
+// freeStaleNIC deletes the endpoint dir's state.json records, which a
+// process killed while its VM ran left behind. Its VM must already be gone.
+func freeStaleNIC(dir string) {
+	if nic := readState(dir).NIC; nic != "" {
+		deleteEndpoint(nic)
+	}
+}
+
+// newNIC records a new endpoint ID in dir's state.json, then makes the
+// endpoint, asking for st.MAC, and records the MAC HNS gave it. A NIC that
+// cannot be recorded is not made.
+func newNIC(dir string, st instanceState) (*endpoint, error) {
+	st.NIC = newID()
+	if err := writeState(dir, st); err != nil {
+		return nil, fmt.Errorf("hcs: record the VM's NIC: %w", err)
+	}
+	nic, err := createEndpoint(st.NIC, st.MAC)
+	var refused *hcsError
+	if errors.As(err, &refused) && refused.HR == eAddressReserved && st.MAC != "" {
+		// An endpoint no record names holds the MAC: a killed shim's from
+		// before NIC was recorded, or another VM's, which HNS gave the MAC
+		// once this instance's endpoint freed it. Which, nothing here can
+		// tell, so the boot takes another MAC, and the guest another
+		// adapter, rather than not booting or deleting a running VM's NIC.
+		st.MAC = ""
+		nic, err = createEndpoint(st.NIC, "")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if nic.MAC != st.MAC {
+		st.MAC = nic.MAC
+		if err := writeState(dir, st); err != nil {
+			deleteEndpoint(nic.ID)
+			return nil, fmt.Errorf("hcs: record the VM's MAC: %w", err)
+		}
+	}
+	return nic, nil
+}
+
 // Boot starts the instance and waits for its agent. With opts.GUI it opens a
 // window on the guest's desktop once there is one to show (View), which
 // closes when the VM stops. Closing the window leaves the VM running.
@@ -256,18 +302,19 @@ func (d *Hypervisor) boot(inst local.InstanceSpec, opts local.BootOptions) (*vm,
 	}
 	id := vmID(inst.Dir)
 	terminateStale(id)
+	// A killed shim's endpoint still holds st.MAC, and HNS refuses the MAC
+	// to another until it is gone.
+	freeStaleNIC(inst.Dir)
 	if err := freshState(inst.Dir); err != nil {
 		return nil, err
 	}
 	if err := grantAll(id, grantPaths(inst.Dir, inst.Chain)); err != nil {
 		return nil, err
 	}
-	nic, err := createEndpoint(st.MAC)
+	nic, err := newNIC(inst.Dir, st)
 	if err != nil {
 		return nil, err
 	}
-	st.MAC = nic.MAC
-	_ = writeState(inst.Dir, st)
 	fmt.Fprintf(log, "hcs: booting %s as %s\n", inst.ID, id)
 	return startVM(id, vmConfig{
 		Disk:      filepath.Join(inst.Dir, diskName),
@@ -294,7 +341,8 @@ func (*Hypervisor) SaveCache(context.Context, local.InstanceSpec, local.Layer) e
 // differencing over its parent's, whose path is final, so its parent locator
 // needs no rewriting (a disk moved across directories would). What only a
 // running VM needs goes: its guest and runtime state and state.json (its
-// MAC), so a VM created from it gets its own. hcs attaches no volumes.
+// MAC), so a VM created from it gets its own, and the NIC state.json records,
+// if a killed shim left it. hcs attaches no volumes.
 func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec) error {
 	if sys, err := openSystem(vmID(inst.Dir)); err == nil {
 		sys.close()
@@ -306,6 +354,7 @@ func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec) error {
 	if _, err := os.Stat(filepath.Join(inst.Dir, diskName)); err != nil {
 		return fmt.Errorf("hcs: instance %s has no disk to commit: %w", inst.ID, err)
 	}
+	freeStaleNIC(inst.Dir)
 	for _, name := range []string{guestFileName, stateFileName, stateJSON} {
 		if err := os.Remove(filepath.Join(inst.Dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("hcs: commit %s: %w", inst.ID, err)
@@ -314,13 +363,17 @@ func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec) error {
 	return nil
 }
 
-// Destroy ends the instance's VM if one is running and removes its files.
+// Destroy ends the instance's VM if one is running, frees the NIC state.json
+// records, and removes its files. A failed install's directory is destroyed
+// here too; its first boot's VM, not under vmID, is gone with the process
+// that held it.
 func (d *Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {
 	if inst.Dir == "" {
 		return nil
 	}
 	id := vmID(inst.Dir)
 	terminateStale(id)
+	freeStaleNIC(inst.Dir)
 	for _, path := range grantPaths(inst.Dir, inst.Chain) {
 		revokeVMAccess(id, path)
 	}
