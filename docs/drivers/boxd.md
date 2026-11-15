@@ -247,9 +247,21 @@ org's `all` secrets, its `shared` ones on a shared machine, and its owner's
 `private` ones on a private machine (disco-vm's are its key's owner's), and
 `isolated` does not strip them, only keeps them from boot (boxd's
 docs.boxd.sh/guides/env-secrets). A secret is scoped to the org or a person,
-never to a network. disco-vm binds none, so a caller that must reach nothing
-but its networks keeps host-bound secrets out of every scope its machines
-are in. Not checked against boxd: the org of the run below held none.
+never to a network. disco-vm binds none, so the fence holds only while no
+host-bound secret is in a scope its machines are in, and `Check` refuses
+the key until none is (ADR 26-11-15-274). It lists the secrets with no org
+(`ListVars`), which boxd resolves as it does a create, which names none
+either: to the org an API key or a machine's token is fenced to ("" resolves
+to it, boxd's credential fence), and for a login to its own scope. It fails
+naming each host-bound one of scope `all` or `private`, or of no scope (boxd
+ignores a personal secret's scope and does not say what it lists one as),
+with its scope and hosts; boxd returns no value. `shared` ones reach only
+shared machines, and `unattached` and `private-unattached` only a machine
+whose spec lists them, which disco-vm's never do. An in-machine token is
+checked the same way. Checked against the fake API only: that `ListVars`
+with no org answers an API key and a machine's token with the fenced org's
+secrets, and whether it lists only the caller's own `private` ones or every
+member's, are not confirmed against boxd.
 boxd's empty allowlist is none at all. boxd enforces it outside the machine, where its
 root cannot loosen it, and its resolver answers only the names the list
 admits. Neither `CreateVm` nor `CreateVmFromSnapshot` takes it, so Create
@@ -280,6 +292,27 @@ the TLS handshake. It reached the hub's pool URL and its port 8080, and
 did after a stop and a start. Restores of its snapshot got the fence each
 asked for: `none`, `example.com` (example.com answered, github.com did not
 resolve), and none at all, which reached both.
+
+## The org's machine limit
+
+boxd caps the machines an org may have at once: `GetOrgMachineLimit`'s
+`max_vms`, 50 by default and 2 for a new org without a payment method. It
+counts every non-destroyed machine billed to the org (`vm_count`), stopped
+ones included, shared and private, every member's and every pool's; a
+snapshot, so a committed VM, does not count. boxd refuses a create past it,
+and never a boot. So it is not `MaxRunning`, which boxd leaves unset, but
+`MaxMachines[linux]` (ADR 26-11-15-274). `Check` reads it at the home
+endpoint and keeps it, and `Capabilities` reports none before. boxd
+documents it readable with a login or an API key issued for the org, not
+with a token minted inside a machine, so a refusal (`PermissionDenied`,
+`Unimplemented`) leaves no cap and passes `Check`: boxd still enforces it. boxd does not
+document the code it refuses a create with, so on any refused create the
+driver reads the limit again: with `vm_count` at `max_vms`, the refusal is
+`ErrCapacity`, naming the org and its count, and the kept limit is the new
+one. `machinetest`'s max-machines subtest fills the limit, so the run
+against boxd itself skips it (`SkipMaxMachines`): it would refuse every
+other member's machines meanwhile. `TestConformanceFakeAPI` runs it at a
+limit of 4, counted across regions.
 
 ## Regions
 
@@ -400,6 +433,13 @@ its listener on it.
 - Committed VMs (ADR 26-11-03-606) on boxd itself: a snapshot named as its
   machine is, taken while the machine still exists. It passes against the
   fake only.
+- The org's machine limit and its secrets on boxd itself: that
+  `GetOrgMachineLimit` answers an API key (a machine's token, which boxd
+  does not document reading it, is taken as no cap), that `ListVars` with
+  no org lists the fenced org's secrets, how it lists a secret set with no
+  scope (counted as reaching, and the error says to set one explicitly; if
+  boxd lists it with none rather than `shared`, a shared one is refused
+  until it is), and the code boxd refuses a create past the limit with. They pass against the fake only.
 - The `suspended`/`standby` status strings, and `WakeVm` from `hibernated`.
   The driver turns off auto-suspend and auto-hibernate on every machine, so
   these show up only when something else suspends one.
@@ -424,5 +464,4 @@ tries again.
 
 - No shared directories, and no display. boxd's `DesktopTunnel` is an xpra
   stream, which could back `Display` later.
-- `MaxRunning` is unset. The org's machine quota (50 by default, 2 for a new
-  org without a payment method) is not reported as a capability.
+

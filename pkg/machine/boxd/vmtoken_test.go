@@ -16,6 +16,7 @@ import (
 
 	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
 )
 
 // fakeAdapter is boxd's in-machine metadata adapter: each GET mints a new
@@ -113,11 +114,14 @@ func TestTheMachineTokenIsTheCredentialWithNoKey(t *testing.T) {
 	adapter.lifetime.Store(int64(30 * time.Second))
 	d.api.vm.drop()
 	before := adapter.minted.Load()
-	if err := d.Check(ctx); err != nil {
+	account, err := d.api.Account()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Check(ctx); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if _, err := account.Whoami(ctx, &boxdapi.WhoamiRequest{}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if n := adapter.minted.Load() - before; n != 2 {
 		t.Fatalf("the adapter minted %d tokens for two Whoamis near expiry, want 2", n)

@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -66,6 +67,9 @@ type Driver struct {
 	// base is the image a fresh VM is made from; empty is boxd's default
 	// image (GetConfig).
 	base string
+	// maxMachines is the key's org's machine limit, as Check (or a create
+	// refused at it) last read it; zero until then.
+	maxMachines atomic.Int64
 }
 
 var _ machine.Driver = (*Driver)(nil)
@@ -93,13 +97,20 @@ func New(cfg machine.Config) (*Driver, error) {
 
 func (*Driver) Name() string { return "boxd" }
 
-func (*Driver) Capabilities() machine.Capabilities {
+func (d *Driver) Capabilities() machine.Capabilities {
+	var maxMachines map[machine.OS]int
+	if n := d.maxMachines.Load(); n > 0 {
+		// The org's limit counts every machine billed to it, stopped ones
+		// and other members' included, and boxd refuses a create past it.
+		maxMachines = map[machine.OS]int{machine.Linux: int(n)}
+	}
 	return machine.Capabilities{
-		GuestOS:   []machine.OS{machine.Linux},
-		Commit:    true,
-		Keys:      keyCapabilities,
-		Isolation: true,
-		Egress:    []machine.EgressFence{machine.EgressNone, machine.EgressAllow},
+		MaxMachines: maxMachines,
+		GuestOS:     []machine.OS{machine.Linux},
+		Commit:      true,
+		Keys:        keyCapabilities,
+		Isolation:   true,
+		Egress:      []machine.EgressFence{machine.EgressNone, machine.EgressAllow},
 		// Ingress is the default proxy, closed for a VM whose ingress URL
 		// is asked off; the pool URL is the direct one on networks, else
 		// the ingress one.
@@ -107,11 +118,14 @@ func (*Driver) Capabilities() machine.Capabilities {
 	}
 }
 
-// Check asks boxd who the key is, at the home endpoint. With a region it
-// also finds the region's endpoint, which needs the region to be one the
-// key's org has enabled, and lists the machines there, so an endpoint that
-// does not answer, or refuses the key, fails here rather than at the first
-// create.
+// Check asks boxd who the key is, at the home endpoint, and reads its org's
+// machine limit (Capabilities.MaxMachines). It fails when a host-bound
+// secret of the org or of the key's owner would reach the driver's
+// machines, since boxd lets a machine reach such a secret's hosts whatever
+// its egress allowlist says. With a region it also finds the region's
+// endpoint, which needs the region to be one the key's org has enabled, and
+// lists the machines there, so an endpoint that does not answer, or refuses
+// the key, fails here rather than at the first create.
 func (d *Driver) Check(ctx context.Context) error {
 	account, err := d.api.Account()
 	if err != nil {
@@ -121,6 +135,13 @@ func (d *Driver) Check(ctx context.Context) error {
 	defer cancel()
 	if _, err := account.Whoami(ctx, &boxdapi.WhoamiRequest{}); err != nil {
 		return fmt.Errorf("boxd: %s: %w", d.api.addr, err)
+	}
+	limit, err := d.machineLimit(ctx, account)
+	if err != nil {
+		return err
+	}
+	if err := hostBoundSecrets(ctx, account, limit.GetOrgName()); err != nil {
+		return err
 	}
 	if d.api.region == "" {
 		return nil
@@ -250,6 +271,10 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("boxd: a VM named %q: %w", spec.Name, machine.ErrExists)
 	}
 	if err != nil {
+		if limit, full := d.atLimit(ctx); full {
+			return machine.Instance{}, fmt.Errorf("boxd: org %s has %d machines, its limit, stopped ones and every member's counted; destroy one, or have the org's owner ask boxd for more: %w (create %s: %w)",
+				limit.GetOrgName(), limit.GetVmCount(), machine.ErrCapacity, name, err)
+		}
 		return machine.Instance{}, fmt.Errorf("boxd: create %s: %w", name, err)
 	}
 	vm := created.GetVmId()
