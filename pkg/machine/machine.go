@@ -736,7 +736,7 @@ type Service struct {
 	Listen string
 	// IngressURL is where the driver's caller reaches the service over HTTP
 	// with no credential of the driver's (URLIngress): boxd's
-	// https://<machine>.boxd.sh, archil's exposed port, a port the Docker
+	// https://<machine>.<zone>, archil's exposed port, a port the Docker
 	// daemon publishes on its host's loopback, a loopback port fake's shim
 	// serves, or the owner-only local socket a held VM's shim serves
 	// (unix:///PATH, or npipe:////./pipe/NAME on Windows; DialURL). It is
