@@ -212,10 +212,14 @@ What booting the DVDs took:
   2026-11-15). The script's log on the guest's C: goes with the failed
   install's disk.
 - Install grants the VM's throwaway identity access to the person's ISO
-  (`HcsGrantVmAccess`), so the ISO must be on NTFS and theirs to change. An
-  install killed before its cleanup leaves that entry behind; it names a SID
-  nothing else holds. `icacls <iso>` lists it as `NT VIRTUAL MACHINE\<id>`,
-  and `icacls <iso> /remove "NT VIRTUAL MACHINE\<id>"` removes it.
+  (`HcsGrantVmAccess`), so the ISO must be on NTFS and theirs to change. It
+  records that identity and every path it grants, in `.install-grants` in
+  the image's directory, before it grants any. An install killed before its
+  cleanup leaves the entries behind, and `disco-vm rm` of the interrupted
+  install revokes them from that record. An install killed by a disco-vm
+  from before the record left an entry no record names: `icacls <iso>` lists
+  it as `NT VIRTUAL MACHINE\<id>`, and `icacls <iso> /remove "NT VIRTUAL
+  MACHINE\<id>"` removes it.
 - A COM1 on a named pipe (`Devices.ComPorts`) carries installed Windows's
   `echo ...> COM1` to the host, but nothing from WinPE or specialize, so
   install has no serial log; `C:\disco-vm\specialize.log` is the record.

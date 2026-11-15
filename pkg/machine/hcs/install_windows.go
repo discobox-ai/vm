@@ -10,11 +10,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"golang.org/x/sys/windows"
 
+	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/internal/udf"
 	"github.com/discobox-ai/vm/internal/units"
 	"github.com/discobox-ai/vm/pkg/guest"
@@ -186,12 +188,20 @@ func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, work, disk st
 	}
 	id := newID()
 	paths := []string{dir, disk, work, filepath.Join(work, guestFileName), filepath.Join(work, stateFileName)}
+	// Recorded before anything is granted, so a Destroy after an install
+	// killed midway revokes it all, the person's ISO outside dir included.
+	granted := slices.Concat(paths, media)
+	forgetGrants, err := recordGrants(dir, installGrants{VMID: id, Paths: granted})
+	if err != nil {
+		return err
+	}
 	// Revoke whatever was granted, the person's ISO included: a grant that
 	// fails partway leaves no entry behind.
 	defer func() {
-		for _, path := range append(paths, media...) {
+		for _, path := range granted {
 			revokeVMAccess(id, path)
 		}
+		forgetGrants()
 	}()
 	if err := grantAll(id, paths); err != nil {
 		return err
@@ -246,6 +256,43 @@ func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, work, disk st
 		return errors.New("hcs: the guest did not power off after Setup; a disk that has to be forced off is not committed")
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// installGrantsFile records, in the image's directory, the access the
+// install's first boot grants, written before it grants any and removed once
+// it has revoked them. An install killed midway never revokes: its VM ID is
+// random and its media (the person's ISO) lie outside the directory, so
+// Destroy revokes from this record (revokeInstall).
+const installGrantsFile = ".install-grants"
+
+// installGrants is the install's VM ID and every path granted to it.
+type installGrants struct {
+	VMID  string
+	Paths []string
+}
+
+// recordGrants writes grants in dir, and returns what removes them again.
+func recordGrants(dir string, grants installGrants) (func(), error) {
+	path := filepath.Join(dir, installGrantsFile)
+	if err := fsutil.WriteJSON(path, grants); err != nil {
+		return nil, err
+	}
+	return func() { _ = os.Remove(path) }, nil
+}
+
+// revokeInstall ends the VM of an install killed midway in dir, if it is
+// still there, and revokes the access its first boot granted, as recorded. A
+// record that cannot be read names nothing to revoke, and does not keep the
+// directory from being removed.
+func revokeInstall(dir string) {
+	var grants installGrants
+	if err := fsutil.ReadJSON(filepath.Join(dir, installGrantsFile), &grants); err != nil || grants.VMID == "" {
+		return
+	}
+	terminateStale(grants.VMID)
+	for _, path := range grants.Paths {
+		revokeVMAccess(grants.VMID, path)
 	}
 }
 

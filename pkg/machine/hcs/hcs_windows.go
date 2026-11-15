@@ -324,6 +324,8 @@ func (d *Hypervisor) Destroy(_ context.Context, inst local.InstanceSpec) error {
 	for _, path := range grantPaths(inst.Dir, inst.Chain) {
 		revokeVMAccess(id, path)
 	}
+	// What an install killed midway granted, to a VM ID of its own.
+	revokeInstall(inst.Dir)
 	return removeAll(inst.Dir)
 }
 
