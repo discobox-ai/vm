@@ -36,12 +36,15 @@ Hyper-V role needed) with a Windows 11 Pro 25H2 guest:
   DISCO_VM_E2E_ISO=<iso> go test ./internal/e2e` from an elevated shell. The
   first run installs and tags `e2e/base` (about 15 min in all); later runs
   reuse it.
-- (3) a build of the since-removed `docs/examples/windows.yaml` installed
-  from the retail ISO (the 128 GiB fixed disk alone takes over ten minutes
-  to allocate), and its OpenSSH step downloaded from Windows Update through
-  the guest's NIC. `disco-vm install NAME` and a chain of committed VMs have
-  not run here; `local`'s refusal to remove a committed VM another VM's disk
-  needs is proven with a chaining stand-in on the fake.
+- (3) `disco-vm install NAME` from a retail Windows 11 ISO, Setup running
+  inside the VM with nothing attached to or mounted on the host (ADR
+  26-11-14-816), committed a VM in about 11 minutes, which `run --from`
+  booted to its agent in 8 s (2026-11-15, see Known numbers). Before that
+  ADR, a build of the since-removed `docs/examples/windows.yaml` installed
+  from the retail ISO and its OpenSSH step downloaded from Windows Update
+  through the guest's NIC. A chain of committed VMs has not run here;
+  `local`'s refusal to remove a committed VM another VM's disk needs is
+  proven with a chaining stand-in on the fake.
 
 What building it found, beyond the recipes below:
 
@@ -69,7 +72,7 @@ What building it found, beyond the recipes below:
   does.
 - **Run as user is LogonUser**, with the password Install's unattend gives
   the account, its own name (an image from before has a blank one, which is
-  tried second; `LimitBlankPasswordUse` is turned off in the offline hive).
+  tried second; `LimitBlankPasswordUse` is turned off during specialize).
   An image installed with `--option password` has a password disco-vm keeps
   nowhere, so running as its account is unsupported, and the error says so
   (ADR 26-11-14-593). The process gets the linked elevated token and the
@@ -142,40 +145,67 @@ Port the behavior, not the structure.
 - **Pure HCS only:** `vmcompute.dll` / `computecore.dll`. No vmms/Hyper-V
   management, no CmService/Windows Sandbox, no WSL. It must work on Home. Both
   the Hyper-V role and Windows Sandbox may be absent.
-- **Never mount a disk on the host except inside Install**, and there only with
-  the guards from sandboxi's `scripts/build-image.ps1`:
-  - a fixed-size VHDX
-  - `Assert-OurDisk` verifying disk identity before any destructive cmdlet
-  - a free-space preflight
-  - a breadcrumb file plus cleanup
-
-  A dynamic VHDX expanding under DISM caused vhdmp bus resets that hung the
-  machine. Every other path hands VHDX paths to HCS and lets the guest mount
-  them.
+- **Never mount a disk on the host**, Install included (ADR 26-11-14-816):
+  no VHDX attach, no ISO mount, no offline hive, no host `dism` or
+  `bcdboot`. Every path hands VHDX and ISO paths to HCS and lets the guest
+  mount them. The host-side install this replaced attached a fixed VHDX
+  for DISM, and an attach froze a host with vhdmp resets (discobox-ai/vm#74),
+  as a dynamic VHDX expanding under DISM had hung sandboxi's.
 
 ## Method by method
 
 **Check:** confirm vmcompute is available and the process is elevated. Name
 the fix in the error: enable Virtual Machine Platform, or run elevated.
 
-**Install(spec, dst):** retail ISO to a bootable VHDX in `dst.Dir`, the
-committed VM's own directory. The flow is the one sandboxi's
-`build-image.ps1` proved:
+**Install(spec, dst):** a retail ISO to a committed VM in `dst.Dir`, the way
+a person installs Windows on Hyper-V: Windows Setup runs inside the VM
+(ADR 26-11-14-816). Nothing is attached to or mounted on the host.
 
-1. Create a fixed VHDX.
-2. Partition it GPT: ESP 300 MB FAT32, MSR 16 MB, Windows. `Initialize-Disk`
-   auto-creates an MSR, so clear it first.
-3. `Expand-WindowsImage` the edition from `install.wim`.
-4. Run the **host's** `bcdboot` (the image's own exits 0xC0E90002 silently),
-   check its exit code, and assert that `\EFI\Microsoft\Boot\BCD` exists.
-5. Write `unattend.xml`.
-6. **Bake in the agent:** copy `spec.Agent` into the image and register
-   `disco-vm guest` as an auto-start SYSTEM service through the offline SYSTEM
-   hive, the same way guestexec was baked in.
+1. Read the ISO's UDF tree in Go (`internal/udf`; its ISO 9660 tree holds
+   only a README), and choose the edition from `install.wim`'s XML
+   (`internal/wim`): an index, a name matched without regard to case, or
+   the first ` Pro`, else the first. A missing edition is refused, listing
+   the ISO's, before anything is written.
+2. Write the install medium (`internal/iso9660`, ISO 9660 with Joliet) in
+   the first boot's working directory, in a second or two: the ISO's `efi`
+   tree, its root `bootmgr.efi`, `boot\boot.sdi`, and `sources\boot.wim`,
+   booting from `efi\microsoft\boot\efisys_noprompt.bin` so no key is
+   needed; `autounattend.xml`; and under `disco-vm\` the agent and two
+   scripts.
+3. Create a dynamic `disk.vhdx` of `spec.DiskBytes` (64 GiB by default),
+   after checking the volume has 32 GiB free.
+4. Boot it with the medium at SCSI LUN 1 and the retail ISO at LUN 2, both
+   `Iso` and read-only.
+5. In WinPE, the answer file's `pe.cmd` gives the retail DVD the letter
+   `Z:` (`subst`; `InstallFrom` names `Z:\sources\install.wim`) and sets
+   `LabConfig`'s `BypassTPMCheck` and `BypassCPUCheck`: HCS gives no vTPM
+   without the Hyper-V role (`EnableTpm` fails with 0x80070002). Setup
+   wipes disk 0 into ESP 300 MB, MSR 16 MB, and Windows, and applies the
+   image.
+6. In specialize, `specialize.cmd` copies the agent to
+   `C:\disco-vm\disco-vm.exe`, registers `disco-vm guest` as an auto-start
+   SYSTEM service, turns off `LimitBlankPasswordUse` and automatic device
+   encryption, and turns Remote Desktop on except on `Core*` editions. It
+   logs to `C:\disco-vm\specialize.log`.
 
-Then boot once through Windows Setup (about 4.6 min) and finish only after an
-orderly shutdown through the agent, so the committed VM is past Setup. Do the
-PowerShell by embedding scripts (`//go:embed`), as sandboxi does.
+Then wait through the agent for Setup to finish, and finish only after an
+orderly shutdown through the agent, so the committed VM is past Setup. The
+medium and the boot's state files go with the working directory; the
+committed VM is `disk.vhdx` alone.
+
+What booting the DVDs took:
+
+- The El Torito image's `cdboot` loads `\bootmgr.efi` from the disc's root.
+  Without it every El Torito entry fails at once: Hyper-V-Worker 18603,
+  each boot source's status 0x00010003 with extended status 0x13, read from
+  the event's XML (`VmBootSourceResult`). A boot that loads Windows reads
+  0x00010005 (18601).
+- Secure Boot passes the retail ISO's PCA-2011-signed boot files under the
+  Microsoft Windows template; the Microsoft UEFI CA template refuses them
+  (18604, 0x00020006/0xF).
+- A COM1 on a named pipe (`Devices.ComPorts`) carries installed Windows's
+  `echo ...> COM1` to the host, but nothing from WinPE or specialize, so
+  install has no serial log; `C:\disco-vm\specialize.log` is the record.
 
 **Prepare(inst):** create a differencing VHDX in `inst.Dir` whose parent is
 `inst.Parent().Dir`'s disk: the committed VM it is created from, last in
@@ -253,5 +283,6 @@ restore) did **not** work on image VMs: HCS cold-booted instead.
 
 | | time |
 |---|---|
-| first boot, full Setup | 4.6 min (sandboxi); 3.9–5.5 min to a settled desktop (disco-vm) |
-| boot from a captured disk | about 37 s to desktop; `run` to the agent answering in 5.8 s |
+| `install`, Setup inside the VM (ADR 26-11-14-816), retail Windows 11 ISO, 64 GiB dynamic disk, defaults (6 vCPUs) | 10m49s end to end for Pro, 11m20s for Education with `--gui` (2026-11-15); of that: the medium (669 MB) written in 1–2 s, specialize done about 7 min after boot, the agent answering at 8 min, Setup finished at 10m37s and 11m2s, then the shutdown that commits; the committed disk about 22 GB |
+| first boot, full Setup, host-side install before ADR 26-11-14-816 | 4.6 min (sandboxi); 3.9–5.5 min to a settled desktop (disco-vm); the host-side steps before it were not timed again (the baseline that attaches a disk was skipped, by the owner's decision on #127) |
+| boot from a captured disk | about 37 s to desktop; `run` to the agent answering in 5.8 s; `run --from` an in-VM install's committed VM, 8 s (2026-11-15) |
