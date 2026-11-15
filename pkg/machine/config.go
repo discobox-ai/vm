@@ -293,7 +293,12 @@ func Normalize(driver string, config json.RawMessage) (json.RawMessage, error) {
 	}
 	for _, f := range def.Current() {
 		if _, ok := fields[f.Key]; f.Required && !ok {
-			return nil, fmt.Errorf("%s: configuration: %s is required", driver, f.Key)
+			// Its description says what to set, which a refusal is
+			// often the first place a person reads it.
+			if f.Description == "" {
+				return nil, fmt.Errorf("%s: configuration: %s is required", driver, f.Key)
+			}
+			return nil, fmt.Errorf("%s: configuration: %s is required: %s", driver, f.Key, f.Description)
 		}
 	}
 	var out json.RawMessage
