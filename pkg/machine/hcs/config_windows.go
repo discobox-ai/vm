@@ -1,6 +1,7 @@
 package hcs
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/Microsoft/go-winio"
@@ -98,8 +99,9 @@ type scsi struct {
 }
 
 type attachment struct {
-	Type string `json:"Type"`
-	Path string `json:"Path"`
+	Type     string `json:"Type"`
+	Path     string `json:"Path"`
+	ReadOnly bool   `json:"ReadOnly,omitempty"`
 }
 
 type hvSocket struct {
@@ -142,7 +144,10 @@ const (
 
 // vmConfig is what varies between the documents this driver creates.
 type vmConfig struct {
-	Disk      string
+	Disk string
+	// Media are ISOs attached read-only after the disk, as DVDs: an
+	// install's alone.
+	Media     []string
 	GuestFile string
 	StateFile string
 	CPUs      int
@@ -184,7 +189,7 @@ func newDocument(c vmConfig) document {
 				Processor: processor{Count: cpus, ExposeVirtualizationExtensions: true},
 			},
 			Devices: devices{
-				Scsi: map[string]scsi{"0": {Attachments: map[string]attachment{"0": {Type: "VirtualDisk", Path: slashes(c.Disk)}}}},
+				Scsi: map[string]scsi{"0": {Attachments: attachments(c)}},
 				HvSocket: hvSocket{HvSocketConfig: hvSocketConfig{
 					DefaultBindSecurityDescriptor:    sddlEveryone,
 					DefaultConnectSecurityDescriptor: sddlAdmins,
@@ -200,4 +205,13 @@ func newDocument(c vmConfig) document {
 		d.VirtualMachine.Devices.NetworkAdapters = map[string]networkAdapter{c.NIC.ID: {EndpointID: c.NIC.ID, MacAddress: c.NIC.MAC}}
 	}
 	return d
+}
+
+// attachments are the VM's SCSI LUNs: its disk at 0, then each medium.
+func attachments(c vmConfig) map[string]attachment {
+	a := map[string]attachment{"0": {Type: "VirtualDisk", Path: slashes(c.Disk)}}
+	for i, iso := range c.Media {
+		a[strconv.Itoa(i+1)] = attachment{Type: "Iso", Path: slashes(iso), ReadOnly: true}
+	}
+	return a
 }

@@ -28,8 +28,8 @@ import (
 // the logon Setup is finishing.
 //
 // The installing process shows it with `install --gui`. Any other process
-// reaches the install's VM by the record firstBoot writes beside the
-// install's breadcrumb, and dials its guest over hvsocket: it never opens the
+// reaches the install's VM by the record firstBoot writes in the image's
+// directory, and dials its guest over hvsocket: it never opens the
 // compute system, whose last handle closing is what ends the VM.
 
 // installVMFile records the install's running VM in the image's directory
