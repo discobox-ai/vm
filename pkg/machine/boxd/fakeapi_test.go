@@ -70,6 +70,15 @@ type fakeAPI struct {
 	// egressIgnored makes SetVmEgressAllow answer and keep nothing, so
 	// GetVm reports the machine unrestricted.
 	egressIgnored atomic.Bool
+	// unseen makes the next lookups of a machine by ID or name answer
+	// NotFound, as boxd's SetAutoSuspendTimeout did for a machine CreateVm
+	// had just made (region fra, 2026-11-15). ListVms still lists it.
+	unseen atomic.Int32
+	// destroyErr, when set, is DestroyVm's answer, the machine kept.
+	destroyErr error
+	// destroyNotFound makes DestroyVm remove the machine and then answer
+	// NotFound, so a caller learns it is gone only from ListVms.
+	destroyNotFound atomic.Bool
 
 	keys keys
 	// addr and tokenURL are where the API and its token exchange are
@@ -258,6 +267,10 @@ func (f *fakeAPI) snapshot(ref string) (*fakeSnapshot, error) {
 func (f *fakeAPI) root(v *fakeVM) string { return filepath.Join(v.dir, "root") }
 
 func (f *fakeAPI) vm(id string) (*fakeVM, error) {
+	if f.unseen.Add(-1) >= 0 {
+		return nil, status.Errorf(codes.NotFound, "vm not found: %s", id)
+	}
+	f.unseen.Store(0)
 	for _, v := range f.vms {
 		if v.id == id || v.name == id {
 			return v, nil
@@ -445,6 +458,9 @@ func (f *fakeAPI) ListVms(context.Context, *boxdapi.ListVmsRequest) (*boxdapi.Li
 func (f *fakeAPI) DestroyVm(_ context.Context, req *boxdapi.DestroyVmRequest) (*boxdapi.DestroyVmResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.destroyErr != nil {
+		return nil, f.destroyErr
+	}
 	v, err := f.vm(req.GetVmId())
 	if err != nil {
 		return nil, err
@@ -460,7 +476,10 @@ func (f *fakeAPI) DestroyVm(_ context.Context, req *boxdapi.DestroyVmRequest) (*
 	}
 	delete(f.vms, v.id)
 	f.org().machines.Add(-1)
-	return &boxdapi.DestroyVmResponse{}, os.RemoveAll(v.dir)
+	if err := os.RemoveAll(v.dir); err != nil || !f.destroyNotFound.Load() {
+		return &boxdapi.DestroyVmResponse{}, err
+	}
+	return nil, status.Errorf(codes.NotFound, "vm not found: %s", v.id)
 }
 
 func (f *fakeAPI) StartVm(_ context.Context, req *boxdapi.StartVmRequest) (*boxdapi.StartVmResponse, error) {

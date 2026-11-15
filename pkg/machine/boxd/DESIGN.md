@@ -39,6 +39,15 @@ machines and snapshots (the root
   is two boots. boxd does not say which snapshot a machine was restored
   from, so `Instance.From` is empty, and a restored machine outlives its
   snapshot's removal.
+- **A NotFound for a machine just made is not a machine gone.** boxd has
+  answered one for a machine `CreateVm` had just made, and does not say
+  that every call sees a new machine at once, so each step of a create (the
+  fence, the networks, the idle timers, the wait for it to run, the proxies,
+  the power-off) is made again while it answers NotFound, until a minute
+  after the create answered. A create that fails destroys its machine, and
+  counts it gone only when `DestroyVm` succeeds, or answers NotFound while
+  `ListVms` lists it destroying or, once a step has found it, not at all;
+  otherwise it fails naming the machine as left, or as possibly left.
 - **The guest's operations are Exec streams.** Each is one command line run
   as boxd's own user: `sudo -n -H -u USER -- env -C DIR -- K=V... ARGV...`,
   every word quoted, root unless the request names a user. Stdin, stdout,

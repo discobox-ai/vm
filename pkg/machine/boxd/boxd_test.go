@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
@@ -463,6 +465,124 @@ func TestCreateUndone(t *testing.T) {
 	}
 	if _, err := d.Create(ctx, spec); !errors.Is(err, machine.ErrExists) {
 		t.Fatalf("a second instance of the name: %v, want ErrExists", err)
+	}
+}
+
+// TestCreateWaitsForAMachineNotYetSeen checks that a create whose machine
+// boxd does not find for a moment after CreateVm succeeds: the NotFound boxd
+// answered the idle-timer call with (region fra, 2026-11-15) is made again,
+// not taken for a machine gone, with the egress fence set first or not.
+func TestCreateWaitsForAMachineNotYetSeen(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	for _, egress := range []*machine.Egress{nil, {}} {
+		dir, err := os.MkdirTemp("", "boxd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		d, fake := fakeDriver(t, dir)
+		ctx := context.Background()
+		spec := machine.InstanceSpec{Name: "unseen", Isolated: true, Egress: egress, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}}
+		// The first call on the machine, and the one made again after it.
+		fake.unseen.Store(2)
+		inst, err := d.Create(ctx, spec)
+		if err != nil {
+			t.Fatalf("egress %v: a create whose machine boxd did not find at first: %v", egress, err)
+		}
+		t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
+		fake.mu.Lock()
+		v, err := fake.vm(inst.ID)
+		fake.mu.Unlock()
+		if err != nil || v.status != "stopped" {
+			t.Fatalf("egress %v: the created VM's machine is %+v, %v; want it stopped", egress, v, err)
+		}
+	}
+}
+
+// TestCreateUndoneSaysWhatItLeft checks that a failed create whose machine
+// cannot be shown destroyed says so, naming the machine, rather than dropping
+// the destroy's error: boxd refuses the destroy, answers it NotFound while it
+// still lists the machine, or never finds the machine at all.
+func TestCreateUndoneSaysWhatItLeft(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	defer func(limit time.Duration) { appearLimit = limit }(appearLimit)
+	appearLimit = time.Second
+	for _, tc := range []struct {
+		name       string
+		unseen     bool
+		destroyErr error
+		want       string
+	}{
+		{name: "refused", destroyErr: status.Error(codes.Unavailable, "boxd is unreachable"), want: "is left: destroy"},
+		{name: "not found but listed", destroyErr: status.Error(codes.NotFound, "vm not found"), want: "may be left"},
+		{name: "never found", unseen: true, want: "may be left"},
+	} {
+		dir, err := os.MkdirTemp("", "boxd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		d, fake := fakeDriver(t, dir)
+		ctx := context.Background()
+		if tc.unseen {
+			fake.unseen.Store(1 << 30)
+		} else {
+			// The fence is read back unset, and the create fails.
+			fake.egressIgnored.Store(true)
+		}
+		fake.mu.Lock()
+		fake.destroyErr = tc.destroyErr
+		fake.mu.Unlock()
+		_, err = d.Create(ctx, machine.InstanceSpec{Name: "left", Egress: &machine.Egress{}})
+		fake.unseen.Store(0)
+		fake.mu.Lock()
+		fake.destroyErr = nil
+		var left []string
+		for _, v := range fake.vms {
+			left = append(left, v.id)
+		}
+		fake.mu.Unlock()
+		if len(left) != 1 {
+			t.Fatalf("%s: the fake has machines %v, want the one left", tc.name, left)
+		}
+		if err == nil || !strings.Contains(err.Error(), "undo the create of") || !strings.Contains(err.Error(), "machine "+left[0]+" "+tc.want) {
+			t.Fatalf("%s: a create that left %s failed with %v", tc.name, left[0], err)
+		}
+	}
+}
+
+// TestCreateUndoneTrustsAListedDestroy checks that a failed create's
+// cleanup counts its machine gone when DestroyVm answers NotFound and ListVms
+// no longer lists it, once a step of the create had found it: the create
+// fails at its proxy, after the idle timers.
+func TestCreateUndoneTrustsAListedDestroy(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	defer func(limit time.Duration) { appearLimit = limit }(appearLimit)
+	appearLimit = time.Second
+	dir, err := os.MkdirTemp("", "boxd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	d, fake := fakeDriver(t, dir)
+	fake.destroyNotFound.Store(true)
+	fake.mu.Lock()
+	fake.proxyErr = errors.New("proxy unavailable")
+	fake.mu.Unlock()
+	_, err = d.Create(context.Background(), machine.InstanceSpec{Name: "gone"})
+	if err == nil || !strings.Contains(err.Error(), "proxy unavailable") || strings.Contains(err.Error(), "undo the create of") {
+		t.Fatalf("a create whose machine was destroyed failed with %v, want its proxy's error alone", err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.vms) != 0 {
+		t.Fatalf("a failed create left %d machines", len(fake.vms))
 	}
 }
 

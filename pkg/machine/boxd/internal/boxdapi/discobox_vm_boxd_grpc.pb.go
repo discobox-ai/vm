@@ -79,7 +79,8 @@ type BoxdApiClient interface {
 	StopVm(ctx context.Context, in *StopVmRequest, opts ...grpc.CallOption) (*StopVmResponse, error)
 	RebootVm(ctx context.Context, in *RebootVmRequest, opts ...grpc.CallOption) (*RebootVmResponse, error)
 	// NOT_FOUND for an id/name with no matching machine, including a destroyed
-	// one.
+	// one, and, a moment after CreateVm, perhaps for the machine it made (see
+	// SetAutoSuspendTimeout).
 	GetVm(ctx context.Context, in *GetVmRequest, opts ...grpc.CallOption) (*GetVmResponse, error)
 	// Every machine in the caller's context, with no paging.
 	ListVms(ctx context.Context, in *ListVmsRequest, opts ...grpc.CallOption) (*ListVmsResponse, error)
@@ -93,6 +94,10 @@ type BoxdApiClient interface {
 	SuspendVm(ctx context.Context, in *SuspendVmRequest, opts ...grpc.CallOption) (*SuspendVmResponse, error)
 	ResumeVm(ctx context.Context, in *ResumeVmRequest, opts ...grpc.CallOption) (*ResumeVmResponse, error)
 	WakeVm(ctx context.Context, in *WakeVmRequest, opts ...grpc.CallOption) (*WakeVmResponse, error)
+	// Answered NOT_FOUND for a machine CreateVm had answered for just before,
+	// which a retry of the whole create then made without one (region fra,
+	// 2026-11-15). Whether every per-machine call can, and for how long, is
+	// not known.
 	SetAutoSuspendTimeout(ctx context.Context, in *SetAutoSuspendTimeoutRequest, opts ...grpc.CallOption) (*SetAutoSuspendTimeoutResponse, error)
 	SetAutoHibernateTimeout(ctx context.Context, in *SetAutoHibernateTimeoutRequest, opts ...grpc.CallOption) (*SetAutoHibernateTimeoutResponse, error)
 	// Memory + disk of a running VM, replicated and versioned (latest-only).
@@ -501,7 +506,8 @@ type BoxdApiServer interface {
 	StopVm(context.Context, *StopVmRequest) (*StopVmResponse, error)
 	RebootVm(context.Context, *RebootVmRequest) (*RebootVmResponse, error)
 	// NOT_FOUND for an id/name with no matching machine, including a destroyed
-	// one.
+	// one, and, a moment after CreateVm, perhaps for the machine it made (see
+	// SetAutoSuspendTimeout).
 	GetVm(context.Context, *GetVmRequest) (*GetVmResponse, error)
 	// Every machine in the caller's context, with no paging.
 	ListVms(context.Context, *ListVmsRequest) (*ListVmsResponse, error)
@@ -515,6 +521,10 @@ type BoxdApiServer interface {
 	SuspendVm(context.Context, *SuspendVmRequest) (*SuspendVmResponse, error)
 	ResumeVm(context.Context, *ResumeVmRequest) (*ResumeVmResponse, error)
 	WakeVm(context.Context, *WakeVmRequest) (*WakeVmResponse, error)
+	// Answered NOT_FOUND for a machine CreateVm had answered for just before,
+	// which a retry of the whole create then made without one (region fra,
+	// 2026-11-15). Whether every per-machine call can, and for how long, is
+	// not known.
 	SetAutoSuspendTimeout(context.Context, *SetAutoSuspendTimeoutRequest) (*SetAutoSuspendTimeoutResponse, error)
 	SetAutoHibernateTimeout(context.Context, *SetAutoHibernateTimeoutRequest) (*SetAutoHibernateTimeoutResponse, error)
 	// Memory + disk of a running VM, replicated and versioned (latest-only).
