@@ -17,6 +17,16 @@
   carries that page's comment on the field. A fake widened to match what the
   driver sends passes a test that boxd itself would fail. (ADR 26-10-15-833:
   a base's machine is made from its snapshot's ID.)
+- **Where the boxd fake models what boxd was found to do, not what its docs
+  say, the hand-kept proto says what was found, where and when.** A proto
+  comment that leaves a claim to an integration test is rewritten once that
+  test has run. The fake let a default proxy be deleted on such an unchecked
+  claim, and every boxd pool's create failed (ADR 26-11-14-454).
+- **A boxd integration test that a guest is not reachable at a URL first sees
+  boxd answer there.** A request that fails because the name does not resolve
+  yet, or its certificate is not issued, passes the check and proves nothing;
+  `TestNoIngressURL` waits for boxd's 502 before it counts the guest as
+  unreachable.
 - **A driver's `Machine.Shutdown` returns once the stop is accepted, not
   before.** A caller may exit after it, and a stop left in a goroutine of its
   own dies with that process, leaving the machine running. Work before the

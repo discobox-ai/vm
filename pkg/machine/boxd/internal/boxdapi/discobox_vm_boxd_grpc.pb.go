@@ -103,8 +103,9 @@ type BoxdApiClient interface {
 	ListProxies(ctx context.Context, in *ListProxiesRequest, opts ...grpc.CallOption) (*ListProxiesResponse, error)
 	SetProxyPort(ctx context.Context, in *SetProxyPortRequest, opts ...grpc.CallOption) (*SetProxyPortResponse, error)
 	// Removes a proxy and its domain (docs.boxd.sh/guides/proxies, "Remove a
-	// proxy"). The docs show it on a subdomain proxy; that it takes a
-	// machine's default one too is what TestNoIngressURL checks on boxd.
+	// proxy"). Not a machine's default one: found on boxd itself (fra,
+	// 2026-11-14), the default proxy's `@` answers FailedPrecondition "cannot
+	// delete the default proxy", and its empty name NotFound.
 	DeleteProxy(ctx context.Context, in *DeleteProxyRequest, opts ...grpc.CallOption) (*DeleteProxyResponse, error)
 	// Bot protection challenges an HTTPS request that would wake a sleeping
 	// machine on <machine>.<zone>. On by default.
@@ -493,8 +494,9 @@ type BoxdApiServer interface {
 	ListProxies(context.Context, *ListProxiesRequest) (*ListProxiesResponse, error)
 	SetProxyPort(context.Context, *SetProxyPortRequest) (*SetProxyPortResponse, error)
 	// Removes a proxy and its domain (docs.boxd.sh/guides/proxies, "Remove a
-	// proxy"). The docs show it on a subdomain proxy; that it takes a
-	// machine's default one too is what TestNoIngressURL checks on boxd.
+	// proxy"). Not a machine's default one: found on boxd itself (fra,
+	// 2026-11-14), the default proxy's `@` answers FailedPrecondition "cannot
+	// delete the default proxy", and its empty name NotFound.
 	DeleteProxy(context.Context, *DeleteProxyRequest) (*DeleteProxyResponse, error)
 	// Bot protection challenges an HTTPS request that would wake a sleeping
 	// machine on <machine>.<zone>. On by default.

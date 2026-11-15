@@ -2641,10 +2641,15 @@ func (x *ProxyInfo) GetEffectivePort() uint32 {
 }
 
 type SetProxyPortRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Port          string                 `protobuf:"bytes,3,opt,name=port,proto3" json:"port,omitempty"` // a port number, or "auto" (the default proxy only)
-	Vm            string                 `protobuf:"bytes,4,opt,name=vm,proto3" json:"vm,omitempty"`     // machine id OR name
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Empty is the default proxy, the name ListProxies gives it (found on boxd
+	// itself, fra, 2026-11-14).
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// A port number, or "auto" (the default proxy only). 0 locks it to port 0,
+	// where boxd answers 502, across a stop and start (found on boxd itself,
+	// fra, 2026-11-14; TestNoIngressURL checks it).
+	Port          string `protobuf:"bytes,3,opt,name=port,proto3" json:"port,omitempty"`
+	Vm            string `protobuf:"bytes,4,opt,name=vm,proto3" json:"vm,omitempty"` // machine id OR name
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

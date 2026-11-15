@@ -75,7 +75,7 @@ sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, port)
 		// A new proxy can answer 502, or not resolve, for its first seconds.
 		deadline := time.Now().Add(3 * time.Minute)
 		for {
-			body, err := httpGet(ctx, url)
+			_, body, err := httpGet(ctx, url)
 			if err == nil && strings.TrimSpace(body) == marker {
 				break
 			}
@@ -114,9 +114,10 @@ sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, port)
 // sandbox's is (isolated), and checks on boxd itself that its default proxy,
 // which boxd keeps, stays locked to port 0 and is its only one across two
 // boots, and that servers on the service port and the ports boxd's proxy
-// picks on its own answer at no <machine>.<zone> URL, with bot protection
-// off so its browser check hides nothing. It makes billable machines, so it
-// runs only when asked for and given an account.
+// picks on its own answer at no <machine>.<zone> URL, where boxd answers
+// 502 instead, with bot protection off so its browser check hides nothing.
+// It makes billable machines, so it runs only when asked for and given an
+// account.
 func TestNoIngressURL(t *testing.T) {
 	if os.Getenv(IntegrationEnv) != "1" || (os.Getenv(APIKeyEnv) == "" && os.Getenv(TokenEnv) == "") {
 		t.Skipf("set %s=1 and %s to check a VM with no ingress URL on boxd, which bills the account", IntegrationEnv, APIKeyEnv)
@@ -156,11 +157,21 @@ for port in %d 80 8000 8080; do sudo systemd-run python3 -m http.server $port --
 		if service, err := d.Service(ctx, inst); err != nil || service.IngressURL != "" {
 			t.Fatalf("boot %d: service %+v, %v; want no URL", boot, service, err)
 		}
-		// Long enough for a proxy that would forward to answer.
-		deadline := time.Now().Add(time.Minute)
-		for time.Now().Before(deadline) {
-			if body, _ := httpGet(ctx, url); strings.TrimSpace(body) == marker {
+		// Nothing answering proves nothing: the name may not resolve yet, or
+		// its certificate not be issued. So boxd has to be seen refusing,
+		// 502, within the three minutes TestService gives a new proxy to
+		// come up, and then for a minute more; the guest, at no time.
+		deadline, refused := time.Now().Add(3*time.Minute), time.Time{}
+		for refused.IsZero() || time.Since(refused) < time.Minute {
+			code, body, err := httpGet(ctx, url)
+			if strings.TrimSpace(body) == marker {
 				t.Fatalf("boot %d: %s serves the guest", boot, url)
+			}
+			if code == http.StatusBadGateway && refused.IsZero() {
+				refused = time.Now()
+			}
+			if refused.IsZero() && time.Now().After(deadline) {
+				t.Fatalf("boot %d: GET %s: %d %q, %v; want boxd to answer 502", boot, url, code, body, err)
 			}
 			time.Sleep(5 * time.Second)
 		}
@@ -170,23 +181,23 @@ for port in %d 80 8000 8080; do sudo systemd-run python3 -m http.server $port --
 	}
 }
 
-func httpGet(ctx context.Context, url string) (string, error) {
+func httpGet(ctx context.Context, url string) (int, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
-		return string(body), fmt.Errorf("%s", resp.Status)
+		return resp.StatusCode, string(body), fmt.Errorf("%s", resp.Status)
 	}
-	return string(body), err
+	return resp.StatusCode, string(body), err
 }
 
 // randomID is an image ID nothing else has.
