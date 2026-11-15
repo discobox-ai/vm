@@ -28,8 +28,8 @@ const (
 	// answerFileName is where Setup looks for its answers on removable
 	// media: the root.
 	answerFileName = "autounattend.xml"
-	// maxBootTree and maxBootDepth bound the files the medium copies from
-	// the boot tree, and how deep it walks, against a hostile ISO.
+	// maxBootTree and maxBootDepth bound the files and directories the
+	// medium walks in the boot tree, and how deep, against a hostile ISO.
 	maxBootTree  = 512
 	maxBootDepth = 16
 )
@@ -62,10 +62,16 @@ func retailImage(iso *udf.FS, edition string) (string, wim.Image, error) {
 // through its UDF tree, and the answer file, the agent, and the scripts.
 func mediumFiles(iso *udf.FS, answerFile []byte, agent string) ([]iso9660.File, error) {
 	var files []iso9660.File
+	// Directories count against maxBootTree too: a hostile ISO's directory
+	// can name its own ancestors under ordinary names, and hold no files.
+	visited := 0
 	var walk func(dir string, depth int) error
 	walk = func(dir string, depth int) error {
 		if depth > maxBootDepth {
 			return fmt.Errorf("hcs: the ISO's %s nests deeper than %d directories", retailBootTree, maxBootDepth)
+		}
+		if visited++; visited+len(files) > maxBootTree {
+			return fmt.Errorf("hcs: the ISO's %s holds over %d files and directories", retailBootTree, maxBootTree)
 		}
 		names, err := iso.ReadDir(dir)
 		if err != nil {
@@ -83,8 +89,8 @@ func mediumFiles(iso *udf.FS, answerFile []byte, agent string) ([]iso9660.File, 
 				}
 				continue
 			}
-			if len(files) >= maxBootTree {
-				return fmt.Errorf("hcs: the ISO's %s holds over %d files", retailBootTree, maxBootTree)
+			if visited+len(files) >= maxBootTree {
+				return fmt.Errorf("hcs: the ISO's %s holds over %d files and directories", retailBootTree, maxBootTree)
 			}
 			files = append(files, isoFile(p, f))
 		}
