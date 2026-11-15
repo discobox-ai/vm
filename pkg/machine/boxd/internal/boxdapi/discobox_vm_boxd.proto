@@ -50,8 +50,9 @@ service BoxdApi {
   rpc ListProxies(ListProxiesRequest)       returns (ListProxiesResponse);
   rpc SetProxyPort(SetProxyPortRequest)     returns (SetProxyPortResponse);
   // Removes a proxy and its domain (docs.boxd.sh/guides/proxies, "Remove a
-  // proxy"). The docs show it on a subdomain proxy; that it takes a
-  // machine's default one too is what TestNoIngressURL checks on boxd.
+  // proxy"). Not a machine's default one: found on boxd itself (fra,
+  // 2026-11-14), the default proxy's `@` answers FailedPrecondition "cannot
+  // delete the default proxy", and its empty name NotFound.
   rpc DeleteProxy(DeleteProxyRequest)       returns (DeleteProxyResponse);
   // Bot protection challenges an HTTPS request that would wake a sleeping
   // machine on <machine>.<zone>. On by default.
@@ -292,8 +293,13 @@ message ProxyInfo {
 }
 
 message SetProxyPortRequest {
+  // Empty is the default proxy, the name ListProxies gives it (found on boxd
+  // itself, fra, 2026-11-14).
   string name = 1;
-  string port = 3;  // a port number, or "auto" (the default proxy only)
+  // A port number, or "auto" (the default proxy only). 0 locks it to port 0,
+  // where boxd answers 502, across a stop and start (found on boxd itself,
+  // fra, 2026-11-14; TestNoIngressURL checks it).
+  string port = 3;
   string vm   = 4;  // machine id OR name
 }
 message SetProxyPortResponse {}

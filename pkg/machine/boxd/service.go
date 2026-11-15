@@ -93,15 +93,20 @@ func closeProxies(ctx context.Context, api boxdapi.BoxdApiClient, vm string) err
 	if err != nil {
 		return fmt.Errorf("boxd: proxies of %s: %w", vm, err)
 	}
+	var def *boxdapi.ProxyInfo
 	for _, p := range list.GetProxies() {
 		if p.GetIsDefault() {
+			def = p
 			continue
 		}
 		if _, err := api.DeleteProxy(ctx, &boxdapi.DeleteProxyRequest{Name: p.GetName(), Vm: vm}); err != nil {
 			return fmt.Errorf("boxd: remove %s's proxy %q (%s): %w", vm, p.GetName(), p.GetDomain(), err)
 		}
 	}
-	if _, err := lockProxy(ctx, api, vm, closedPort); err != nil {
+	if def == nil {
+		return fmt.Errorf("boxd: %s has no default proxy", vm)
+	}
+	if err := setProxyPort(ctx, api, vm, def, closedPort); err != nil {
 		return err
 	}
 	if list, err = api.ListProxies(ctx, &boxdapi.ListProxiesRequest{Vm: vm}); err != nil {
@@ -129,10 +134,8 @@ func lockProxy(ctx context.Context, api boxdapi.BoxdApiClient, vm string, port u
 	if def == nil {
 		return nil, fmt.Errorf("boxd: %s has no default proxy", vm)
 	}
-	// The default proxy's name is empty, which SetProxyPort takes as the
-	// default proxy.
-	if _, err := api.SetProxyPort(ctx, &boxdapi.SetProxyPortRequest{Name: def.GetName(), Vm: vm, Port: strconv.FormatUint(uint64(port), 10)}); err != nil {
-		return nil, fmt.Errorf("boxd: lock %s's proxy %s to port %d: %w", vm, def.GetDomain(), port, err)
+	if err := setProxyPort(ctx, api, vm, def, port); err != nil {
+		return nil, err
 	}
 	if def, err = defaultProxy(ctx, api, vm); err != nil {
 		return nil, err
@@ -141,6 +144,15 @@ func lockProxy(ctx context.Context, api boxdapi.BoxdApiClient, vm string, port u
 		return nil, fmt.Errorf("boxd: %s's proxy forwards %q to port %d (%s), not locked to %d", vm, def.GetDomain(), def.GetEffectivePort(), def.GetPortMode(), port)
 	}
 	return def, nil
+}
+
+// setProxyPort locks the machine's default proxy def to port. Its name is
+// empty, which SetProxyPort takes as the default proxy.
+func setProxyPort(ctx context.Context, api boxdapi.BoxdApiClient, vm string, def *boxdapi.ProxyInfo, port uint32) error {
+	if _, err := api.SetProxyPort(ctx, &boxdapi.SetProxyPortRequest{Name: def.GetName(), Vm: vm, Port: strconv.FormatUint(uint64(port), 10)}); err != nil {
+		return fmt.Errorf("boxd: lock %s's proxy %s to port %d: %w", vm, def.GetDomain(), port, err)
+	}
+	return nil
 }
 
 // closed is whether a proxy is locked to closedPort.
