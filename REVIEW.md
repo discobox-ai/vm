@@ -25,9 +25,13 @@
 - **A boxd integration test that a guest is not reachable at a URL first sees
   boxd answer there.** A request that fails because the name does not resolve
   yet, or its certificate is not issued, passes the check and proves nothing;
-  `TestNoIngressURL` waits for boxd's 502 before it counts the guest as
-  unreachable. A proxy that forwards can answer 502 too while it warms up, so
-  the watch also lasts the whole time a new proxy is given to come up.
+  `TestNoIngressURL` waits for boxd's answer for a closed proxy before it
+  counts the guest as unreachable: `502` with `x-boxd-proxy: placeholder`, at
+  the domain `ListProxies` reports, `<machine>.<zone>` (the zone is the
+  region's, `boxd.sh` in fra). A bare `502` is not one: a name with no machine
+  answers it too, through a discobox's egress, and its control checks that.
+  A proxy that forwards can answer 502 too while it warms up, so the watch
+  also lasts the whole time a new proxy is given to come up.
 - **A driver's `Machine.Shutdown` returns once the stop is accepted, not
   before.** A caller may exit after it, and a stop left in a goroutine of its
   own dies with that process, leaving the machine running. Work before the
