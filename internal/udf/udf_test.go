@@ -304,4 +304,19 @@ func TestRefuses(t *testing.T) {
 			t.Errorf("%s: read", name)
 		}
 	}
+
+	// A name a path cannot hold is refused, not walked into.
+	for _, bad := range []string{".", "..", "a/b", "a\\b", "a\x00b"} {
+		im := sample()
+		src := append(fid("", false, fidParent, 1), fid(bad, false, fidDir, 3)...)
+		copy(im.block(4), src)
+		im.entry(3, true, true, len(src), 0, shortAD(0, uint32(len(src)), 4))
+		f, err := Open(bytes.NewReader(im.b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.ReadDir("sources"); err == nil {
+			t.Errorf("a directory holding %q listed", bad)
+		}
+	}
 }

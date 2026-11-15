@@ -1,6 +1,7 @@
 // Package wim reads the images a Windows image file (install.wim, or an
 // install.esd) describes: each image's index, name, and edition, from the
-// XML resource the file's header points to. It reads no image's files.
+// XML resource the file's header points to. It reads no image's files, and
+// leaves choosing among them to its caller.
 package wim
 
 import (
@@ -91,38 +92,4 @@ func parseXML(data []byte) ([]Image, error) {
 		return nil, errors.New("wim: no images")
 	}
 	return images, nil
-}
-
-// Choose picks the image to install, as hcs's install always has: edition is
-// an index, or a name matched exactly without regard to case; with no
-// edition, the first whose name ends in " Pro", else the first. An edition
-// the file lacks is an error that lists the file's.
-func Choose(images []Image, edition string) (Image, error) {
-	edition = strings.TrimSpace(edition)
-	if edition == "" {
-		for _, im := range images {
-			if strings.HasSuffix(strings.ToLower(im.Name), " pro") {
-				return im, nil
-			}
-		}
-		return images[0], nil
-	}
-	if index, err := strconv.Atoi(edition); err == nil {
-		for _, im := range images {
-			if im.Index == index {
-				return im, nil
-			}
-		}
-	} else {
-		for _, im := range images {
-			if strings.EqualFold(im.Name, edition) {
-				return im, nil
-			}
-		}
-	}
-	names := make([]string, len(images))
-	for i, im := range images {
-		names[i] = fmt.Sprintf("%d %s", im.Index, im.Name)
-	}
-	return Image{}, fmt.Errorf("no edition %q; the image has: %s", edition, strings.Join(names, ", "))
 }

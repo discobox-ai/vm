@@ -260,7 +260,12 @@ func (f *FS) readDir(dir *File) ([]dirEntry, error) {
 		}
 		const deleted, parent = 1 << 2, 1 << 3
 		if chars&(deleted|parent) == 0 && nameLen > 0 {
-			entries = append(entries, dirEntry{name: dstring(buf[p+38+implLen : end]), icb: icb})
+			name := dstring(buf[p+38+implLen : end])
+			// A name a path could not hold, which a walk would loop on.
+			if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+				return nil, fmt.Errorf("udf: directory %s: a file named %q", dir.Name, name)
+			}
+			entries = append(entries, dirEntry{name: name, icb: icb})
 		}
 		p = (end + 3) &^ 3
 	}

@@ -52,7 +52,8 @@ type node struct {
 	file     *File
 	parent   *node
 	// Layout.
-	number          int    // in the path table, from 1
+	number          int    // in the primary path table, from 1
+	jolietNumber    int    // in the Joliet one, ordered by its own names
 	primary, joliet uint32 // a directory's record extents
 	primarySize     uint32
 	jolietSize      uint32
@@ -114,7 +115,18 @@ func Write(w io.Writer, im Image) error {
 		catalogAt = next
 		next++
 	}
-	lPrimary, mPrimary, lJoliet, mJoliet := pathTable(dirs, false, true), pathTable(dirs, false, false), pathTable(dirs, true, true), pathTable(dirs, true, false)
+	// The Joliet tree's own path-table order, by its UCS-2 names.
+	jdirs := []*node{root}
+	for i := 0; i < len(jdirs); i++ {
+		d := jdirs[i]
+		d.jolietNumber = i + 1
+		for _, c := range jolietOrder(d.children) {
+			if c.dir {
+				jdirs = append(jdirs, c)
+			}
+		}
+	}
+	lPrimary, mPrimary, lJoliet, mJoliet := pathTable(dirs, false, true), pathTable(dirs, false, false), pathTable(jdirs, true, true), pathTable(jdirs, true, false)
 	tables := [4]uint32{}
 	for i, t := range [][]byte{lPrimary, mPrimary, lJoliet, mJoliet} {
 		tables[i] = next
@@ -142,7 +154,7 @@ func Write(w io.Writer, im Image) error {
 	}
 	total := next
 	// Path tables were laid out before the directories had extents.
-	lPrimary, mPrimary, lJoliet, mJoliet = pathTable(dirs, false, true), pathTable(dirs, false, false), pathTable(dirs, true, true), pathTable(dirs, true, false)
+	lPrimary, mPrimary, lJoliet, mJoliet = pathTable(dirs, false, true), pathTable(dirs, false, false), pathTable(jdirs, true, true), pathTable(jdirs, true, false)
 
 	out := &sectorWriter{w: w}
 	if err := out.pad(16 * sector); err != nil {
@@ -351,13 +363,20 @@ func dirRecords(d *node, joliet bool, stamp time.Time) []byte {
 	add(record(parent, "..", joliet, stamp))
 	children := d.children
 	if joliet {
-		children = slices.Clone(children)
-		slices.SortFunc(children, func(a, b *node) int { return bytes.Compare(ucs2(a.name), ucs2(b.name)) })
+		children = jolietOrder(children)
 	}
 	for _, c := range children {
 		add(record(c, "", joliet, stamp))
 	}
 	return buf
+}
+
+// jolietOrder is children sorted by their Joliet (UCS-2) names, as the
+// Joliet tree's records and path table list them.
+func jolietOrder(children []*node) []*node {
+	children = slices.Clone(children)
+	slices.SortFunc(children, func(a, b *node) int { return bytes.Compare(ucs2(a.name), ucs2(b.name)) })
+	return children
 }
 
 // dirSize is the sectors d's records fill, in bytes; it lays them out as
@@ -383,6 +402,9 @@ func pathTable(dirs []*node, joliet, little bool) []byte {
 		parent := 1
 		if d.parent != nil {
 			parent = d.parent.number
+			if joliet {
+				parent = d.parent.jolietNumber
+			}
 		}
 		if little {
 			binary.LittleEndian.PutUint32(e[2:], extent)
