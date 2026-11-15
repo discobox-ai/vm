@@ -1,50 +1,49 @@
 package hcs
 
 import (
+	"bufio"
 	"bytes"
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/Microsoft/go-winio/vhd"
 	"golang.org/x/sys/windows"
 
+	"github.com/discobox-ai/vm/internal/udf"
 	"github.com/discobox-ai/vm/internal/units"
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
-//go:embed install.ps1
-var installScript []byte
-
 const (
-	installDiskName = "install.vhdx"
-	// breadcrumb names the disk an install has attached to the host. The
-	// attach dies with the installing process, so the breadcrumb only matters
-	// after a power loss: the next install detaches what it names.
-	breadcrumb = ".attached"
-
 	defaultDiskBytes = 64 << 30
 	minDiskBytes     = 32 << 30
-	defaultUser      = "disco"
+	// minMemory is what Windows 11 Setup asks of a machine.
+	minMemory   = 4 << 30
+	defaultUser = "disco"
+
+	// mediumName is the install medium disco-vm writes, in the first boot's
+	// working directory, which goes with it.
+	mediumName = "install-medium.iso"
 
 	setupTimeout = 90 * time.Minute
 )
 
-// Install lays Windows from a retail ISO onto a new disk in dst.Dir, bakes in
-// the agent as a boot-start service, and boots it once through Windows Setup,
-// so the committed VM is a Windows that has already been set up. It is done only
-// after an orderly shutdown through the agent.
+// Install installs Windows from a retail ISO the way a person would on
+// Hyper-V, inside the VM, and attaches and mounts nothing on the host (ADR
+// 26-11-14-816). The VM boots WinPE from a small medium disco-vm writes,
+// with the retail ISO beside it as a read-only DVD. Windows Setup partitions
+// a new dynamic disk, applies the edition, installs the agent as a
+// boot-start service during specialize, and runs OOBE to a logged-on
+// desktop. The committed VM is that disk, once the guest has shut down
+// through the agent.
 //
 // Options: user and password name the local administrator Setup creates and
 // logs on automatically (default "disco", and the user's own name for a
@@ -66,7 +65,10 @@ func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst lo
 		return nil, fmt.Errorf("hcs: install media %s is not an ISO file", spec.Media)
 	}
 	if _, err := os.Stat(spec.Agent); err != nil {
-		return nil, fmt.Errorf("hcs: the agent to bake in: %w", err)
+		return nil, fmt.Errorf("hcs: the agent to install: %w", err)
+	}
+	if spec.Memory != 0 && spec.Memory < minMemory {
+		return nil, fmt.Errorf("hcs: Windows Setup needs %s of memory, not %s", units.FormatBytes(minMemory), units.FormatBytes(spec.Memory))
 	}
 	if err := d.Check(ctx); err != nil {
 		return nil, err
@@ -78,33 +80,85 @@ func (d *Hypervisor) Install(ctx context.Context, spec local.InstallSpec, dst lo
 	if size < minDiskBytes {
 		return nil, fmt.Errorf("hcs: a %s disk is too small for Windows; give it at least %s", units.FormatBytes(size), units.FormatBytes(minDiskBytes))
 	}
-	if err := os.MkdirAll(dst.Dir, 0o755); err != nil {
+	user := spec.Options["user"]
+	if user == "" {
+		user = defaultUser
+	}
+	password := spec.Options["password"]
+	if password == "" {
+		password = user
+	}
+
+	// The edition, read from the ISO before anything is written or booted.
+	isoFile, err := os.Open(spec.Media)
+	if err != nil {
 		return nil, err
 	}
-	sweepAttached(dst.Dir, log)
-	// The fixed disk, its dynamic copy, and Setup's growth all at once.
-	if err := needSpace(dst.Dir, size+30<<30); err != nil {
+	defer isoFile.Close()
+	iso, err := udf.Open(isoFile)
+	if err != nil {
+		return nil, fmt.Errorf("hcs: read %s: %w", spec.Media, err)
+	}
+	wimPath, image, err := retailImage(iso, spec.Edition)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(log, "hcs: image: %s index %d (%s, %s)\n", wimPath, image.Index, image.Name, image.EditionID)
+	answer, err := answerFile(answers{Index: image.Index, WIM: wimPath, User: user, Password: password})
+	if err != nil {
+		return nil, err
+	}
+	files, err := mediumFiles(iso, answer, spec.Agent)
+	if err != nil {
 		return nil, err
 	}
 
-	fixed := filepath.Join(dst.Dir, installDiskName)
-	fmt.Fprintf(log, "hcs: allocating a fixed %s disk (this is silent, and takes a while)\n", units.FormatBytes(size))
-	if err := createFixed(fixed, size); err != nil {
+	if err := os.MkdirAll(dst.Dir, 0o755); err != nil {
 		return nil, err
 	}
-	if err := writeDisk(ctx, fixed, spec.InstallSpec, log); err != nil {
+	// The guest grows its dynamic disk as Setup writes; the smallest disk
+	// hcs installs to is what must fit.
+	if err := needSpace(dst.Dir, minDiskBytes); err != nil {
 		return nil, err
 	}
-	fmt.Fprintln(log, "hcs: compacting the disk")
+	work := filepath.Join(dst.Dir, "firstboot")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		return nil, err
+	}
+	defer func() { _ = removeAll(work) }()
+
+	started := time.Now()
+	medium := filepath.Join(work, mediumName)
+	if err := writeFile(medium, func(w io.Writer) error { return writeMedium(w, files) }); err != nil {
+		return nil, fmt.Errorf("hcs: write the install medium: %w", err)
+	}
+	fmt.Fprintf(log, "hcs: wrote the install medium in %s\n", time.Since(started).Round(time.Second))
 	disk := filepath.Join(dst.Dir, diskName)
-	if err := createDynamicFrom(disk, fixed); err != nil {
-		return nil, err
-	}
-	if err := os.Remove(fixed); err != nil {
+	if err := createDynamic(disk, size); err != nil {
 		return nil, err
 	}
 	// The ISO is the person's own; hcs resolves no release from it.
-	return nil, firstBoot(ctx, spec.InstallSpec, dst.Dir, disk, log)
+	return nil, firstBoot(ctx, spec.InstallSpec, dst.Dir, work, disk, []string{medium, spec.Media}, log)
+}
+
+// writeFile writes path through write, and removes it on failure.
+func writeFile(path string, write func(io.Writer) error) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	w := bufio.NewWriterSize(f, 1<<20)
+	err = write(w)
+	if err == nil {
+		err = w.Flush()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+	}
+	return err
 }
 
 // needSpace fails early when dir's volume cannot hold what Install writes.
@@ -123,76 +177,15 @@ func needSpace(dir string, need uint64) error {
 	return nil
 }
 
-// sweepAttached detaches disks that installs which lost power left attached.
-// Installs run in sibling VM directories of the same shape as dst's
-// (instances/<id>/machine).
-func sweepAttached(dir string, log io.Writer) {
-	pattern := filepath.Join(filepath.Dir(filepath.Dir(dir)), "*", filepath.Base(dir), breadcrumb)
-	crumbs, _ := filepath.Glob(pattern)
-	for _, crumb := range crumbs {
-		if data, err := os.ReadFile(crumb); err == nil {
-			if path := strings.TrimSpace(string(data)); path != "" && vhd.DetachVhd(path) == nil {
-				fmt.Fprintf(log, "hcs: detached %s, left attached by an earlier install\n", path)
-			}
-		}
-		_ = os.Remove(crumb)
-	}
-}
-
-// writeDisk attaches the fixed disk to the host, runs the install script over
-// it, and detaches it. This is the only place the driver mounts a disk.
-func writeDisk(ctx context.Context, fixed string, spec machine.InstallSpec, log io.Writer) error {
-	dir := filepath.Dir(fixed)
-	crumb := filepath.Join(dir, breadcrumb)
-	if err := os.WriteFile(crumb, []byte(fixed), 0o600); err != nil {
-		return err
-	}
-	defer os.Remove(crumb)
-	disk, err := attach(fixed)
-	if err != nil {
-		return err
-	}
-	defer disk.detach()
-	fmt.Fprintf(log, "hcs: disk attached to the host as disk %d\n", disk.diskNumber)
-
-	script := filepath.Join(dir, "install.ps1")
-	// A BOM, so Windows PowerShell reads the script as UTF-8.
-	if err := os.WriteFile(script, append([]byte("\xEF\xBB\xBF"), installScript...), 0o600); err != nil {
-		return err
-	}
-	defer os.Remove(script)
-	user := spec.Options["user"]
-	if user == "" {
-		user = defaultUser
-	}
-	password := spec.Options["password"]
-	if password == "" {
-		password = user
-	}
-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-		"-File", script,
-		"-Iso", spec.Media, "-Vhdx", fixed, "-DiskNumber", strconv.Itoa(disk.diskNumber),
-		"-Agent", spec.Agent, "-Edition", spec.Edition, "-User", user, "-Password", password)
-	cmd.Stdout, cmd.Stderr = log, log
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("hcs: writing Windows to the disk: %w", err)
-	}
-	return nil
-}
-
-// firstBoot boots the new disk directly, lets Windows Setup run to a logged-on
-// desktop, and shuts it down through the agent.
-func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, disk string, log io.Writer) error {
-	work := filepath.Join(dir, "firstboot")
-	if err := os.MkdirAll(work, 0o755); err != nil {
-		return err
-	}
-	defer func() { _ = removeAll(work) }()
+// firstBoot boots the new disk with the install's media, lets Windows Setup
+// run to a logged-on desktop, and shuts it down through the agent. Its
+// state files live in work, and go with it: the committed VM is the disk.
+func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, work, disk string, media []string, log io.Writer) error {
 	if err := freshState(work); err != nil {
 		return err
 	}
 	id := newID()
-	paths := []string{dir, disk, work, filepath.Join(work, guestFileName), filepath.Join(work, stateFileName)}
+	paths := append([]string{dir, disk, work, filepath.Join(work, guestFileName), filepath.Join(work, stateFileName)}, media...)
 	if err := grantAll(id, paths); err != nil {
 		return err
 	}
@@ -205,15 +198,16 @@ func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, disk string, 
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(log, "hcs: first boot: Windows Setup runs now (several minutes, with reboots)")
+	fmt.Fprintln(log, "hcs: Windows Setup runs inside the VM now (copying Windows, then specialize and OOBE, with reboots)")
 	m, err := startVM(id, vmConfig{
-		Disk: disk, GuestFile: filepath.Join(work, guestFileName), StateFile: filepath.Join(work, stateFileName),
+		Disk: disk, Media: media, GuestFile: filepath.Join(work, guestFileName), StateFile: filepath.Join(work, stateFileName),
 		CPUs: spec.CPUs, Memory: spec.Memory, NIC: nic,
 	})
 	if err != nil {
 		return err
 	}
 	defer m.shutdown()
+	started := time.Now()
 	forget, err := recordInstall(dir, m)
 	if err != nil {
 		return err
@@ -229,7 +223,6 @@ func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, disk string, 
 		fmt.Fprintln(log, "hcs: the window opens at the first logon; Windows Setup before it has no desktop to show")
 		go showInstall(ctx, m, log)
 	}
-	started := time.Now()
 	if err := waitSetup(ctx, client, m, started, log); err != nil {
 		return err
 	}

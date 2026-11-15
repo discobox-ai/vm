@@ -4,8 +4,10 @@
 // works on Home.
 //
 // A VM's disk is a VHDX (disk.vhdx) in its directory: an install is a whole
-// disk that Install wrote from a retail ISO and booted once through Windows
-// Setup, and a VM created from a committed one is a differencing disk over
+// disk that Windows Setup wrote inside the VM, booted from a retail ISO and a
+// small medium Install writes beside it, with nothing attached to or mounted
+// on the host (ADR 26-11-14-816); a VM created from a committed one is a
+// differencing disk over
 // that one's, which commit leaves where it is (ADR 26-11-03-606). The
 // hypervisor Chains, so package local hands Prepare the whole chain, and
 // refuses to remove or boot a VM another VM's disk still needs. Guests

@@ -704,8 +704,9 @@ type InstallSpec struct {
 	CPUs      int
 	Memory    uint64
 	// Agent is the disco-vm binary built for GuestOS, given to a driver that
-	// lists Capabilities.Agent. hcs bakes it into the disk and arranges for
-	// `disco-vm guest` to start at boot as a SYSTEM service. vz does not
+	// lists Capabilities.Agent. hcs puts it on the install medium, and Windows
+	// Setup's specialize pass installs it as a SYSTEM service that runs
+	// `disco-vm guest` at boot (ADR 26-11-14-816). vz does not
 	// read it: a macOS guest runs the agent each boot attaches on a drive,
 	// its configured macOS agent (ADR 26-11-13-318).
 	Agent string
