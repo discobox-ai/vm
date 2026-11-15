@@ -296,7 +296,8 @@ resolve), and none at all, which reached both.
 ## The org's machine limit
 
 boxd caps the machines an org may have at once: `GetOrgMachineLimit`'s
-`max_vms`, 50 by default and 2 for a new org without a payment method. It
+`max_vms`, 50 by default and 2 for a new org without a payment method (100
+for the org it was read from on 2026-11-15). It
 counts every non-destroyed machine billed to the org (`vm_count`), stopped
 ones included, shared and private, every member's and every pool's; a
 snapshot, so a committed VM, does not count. boxd refuses a create past it,
@@ -393,6 +394,13 @@ its listener on it.
 
 ## Confirmed against boxd
 
+- The org's machine limit and its secrets, read-only with an API key
+  (2026-11-15, `disco-vm info`, nothing created): `GetOrgMachineLimit`
+  with no org answered the key's org by name with `max_vms` 100 and no
+  machines counted, reported as `MaxMachines[linux]` 100; `ListVars` with
+  no org and kind `secret` answered, empty for an org that holds no
+  secrets, and `Check` passed.
+
 - With no agent (2026-10-15): every guest operation as a command line
   through sudo. `systemctl --no-block poweroff`'s Exec returns exit 0 before
   the shutdown takes the exec path down, so an orderly stop and a snapshot's
@@ -433,13 +441,14 @@ its listener on it.
 - Committed VMs (ADR 26-11-03-606) on boxd itself: a snapshot named as its
   machine is, taken while the machine still exists. It passes against the
   fake only.
-- The org's machine limit and its secrets on boxd itself: that
-  `GetOrgMachineLimit` answers an API key (a machine's token, which boxd
-  does not document reading it, is taken as no cap), that `ListVars` with
-  no org lists the fenced org's secrets, how it lists a secret set with no
-  scope (counted as reaching, and the error says to set one explicitly; if
-  boxd lists it with none rather than `shared`, a shared one is refused
-  until it is), and the code boxd refuses a create past the limit with. They pass against the fake only.
+- The org's machine limit and its secrets with a machine's token (boxd
+  does not document `GetOrgMachineLimit` for one, so a refusal is taken as
+  no cap); that `ListVars` with no org lists the fenced org's secrets, and
+  how it lists a secret set with no scope (counted as reaching, and the
+  error says to set one explicitly; if boxd lists it with none rather than
+  `shared`, a shared one is refused until it is), which take an org that
+  holds secrets; and the code boxd refuses a create past the limit with.
+  They pass against the fake only.
 - The `suspended`/`standby` status strings, and `WakeVm` from `hibernated`.
   The driver turns off auto-suspend and auto-hibernate on every machine, so
   these show up only when something else suspends one.
