@@ -61,12 +61,14 @@ machines and snapshots (the root
   harm.
 - **The ingress URL is the machine's default proxy, unless it is asked
   off.** By default, and asked on, Create pins the default proxy at
-  `<machine>.boxd.sh` to 7302 and turns off bot protection, which would put
+  `<machine>.<zone>` (the domain `ListProxies` reports; the zone is the
+  region's, `boxd.sh` in fra) to 7302 and turns off bot protection, which would put
   a browser challenge in front of a request that wakes the machine. Pinning
   it also stops the proxy forwarding to whichever common port the guest
   listens on (80, 443, 8080, 8000, 3000, 5000, 5173). Asked off, strictly or
   not, Create closes it: boxd never deletes a default proxy, so Create locks
-  it to port 0, which no guest can listen on (boxd answers 502; once every
+  it to port 0, which no guest can listen on (boxd answers `502` with
+  `x-boxd-proxy: placeholder`; once every
   proxy reads back closed, Create turns bot protection off so its challenge
   does not answer in its place), removes
   every other proxy (`DeleteProxy`), and reads back the default one alone and

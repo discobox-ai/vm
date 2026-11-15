@@ -53,7 +53,7 @@ INSTANCE` give the one asked, never the other's in its place:
 
 - **Ingress** (`Service.IngressURL`, the default): where the caller, the
   controller managing the pool, reaches it. boxd's
-  `https://<machine>.<zone>.boxd.sh`, its default proxy pinned to 7302 at
+  `https://<machine>.<zone>` (the zone is the region's, `boxd.sh` in fra), its default proxy pinned to 7302 at
   Create unless ingress is asked off, and archil's exposed port, both the
   same across stop and start; Docker's `http://127.0.0.1:N`, a port the
   daemon publishes at each start; fake's `http://127.0.0.1:N`, a loopback
