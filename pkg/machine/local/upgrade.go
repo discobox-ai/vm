@@ -42,8 +42,12 @@ type upgradeTarget struct {
 	Release machine.Release `json:"release,omitzero"`
 }
 
-// whole refuses a VM caught between two roots by an interrupted upgrade.
+// whole refuses an interrupted install, and a VM caught between two roots by
+// an interrupted upgrade.
 func (rec instanceRecord) whole() error {
+	if rec.Interrupted {
+		return fmt.Errorf("instance %s is an install that was interrupted, and no VM; remove it and install again", rec.Name)
+	}
 	if rec.Upgrading == nil {
 		return nil
 	}
@@ -89,6 +93,9 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 		return machine.Instance{}, fmt.Errorf("%s cannot give a VM the root of a committed one: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
 	rec, err := d.readPool(inst.ID)
+	if err == nil && rec.Interrupted {
+		err = rec.whole()
+	}
 	if err != nil {
 		return machine.Instance{}, err
 	}

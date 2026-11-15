@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/discobox-ai/vm/internal/fsutil"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/fake"
 	"github.com/discobox-ai/vm/pkg/machine/local"
@@ -371,5 +372,293 @@ func TestViewInstallSkipsACrashedInstall(t *testing.T) {
 	}
 	if err := plain.View(ctx, machine.Instance{Name: "x"}, "t"); !errors.Is(err, machine.ErrUnsupported) {
 		t.Fatalf("view an instance without View: %v, want ErrUnsupported", err)
+	}
+}
+
+// An install killed mid-run leaves its name's claim, its installing.json
+// (its process gone) and its disk. It is listed, found by its name, and
+// removed like any other VM, its directory and name included.
+func TestAnInterruptedInstallIsListedAndRemoved(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	d, err := local.New(machine.Config{Dir: dir}, &fake.Hypervisor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := exec.CommandContext(ctx, "go", "version")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	const id, name = "killed00001", "killed"
+	inst := filepath.Join(dir, "instances", id)
+	if err := os.MkdirAll(filepath.Join(inst, "machine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inst, "machine", "disk"), []byte("half a disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data := fmt.Sprintf(`{"id":%q,"name":%q,"guestOS":%q,"pool":"default","pid":%d}`, id, name, runtime.GOOS, gone.Process.Pid)
+	if err := os.WriteFile(filepath.Join(inst, "installing.json"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	names := filepath.Join(dir, "instances", ".names", "default")
+	if err := os.MkdirAll(names, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(names, name), []byte(id), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := d.Instances(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].ID != id {
+		t.Fatalf("instances = %+v, want the interrupted install %s", all, id)
+	}
+	found, err := d.Instance(ctx, name)
+	if err != nil {
+		t.Fatalf("instance %s, an interrupted install: %v", name, err)
+	}
+	if err := d.Destroy(ctx, found); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(inst); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the install's directory after Destroy: %v, want it gone", err)
+	}
+	if _, err := os.Stat(filepath.Join(names, name)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the install's name after Destroy: %v, want it released", err)
+	}
+}
+
+// installing writes what an install leaves in d's root while it runs as
+// process pid, its name's claim made long enough ago to be stale, and with
+// held, holds its lock until the test ends, as a running install does.
+func installing(t *testing.T, dir, id, name string, pid int, held bool) {
+	t.Helper()
+	inst := filepath.Join(dir, "instances", id)
+	if err := os.MkdirAll(filepath.Join(inst, "machine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := fmt.Sprintf(`{"id":%q,"name":%q,"guestOS":%q,"pool":"default","pid":%d}`, id, name, runtime.GOOS, pid)
+	if err := os.WriteFile(filepath.Join(inst, "installing.json"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	names := filepath.Join(dir, "instances", ".names", "default")
+	if err := os.MkdirAll(names, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claim := filepath.Join(names, name)
+	if err := os.WriteFile(claim, []byte(id), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(claim, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		release, err := fsutil.TryLock(filepath.Join(inst, "install.lock"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(release)
+	}
+}
+
+// An interrupted install is marked so, and is no VM: it is not booted,
+// committed, upgraded, or created from, and its name is not taken by
+// another install, however old its claim.
+func TestAnInterruptedInstallIsRefusedAsAVM(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	d, err := local.New(machine.Config{Dir: dir}, &fake.Hypervisor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := exec.CommandContext(ctx, "go", "version")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	installing(t, dir, "killed00002", "killed", gone.Process.Pid, false)
+	inst, err := d.Instance(ctx, "killed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inst.Interrupted || inst.Name != "killed" {
+		t.Fatalf("instance = %+v, want the install killed marked interrupted", inst)
+	}
+	_, bootErr := d.Boot(ctx, inst, machine.BootOptions{})
+	_, commitErr := d.Commit(ctx, inst)
+	_, upgradeErr := d.Upgrade(ctx, inst, nil)
+	_, createErr := d.Create(ctx, machine.InstanceSpec{Name: "copy", From: &inst})
+	refusals := map[string]error{"boot": bootErr, "commit": commitErr, "upgrade": upgradeErr, "create from": createErr}
+	if _, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "x"}, "killed"); !errors.Is(err, machine.ErrExists) {
+		t.Errorf("install over the interrupted install's name: %v, want ErrExists", err)
+	}
+	for what, err := range refusals {
+		if err == nil || !strings.Contains(err.Error(), "interrupted") {
+			t.Errorf("%s of an interrupted install: %v, want it refused as interrupted", what, err)
+		}
+	}
+	if err := d.Destroy(ctx, inst); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An install still running is no VM yet: it is not listed or found by its
+// name, its name is not taken however old its claim, and it holds no
+// committed VM's removal.
+func TestAnInstallInProgressKeepsItsName(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	hv := &chained{Hypervisor: &fake.Hypervisor{}}
+	d, err := local.New(machine.Config{Dir: dir}, hv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "x"}, "done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installing(t, dir, "running0001", "running", os.Getpid(), true)
+	all, err := d.Instances(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].ID != committed.ID {
+		t.Fatalf("instances = %+v, want only %s", all, committed.Name)
+	}
+	if _, err := d.Instance(ctx, "running"); err == nil || errors.Is(err, machine.ErrNotFound) || !strings.Contains(err.Error(), "being installed") {
+		t.Fatalf("instance of an install in progress: %v, want it being installed", err)
+	}
+	if _, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "x"}, "running"); !errors.Is(err, machine.ErrExists) {
+		t.Fatalf("install over an install in progress: %v, want ErrExists", err)
+	}
+	if err := d.Destroy(ctx, committed); err != nil {
+		t.Fatalf("remove a committed VM while an install runs: %v", err)
+	}
+}
+
+// A dead install whose process ID a live process took since, as a reboot or
+// a busy host makes, holds no lock: it is an interrupted install, listed
+// and removed, not one in progress.
+func TestAnInterruptedInstallWhosePIDWasReused(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	d, err := local.New(machine.Config{Dir: dir}, &fake.Hypervisor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installing(t, dir, "reused00001", "reused", os.Getpid(), false)
+	inst, err := d.Instance(ctx, "reused")
+	if err != nil {
+		t.Fatalf("an install whose PID is reused: %v", err)
+	}
+	if !inst.Interrupted {
+		t.Fatalf("instance = %+v, want it interrupted", inst)
+	}
+	if err := d.Destroy(ctx, inst); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "instances", "reused00001")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("its directory after Destroy: %v, want it gone", err)
+	}
+}
+
+// An install an older disco-vm left, whose name a later VM has taken since
+// (that one took a stale claim), is listed under that name beside the VM
+// that holds it now. The name finds the one that holds it; the interrupted
+// install is removed by its ID, and leaves the other's name alone.
+func TestAnInterruptedInstallWhoseNameWasTaken(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	d, err := local.New(machine.Config{Dir: dir}, &fake.Hypervisor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := exec.CommandContext(ctx, "go", "version")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	installing(t, dir, "orphan00001", "taken", gone.Process.Pid, false)
+	// The later VM's claim replaces the orphan's, as the older claim did.
+	if err := os.Remove(filepath.Join(dir, "instances", ".names", "default", "taken")); err != nil {
+		t.Fatal(err)
+	}
+	later, err := d.Install(ctx, machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "x"}, "taken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := d.Instances(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("instances = %+v, want the orphan and %s", all, later.ID)
+	}
+	byName, err := d.Instance(ctx, "taken")
+	if err != nil || byName.ID != later.ID {
+		t.Fatalf("instance taken = %+v, %v; want %s, which holds the name", byName, err, later.ID)
+	}
+	var orphan machine.Instance
+	for _, inst := range all {
+		if inst.ID == "orphan00001" {
+			orphan = inst
+		}
+	}
+	if !orphan.Interrupted {
+		t.Fatalf("the orphan %+v is not marked interrupted", orphan)
+	}
+	if err := d.Destroy(ctx, orphan); err != nil {
+		t.Fatal(err)
+	}
+	if byName, err := d.Instance(ctx, "taken"); err != nil || byName.ID != later.ID {
+		t.Fatalf("instance taken after removing the orphan = %+v, %v; want %s still", byName, err, later.ID)
+	}
+}
+
+// A caller with a key the driver issued for the pool removes its pool's
+// interrupted install, which it sees listed, and no other pool's.
+func TestAKeyRemovesItsPoolsInterruptedInstall(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	hv := &fake.Hypervisor{}
+	owner, err := local.New(machine.Config{Dir: dir}, hv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := owner.IssueKey(ctx, machine.IssueRequest{Name: "pool", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyed, err := local.New(machine.Config{Dir: dir, Keys: machine.StaticKey(key)}, hv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := exec.CommandContext(ctx, "go", "version")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	installing(t, dir, "keyed000001", "keyed", gone.Process.Pid, false)
+	theirs := filepath.Join(dir, "instances", "theirs00001")
+	if err := os.MkdirAll(theirs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := fmt.Sprintf(`{"id":"theirs00001","name":"theirs","guestOS":%q,"pool":"other","pid":%d}`, runtime.GOOS, gone.Process.Pid)
+	if err := os.WriteFile(filepath.Join(theirs, "installing.json"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	all, err := keyed.Instances(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].ID != "keyed000001" {
+		t.Fatalf("instances with the pool's key = %+v, want its interrupted install alone", all)
+	}
+	if err := keyed.Destroy(ctx, machine.Instance{ID: "theirs00001", Name: "theirs"}); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("remove another pool's interrupted install: %v, want ErrNotFound", err)
+	}
+	if err := keyed.Destroy(ctx, all[0]); err != nil {
+		t.Fatalf("remove the pool's interrupted install with its key: %v", err)
 	}
 }

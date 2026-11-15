@@ -268,7 +268,7 @@ func lsCommand(g *globals) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "ls",
 		Aliases: []string{"ps"},
-		Short:   "List VMs: running ones, and with -a stopped and committed ones",
+		Short:   "List VMs: running ones, and with -a stopped and committed ones, and installs that were interrupted",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			e, err := g.engine()
@@ -291,12 +291,16 @@ func lsCommand(g *globals) *cobra.Command {
 					release = inst.Release.String()
 				}
 				release = dash(release)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", short(inst.ID), inst.Name, dash(inst.From), inst.GuestOS, release, state, ago(inst.Created))
+				shown := string(state)
+				if inst.Interrupted {
+					shown = "interrupted install"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", short(inst.ID), inst.Name, dash(inst.From), inst.GuestOS, release, shown, ago(inst.Created))
 			}
 			return w.Flush()
 		},
 	}
-	cmd.Flags().BoolVarP(&all, "all", "a", false, "include stopped VMs, committed ones among them")
+	cmd.Flags().BoolVarP(&all, "all", "a", false, "include stopped VMs, committed ones among them, and interrupted installs, which rm removes")
 	return cmd
 }
 

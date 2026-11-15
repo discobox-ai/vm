@@ -205,8 +205,8 @@ type env struct {
 // so it never runs in the pool of someone's own.
 const poolEnv = "DISCO_VM_E2E_POOL"
 
-func (e env) run(args ...string) (string, int) {
-	e.t.Helper()
+// command is disco-vm with args, in the test's root, pool, and driver.
+func (e env) command(args ...string) *exec.Cmd {
 	// Not t.Context(): cleanups call run too, after that is canceled.
 	cmd := exec.CommandContext(context.Background(), binary, args...)
 	pool := os.Getenv(poolEnv)
@@ -218,6 +218,12 @@ func (e env) run(args ...string) (string, int) {
 		cmd.Env = append(cmd.Env, "DISCO_VM_BASE="+tg.base)
 	}
 	cmd.Env = append(cmd.Env, e.extra...)
+	return cmd
+}
+
+func (e env) run(args ...string) (string, int) {
+	e.t.Helper()
+	cmd := e.command(args...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if e.stdin != "" {
@@ -1181,6 +1187,74 @@ func TestFresh(t *testing.T) {
 	e.ok("run", "b2", "--from", "b")
 	mustContain(t, e.ok(append([]string{"exec", "b2"}, catArgv(".disco-vm-install")...)...), "base=stock")
 	e.ok("rm", "-f", "b2", "b")
+}
+
+// TestInterruptedInstall kills an install midway, as a crash or a closed
+// terminal would, and finds it listed with -a as an interrupted install,
+// refused a start, and removed by rm, its directory and name with it.
+func TestInterruptedInstall(t *testing.T) {
+	if tg.driver != "fake" {
+		t.Skip("only the fake driver's install waits to be killed")
+	}
+	e := newEnv(t)
+	if !e.caps.Installs(machine.OS(runtime.GOOS)) {
+		t.Skip("this fake installs nothing")
+	}
+	var out bytes.Buffer
+	install := e.command("install", "cut", "--media", "hang")
+	install.Stdout, install.Stderr = &out, &out
+	if err := install.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- install.Wait() }()
+	var record string
+	for deadline := time.Now().Add(time.Minute); record == ""; {
+		select {
+		case err := <-exited:
+			t.Fatalf("the install ended before it was killed: %v\n%s", err, out.String())
+		case <-time.After(50 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			_ = install.Process.Kill()
+			<-exited
+			t.Fatalf("the install wrote no installing.json in a minute:\n%s", out.String())
+		}
+		found, _ := filepath.Glob(filepath.Join(e.root, "instances", "*", "installing.json"))
+		if len(found) == 1 {
+			record = found[0]
+		}
+	}
+	if err := install.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-exited
+
+	ls := e.ok("ls", "-a")
+	line := ""
+	for l := range strings.SplitSeq(ls, "\n") {
+		if f := strings.Fields(l); len(f) > 1 && f[1] == "cut" {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "interrupted install") {
+		t.Fatalf("ls -a lists no interrupted install cut:\n%s", ls)
+	}
+	if out, code := e.run("start", "cut"); code == 0 || !strings.Contains(out, "interrupted") {
+		t.Fatalf("start of an interrupted install: exit %d, want it refused as interrupted\n%s", code, out)
+	}
+	e.ok("rm", "cut")
+	if _, err := os.Stat(filepath.Dir(record)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the install's directory after rm: %v, want it gone", err)
+	}
+	if strings.Contains(e.ok("ls", "-a"), "cut") {
+		t.Fatal("ls -a lists cut after rm")
+	}
+	// Its name is free again: an install of it is not refused as taken.
+	if out, code := e.run("install", "cut", "--media", "x"); code != 0 {
+		t.Fatalf("install of the removed install's name: exit %d\n%s", code, out)
+	}
+	e.ok("rm", "cut")
 }
 
 // TestNoCommit runs a driver that does not report Capabilities.Commit (ADR

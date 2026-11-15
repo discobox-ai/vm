@@ -61,9 +61,13 @@ func (d *Driver) authorizeInstance(ctx context.Context, inst machine.Instance) e
 	}
 	var rec instanceRecord
 	err = fsutil.ReadJSON(filepath.Join(d.instanceDir(inst.ID), instanceFile), &rec)
+	if errors.Is(err, fs.ErrNotExist) {
+		// An install's record, running or interrupted, says its pool.
+		err = fsutil.ReadJSON(filepath.Join(d.instanceDir(inst.ID), installingFile), &rec)
+	}
 	switch {
 	case errors.Is(err, fs.ErrNotExist) && issued != nil:
-		// An instance with no record yet may be any pool's, half made.
+		// An instance with neither record yet may be any pool's, half made.
 		return fmt.Errorf("instance %s: %w", inst.ID, machine.ErrNotFound)
 	case errors.Is(err, fs.ErrNotExist):
 		// The owner removes what a crash left, or what is gone already.

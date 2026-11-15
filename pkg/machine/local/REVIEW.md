@@ -20,6 +20,14 @@
   advice that sent a pool's engine looking in its own pool, the second
   resume path missed after the root's note on finishing an interrupted
   step.
+- **Whether a process still runs is asked of a lock it holds, never of its
+  PID alone.** A process ID is reused, within minutes on Windows and after
+  any reboot, so a PID check alone takes a dead install for a live one:
+  hidden from `ls`, refused by `rm`, its name taken for good. An install
+  holds `install.lock` for its whole run, and is in progress only while
+  that is held and its PID alive (`readInstalling`); a check that creates
+  the lock file is not one (`fsutil.Held`). A review found the PID check
+  standing alone.
 - **A shim outlives the binary that started it, so a new route has a plan
   for an old shim.** An instance started before an upgrade keeps its shim
   until it stops. `/kill` falls back to a stop; `/display` turns the old

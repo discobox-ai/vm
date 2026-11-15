@@ -282,6 +282,13 @@ that no listed VM owns. Finishing reads that committed VM only if the new
 root is not made yet, so one removed in between does not strand the VM
 (the engine passes a `from` it does not find to the driver, to say).
 
+An install whose process ended before it finished (killed, or crashed) is
+listed under its name as `Instance.Interrupted`, refused by Boot, Start,
+Commit, Upgrade, and a Create from it, and removed by `Destroy` with
+whatever it laid down and granted; its name stays taken until then (on the
+local drivers, an install an older disco-vm left may have lost it, and is
+removed by its ID). A driver that installs nothing never sets it.
+
 A driver lists every guest OS it boots in `Capabilities.GuestOS`, and the
 ones it installs from media in `Capabilities.Install`; a caller asks for a
 guest OS by creating from a committed VM of it, or fresh from a base of it
