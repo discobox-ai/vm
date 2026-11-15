@@ -72,3 +72,14 @@
   context) or its control API, never by killing its process, or the guest
   runs on with no shim, no `shim.json`, and its slot released. A review
   found a give-up that killed the shim (#130).
+- **A removal waits for every process that holds the instance's files,
+  not only for its machine.** A shim lets go of `boot.lock` and `shim.json`
+  before it exits and holds `shim.log` to the end, so `Destroy` waits on
+  `shim.lock`, which the shim holds until the operating system releases it
+  at exit, and `Start` waits on it before spawning the next shim. Whatever
+  else a shim opens in the instance's directory is held under that lock
+  too; a lock released before exit reopens the gap, and so does an unlock
+  func dropped, since the garbage collector closes an unreachable
+  `*os.File` and with it the lock (a review found that one; the test runs
+  the shim under `GOGC=1`). Linux unlinks an open file, so only Windows CI
+  shows it (vm#166).

@@ -28,6 +28,13 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
+// heldShimLocks keeps every shim lock this process took reachable until it
+// exits (runShim).
+var (
+	heldShimLocksMu sync.Mutex
+	heldShimLocks   []func()
+)
+
 const (
 	shimStateName  = "shim.json"
 	shimSocketName = "shim.sock"
@@ -35,6 +42,12 @@ const (
 	// written before the shim exits and removed by the Start that spawns
 	// the next one.
 	shimRefusedName = "shim.refused"
+	// shimLockName is locked by a shim from its machine's boot until its
+	// process exits, so a removal waits for the files it holds open
+	// (shim.log, its stdout and stderr) to be closed: Windows removes no
+	// file a live process holds, and the shim gives up its boot lock and
+	// shim.json before it is done (vm#166).
+	shimLockName = "shim.lock"
 	// shimConfigName is the driver configuration a shim is started with
 	// (writeShimConfig), readable by its owner alone.
 	shimConfigName = "driver-config.json"
@@ -228,6 +241,18 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 	if err != nil {
 		return err
 	}
+	// Never released here: the operating system releases it as the
+	// process exits, once nothing is left for this shim to do. Kept
+	// reachable, or the garbage collector would close its file, and
+	// release it, long before.
+	unlock, err := fsutil.TryLock(filepath.Join(d.instanceDir(id), shimLockName))
+	if err != nil {
+		_ = m.Kill(context.Background())
+		return fmt.Errorf("instance %s: lock its shim: %w", inst.Name, err)
+	}
+	heldShimLocksMu.Lock()
+	heldShimLocks = append(heldShimLocks, unlock)
+	heldShimLocksMu.Unlock()
 	forwards, err := d.serveForwards(m, inst.Forwards)
 	if err != nil {
 		_ = m.Kill(context.Background())
@@ -730,6 +755,11 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 	}
 	release()
 	dir := d.instanceDir(inst.ID)
+	// The shim of its last boot may still be exiting, with its lock, which
+	// the new one takes once booted.
+	if err := waitShimExit(ctx, dir); err != nil {
+		return nil, fmt.Errorf("instance %s: %w", inst.Name, err)
+	}
 	_ = os.Remove(filepath.Join(dir, shimStateName))
 	refused := filepath.Join(dir, shimRefusedName)
 	_ = os.Remove(refused)

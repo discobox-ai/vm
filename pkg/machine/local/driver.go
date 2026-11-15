@@ -698,6 +698,9 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 			unlock()
 		}
 	}()
+	if err := waitShimExit(ctx, dir); err != nil {
+		return fmt.Errorf("instance %s: %w", inst.Name, err)
+	}
 	hs, err := d.spec(rec)
 	if err != nil {
 		// A chain whose base is gone: its disks are removed all the same.
@@ -732,6 +735,36 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 		return err
 	}
 	return d.release(inst)
+}
+
+// shimExitWait bounds how long a removal waits for a shim whose machine
+// has stopped to exit: its control server's shutdown alone may take 5 s.
+const shimExitWait = 30 * time.Second
+
+// waitShimExit waits for the shim of the instance in dir, if one still
+// runs, to exit: its machine stopped (its boot lock is free) and it no
+// longer publishes shim.json, yet it holds shim.log open until it exits,
+// which Windows will not remove (vm#166).
+func waitShimExit(ctx context.Context, dir string) error {
+	deadline := time.Now().Add(shimExitWait)
+	for {
+		unlock, err := fsutil.TryLock(filepath.Join(dir, shimLockName))
+		if err == nil {
+			unlock()
+			return nil
+		}
+		if !errors.Is(err, fsutil.ErrLocked) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("its shim has not exited %s after its machine stopped", shimExitWait)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // inUse refuses a VM whose disk another VM's differences over, in any
