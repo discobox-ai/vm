@@ -34,6 +34,10 @@ var (
 	procHcnDeleteEndpoint          = computenetwork.NewProc("HcnDeleteEndpoint")
 )
 
+// eAddressReserved is HcnCreateEndpoint refusing a MAC another endpoint
+// holds ("An address provided is invalid or reserved").
+const eAddressReserved = 0x803B002F
+
 // hcnResult takes a CoTaskMem string HCN returned, freeing it.
 func hcnResult(p *uint16) string {
 	if p == nil {
@@ -88,19 +92,22 @@ type endpoint struct {
 	MAC string `json:"mac"`
 }
 
-// createEndpoint makes a NIC, asking for mac when one is given so a restarted
-// guest keeps its adapter instead of installing another. HNS owns the pool and
-// may still pick another, so callers use the MAC returned.
-func createEndpoint(mac string) (*endpoint, error) {
+// createEndpoint makes the NIC nicID, asking for mac when one is given so a
+// restarted guest keeps its adapter instead of installing another. HNS owns
+// the pool and may still pick another, so callers use the MAC returned. The
+// caller chooses nicID and records it first (instanceState.NIC): an endpoint
+// outlives a process killed while its VM runs, and only a recorded one is
+// freed after.
+func createEndpoint(nicID, mac string) (*endpoint, error) {
+	id, err := windows.GUIDFromString("{" + nicID + "}")
+	if err != nil {
+		return nil, fmt.Errorf("hcs: endpoint ID %q: %w", nicID, err)
+	}
 	network, err := openNetwork()
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _, _, _ = procHcnCloseNetwork.Call(network) }()
-	id, err := windows.GenerateGUID()
-	if err != nil {
-		return nil, err
-	}
 	settings := map[string]any{
 		"SchemaVersion":      map[string]int{"Major": 2, "Minor": 0},
 		"HostComputeNetwork": strings.Trim(networkID, "{}"),
@@ -129,7 +136,7 @@ func createEndpoint(mac string) (*endpoint, error) {
 	record = nil
 	hr, _, _ = procHcnQueryEndpointProperties.Call(ep, uintptr(unsafe.Pointer(query)), uintptr(unsafe.Pointer(&props)), uintptr(unsafe.Pointer(&record)))
 	runtime.KeepAlive(query)
-	out := &endpoint{ID: strings.Trim(id.String(), "{}")}
+	out := &endpoint{ID: nicID}
 	if hr != 0 {
 		deleteEndpoint(out.ID)
 		return nil, hcnError("HcnQueryEndpointProperties", hr, record)
@@ -144,8 +151,10 @@ func createEndpoint(mac string) (*endpoint, error) {
 	return out, nil
 }
 
-// deleteEndpoint frees a NIC. An endpoint outlives its VM otherwise, and a
-// replayed create over one still attached fails with 0x803B0014.
+// deleteEndpoint frees a NIC, and is a no-op on one already gone. An endpoint
+// outlives its VM otherwise: a replayed create over one still attached fails
+// with 0x803B0014, and one asking for the MAC a leaked endpoint holds with
+// 0x803B002F, so the instance cannot boot.
 func deleteEndpoint(id string) {
 	g, err := windows.GUIDFromString("{" + id + "}")
 	if err != nil {

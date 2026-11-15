@@ -134,3 +134,9 @@
   field defaults to off, as every way a driver acts as its host does. A
   review found a first draft that listed the adapter only when the driver
   used it, and so told an embedder holding a key there was nothing to block.
+- **hcs matches no HNS endpoint to an instance by its MAC.** An instance's
+  `state.json` keeps the MAC it asks for again, but while it is stopped the
+  MAC is HNS's to give another VM's endpoint, so an endpoint holding it may
+  be a running VM's NIC. hcs frees only an endpoint whose ID the instance
+  recorded before making it (`instanceState.NIC`). A review caught a
+  delete-by-MAC fallback that would have taken a running VM's network.

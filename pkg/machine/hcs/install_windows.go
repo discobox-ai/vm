@@ -182,6 +182,9 @@ func needSpace(dir string, need uint64) error {
 // firstBoot boots the new disk with the install's media, lets Windows Setup
 // run to a logged-on desktop, and shuts it down through the agent. Its
 // state files live in work, and go with it: the committed VM is the disk.
+// Its NIC's record lives in dir's state.json until the VM is gone, so that
+// Destroy of dir frees the NIC if this process is killed. Nothing hands a
+// killed install's dir to Destroy yet: removing one is vm#165.
 func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, work, disk string, media []string, log io.Writer) error {
 	if err := freshState(work); err != nil {
 		return err
@@ -213,7 +216,11 @@ func firstBoot(ctx context.Context, spec machine.InstallSpec, dir, work, disk st
 			return fmt.Errorf("hcs: give the VM read access to %s (%w); an ISO on FAT, exFAT, or a network share cannot take it, so copy it to an NTFS volume of your own", path, err)
 		}
 	}
-	nic, err := createEndpoint("")
+	// The NIC is recorded in dir's state.json while the VM runs, so Destroy
+	// frees it if this process is killed first. A committed VM keeps its disk
+	// alone, so the record goes once the VM is gone.
+	defer func() { _ = os.Remove(filepath.Join(dir, stateJSON)) }()
+	nic, err := newNIC(dir, instanceState{})
 	if err != nil {
 		return err
 	}
