@@ -46,6 +46,8 @@ func TestConformance(t *testing.T) {
 		Keyed: func(keys machine.KeySource) machine.Driver {
 			return envDriver(t, keys)
 		},
+		// TestConformanceFakeAPI runs it against the fake.
+		SkipMaxMachines: "filling the org's machine limit would refuse every other member's machines while the suite holds it",
 	})
 }
 
@@ -83,6 +85,8 @@ func TestConformanceFakeAPI(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = os.RemoveAll(dir) })
 			d, home := fakeDriver(t, dir)
+			// Small, so the suite fills it: the org's, in every region.
+			home.maxVMs.Store(4)
 			served := home
 			if region != "" {
 				served = fakeRegion(t, home, dir, region, "enabled")

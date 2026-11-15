@@ -78,6 +78,85 @@ type fakeAPI struct {
 	// account, on a region's API, is the home endpoint's: it holds the
 	// keys and answers for the regions, and a key call made here is refused.
 	account *fakeAPI
+
+	// The org's, on the home endpoint (org): its name, its secrets, and its
+	// machine limit, which counts the machines of every region, stopped
+	// ones included, as boxd's does. Every credential the fake takes is
+	// fenced to the org, as boxd's API keys and machine tokens are.
+	orgName  string
+	secrets  []*boxdapi.VarItem
+	maxVMs   atomic.Int64
+	machines atomic.Int64
+	// limitRefused makes GetOrgMachineLimit refuse the caller, as boxd may
+	// a token minted inside a machine, which it does not document reading.
+	limitRefused atomic.Bool
+}
+
+// org is the home endpoint's API, which holds the org.
+func (f *fakeAPI) org() *fakeAPI {
+	if f.account != nil {
+		return f.account
+	}
+	return f
+}
+
+// admit counts a machine about to be made against the org's limit, or
+// refuses it as boxd does. boxd does not document the code it refuses with,
+// so the fake's is one the driver cannot mistake for anything in particular.
+func (f *fakeAPI) admit() error {
+	org := f.org()
+	for {
+		n := org.machines.Load()
+		if limit := org.maxVMs.Load(); limit > 0 && n >= limit {
+			return status.Errorf(codes.FailedPrecondition, "org %s has reached its machine limit (%d)", org.orgName, limit)
+		}
+		if org.machines.CompareAndSwap(n, n+1) {
+			return nil
+		}
+	}
+}
+
+// GetOrgMachineLimit is the org's limit and how many machines count
+// against it.
+func (f *fakeAPI) GetOrgMachineLimit(context.Context, *boxdapi.GetOrgMachineLimitRequest) (*boxdapi.GetOrgMachineLimitResponse, error) {
+	if err := f.accountCall(); err != nil {
+		return nil, err
+	}
+	if f.limitRefused.Load() {
+		return nil, status.Error(codes.PermissionDenied, "a token minted inside a machine cannot read the org's machine limit")
+	}
+	return &boxdapi.GetOrgMachineLimitResponse{
+		OrgId: "org_fake", OrgName: f.orgName,
+		MaxVms: uint32(f.maxVMs.Load()), VmCount: uint32(f.machines.Load()),
+	}, nil
+}
+
+// ListVars lists the org's secrets as boxd does: names, scopes, and hosts,
+// never a value. A fenced credential's empty org resolves to its own, and
+// any other is refused (boxd's credential fence).
+func (f *fakeAPI) ListVars(_ context.Context, req *boxdapi.ListVarsRequest) (*boxdapi.VarListReply, error) {
+	if err := f.accountCall(); err != nil {
+		return nil, err
+	}
+	if req.GetOrg() != "" && req.GetOrg() != f.orgName {
+		return nil, status.Errorf(codes.PermissionDenied, "this credential is fenced to org %s, not %q", f.orgName, req.GetOrg())
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := &boxdapi.VarListReply{}
+	for _, v := range f.secrets {
+		if req.GetKind() == "" || req.GetKind() == v.GetKind() {
+			out.Vars = append(out.Vars, v)
+		}
+	}
+	return out, nil
+}
+
+// setSecret adds a secret to the org, in a scope.
+func (f *fakeAPI) setSecret(name, scope string, domains ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.secrets = append(f.secrets, &boxdapi.VarItem{Name: name, Kind: "secret", Scope: scope, Domains: domains})
 }
 
 // ListRegions is the home endpoint's list, with the region this one serves.
@@ -141,10 +220,14 @@ type fakeSnapshot struct {
 }
 
 func newFakeAPI(dir string) *fakeAPI {
-	return &fakeAPI{
+	f := &fakeAPI{
 		dir: dir, vms: map[string]*fakeVM{}, snapshots: map[string]*fakeSnapshot{}, defaultImage: "ubuntu-24.04",
-		keys: keys{byID: map[string]*fakeKey{}, jwts: map[string]string{}},
+		keys:    keys{byID: map[string]*fakeKey{}, jwts: map[string]string{}},
+		orgName: "fake-org",
 	}
+	// boxd's default limit for an org.
+	f.maxVMs.Store(50)
+	return f
 }
 
 // snapshot finds a snapshot by name or ID, as boxd does.
@@ -230,6 +313,9 @@ func (f *fakeAPI) CreateVm(_ context.Context, req *boxdapi.CreateVmRequest) (*bo
 	if f.taken(req.GetName()) {
 		return nil, status.Errorf(codes.AlreadyExists, "a machine is named %q", req.GetName())
 	}
+	if err := f.admit(); err != nil {
+		return nil, err
+	}
 	v := f.newVM(req.GetName(), req.GetConfig().GetVcpu(), req.GetConfig().GetMemoryBytes())
 	v.isolated, v.networks = req.GetIsolated(), req.GetNetworks()
 	v.imageRef = req.GetImageRef()
@@ -251,6 +337,9 @@ func (f *fakeAPI) CreateVmFromSnapshot(_ context.Context, req *boxdapi.CreateVmF
 	}
 	if f.taken(req.GetName()) {
 		return nil, status.Errorf(codes.AlreadyExists, "a machine is named %q", req.GetName())
+	}
+	if err := f.admit(); err != nil {
+		return nil, err
 	}
 	// The config is "optional overrides" of the snapshot's size, each field
 	// on its own: zero keeps the snapshot's.
@@ -347,6 +436,7 @@ func (f *fakeAPI) DestroyVm(_ context.Context, req *boxdapi.DestroyVmRequest) (*
 	}
 	f.halt(v)
 	delete(f.vms, v.id)
+	f.org().machines.Add(-1)
 	return &boxdapi.DestroyVmResponse{}, os.RemoveAll(v.dir)
 }
 

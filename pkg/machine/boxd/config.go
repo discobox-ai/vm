@@ -63,11 +63,11 @@ func Definition() machine.Definition {
 			{Key: "region", Label: "Region", Type: machine.ConfigString, Env: RegionEnv,
 				Description: "The boxd region the driver's machines and snapshots are in, such as fra or nyc; the driver lists and makes only that region's. Empty is the home endpoint's own region."},
 			{Key: "inMachine", Label: "In-Machine Auth", Type: machine.ConfigBoolean, Env: InMachineEnv, Default: "false", Privileged: true,
-				Description: "With no API key, authenticate as the boxd machine the driver runs on: the token its metadata adapter (port 9002 on the default gateway) mints for the machine's owner, which reaches every machine of the owner's in the org. A machine that is isolated has no adapter. An API key, when given, is used instead."},
+				Description: "With no API key, authenticate as the boxd machine the driver runs on: the token its metadata adapter (port 9002 on the default gateway) mints for the machine's owner, which reaches every machine of the owner's in the org. A machine that is isolated has no adapter. An API key, when given, is used instead. The owner's org and personal scope must hold no host-bound secret, as for a key."},
 		},
 		Secrets: []machine.SecretField{{
 			Key: "apiKey", Label: "API Key", Type: machine.ConfigSecret, Env: []string{APIKeyEnv, TokenEnv}, Placeholder: "bxd_...",
-			Description: "A boxd API key (bxd_...), from `boxd auth keys create`, which the driver exchanges for a token at tokenUrl; or a token, which it sends as it is.",
+			Description: "A boxd API key (bxd_...), from `boxd auth keys create`, which the driver exchanges for a token at tokenUrl; or a token, which it sends as it is. Its org and its owner must hold no host-bound secret (one with hosts) that reaches the owner's private machines (scope all or private, or the owner's personal ones): boxd lets a machine reach such a secret's hosts whatever its egress allowlist says, so the check refuses the key while one does.",
 			Sends: []machine.SecretSend{
 				// An API key goes only to the token exchange (client.token).
 				{Prefix: apiKeyPrefix, Endpoint: "tokenUrl", Protocol: machine.SendHTTPS, Method: "POST", JSONField: "api_key"},

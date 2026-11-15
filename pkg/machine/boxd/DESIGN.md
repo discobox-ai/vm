@@ -127,6 +127,19 @@ machines and snapshots (the root
   machine starts unrestricted, and so does a restore of a snapshot disco-vm
   made, since only a snapshot of a boxd machine spec carries an allowlist.
   `Instance.Egress` is `egress_allow`, nil for none.
+- **`Check` reads the org's machine limit and refuses host-bound secrets**
+  (ADR 26-11-15-274). The limit (`GetOrgMachineLimit`'s `max_vms`) counts
+  every machine billed to the org, stopped and every member's, and boxd
+  refuses a create past it, so it is `MaxMachines[linux]`, kept from the
+  last `Check` and none before; `MaxRunning` is unset. A create boxd refuses
+  reads the limit again, and is `ErrCapacity` when the org is at it, since
+  boxd documents no code for it. boxd lets a machine reach a host-bound
+  secret's hosts past its egress allowlist, so `Check` lists the
+  secrets with no org (`ListVars`), resolved as a create's no org is, to the
+  org the credential is fenced to, and fails, naming each, its scope, and
+  its hosts, while one reaches the driver's machines: scope `all`,
+  `private`, or none. A credential that may not read the limit (a
+  machine's token) has no cap, and passes.
 - **The key's errors are the caller's.** The bearer is added by client
   interceptors, not gRPC per-RPC credentials, whose errors gRPC flattens: a
   missing key, with no adapter to ask, is `errNoCredentials`, and a key the exchange or a call

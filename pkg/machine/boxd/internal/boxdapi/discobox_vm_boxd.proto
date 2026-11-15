@@ -79,6 +79,12 @@ service BoxdApi {
   // their region's endpoint, and account and API key calls to boxd.sh:9443.
   // An org can use its home region and the regions enabled for it.
   rpc ListRegions(ListRegionsRequest)       returns (ListRegionsResponse);
+  // Env vars and secrets: an org's, or with `org` empty the caller's own
+  // (personal scope). A secret's value is never returned.
+  rpc ListVars(ListVarsRequest)             returns (VarListReply);
+  // The org's machine limit: how many machines it may have at once.
+  // Readable by any member, with a login or an API key issued for the org.
+  rpc GetOrgMachineLimit(GetOrgMachineLimitRequest) returns (GetOrgMachineLimitResponse);
 }
 
 message VmConfig {
@@ -353,3 +359,33 @@ message ApiKeyInfo {
 
 message DeleteApiKeyRequest  { string id = 1; }
 message DeleteApiKeyResponse {}
+
+// `kind` = "env" | "secret". `scope` = "all" (every machine of the org),
+// "shared" (the org's shared machines), "private" (the caller's own private
+// machines in the org), "unattached" and "private-unattached" (only the
+// machines whose spec lists the secret by name); empty is "shared", and the
+// personal scope ignores it but for "unattached".
+message ListVarsRequest { string org = 1; string kind = 2; }
+message VarItem {
+  string name  = 1;
+  string kind  = 2;
+  string scope = 3;
+  reserved 5;                   // removed upstream: networked
+  // Secrets only: the hosts the secret is bound to. Non-empty = host-bound:
+  // the machine holds a placeholder, boxd substitutes the value on HTTPS to
+  // these hosts, and they are reachable whatever the egress allowlist says.
+  repeated string domains = 6;
+}
+message VarListReply { repeated VarItem vars = 1; }
+
+message GetOrgMachineLimitRequest {
+  string org_id = 1;  // name or id; "" = your home org (an API key's own org)
+}
+message GetOrgMachineLimitResponse {
+  string org_id   = 1;
+  string org_name = 2;
+  // The machine limit: non-destroyed machines billed to the org, stopped
+  // ones included, shared and private, every member's.
+  uint32 max_vms  = 3;
+  uint32 vm_count = 4;  // machines that count against it now
+}
