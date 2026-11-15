@@ -33,7 +33,10 @@
 // volumes, or the driver refuses it; and a key
 // the driver issues runs the pool's machines, cannot issue another, and
 // works no more once it is revoked. That a VM is committed is the caller's
-// to record, so the suite never boots one again.
+// to record, so the suite never boots one again. Every VM and cache the suite
+// makes it removes, a removal that fails fails the case that made it, and
+// the suite ends by failing on, and removing, any of its run still in a pool
+// it used.
 package machinetest
 
 import (
@@ -120,6 +123,24 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 
 	suite := t
 	run := randomHex(4)
+	// Registered first, so it runs last, once every subtest and every other
+	// cleanup has removed what it made: a VM or cache of this run still in
+	// a pool the suite used is one a removal left behind, which fails the
+	// suite, and is removed again so it does not outlive the run. The
+	// other pool across-pools makes is the run's alone, and its VMs and
+	// this pool's are made from each other, so both are swept together.
+	suite.Cleanup(func() {
+		pools := []sweptPool{{driver, func(name string) bool {
+			return name == "conformance-"+run || strings.HasPrefix(name, "conformance-"+run+"-")
+		}}}
+		if caps.AcrossPools && caps.Commit && cfg.Pool != nil {
+			pools = append(pools, sweptPool{cfg.Pool("conformance-" + run), func(string) bool { return true }})
+		}
+		sweep(suite, pools)
+		if caps.Attaches(machine.VolumeCache) {
+			sweepCaches(suite, driver, pools[0].ours)
+		}
+	})
 	names := 0
 	newName := func() string {
 		names++
@@ -143,7 +164,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err != nil {
 			t.Fatalf("install: %v", err)
 		}
-		t.Cleanup(func() { _ = driver.Destroy(context.Background(), installed) })
+		t.Cleanup(func() { remove(t, driver, installed) })
 		if installed.GuestOS != cfg.Install.GuestOS {
 			t.Fatalf("installed %+v, want a %s guest", installed, cfg.Install.GuestOS)
 		}
@@ -172,7 +193,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		// cloud driver, a billed machine.
 		t.Cleanup(func() {
 			if !suiteOwned[inst.Name] {
-				_ = driver.Destroy(context.Background(), inst)
+				remove(t, driver, inst)
 			}
 		})
 		if inst.Name != spec.Name || inst.ID == "" || inst.Pool == "" {
@@ -224,7 +245,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("commit %s: %v", inst.Name, err)
 		}
 		suiteOwned[inst.Name] = true
-		suite.Cleanup(func() { _ = driver.Destroy(context.Background(), committed) })
+		suite.Cleanup(func() { remove(suite, driver, committed) })
 		if committed.Name != inst.Name || committed.GuestOS != inst.GuestOS || committed.Data != nil || committed.Cache != nil {
 			t.Fatalf("committed %+v from %+v", committed, inst)
 		}
@@ -283,7 +304,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		copied.Name = fmt.Sprintf("conformance-%s-copied", run)
 		if made, err := driver.Create(ctx, copied); !errors.Is(err, machine.ErrUnsupported) {
 			if err == nil {
-				_ = driver.Destroy(context.Background(), made)
+				remove(t, driver, made)
 			}
 			t.Fatalf("a driver that does not commit made a copy: %v, want ErrUnsupported", err)
 		}
@@ -323,7 +344,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		again.Name = committed.Name
 		if inst, err := driver.Create(ctx, again); !errors.Is(err, machine.ErrExists) {
 			if err == nil {
-				_ = driver.Destroy(context.Background(), inst)
+				remove(t, driver, inst)
 			}
 			t.Fatalf("a VM named as the committed VM %s: %v, want ErrExists", committed.Name, err)
 		}
@@ -378,7 +399,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err != nil {
 			t.Fatalf("create a fresh VM: %v", err)
 		}
-		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+		t.Cleanup(func() { remove(t, driver, inst) })
 		if inst.From != "" || !caps.SupportsOS(inst.GuestOS) {
 			t.Fatalf("a fresh VM %+v", inst)
 		}
@@ -468,7 +489,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		var made []machine.Instance
 		t.Cleanup(func() {
 			for _, inst := range made {
-				_ = driver.Destroy(context.Background(), inst)
+				remove(t, driver, inst)
 			}
 		})
 		for {
@@ -528,7 +549,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 				spec.Name = fmt.Sprintf("conformance-%s-fenced-%d", run, i)
 				if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
 					if err == nil {
-						_ = driver.Destroy(context.Background(), inst)
+						remove(t, driver, inst)
 					}
 					t.Fatalf("a driver that does not hold the fence %q made an instance fenced to it: %v, want ErrUnsupported", from.allow, err)
 				}
@@ -613,7 +634,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			spec.Forwards = []machine.Forward{{Port: 7402, Instance: "peer", InstancePort: guest.DisplayPort}}
 			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
 				if err == nil {
-					_ = driver.Destroy(context.Background(), inst)
+					remove(t, driver, inst)
 				}
 				t.Fatalf("a forward to a peer's port %d, neither its agent's nor its service's: %v, want ErrUnsupported", guest.DisplayPort, err)
 			}
@@ -624,7 +645,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			spec.Forwards = []machine.Forward{{Port: 7402, Instance: "peer", InstancePort: guest.AgentPort}}
 			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
 				if err == nil {
-					_ = driver.Destroy(context.Background(), inst)
+					remove(t, driver, inst)
 				}
 				t.Fatalf("a driver that reaches no guest port made a peer forward: %v, want ErrUnsupported", err)
 			}
@@ -713,7 +734,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 				spec := machine.InstanceSpec{Name: fmt.Sprintf("conformance-%s-across", run), From: &from}
 				if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
 					if err == nil {
-						_ = driver.Destroy(context.Background(), inst)
+						remove(t, driver, inst)
 					}
 					t.Fatalf("a VM from another pool's committed VM, on a driver that does not list AcrossPools: %v, want ErrUnsupported", err)
 				}
@@ -723,7 +744,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			spec.Forwards = []machine.Forward{{Port: 7402, Pool: other, Instance: "peer", InstancePort: guest.AgentPort}}
 			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
 				if err == nil {
-					_ = driver.Destroy(context.Background(), inst)
+					remove(t, driver, inst)
 				}
 				t.Fatalf("a forward to another pool's instance, on a driver that does not list AcrossPools: %v, want ErrUnsupported", err)
 			}
@@ -753,7 +774,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err != nil {
 			t.Fatalf("a VM of pool %s from this pool's committed VM: %v", other, err)
 		}
-		t.Cleanup(func() { _ = od.Destroy(context.Background(), src) })
+		t.Cleanup(func() { remove(t, od, src) })
 		if src.Pool != other || src.From != committed.Name || src.FromPool != committed.Pool {
 			t.Fatalf("a VM of pool %s from %+v is %+v", other, committed, src)
 		}
@@ -784,12 +805,12 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			if err != nil {
 				t.Fatalf("issue: %v", err)
 			}
-			t.Cleanup(func() { _ = driver.RevokeKey(context.Background(), key) })
+			t.Cleanup(func() { revoke(t, driver, key) })
 			keyed := cfg.Keyed(machine.StaticKey(key))
 			spec := machine.InstanceSpec{Name: fmt.Sprintf("conformance-%s-keyed", run), From: &from}
 			if inst, err := keyed.Create(ctx, spec); !errors.Is(err, machine.ErrUnauthorized) {
 				if err == nil {
-					_ = driver.Destroy(context.Background(), inst)
+					remove(t, driver, inst)
 				}
 				t.Fatalf("a key the driver issued made a VM from pool %s's: %v, want ErrUnauthorized", other, err)
 			}
@@ -798,7 +819,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			spec.Forwards = []machine.Forward{{Port: 7402, Pool: other, Instance: "peer", InstancePort: guest.AgentPort}}
 			if inst, err := keyed.Create(ctx, spec); !errors.Is(err, machine.ErrUnauthorized) {
 				if err == nil {
-					_ = driver.Destroy(context.Background(), inst)
+					remove(t, driver, inst)
 				}
 				t.Fatalf("a key the driver issued forwarded to pool %s: %v, want ErrUnauthorized", other, err)
 			}
@@ -827,7 +848,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			if err != nil {
 				t.Fatalf("a peer of pool %s: %v", other, err)
 			}
-			t.Cleanup(func() { _ = od.Destroy(context.Background(), peer) })
+			t.Cleanup(func() { remove(t, od, peer) })
 			spec.Forwards = []machine.Forward{{Port: 7402, Pool: other, Instance: peer.Name, InstancePort: guest.AgentPort}}
 		}
 		inst := create(t, spec)
@@ -933,7 +954,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 				}
 				inst, err := driver.Create(ctx, spec)
 				if err == nil {
-					_ = driver.Destroy(context.Background(), inst)
+					remove(t, driver, inst)
 				}
 				if !errors.Is(err, machine.ErrUnsupported) {
 					t.Fatalf("a strict %s URL %s on a driver whose reach is %q: %v, want ErrUnsupported", scope, mode, reach, err)
@@ -985,7 +1006,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err != nil {
 			t.Fatalf("issue: %v", err)
 		}
-		t.Cleanup(func() { _ = driver.RevokeKey(context.Background(), key) })
+		t.Cleanup(func() { revoke(t, driver, key) })
 		if !key.Issued || key.Secret == "" || key.ID == "" || key.Scope != caps.Keys.Scope {
 			t.Fatalf("issued %v (issued %t, a secret %t), want an issued key with a secret, an ID, and scope %s", key, key.Issued, key.Secret != "", caps.Keys.Scope)
 		}
@@ -1003,7 +1024,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("issued keys named %s: %v, want %s alone, without its secret", key.Name, listed, key.ID)
 		}
 		if again, err := driver.IssueKey(ctx, machine.IssueRequest{Name: key.Name, TTL: ttl}); !errors.Is(err, machine.ErrExists) {
-			_ = driver.RevokeKey(context.Background(), again)
+			if err == nil {
+				revoke(t, driver, again)
+			}
 			t.Fatalf("a second key named %s: %v, want ErrExists", key.Name, err)
 		}
 		if cfg.Keyed == nil {
@@ -1011,7 +1034,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		keyed := cfg.Keyed(machine.StaticKey(key))
 		if again, err := keyed.IssueKey(ctx, machine.IssueRequest{Name: "conformance-" + run + "-again", TTL: ttl}); err == nil {
-			_ = driver.RevokeKey(context.Background(), again)
+			revoke(t, driver, again)
 			t.Fatal("an issued key issued another")
 		}
 
@@ -1023,7 +1046,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err != nil {
 			t.Fatalf("create with the issued key: %v", err)
 		}
-		t.Cleanup(func() { _ = driver.Destroy(context.Background(), inst) })
+		t.Cleanup(func() { remove(t, driver, inst) })
 		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		defer cancel()
 		m, err := keyed.Start(startCtx, inst, machine.BootOptions{})
@@ -1053,7 +1076,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		spec.Name += "-revoked"
 		if inst, err := keyed.Create(ctx, spec); err == nil {
-			_ = driver.Destroy(context.Background(), inst)
+			remove(t, driver, inst)
 			t.Fatal("a revoked key creates an instance")
 		}
 		if err := driver.RevokeKey(ctx, key); err != nil {
@@ -1071,7 +1094,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			spec.Name = fmt.Sprintf("conformance-%s-data", run)
 			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
 				if err == nil {
-					_ = driver.Destroy(context.Background(), inst)
+					remove(t, driver, inst)
 				}
 				t.Fatalf("a driver that attaches no data volume made an instance with one: %v, want ErrUnsupported", err)
 			}
@@ -1098,6 +1121,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err != nil {
 			t.Fatalf("create %s: %v", gone.Name, err)
 		}
+		t.Cleanup(func() { remove(t, driver, destroyed) })
 		m = boot(t, destroyed)
 		if err := m.CopyTo(ctx, dir, tarOf(t, "data.txt", "destroyed")); err != nil {
 			t.Fatalf("write to the data volume: %v", err)
@@ -1110,7 +1134,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err != nil {
 			t.Fatalf("create %s again: %v", gone.Name, err)
 		}
-		t.Cleanup(func() { _ = driver.Destroy(context.Background(), reborn) })
+		t.Cleanup(func() { remove(t, driver, reborn) })
 		m = boot(t, reborn)
 		absent(t, m, dir+"/data.txt", "a new instance of a destroyed one's name")
 		shutdown(t, m)
@@ -1149,7 +1173,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			spec.Name = fmt.Sprintf("conformance-%s-cache", run)
 			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
 				if err == nil {
-					_ = driver.Destroy(context.Background(), inst)
+					remove(t, driver, inst)
 				}
 				t.Fatalf("a driver that attaches no cache volume made an instance with one: %v, want ErrUnsupported", err)
 			}
@@ -1162,8 +1186,8 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Skip("the driver attaches no cache volume")
 		}
 		t.Cleanup(func() {
-			_ = driver.DeleteCache(context.Background(), key)
-			_ = driver.DeleteCache(context.Background(), other)
+			deleteCache(t, driver, key)
+			deleteCache(t, driver, other)
 		})
 		dir := machine.VolumePath(guestOS, machine.VolumeCache)
 		cached := func(t *testing.T, key string) machine.Instance {
@@ -1286,7 +1310,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		spec.Data = &machine.DataVolume{}
 		if caps.Attaches(machine.VolumeCache) {
 			spec.Cache = &machine.CacheVolume{Key: key}
-			t.Cleanup(func() { _ = driver.DeleteCache(context.Background(), key) })
+			t.Cleanup(func() { deleteCache(t, driver, key) })
 		}
 		data := machine.VolumePath(guestOS, machine.VolumeData)
 		cache := machine.VolumePath(guestOS, machine.VolumeCache)
@@ -1432,6 +1456,98 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("a VM of the second committed VM reads %q from its own", got)
 		}
 	})
+}
+
+// remove removes a VM the suite made, and fails t where the driver could
+// not: a removal whose error is dropped leaves the VM in the pool unseen
+// (vm#166). A VM already gone is removed.
+func remove(t *testing.T, d machine.Driver, inst machine.Instance) {
+	t.Helper()
+	if err := d.Destroy(context.Background(), inst); err != nil && !errors.Is(err, machine.ErrNotFound) {
+		t.Errorf("remove %s of pool %s: %v", inst.Name, inst.Pool, err)
+	}
+}
+
+// deleteCache deletes a cache key the suite saved, and fails t where the
+// driver could not.
+func deleteCache(t *testing.T, d machine.Driver, key string) {
+	t.Helper()
+	if err := d.DeleteCache(context.Background(), key); err != nil && !errors.Is(err, machine.ErrNotFound) {
+		t.Errorf("delete cache %s: %v", key, err)
+	}
+}
+
+// revoke revokes a key the suite issued, and fails t where the driver
+// could not.
+func revoke(t *testing.T, d machine.Driver, key machine.Key) {
+	t.Helper()
+	if err := d.RevokeKey(context.Background(), key); err != nil && !errors.Is(err, machine.ErrNotFound) {
+		t.Errorf("revoke key %s: %v", key.Name, err)
+	}
+}
+
+// sweptPool is a pool the suite used, and which of its VMs are the run's.
+type sweptPool struct {
+	driver machine.Driver
+	ours   func(name string) bool
+}
+
+// sweep fails t for every VM of the pools that is the run's, and removes
+// it. A VM another was made from, in any of the pools, may be refused until
+// that one is gone, so it removes in rounds across all of them until a
+// round removes nothing.
+func sweep(t *testing.T, pools []sweptPool) {
+	t.Helper()
+	type found struct {
+		driver machine.Driver
+		inst   machine.Instance
+	}
+	var left []found
+	for _, p := range pools {
+		list, err := p.driver.Instances(context.Background())
+		if err != nil {
+			t.Errorf("list a pool for VMs the suite left behind: %v", err)
+			continue
+		}
+		for _, inst := range list {
+			if p.ours(inst.Name) {
+				left = append(left, found{p.driver, inst})
+				t.Errorf("the suite left %s behind in pool %s", inst.Name, inst.Pool)
+			}
+		}
+	}
+	for len(left) > 0 {
+		var kept []found
+		var errs []error
+		for _, f := range left {
+			if err := f.driver.Destroy(context.Background(), f.inst); err != nil && !errors.Is(err, machine.ErrNotFound) {
+				kept = append(kept, f)
+				errs = append(errs, fmt.Errorf("%s of pool %s: %w", f.inst.Name, f.inst.Pool, err))
+			}
+		}
+		if len(kept) == len(left) {
+			t.Errorf("remove what the suite left behind: %v", errors.Join(errs...))
+			return
+		}
+		left = kept
+	}
+}
+
+// sweepCaches fails t for every cache key of d's pool that ours names, and
+// deletes it.
+func sweepCaches(t *testing.T, d machine.Driver, ours func(key string) bool) {
+	t.Helper()
+	caches, err := d.Caches(context.Background())
+	if err != nil {
+		t.Errorf("list the pool for caches the suite left behind: %v", err)
+		return
+	}
+	for _, c := range caches {
+		if ours(c.Key) {
+			t.Errorf("the suite left cache %s behind", c.Key)
+			deleteCache(t, d, c.Key)
+		}
+	}
 }
 
 // absent fails unless the guest has nothing at path.

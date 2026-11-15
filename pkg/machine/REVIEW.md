@@ -144,3 +144,9 @@
   be a running VM's NIC. hcs frees only an endpoint whose ID the instance
   recorded before making it (`instanceState.NIC`). A review caught a
   delete-by-MAC fallback that would have taken a running VM's network.
+- **`machinetest` never drops a removal's error.** Every VM, cache, and key
+  it makes is removed through `remove`, `deleteCache`, or `revoke`, which
+  fail the case on an error, and its last cleanup fails on, and removes,
+  any VM or cache of its run still in a pool it used, sweeping every pool
+  in the same rounds, since hcs chains a VM to one in another pool. An `_ = driver.Destroy(...)` in a cleanup let
+  an hcs run pass while leaving two VMs in its pool (vm#166).
