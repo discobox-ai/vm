@@ -155,4 +155,5 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - run: go test -race -count=200 -v -run TestDialURL ./pkg/machine/
       - run: go tool task test
