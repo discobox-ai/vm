@@ -38,9 +38,12 @@ type Config struct {
 	TokenURL string `json:"tokenUrl,omitempty"`
 	// Region picks the endpoint the home endpoint names for it
 	// (ListRegions), for the calls that are the region's: every call on a
-	// machine or a snapshot. Empty is the home endpoint's own. A region boxd
-	// does not list, or one the key's org has not enabled, fails Check and
-	// every such call: the list is boxd's, and is read only once it is used.
+	// machine or a snapshot. It is required: boxd's own default (the org's,
+	// set in its console) can change under a pool, and not every credential
+	// may read it, so a driver that followed it would lose sight of its VMs.
+	// A region boxd does not list, or one the key's org has not enabled,
+	// fails Check and every such call: the list is boxd's, and is read only
+	// once it is used.
 	Region string `json:"region,omitempty"`
 	// InMachine, with no key (machine.Config.Keys nil), authenticates as
 	// the boxd machine the driver runs on: its owner's token, which the
@@ -60,8 +63,8 @@ func Definition() machine.Definition {
 				Description: "The boxd cluster's home gRPC API, as HOST:PORT, always over TLS; it is sent the key."},
 			{Key: "tokenUrl", Label: "Token URL", Type: machine.ConfigString, Env: TokenURLEnv, Default: defaultTokenURL, Advanced: true, Privileged: true,
 				Description: "Where the cluster exchanges an API key for a token; it is sent the key, so it is https, or http to a loopback address."},
-			{Key: "region", Label: "Region", Type: machine.ConfigString, Env: RegionEnv,
-				Description: "The boxd region the driver's machines and snapshots are in, such as fra or nyc; the driver lists and makes only that region's. Empty is the home endpoint's own region."},
+			{Key: "region", Label: "Region", Type: machine.ConfigString, Env: RegionEnv, Required: true, Placeholder: "fra",
+				Description: "The boxd region the driver's machines and snapshots are in, such as fra or nyc; the driver lists and makes only that region's. fra, the home region, is where a pool made before it was required keeps its VMs."},
 			{Key: "inMachine", Label: "In-Machine Auth", Type: machine.ConfigBoolean, Env: InMachineEnv, Default: "false", Privileged: true,
 				Description: "With no API key, authenticate as the boxd machine the driver runs on: the token its metadata adapter (port 9002 on the default gateway) mints for the machine's owner, which reaches every machine of the owner's in the org. A machine that is isolated has no adapter. An API key, when given, is used instead. The owner's org and personal scope must hold no host-bound secret, as for a key."},
 		},
@@ -100,7 +103,10 @@ func decode(config json.RawMessage) (Config, error) {
 	if err := machine.CheckKeyURL("boxd", "tokenUrl", cfg.TokenURL); err != nil {
 		return cfg, err
 	}
-	if cfg.Region != "" && !regionID.MatchString(cfg.Region) {
+	if cfg.Region == "" {
+		return cfg, errors.New("boxd: configuration: region is required: the boxd region the driver's machines and snapshots are in, such as fra or nyc (fra, the home region, keeps the VMs of a pool made before it was required)")
+	}
+	if !regionID.MatchString(cfg.Region) {
 		return cfg, errors.New("boxd: configuration: region: not a boxd region ID, such as fra or nyc")
 	}
 	return cfg, nil

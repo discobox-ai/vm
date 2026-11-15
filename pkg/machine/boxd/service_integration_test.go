@@ -25,8 +25,8 @@ const IntegrationEnv = "DISCO_VM_INTEGRATION"
 // start. It makes billable machines,
 // so it runs only when asked for and given an account.
 func TestService(t *testing.T) {
-	if os.Getenv(IntegrationEnv) != "1" || (os.Getenv(APIKeyEnv) == "" && os.Getenv(TokenEnv) == "") {
-		t.Skipf("set %s=1 and %s to reach a service on boxd, which bills the account", IntegrationEnv, APIKeyEnv)
+	if os.Getenv(IntegrationEnv) != "1" || !live() {
+		t.Skipf("set %s=1, %s and %s to reach a service on boxd, which bills the account", IntegrationEnv, APIKeyEnv, RegionEnv)
 	}
 	d := envDriver(t, machine.KeyFromEnv("boxd"))
 	ctx := context.Background()
@@ -120,8 +120,8 @@ sudo systemd-run python3 -m http.server %d --directory /tmp/www`, marker, port)
 // It makes billable machines, so it runs only when asked for and given an
 // account.
 func TestNoIngressURL(t *testing.T) {
-	if os.Getenv(IntegrationEnv) != "1" || (os.Getenv(APIKeyEnv) == "" && os.Getenv(TokenEnv) == "") {
-		t.Skipf("set %s=1 and %s to check a VM with no ingress URL on boxd, which bills the account", IntegrationEnv, APIKeyEnv)
+	if os.Getenv(IntegrationEnv) != "1" || !live() {
+		t.Skipf("set %s=1, %s and %s to check a VM with no ingress URL on boxd, which bills the account", IntegrationEnv, APIKeyEnv, RegionEnv)
 	}
 	d := envDriver(t, machine.KeyFromEnv("boxd"))
 	ctx := context.Background()

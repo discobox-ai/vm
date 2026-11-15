@@ -88,7 +88,7 @@ func TestSecretSends(t *testing.T) {
 		driver, config string
 		want           map[string][]machine.SecretSend
 	}{
-		{"boxd", ``, map[string][]machine.SecretSend{"apiKey": {
+		{"boxd", `{"region":"fra"}`, map[string][]machine.SecretSend{"apiKey": {
 			exchange("app.boxd.sh:443", "/api/v1/auth/token"), grpcBearer("boxd.sh:9443")}}},
 		{"boxd", `{"addr":"boxd.example:8443","tokenUrl":"http://127.0.0.1:9/t","region":"nyc"}`, map[string][]machine.SecretSend{"apiKey": {
 			exchange("127.0.0.1:9", "/t"), grpcBearer("boxd.example:8443")}}},

@@ -130,10 +130,10 @@ func (d *Driver) Capabilities() machine.Capabilities {
 // machine limit (Capabilities.MaxMachines). It fails when a host-bound
 // secret of the org or of the key's owner would reach the driver's
 // machines, since boxd lets a machine reach such a secret's hosts whatever
-// its egress allowlist says. With a region it also finds the region's
-// endpoint, which needs the region to be one the key's org has enabled, and
-// lists the machines there, so an endpoint that does not answer, or refuses
-// the key, fails here rather than at the first create.
+// its egress allowlist says. It also finds the region's endpoint, which
+// needs the region to be one the key's org has enabled, and lists the
+// machines there, so an endpoint that does not answer, or refuses the key,
+// fails here rather than at the first create.
 func (d *Driver) Check(ctx context.Context) error {
 	account, err := d.api.Account()
 	if err != nil {
@@ -150,9 +150,6 @@ func (d *Driver) Check(ctx context.Context) error {
 	}
 	if err := hostBoundSecrets(ctx, account, limit.GetOrgName()); err != nil {
 		return err
-	}
-	if d.api.region == "" {
-		return nil
 	}
 	api, err := d.api.API(ctx)
 	if err != nil {

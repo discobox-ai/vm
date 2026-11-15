@@ -184,10 +184,10 @@ func TestInMachineIsTheConfigurations(t *testing.T) {
 		keys   machine.KeySource
 		reads  bool
 	}{
-		{`{"inMachine":true}`, nil, true},
-		{`{"inMachine":true}`, key, false},
-		{`{}`, nil, false},
-		{`{"inMachine":false}`, key, false},
+		{`{"region":"fra","inMachine":true}`, nil, true},
+		{`{"region":"fra","inMachine":true}`, key, false},
+		{`{"region":"fra"}`, nil, false},
+		{`{"region":"fra","inMachine":false}`, key, false},
 	} {
 		d, err := New(machine.Config{DriverConfig: json.RawMessage(c.config), Keys: c.keys})
 		if err != nil {
@@ -200,7 +200,7 @@ func TestInMachineIsTheConfigurations(t *testing.T) {
 	if err := Validate(json.RawMessage(`{"inMachine":"yes"}`)); err == nil {
 		t.Error("an inMachine that is no boolean was accepted")
 	}
-	d, err := New(machine.Config{})
+	d, err := New(machine.Config{DriverConfig: json.RawMessage(`{"region":"fra"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}

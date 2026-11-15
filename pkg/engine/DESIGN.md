@@ -181,7 +181,10 @@ in a pool, so a name belongs to exactly one pool.
 A driver whose configuration names a region (boxd's and archil's `region`)
 is also made for one region, and lists and makes only that region's VMs:
 the same pool in two regions is two sets of VMs that share a name, and
-neither lists the other's.
+neither lists the other's. The region a driver lists is the one its
+configuration names, never one the provider picks: boxd's is required, since
+its default (the org's, in its console) can move, and archil's default is
+the driver's own, fixed.
 
 There are no orphans in disco-vm (ADR 26-10-23-417): everything under a
 pool's names in a region is that pool's, and is listed by a driver made for
