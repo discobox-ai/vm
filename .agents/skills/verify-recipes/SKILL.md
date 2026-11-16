@@ -113,17 +113,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   for it on `*.archil.com` (the control plane and the process API) and
   `*.archil.app` (exposed ports), then `eval "$(discobox-access env)"`. Any
   build drives it: nothing of disco-vm's goes in the guest.
-- Isolate state: `export DISCO_VM_DRIVER=archil DISCO_VM_POOL=<scratch>
-  DISCO_VM_BASE=debian:sid`. A VM is the sandbox `dvm-<pool>--<name>`,
-  its data volume the disk `dvm-<pool>--<name>--data`. With no
-  `DISCO_VM_BASE`, a fresh VM runs Archil's default image (Debian 12).
+- Isolate state: `export DISCO_VM_DRIVER=archil ARCHIL_REGION=aws-us-east-1
+  DISCO_VM_POOL=<scratch> DISCO_VM_BASE=debian:sid` (the region is
+  required). A VM is the sandbox `dvm-<pool>--<name>`, its data volume the
+  disk `dvm-<pool>--<name>--data`. With no `DISCO_VM_BASE`, a fresh VM runs
+  Archil's default image (`node:24-bookworm`).
 - The flow: `run dev --data 1GiB` (about 7 s), `exec dev sh -c '...'` (no
   `--` after the name: it reaches the guest as the command), `stop`,
   `commit`, `run dev2 --from dev`. `rm dev` is refused with `ErrInUse`
   while `dev2`, its fork, exists.
-- Conformance: `DISCO_VM_ARCHIL_IMAGE=debian:sid go test
-  ./pkg/machine/archil -run TestConformance -v` (about 2.5 minutes, in
-  pool `conformance`).
+- Conformance and e2e: `go tool task test:archil` (`TestConformance` in
+  pool `conformance`, then `internal/e2e` in pool `e2e`, both from a fresh
+  VM of debian:sid). Against the fake API, with no key:
+  `go test ./pkg/machine/archil -run TestConformanceFakeAPI`.
+- A guest's server through the ingress URL: run it under Archil's own
+  supervisor so it outlives the exec, `exec dev /opt/archil/archil-client
+  services create web --tcp-port 7302 -- <server>`, then `curl $(disco-vm
+  url dev)`. A request to that URL starts a stopped VM.
 - Clean up: `ls -a` is empty, and the control plane lists no sandbox or disk
   of the pool (`GET /api/sandboxes`, `GET /api/disks` at
   `https://control.green.us-east-1.aws.prod.archil.com`).

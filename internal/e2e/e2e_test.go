@@ -14,7 +14,10 @@
 // Nor does boxd: e2e-base is a fresh VM of boxd's default image, or the one
 // $DISCO_VM_E2E_IMAGE names, committed as a snapshot. It needs a key
 // ($BOXD_API_KEY or $BOXD_TOKEN), and its state root is optional, since boxd
-// keeps everything; the pool keeps a run apart.
+// keeps everything; the pool keeps a run apart. Nor does archil: e2e-base
+// is a fresh VM of debian:sid, or the image $DISCO_VM_E2E_IMAGE names,
+// committed as its stopped sandbox. It needs $ARCHIL_API_KEY and
+// $ARCHIL_REGION.
 //
 // A driver that does not report Capabilities.Commit (ADR 26-11-03-868) has
 // no e2e-base: every VM is fresh, the cases that commit are skipped, and
@@ -68,9 +71,13 @@ type target struct {
 	// slow says the install is too slow to repeat in every test, so root is
 	// required.
 	slow bool
-	// lastingURL says a VM's URL outlives a stop (boxd's proxy), so url
-	// answers while it is stopped, the same as while it runs.
+	// lastingURL says a VM's URL outlives a stop (boxd's proxy, archil's
+	// exposed port), so url answers while it is stopped, the same as while
+	// it runs.
 	lastingURL bool
+	// noFrom says a VM made from another does not say which (Archil keeps
+	// no record of a fork's source), so ls and inspect show no FROM.
+	noFrom bool
 }
 
 // file is a guest path for the file API.
@@ -139,6 +146,23 @@ func targetFromEnv() target {
 			dir:        "/srv",
 			root:       os.Getenv("DISCO_VM_E2E_ROOT"),
 			lastingURL: true,
+		}
+	case "archil":
+		if os.Getenv("ARCHIL_API_KEY") == "" || os.Getenv("ARCHIL_REGION") == "" {
+			fmt.Fprintln(os.Stderr, "e2e: driver archil needs $ARCHIL_API_KEY, a key of the Archil account to run VMs in, and $ARCHIL_REGION, such as aws-us-east-1")
+			os.Exit(2)
+		}
+		image := os.Getenv("DISCO_VM_E2E_IMAGE")
+		if image == "" {
+			image = "debian:sid"
+		}
+		return target{
+			driver:     "archil",
+			base:       image,
+			dir:        "/srv",
+			root:       os.Getenv("DISCO_VM_E2E_ROOT"),
+			lastingURL: true,
+			noFrom:     true,
 		}
 	case "hcs":
 		iso := os.Getenv("DISCO_VM_E2E_ISO")
@@ -378,7 +402,9 @@ func TestLifecycle(t *testing.T) {
 	// ps is ls by its older name.
 	mustContain(t, e.ok("ps"), "dev", "running")
 	if e.caps.Commit {
-		mustContain(t, e.ok("ls"), "app-v1")
+		if !tg.noFrom {
+			mustContain(t, e.ok("ls"), "app-v1")
+		}
 		mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("greeting.txt")...)...), "hi")
 		mustContain(t, e.ok(append([]string{"exec", "dev"}, catArgv("opt/app/tool.txt")...)...), "tool v1")
 	} else {
@@ -640,7 +666,7 @@ func TestDrivers(t *testing.T) {
 func TestDriverConfig(t *testing.T) {
 	// Empty is unset: the suite may run with the fake driver's variables set
 	// (task test's second run sets DISCO_VM_FAKE_NO_COMMIT).
-	unset := []string{"DISCO_VM_FAKE_NO_COMMIT=", "DISCO_VM_AGENT=", "DISCO_VM_FAKE_MAX_RUNNING="}
+	unset := []string{"DISCO_VM_FAKE_NO_COMMIT=", "DISCO_VM_AGENT=", "DISCO_VM_FAKE_MAX_RUNNING=", "BOXD_REGION=", "ARCHIL_REGION="}
 	e := env{t: t, root: t.TempDir(), extra: unset}
 	fake := func(args ...string) []string { return append([]string{"--driver", "fake"}, args...) }
 
@@ -713,6 +739,7 @@ func TestDriverConfig(t *testing.T) {
 		{[]string{"--driver", "docker", "--docker-host", "ssh://h", "ls"}, "host: only unix:// and tcp://"},
 		{[]string{"--driver", "boxd", "--boxd-region", "fra", "--boxd-token-url", "http://example.com/t", "ls"}, "tokenUrl: a URL the key is sent to is https"},
 		{[]string{"--driver", "boxd", "ls"}, "fra, the home region, is where a pool made before it was required keeps its VMs"},
+		{[]string{"--driver", "archil", "ls"}, "aws-us-east-1 is where a pool made before it was required keeps its VMs"},
 	} {
 		if out, code := e.run(c.args...); code == 0 || !strings.Contains(out, c.want) {
 			t.Errorf("disco-vm %s: exit %d, want %q:\n%s", strings.Join(c.args, " "), code, c.want, out)
@@ -846,7 +873,7 @@ func TestURL(t *testing.T) {
 		t.Fatalf("url --scope ingress svc = %q, and url svc %q", scoped, url)
 	}
 	switch tg.driver {
-	case "boxd":
+	case "boxd", "archil":
 		if url != stopped[machine.URLIngress] {
 			t.Fatalf("url svc = %q running, and %q stopped", url, stopped[machine.URLIngress])
 		}
@@ -864,7 +891,8 @@ func TestURL(t *testing.T) {
 		}
 	}
 	// A container's peers dial its address on its network; a boxd machine
-	// on no network is reached by its peers at its ingress URL, a fake
+	// on no network, or an archil sandbox, is reached by its peers at its
+	// ingress URL, a fake
 	// guest's share its loopback, and a vz, libkrun, or hcs guest's reach it
 	// through the shims, at its socket.
 	pool, code := e.run("url", "--scope", "pool", "svc")
@@ -896,36 +924,107 @@ func TestURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	address := strings.TrimSpace(string(data))
-	want := map[string]string{"vz": "vsock:7302", "hcs": "vsock:7302", "docker": "tcp:0.0.0.0:7302", "boxd": "tcp:0.0.0.0:7302"}[tg.driver]
+	want := map[string]string{"vz": "vsock:7302", "hcs": "vsock:7302", "docker": "tcp:0.0.0.0:7302", "boxd": "tcp:0.0.0.0:7302", "archil": "tcp:0.0.0.0:7302"}[tg.driver]
 	if want != "" && address != want {
 		t.Fatalf("service file says %q, want %q", address, want)
 	}
-	if tg.driver == "fake" {
+	switch {
+	case tg.driver == "fake":
 		l, err := guest.Listen(address)
 		if err != nil {
 			t.Fatalf("listen on the service file's %q: %v", address, err)
 		}
 		server := &http.Server{
-			Handler:           http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "hello from the service") }),
+			Handler:           http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, greeting) }),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() { _ = server.Serve(l) }()
 		t.Cleanup(func() { _ = server.Close() })
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
-		if err != nil {
-			t.Fatal(err)
+		if got, err := get(t.Context(), url); err != nil || got != greeting {
+			t.Fatalf("GET %s: %q, %v", url, got, err)
 		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
+	case guestOS.OS == string(machine.Linux) && strings.HasPrefix(url, "http") && e.serveInGuest("svc"):
+		// A server in the guest, listening where the service file says,
+		// answers at the ingress URL.
+		var got string
+		for deadline := time.Now().Add(2 * time.Minute); got != greeting && time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+			got, err = get(t.Context(), url)
 		}
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if string(body) != "hello from the service" {
-			t.Fatalf("GET %s: %s %q", url, resp.Status, body)
+		if got != greeting {
+			t.Fatalf("GET %s of the guest's server: %q, %v", url, got, err)
 		}
 	}
 	e.ok("rm", "-f", "svc")
+}
+
+// greeting is what the service in TestURL answers.
+const greeting = "hello from the service"
+
+// get is the body a GET of url answers with 200.
+func get(ctx context.Context, url string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err == nil && resp.StatusCode != http.StatusOK {
+		err = fmt.Errorf("%s", resp.Status)
+	}
+	return string(body), err
+}
+
+// serveInGuest builds testdata/guestserver for a Linux guest's architecture,
+// copies it in, and runs it through an exec held open until the test ends:
+// not detached in the guest, since a provider may end what an exec started
+// once it exits (Archil does). Where there is no Go toolchain or no source
+// to build it from (a prebuilt test binary run elsewhere), it starts nothing,
+// says so, and reports false.
+func (e env) serveInGuest(inst string) bool {
+	e.t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		e.t.Logf("no Go toolchain to build the guest's server, so nothing checks it answers at the URL: %v", err)
+		return false
+	}
+	if _, err := os.Stat("testdata/guestserver/main.go"); err != nil {
+		e.t.Logf("no source to build the guest's server, so nothing checks it answers at the URL: %v", err)
+		return false
+	}
+	arch := map[string]string{"x86_64": "amd64", "aarch64": "arm64"}[strings.TrimSpace(e.ok("exec", inst, "uname", "-m"))]
+	if arch == "" {
+		e.t.Fatal("the guest's architecture is not one the server is built for")
+	}
+	dir := e.t.TempDir()
+	build := exec.CommandContext(e.t.Context(), "go", "build", "-o", filepath.Join(dir, "guestserver"), "./testdata/guestserver") //nolint:gosec // G204: the test's own build of its own program
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH="+arch)
+	if out, err := build.CombinedOutput(); err != nil {
+		e.t.Fatalf("build the guest's server: %v\n%s", err, out)
+	}
+	e.ok("cp", filepath.Join(dir, "guestserver"), inst+":"+tg.file("bin"))
+	server := e.command("exec", inst, tg.cmd("bin/guestserver"))
+	var out bytes.Buffer
+	server.Stdout, server.Stderr = &out, &out
+	if err := server.Start(); err != nil {
+		e.t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() { _ = server.Wait(); close(exited) }()
+	e.t.Cleanup(func() {
+		_ = server.Process.Kill()
+		<-exited
+	})
+	select {
+	case <-exited:
+		e.t.Fatalf("the guest's server exited:\n%s", out.String())
+	case <-time.After(time.Second):
+	}
+	return true
 }
 
 // TestEgress: none takes no other entry beside it; a fence the driver holds
@@ -976,31 +1075,40 @@ func TestEgress(t *testing.T) {
 	}
 }
 
-// TestVolumes gives instances a data volume and a cache volume: the data is
-// kept across a stop and never in a committed VM; a cache saved from a stopped
-// instance, and not a running one, is what the next instance of its key
-// starts from; a second save from it is refused once the key has moved,
-// unless forced; and a key removed lists no more. A driver that attaches no
-// volume refuses both.
+// TestVolumes gives instances the volumes the driver attaches, a data volume
+// and a cache volume: the data is kept across a stop and never in a
+// committed VM; a cache saved from a stopped instance, and not a running
+// one, is what the next instance of its key starts from; a second save from
+// it is refused once the key has moved, unless forced; and a key removed
+// lists no more. A volume the driver does not attach is refused.
 func TestVolumes(t *testing.T) {
 	e := newEnv(t)
 	t.Cleanup(func() {
 		e.run("rm", "-f", "vol-s", "vol-b", "vol-a")
 		e.run("cache", "rm", "e2e-cache")
 	})
-	guestOS := map[string]machine.OS{"fake": machine.OS(runtime.GOOS), "docker": machine.Linux, "libkrun": machine.Linux, "vz": machine.Darwin, "hcs": machine.Windows}[tg.driver]
-	data, cache := machine.VolumePath(guestOS, machine.VolumeData), machine.VolumePath(guestOS, machine.VolumeCache)
-	if tg.driver != "fake" && tg.driver != "docker" {
-		for _, flags := range [][]string{{"--data", "1GiB"}, {"--cache", "e2e-cache"}} {
-			args := append(append([]string{"create", "vol-a"}, e.base()...), flags...)
-			if out, code := e.run(args...); code == 0 || !strings.Contains(out, "cannot attach") {
-				t.Fatalf("create %q on %s: exit %d\n%s", flags, tg.driver, code, out)
-			}
+	hasData, hasCache := e.caps.Attaches(machine.VolumeData), e.caps.Attaches(machine.VolumeCache)
+	for _, c := range []struct {
+		attached bool
+		flags    []string
+	}{{hasData, []string{"--data", "1GiB"}}, {hasCache, []string{"--cache", "e2e-cache"}}} {
+		if c.attached {
+			continue
 		}
+		args := append(append([]string{"create", "vol-a"}, e.base()...), c.flags...)
+		if out, code := e.run(args...); code == 0 || !strings.Contains(out, "cannot attach") {
+			t.Fatalf("create %q on %s: exit %d\n%s", c.flags, tg.driver, code, out)
+		}
+	}
+	if !hasData && !hasCache {
 		return
 	}
-	if out, code := e.run(append(append([]string{"create", "vol-a"}, e.base()...), "--cache-size", "1GiB")...); code == 0 || !strings.Contains(out, "needs --cache") {
-		t.Fatalf("create --cache-size with no --cache: exit %d\n%s", code, out)
+	guestOS := map[string]machine.OS{"fake": machine.OS(runtime.GOOS), "docker": machine.Linux, "libkrun": machine.Linux, "vz": machine.Darwin, "hcs": machine.Windows, "boxd": machine.Linux, "archil": machine.Linux}[tg.driver]
+	data, cache := machine.VolumePath(guestOS, machine.VolumeData), machine.VolumePath(guestOS, machine.VolumeCache)
+	if hasCache {
+		if out, code := e.run(append(append([]string{"create", "vol-a"}, e.base()...), "--cache-size", "1GiB")...); code == 0 || !strings.Contains(out, "needs --cache") {
+			t.Fatalf("create --cache-size with no --cache: exit %d\n%s", code, out)
+		}
 	}
 	local := t.TempDir()
 	note := filepath.Join(local, "note.txt")
@@ -1021,75 +1129,93 @@ func TestVolumes(t *testing.T) {
 		return string(got)
 	}
 
-	e.ok(append(append([]string{"run", "vol-a"}, e.base()...), "--data", "1GiB", "--cache", "e2e-cache")...)
-	write("data")
-	e.ok("cp", note, "vol-a:"+data)
-	write("cache a")
-	e.ok("cp", note, "vol-a:"+cache)
-	if out, code := e.run("cache", "save", "vol-a"); code == 0 || !strings.Contains(out, "stop it first") {
-		t.Fatalf("cache save of a running instance: exit %d\n%s", code, out)
+	volumes := []string{}
+	if hasData {
+		volumes = append(volumes, "--data", "1GiB")
+	}
+	if hasCache {
+		volumes = append(volumes, "--cache", "e2e-cache")
+	}
+	e.ok(append(append([]string{"run", "vol-a"}, e.base()...), volumes...)...)
+	if hasData {
+		write("data")
+		e.ok("cp", note, "vol-a:"+data)
+	}
+	if hasCache {
+		write("cache a")
+		e.ok("cp", note, "vol-a:"+cache)
+		if out, code := e.run("cache", "save", "vol-a"); code == 0 || !strings.Contains(out, "stop it first") {
+			t.Fatalf("cache save of a running instance: exit %d\n%s", code, out)
+		}
 	}
 	e.ok("stop", "vol-a")
 	e.ok("start", "vol-a")
-	if got := read("vol-a", data); got != "data" {
-		t.Fatalf("the data volume reads %q after a stop and a start", got)
+	if hasData {
+		if got := read("vol-a", data); got != "data" {
+			t.Fatalf("the data volume reads %q after a stop and a start", got)
+		}
 	}
 	e.ok("stop", "vol-a")
-	gen := strings.TrimSpace(e.ok("cache", "save", "vol-a"))
-	mustContain(t, e.ok("cache", "ls"), "e2e-cache", gen)
-	if out, code := e.run("cache", "save", "vol-a"); code == 0 || !strings.Contains(out, "--force") {
-		t.Fatalf("a second guarded save: exit %d\n%s", code, out)
+	if hasCache {
+		gen := strings.TrimSpace(e.ok("cache", "save", "vol-a"))
+		mustContain(t, e.ok("cache", "ls"), "e2e-cache", gen)
+		if out, code := e.run("cache", "save", "vol-a"); code == 0 || !strings.Contains(out, "--force") {
+			t.Fatalf("a second guarded save: exit %d\n%s", code, out)
+		}
+
+		e.ok(append(append([]string{"run", "vol-b"}, e.base()...), "--cache", "e2e-cache")...)
+		if got := read("vol-b", cache); got != "cache a" {
+			t.Fatalf("an instance of the saved key reads %q", got)
+		}
+		var inspected struct {
+			Cache *machine.CacheVolume `json:"cache"`
+		}
+		if err := json.Unmarshal([]byte(e.ok("inspect", "vol-b")), &inspected); err != nil || inspected.Cache == nil || inspected.Cache.Generation != gen {
+			t.Fatalf("inspect vol-b: cache %+v, %v; want generation %s", inspected.Cache, err, gen)
+		}
+		write("cache b")
+		e.ok("cp", note, "vol-b:"+cache)
+		e.ok("stop", "vol-b")
+		forced := strings.TrimSpace(e.ok("cache", "save", "--force", "vol-a"))
+		mustContain(t, e.ok("cache", "ls"), forced)
 	}
 
-	e.ok(append(append([]string{"run", "vol-b"}, e.base()...), "--cache", "e2e-cache")...)
-	if got := read("vol-b", cache); got != "cache a" {
-		t.Fatalf("an instance of the saved key reads %q", got)
-	}
-	var inspected struct {
-		Cache *machine.CacheVolume `json:"cache"`
-	}
-	if err := json.Unmarshal([]byte(e.ok("inspect", "vol-b")), &inspected); err != nil || inspected.Cache == nil || inspected.Cache.Generation != gen {
-		t.Fatalf("inspect vol-b: cache %+v, %v; want generation %s", inspected.Cache, err, gen)
-	}
-	write("cache b")
-	e.ok("cp", note, "vol-b:"+cache)
-	e.ok("stop", "vol-b")
-	forced := strings.TrimSpace(e.ok("cache", "save", "--force", "vol-a"))
-	mustContain(t, e.ok("cache", "ls"), forced)
-
-	if e.caps.Commit {
+	if e.caps.Commit && hasData {
 		e.ok("commit", "vol-a")
 		e.ok("run", "vol-s", "--from", "vol-a", "--data", "0")
 		if out, code := e.run("cp", "vol-s:"+data+"/note.txt", t.TempDir()); code == 0 {
 			t.Fatalf("a committed VM carried its data volume:\n%s", out)
 		}
 	}
-	e.ok("cache", "rm", "e2e-cache")
-	if out := e.ok("cache", "ls"); strings.Contains(out, "e2e-cache") {
-		t.Fatalf("a removed key is listed:\n%s", out)
+	if hasCache {
+		e.ok("cache", "rm", "e2e-cache")
+		if out := e.ok("cache", "ls"); strings.Contains(out, "e2e-cache") {
+			t.Fatalf("a removed key is listed:\n%s", out)
+		}
 	}
 }
 
 // TestUpgrade gives a stopped VM a new root, the root of another committed
 // VM, or a fresh one on a driver that does not commit: it keeps its name,
-// its data volume, and its cache clone, and loses what it wrote to its old
-// root. It is refused while the VM runs; from a VM there is not, or from
-// any where the driver does not commit; and on a driver that attaches no
-// data volume.
+// its data volume, and its cache clone where the driver attaches one, and
+// loses what it wrote to its old root. It is refused while the VM runs; from
+// a VM there is not, or from any where the driver does not commit; and on a
+// driver that attaches no data volume.
 func TestUpgrade(t *testing.T) {
 	e := newEnv(t)
 	t.Cleanup(func() {
 		e.run("rm", "-f", "up", "up-next")
 		e.run("cache", "rm", "e2e-up")
 	})
-	if tg.driver != "fake" && tg.driver != "docker" {
+	if !e.caps.Attaches(machine.VolumeData) {
 		e.ok(append([]string{"create", "up"}, e.base()...)...)
 		if out, code := e.run("upgrade", "up"); code == 0 || !strings.Contains(out, "attaches no data volume") {
 			t.Fatalf("upgrade on %s: exit %d\n%s", tg.driver, code, out)
 		}
 		return
 	}
-	guestOS := map[string]machine.OS{"fake": machine.OS(runtime.GOOS), "docker": machine.Linux}[tg.driver]
+	hasCache := e.caps.Attaches(machine.VolumeCache)
+	guestOS := map[string]machine.OS{"fake": machine.OS(runtime.GOOS), "docker": machine.Linux, "archil": machine.Linux}[tg.driver]
 	data, cache := machine.VolumePath(guestOS, machine.VolumeData), machine.VolumePath(guestOS, machine.VolumeCache)
 	local := t.TempDir()
 	put := func(inst, dir, name, content string) {
@@ -1126,9 +1252,15 @@ func TestUpgrade(t *testing.T) {
 		to, from = []string{"--from", "up-next"}, "up-next"
 	}
 
-	e.ok(append([]string{"run", "up", "--data", "1GiB", "--cache", "e2e-up"}, e.base()...)...)
+	volumes := []string{"--data", "1GiB"}
+	if hasCache {
+		volumes = append(volumes, "--cache", "e2e-up")
+	}
+	e.ok(append(append([]string{"run", "up"}, volumes...), e.base()...)...)
 	put("up", data, "data.txt", "data")
-	put("up", cache, "cache.txt", "cache")
+	if hasCache {
+		put("up", cache, "cache.txt", "cache")
+	}
 	put("up", root, "old.txt", "old")
 	if out, code := e.run(append([]string{"upgrade", "up"}, to...)...); code == 0 || !strings.Contains(out, "stop it") {
 		t.Fatalf("upgrade of a running VM: exit %d\n%s", code, out)
@@ -1146,11 +1278,17 @@ func TestUpgrade(t *testing.T) {
 		Data  *machine.DataVolume  `json:"data"`
 		Cache *machine.CacheVolume `json:"cache"`
 	}
-	if err := json.Unmarshal([]byte(e.ok("inspect", "up")), &inspected); err != nil || inspected.From != from || inspected.Data == nil || inspected.Cache == nil || inspected.Cache.Key != "e2e-up" {
+	if tg.noFrom {
+		from = ""
+	}
+	if err := json.Unmarshal([]byte(e.ok("inspect", "up")), &inspected); err != nil || inspected.From != from || inspected.Data == nil || hasCache && (inspected.Cache == nil || inspected.Cache.Key != "e2e-up") {
 		t.Fatalf("inspect up: %+v, %v", inspected, err)
 	}
 	e.ok("start", "up")
-	wants := map[string]string{data + "/data.txt": "data", cache + "/cache.txt": "cache"}
+	wants := map[string]string{data + "/data.txt": "data"}
+	if hasCache {
+		wants[cache+"/cache.txt"] = "cache"
+	}
 	if e.caps.Commit {
 		wants[root+"/next.txt"] = "next"
 	}
