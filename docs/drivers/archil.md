@@ -7,14 +7,15 @@ what a guest holds and runs is the caller's, and its operations
 **Done means:**
 
 1. `machinetest.Run` passes against Archil itself: `TestConformance` with
-   `ARCHIL_API_KEY` and `DISCO_VM_ARCHIL_IMAGE` set.
-2. `internal/e2e` passes with `DISCO_VM_DRIVER=archil`.
+   `ARCHIL_API_KEY`, `ARCHIL_REGION`, and `DISCO_VM_ARCHIL_IMAGE` set, and
+   against the fake API (`TestConformanceFakeAPI`) everywhere.
+2. `internal/e2e` passes with `DISCO_VM_DRIVER=archil` (`go tool task
+   test:archil` runs both against Archil).
 3. A fresh VM of an OCI image is shaped through `exec`, stopped, and
    committed, and a VM created from it runs.
 
 Status: see the root [DESIGN.md](../../DESIGN.md#what-is-proven-and-where)'s
-proof table. Criterion 2 waits on a layout for `DISCO_VM_DRIVER=archil` in
-`internal/e2e`.
+proof table.
 
 ## What Archil is
 
@@ -22,7 +23,7 @@ Archil (https://archil.com, docs at https://docs.archil.com) runs Firecracker
 microVM sandboxes, amd64 only, from public OCI images, beside disks backed by
 object storage that the provider mounts in them. Its control plane is a REST
 API per region (the configuration's `region`: `--archil-region`,
-`$ARCHIL_REGION`, `aws-us-east-1` by default; ADR 26-11-11-215), authenticated
+`$ARCHIL_REGION`, required; ADR 26-11-11-215), authenticated
 with an API key (`ARCHIL_API_KEY`); there is no Go SDK. Processes run over a
 WebSocket protocol only its TypeScript SDK implements.
 
@@ -31,7 +32,8 @@ init, which runs nothing of the image's: no entrypoint, no systemd. A stop
 checkpoints the root disk, and a fork branches a checkpoint into a new
 sandbox that boots at once with its source's mounts and network policy. A
 sandbox with forks can't be deleted. A session lasts at most 24 hours, then
-Archil pauses it.
+Archil pauses it. A request to an exposed port starts a stopped sandbox, or
+resumes a paused one.
 
 ## How the seam maps
 
@@ -50,7 +52,7 @@ Archil pauses it.
 | `Machine.Done` | polled every 2s once asked: stopped or exited is a power-off, failed or deleted an error. |
 | `Machine.Kill`, `Shutdown` | Archil's stop. A reboot is refused. |
 | guest operations | a process each: exec with the request's directory, variables, and terminal, `runuser -u` for another account (an image without util-linux, such as Alpine, fails `exec -u`); `cp` as tar, GNU's or BusyBox's, a copy out tarring to `/var/tmp` (so it needs that much free space in the guest, and streams nothing until tar is done) and writing `R` once that worked, then the tar in 512 KiB chunks the host asks for, read with `dd`, since Archil drops output that outruns its connection (an exec that loses output fails); `info` as `uname -m; hostname`. |
-| `Service` | listen on `tcp:0.0.0.0:7302`; the ingress URL is `https://<hostname Archil gives port 7302>`, the same across stop and start, and the pool URL is the ingress URL. It is on the internet and the only path, so every VM has both, and `Create` refuses a strict request for either off (`ErrUnsupported`; ADR 26-11-12-604). |
+| `Service` | listen on `tcp:0.0.0.0:7302`; the ingress URL is `https://<hostname Archil gives port 7302>`, the same across stop and start, and the pool URL is the ingress URL. It is on the internet and the only path, so every VM has both, and `Create` refuses a strict request for either off (`ErrUnsupported`; ADR 26-11-12-604). It is public: any request reaches the guest's server, and starts the VM if it is stopped. |
 | volumes | `data`: the disk `dvm-<pool>--<name>--data` at `/.discobox/data`, made at Create (a data disk of the name with no sandbox is a VM mid-upgrade, so Create of that name is `ErrExists`) and deleted at Commit and Destroy. No `cache` (ADR 26-11-02-180). |
 | egress | `network.egress` `{default: deny, allow: [...]}`, set at create (fresh) or right after the fork (`From`), and read back. |
 | keys | none: an Archil token never expires and reaches the whole account (`ErrCannotIssue`). |
@@ -58,7 +60,7 @@ Archil pauses it.
 ## Try it
 
 ```bash
-export ARCHIL_API_KEY=key-... DISCO_VM_DRIVER=archil DISCO_VM_POOL=scratch DISCO_VM_BASE=debian:sid
+export ARCHIL_API_KEY=key-... ARCHIL_REGION=aws-us-east-1 DISCO_VM_DRIVER=archil DISCO_VM_POOL=scratch DISCO_VM_BASE=debian:sid
 disco-vm run dev --data 1GiB
 disco-vm exec dev sh -c 'apt-get update && apt-get install -y curl'
 disco-vm stop dev
@@ -74,3 +76,7 @@ disco-vm rm -f dev2 && disco-vm rm dev
 - **The cache volume**, until Archil supports its branch API (ADR
   26-11-02-180).
 - **No forward, no guest port, no isolation, no display.**
+- **A private ingress URL:** 7302 left unexposed and reached with an Archil
+  port token (`X-Archil-Token`), which a request without the token neither
+  reaches nor wakes (seen on Archil, vm#86). Whether a pool takes it is
+  discobox-ai/discobox#1053's design.
