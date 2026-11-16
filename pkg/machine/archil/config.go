@@ -17,15 +17,18 @@ const (
 	RegionEnv = "ARCHIL_REGION"
 	// BaseURLEnv is where the command line reads Config.BaseURL from.
 	BaseURLEnv = "ARCHIL_BASE_URL"
-	// DefaultRegion is where the driver calls when Config.Region is empty.
-	DefaultRegion = "aws-us-east-1"
+	// legacyRegion is where the driver called before its region was
+	// required, so where a pool made then keeps its VMs.
+	legacyRegion = "aws-us-east-1"
 )
 
 // Config is the archil driver's configuration (machine.Config.DriverConfig,
 // ADR 26-11-11-215).
 type Config struct {
 	// Region is the region the driver calls: its control plane, its
-	// sandboxes, and its disks. Empty is DefaultRegion.
+	// sandboxes, and its disks. It is required, as boxd's is: a pool sees
+	// only its region's VMs, so a default that changed would lose sight of
+	// VMs still billed in the old one.
 	Region string `json:"region,omitempty"`
 	// BaseURL is a control plane in place of the region's, for a test. It
 	// wins over Region's, and is sent the key.
@@ -42,8 +45,8 @@ func Definition() machine.Definition {
 		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Placeholder: "debian:sid",
 			Description: "The public OCI image a fresh VM runs; empty is Archil's default image."},
 		ConfigFields: []machine.ConfigField{
-			{Key: "region", Label: "Region", Type: machine.ConfigString, Env: RegionEnv, Default: DefaultRegion,
-				Description: "The Archil region the driver calls, which keeps its sandboxes and disks: one of " + strings.Join(regions(), ", ") + "."},
+			{Key: "region", Label: "Region", Type: machine.ConfigString, Env: RegionEnv, Required: true, Placeholder: legacyRegion,
+				Description: "The Archil region the driver calls, which keeps its sandboxes and disks: one of " + strings.Join(regions(), ", ") + ". " + legacyRegion + " is where a pool made before it was required keeps its VMs."},
 			{Key: "baseUrl", Label: "Base URL", Type: machine.ConfigString, Env: BaseURLEnv, Advanced: true, Privileged: true,
 				Description: "A control plane's URL in place of the region's, for a test; it is sent the key, so it is https, or http to a loopback address."},
 		},
@@ -79,7 +82,7 @@ func decode(config json.RawMessage) (Config, error) {
 		return cfg, err
 	}
 	if cfg.Region == "" {
-		cfg.Region = DefaultRegion
+		return cfg, fmt.Errorf("archil: configuration: region is required: the Archil region the driver's sandboxes and disks are in, one of %s (%s keeps the VMs of a pool made before it was required)", strings.Join(regions(), ", "), legacyRegion)
 	}
 	if cfg.BaseURL != "" {
 		return cfg, machine.CheckKeyURL("archil", "baseUrl", cfg.BaseURL)

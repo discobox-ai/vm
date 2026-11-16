@@ -31,7 +31,7 @@ func TestTheKeyGoesWhereTheDefinitionSays(t *testing.T) {
 		_, _ = w.Write([]byte(`{"sandboxes":[]}`))
 	}))
 	t.Cleanup(srv.Close)
-	config := json.RawMessage(`{"baseUrl":"` + srv.URL + `/v2"}`)
+	config := json.RawMessage(`{"region":"aws-us-east-1","baseUrl":"` + srv.URL + `/v2"}`)
 	sends, err := machine.SecretSends("archil", config)
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestTheKeyGoesWhereTheDefinitionSays(t *testing.T) {
 // plane refuses the driver's call there.
 func TestTheDialerCanRefuse(t *testing.T) {
 	refused := errors.New("not a host this embedder lets the driver reach")
-	d, err := New(machine.Config{Keys: machine.StaticKey(machine.Key{Secret: "k"}),
+	d, err := New(machine.Config{Keys: machine.StaticKey(machine.Key{Secret: "k"}), DriverConfig: json.RawMessage(`{"region":"aws-us-east-1"}`),
 		Dial: func(context.Context, string, string) (net.Conn, error) { return nil, refused }})
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestTheEmbeddersRootsAreTrusted(t *testing.T) {
 	srv := fakeArchilServer(t, httptest.NewTLSServer)
 	roots := x509.NewCertPool()
 	roots.AddCert(srv.Certificate())
-	config := json.RawMessage(`{"baseUrl":"` + srv.URL + `"}`)
+	config := json.RawMessage(`{"region":"aws-us-east-1","baseUrl":"` + srv.URL + `"}`)
 	run := func(trusted *x509.CertPool) error {
 		d, err := New(machine.Config{DriverConfig: config, Keys: machine.StaticKey(machine.Key{Secret: "secret"}), RootCAs: trusted})
 		if err != nil {
