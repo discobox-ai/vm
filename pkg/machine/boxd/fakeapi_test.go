@@ -67,6 +67,17 @@ type fakeAPI struct {
 	// namedProxy, when set, is a named proxy every new machine has, as one
 	// made in the guest by boxd's in-VM CLI would be.
 	namedProxy string
+	// startVms counts StartVm calls that answered OK.
+	startVms int
+	// startingReads is how many GetVm reads report a started machine as
+	// starting; zero is one.
+	startingReads int
+	// stopLag is how many GetVm reads still report a machine StopVm stopped
+	// as it was, as a stop that settles after StopVm answers would.
+	stopLag int
+	// calls logs the machine and snapshot reads and power calls, in order,
+	// by method name: what a test asks of how many calls a step makes.
+	calls []string
 	// syncFails makes the guest's sync exit 1.
 	syncFails atomic.Bool
 	// readyHangs makes `systemctl is-system-running --wait` hang until its
@@ -204,6 +215,12 @@ func (f *fakeAPI) accountCall() error {
 
 type fakeVM struct {
 	id, name string
+	// starting is how many GetVm reads to come report a machine StartVm
+	// started as starting, as boxd does for about a second, though it runs.
+	starting int
+	// lagging is how many GetVm reads to come report a stopped machine as
+	// running (stopLag).
+	lagging int
 	// imageRef is the image CreateVm made it from.
 	imageRef string
 	dir      string
@@ -316,6 +333,23 @@ func (f *fakeAPI) newVM(name string, vcpu uint32, memory uint64) *fakeVM {
 
 func (f *fakeAPI) boot(v *fakeVM) { v.status = "running" }
 
+// called logs a call; f.mu is held.
+func (f *fakeAPI) called(method string) { f.calls = append(f.calls, method) }
+
+// takeCalls returns the calls logged since the last take.
+func (f *fakeAPI) takeCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	calls := f.calls
+	f.calls = nil
+	return calls
+}
+
+// WakeVm wakes a hibernated machine.
+func (f *fakeAPI) WakeVm(_ context.Context, req *boxdapi.WakeVmRequest) (*boxdapi.WakeVmResponse, error) {
+	return &boxdapi.WakeVmResponse{}, f.setStatus(req.GetVmId(), "hibernated", "running")
+}
+
 func (f *fakeAPI) halt(v *fakeVM) { v.status = "stopped" }
 
 // RebootVm restarts a running machine's guest, which leaves it running.
@@ -348,7 +382,8 @@ func (f *fakeAPI) CreateVm(_ context.Context, req *boxdapi.CreateVmRequest) (*bo
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.taken(req.GetName()) {
-		return nil, status.Errorf(codes.AlreadyExists, "a machine is named %q", req.GetName())
+		// As boxd answers (see rpc CreateVm in the proto).
+		return nil, status.Errorf(codes.FailedPrecondition, "name '%s' is already taken", req.GetName())
 	}
 	if err := f.admit(); err != nil {
 		return nil, err
@@ -373,7 +408,8 @@ func (f *fakeAPI) CreateVmFromSnapshot(_ context.Context, req *boxdapi.CreateVmF
 		return nil, err
 	}
 	if f.taken(req.GetName()) {
-		return nil, status.Errorf(codes.AlreadyExists, "a machine is named %q", req.GetName())
+		// As boxd answers (see rpc CreateVmFromSnapshot in the proto).
+		return nil, status.Errorf(codes.AlreadyExists, "name '%s' is already taken", req.GetName())
 	}
 	if err := f.admit(); err != nil {
 		return nil, err
@@ -432,6 +468,7 @@ func (f *fakeAPI) GetVm(_ context.Context, req *boxdapi.GetVmRequest) (*boxdapi.
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.called("GetVm")
 	v, err := f.vm(req.GetVmId())
 	if err != nil && f.snapshotIDRefused.Load() {
 		for _, snap := range f.snapshots {
@@ -443,7 +480,15 @@ func (f *fakeAPI) GetVm(_ context.Context, req *boxdapi.GetVmRequest) (*boxdapi.
 	if err != nil {
 		return nil, err
 	}
-	return f.info(v), nil
+	info := f.info(v)
+	if v.lagging > 0 {
+		v.lagging--
+		info.Status = "running"
+	} else if v.starting > 0 {
+		v.starting--
+		info.Status = "starting"
+	}
+	return info, nil
 }
 
 // info is a machine as GetVm and ListVms report it.
@@ -457,6 +502,7 @@ func (f *fakeAPI) info(v *fakeVM) *boxdapi.GetVmResponse {
 func (f *fakeAPI) ListVms(context.Context, *boxdapi.ListVmsRequest) (*boxdapi.ListVmsResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.called("ListVms")
 	out := &boxdapi.ListVmsResponse{}
 	for _, v := range f.vms {
 		out.Vms = append(out.Vms, f.info(v))
@@ -494,14 +540,24 @@ func (f *fakeAPI) DestroyVm(_ context.Context, req *boxdapi.DestroyVmRequest) (*
 func (f *fakeAPI) StartVm(_ context.Context, req *boxdapi.StartVmRequest) (*boxdapi.StartVmResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.called("StartVm")
 	v, err := f.vm(req.GetVmId())
 	if err != nil {
 		return nil, err
 	}
-	if v.status != "stopped" {
+	// As boxd answers (2026-11-16): OK for a machine starting or running,
+	// which it leaves as it is, and for a suspended one, which it resumes.
+	switch v.status {
+	case "stopped":
+		f.boot(v)
+		v.starting = max(f.startingReads, 1)
+	case "starting", "running":
+	case "suspended", "standby":
+		v.status = "running"
+	default:
 		return nil, status.Errorf(codes.FailedPrecondition, "%s is %s", v.name, v.status)
 	}
-	f.boot(v)
+	f.startVms++
 	return &boxdapi.StartVmResponse{}, nil
 }
 
@@ -511,17 +567,20 @@ func (f *fakeAPI) StopVm(_ context.Context, req *boxdapi.StopVmRequest) (*boxdap
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.called("StopVm")
 	v, err := f.vm(req.GetVmId())
 	if err != nil {
 		return nil, err
 	}
 	f.halt(v)
+	v.lagging = f.stopLag
 	return &boxdapi.StopVmResponse{}, nil
 }
 
 func (f *fakeAPI) setStatus(id, from, to string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.called("set " + to)
 	v, err := f.vm(id)
 	if err != nil {
 		return err
@@ -559,6 +618,7 @@ func (f *fakeAPI) SetAutoHibernateTimeout(context.Context, *boxdapi.SetAutoHiber
 func (f *fakeAPI) ResizeVm(_ context.Context, req *boxdapi.ResizeVmRequest) (*boxdapi.ResizeVmResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.called("ResizeVm")
 	v, err := f.vm(req.GetVmId())
 	if err != nil {
 		return nil, err
@@ -682,6 +742,7 @@ func (f *fakeAPI) CreateSnapshot(_ context.Context, req *boxdapi.CreateSnapshotR
 func (f *fakeAPI) GetSnapshot(_ context.Context, req *boxdapi.GetSnapshotRequest) (*boxdapi.GetSnapshotResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.called("GetSnapshot")
 	snap, err := f.snapshot(req.GetName())
 	if err != nil {
 		return nil, err
@@ -695,6 +756,7 @@ func (f *fakeAPI) GetSnapshot(_ context.Context, req *boxdapi.GetSnapshotRequest
 func (f *fakeAPI) ListSnapshots(context.Context, *boxdapi.ListSnapshotsRequest) (*boxdapi.ListSnapshotsResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.called("ListSnapshots")
 	out := &boxdapi.ListSnapshotsResponse{}
 	for _, snap := range f.snapshots {
 		out.Snapshots = append(out.Snapshots, &boxdapi.SnapshotInfo{

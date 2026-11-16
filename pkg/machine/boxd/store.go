@@ -169,8 +169,39 @@ func (d *Driver) Instances(ctx context.Context) ([]machine.Instance, error) {
 	return out, nil
 }
 
-// Instance is the pool's VM of the name, committed or not.
+// Instance is the pool's VM of the name, committed or not, as Instances
+// lists it, read by name rather than listed: the snapshot of the name first,
+// since a VM looked up is most often a committed one to create from, and a
+// ready snapshot is the VM whatever machine shares its name; then the
+// machine of the name, and a failed snapshot only where there is none. A
+// name neither read finds is looked for in the listing before it is
+// ErrNotFound, since boxd's GetVm has answered NotFound for a machine
+// CreateVm had just made.
 func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, error) {
+	if machine.ValidateName(name) != nil {
+		return machine.Instance{}, fmt.Errorf("VM %q: %w", name, machine.ErrNotFound)
+	}
+	api, err := d.api.API(ctx)
+	if err != nil {
+		return machine.Instance{}, err
+	}
+	full := d.machineName(name)
+	snap, err := snapshotNamed(ctx, api, full)
+	if err != nil {
+		return machine.Instance{}, err
+	}
+	if snap.GetStatus() == "ready" {
+		return d.committed(snap), nil
+	}
+	vm, err := machineNamed(ctx, api, full)
+	switch {
+	case err != nil:
+		return machine.Instance{}, err
+	case vm != nil:
+		return d.instance(vm), nil
+	case snap.GetStatus() == "failed":
+		return d.committed(snap), nil
+	}
 	all, err := d.Instances(ctx)
 	if err != nil {
 		return machine.Instance{}, err
@@ -181,4 +212,19 @@ func (d *Driver) Instance(ctx context.Context, name string) (machine.Instance, e
 		}
 	}
 	return machine.Instance{}, fmt.Errorf("VM %q: %w", name, machine.ErrNotFound)
+}
+
+// machineNamed is boxd's machine of a name, or nil when it has none, or one
+// being destroyed, which Instances does not list either.
+func machineNamed(ctx context.Context, api boxdapi.BoxdApiClient, name string) (*boxdapi.GetVmResponse, error) {
+	vm, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: name})
+	switch {
+	case isNotFound(err):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("boxd: machine %s: %w", name, err)
+	case vm.GetName() != name || vm.GetStatus() == "destroying":
+		return nil, nil
+	}
+	return vm, nil
 }

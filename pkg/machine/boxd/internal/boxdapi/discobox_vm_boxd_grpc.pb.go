@@ -70,17 +70,24 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type BoxdApiClient interface {
+	// A name a machine has is FAILED_PRECONDITION ("name '<name>' is already
+	// taken"), not ALREADY_EXISTS (nyc, 2026-11-16).
 	CreateVm(ctx context.Context, in *CreateVmRequest, opts ...grpc.CallOption) (*CreateVmResponse, error)
 	// A snapshot of the machine still pending is finished, not abandoned: one
 	// destroyed 0.2 s into its snapshot's pending had it ready a moment later
 	// (region fra, 2026-11-15).
 	DestroyVm(ctx context.Context, in *DestroyVmRequest, opts ...grpc.CallOption) (*DestroyVmResponse, error)
+	// Returns at once (about 85 ms), before the machine runs. OK for a
+	// machine stopped, starting or running, which it leaves as it is, and for
+	// a suspended one, which it resumes; NOT_FOUND for an id that is no
+	// machine (nyc, 2026-11-16). Not seen: a hibernated or stopping machine.
 	StartVm(ctx context.Context, in *StartVmRequest, opts ...grpc.CallOption) (*StartVmResponse, error)
 	StopVm(ctx context.Context, in *StopVmRequest, opts ...grpc.CallOption) (*StopVmResponse, error)
 	RebootVm(ctx context.Context, in *RebootVmRequest, opts ...grpc.CallOption) (*RebootVmResponse, error)
 	// NOT_FOUND for an id/name with no matching machine, including a destroyed
 	// one, and, a moment after CreateVm, perhaps for the machine it made (see
-	// SetAutoSuspendTimeout).
+	// SetAutoSuspendTimeout). A machine's name finds it as its id does (nyc,
+	// 2026-11-16).
 	GetVm(ctx context.Context, in *GetVmRequest, opts ...grpc.CallOption) (*GetVmResponse, error)
 	// Every machine in the caller's context, with no paging.
 	ListVms(ctx context.Context, in *ListVmsRequest, opts ...grpc.CallOption) (*ListVmsResponse, error)
@@ -113,6 +120,8 @@ type BoxdApiClient interface {
 	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
 	// Every snapshot in the caller's context, with no paging.
 	ListSnapshots(ctx context.Context, in *ListSnapshotsRequest, opts ...grpc.CallOption) (*ListSnapshotsResponse, error)
+	// A name a machine has is ALREADY_EXISTS ("name '<name>' is already
+	// taken"), where CreateVm answers FAILED_PRECONDITION (nyc, 2026-11-16).
 	CreateVmFromSnapshot(ctx context.Context, in *CreateVmFromSnapshotRequest, opts ...grpc.CallOption) (*CreateVmResponse, error)
 	ResizeVm(ctx context.Context, in *ResizeVmRequest, opts ...grpc.CallOption) (*ResizeVmResponse, error)
 	// Every machine has a default proxy at <machine>.<zone>: an HTTPS domain
@@ -502,17 +511,24 @@ func (c *boxdApiClient) GetOrgMachineLimit(ctx context.Context, in *GetOrgMachin
 // All implementations must embed UnimplementedBoxdApiServer
 // for forward compatibility.
 type BoxdApiServer interface {
+	// A name a machine has is FAILED_PRECONDITION ("name '<name>' is already
+	// taken"), not ALREADY_EXISTS (nyc, 2026-11-16).
 	CreateVm(context.Context, *CreateVmRequest) (*CreateVmResponse, error)
 	// A snapshot of the machine still pending is finished, not abandoned: one
 	// destroyed 0.2 s into its snapshot's pending had it ready a moment later
 	// (region fra, 2026-11-15).
 	DestroyVm(context.Context, *DestroyVmRequest) (*DestroyVmResponse, error)
+	// Returns at once (about 85 ms), before the machine runs. OK for a
+	// machine stopped, starting or running, which it leaves as it is, and for
+	// a suspended one, which it resumes; NOT_FOUND for an id that is no
+	// machine (nyc, 2026-11-16). Not seen: a hibernated or stopping machine.
 	StartVm(context.Context, *StartVmRequest) (*StartVmResponse, error)
 	StopVm(context.Context, *StopVmRequest) (*StopVmResponse, error)
 	RebootVm(context.Context, *RebootVmRequest) (*RebootVmResponse, error)
 	// NOT_FOUND for an id/name with no matching machine, including a destroyed
 	// one, and, a moment after CreateVm, perhaps for the machine it made (see
-	// SetAutoSuspendTimeout).
+	// SetAutoSuspendTimeout). A machine's name finds it as its id does (nyc,
+	// 2026-11-16).
 	GetVm(context.Context, *GetVmRequest) (*GetVmResponse, error)
 	// Every machine in the caller's context, with no paging.
 	ListVms(context.Context, *ListVmsRequest) (*ListVmsResponse, error)
@@ -545,6 +561,8 @@ type BoxdApiServer interface {
 	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
 	// Every snapshot in the caller's context, with no paging.
 	ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error)
+	// A name a machine has is ALREADY_EXISTS ("name '<name>' is already
+	// taken"), where CreateVm answers FAILED_PRECONDITION (nyc, 2026-11-16).
 	CreateVmFromSnapshot(context.Context, *CreateVmFromSnapshotRequest) (*CreateVmResponse, error)
 	ResizeVm(context.Context, *ResizeVmRequest) (*ResizeVmResponse, error)
 	// Every machine has a default proxy at <machine>.<zone>: an HTTPS domain
