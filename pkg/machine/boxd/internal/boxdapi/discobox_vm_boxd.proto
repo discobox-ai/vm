@@ -15,17 +15,24 @@ package boxd.api.v1;
 option go_package = "github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi";
 
 service BoxdApi {
+  // A name a machine has is FAILED_PRECONDITION ("name '<name>' is already
+  // taken"), not ALREADY_EXISTS (nyc, 2026-11-16).
   rpc CreateVm(CreateVmRequest)             returns (CreateVmResponse);
   // A snapshot of the machine still pending is finished, not abandoned: one
   // destroyed 0.2 s into its snapshot's pending had it ready a moment later
   // (region fra, 2026-11-15).
   rpc DestroyVm(DestroyVmRequest)           returns (DestroyVmResponse);
+  // Returns at once (about 85 ms), before the machine runs. OK for a
+  // machine stopped, starting or running, which it leaves as it is, and for
+  // a suspended one, which it resumes; NOT_FOUND for an id that is no
+  // machine (nyc, 2026-11-16). Not seen: a hibernated or stopping machine.
   rpc StartVm(StartVmRequest)               returns (StartVmResponse);
   rpc StopVm(StopVmRequest)                 returns (StopVmResponse);
   rpc RebootVm(RebootVmRequest)             returns (RebootVmResponse);
   // NOT_FOUND for an id/name with no matching machine, including a destroyed
   // one, and, a moment after CreateVm, perhaps for the machine it made (see
-  // SetAutoSuspendTimeout).
+  // SetAutoSuspendTimeout). A machine's name finds it as its id does (nyc,
+  // 2026-11-16).
   rpc GetVm(GetVmRequest)                   returns (GetVmResponse);
   // Every machine in the caller's context, with no paging.
   rpc ListVms(ListVmsRequest)               returns (ListVmsResponse);
@@ -58,6 +65,8 @@ service BoxdApi {
   rpc DeleteSnapshot(DeleteSnapshotRequest)   returns (DeleteSnapshotResponse);
   // Every snapshot in the caller's context, with no paging.
   rpc ListSnapshots(ListSnapshotsRequest)     returns (ListSnapshotsResponse);
+  // A name a machine has is ALREADY_EXISTS ("name '<name>' is already
+  // taken"), where CreateVm answers FAILED_PRECONDITION (nyc, 2026-11-16).
   rpc CreateVmFromSnapshot(CreateVmFromSnapshotRequest) returns (CreateVmResponse);
   rpc ResizeVm(ResizeVmRequest) returns (ResizeVmResponse);
   // Every machine has a default proxy at <machine>.<zone>: an HTTPS domain

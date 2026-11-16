@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -67,6 +68,11 @@ var (
 	appearLimit = time.Minute
 	appearEvery = 250 * time.Millisecond
 )
+
+// waitEvery is how often a wait for a machine's state asks for it: a boot
+// is about a second (2026-11-16, nyc and fra), so a second's poll cost up
+// to one again.
+var waitEvery = 200 * time.Millisecond
 
 // Driver is the boxd driver.
 type Driver struct {
@@ -233,17 +239,30 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if err != nil {
 		return machine.Instance{}, err
 	}
-	if _, err := d.Instance(ctx, spec.Name); err == nil {
-		return machine.Instance{}, fmt.Errorf("boxd: a VM named %q: %w", spec.Name, machine.ErrExists)
-	} else if !errors.Is(err, machine.ErrNotFound) {
+	// A committed VM holds its name with no machine, which boxd would let a
+	// new machine take, so the snapshot of the name is asked for, at once
+	// with a restore's own; a machine of the name is boxd's to refuse
+	// (taken, below).
+	var from *boxdapi.SnapshotInfo
+	var fromErr error
+	var reading sync.WaitGroup
+	if restore {
+		// boxd restores only a snapshot: a From that is a machine is no
+		// committed VM boxd has.
+		reading.Go(func() { from, fromErr = d.snapshotOf(ctx, api, *spec.From) })
+	}
+	held, err := snapshotNamed(ctx, api, name)
+	reading.Wait()
+	switch {
+	case err != nil:
 		return machine.Instance{}, err
+	case held.GetStatus() == "ready" || held.GetStatus() == "failed":
+		return machine.Instance{}, fmt.Errorf("boxd: a VM named %q: %w", spec.Name, machine.ErrExists)
 	}
 	config := &boxdapi.VmConfig{Vcpu: uint32(spec.CPUs), MemoryBytes: spec.Memory}
 	var created *boxdapi.CreateVmResponse
 	if restore {
-		// boxd restores only a snapshot: a From that is a machine is no
-		// committed VM boxd has.
-		snap, err := d.snapshotOf(ctx, api, *spec.From)
+		snap, err := from, fromErr
 		if err != nil {
 			return machine.Instance{}, err
 		}
@@ -272,10 +291,17 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 			Isolated: spec.Isolated, Networks: spec.Networks,
 		})
 	}
-	if status.Code(err) == codes.AlreadyExists {
-		return machine.Instance{}, fmt.Errorf("boxd: a VM named %q: %w", spec.Name, machine.ErrExists)
-	}
 	if err != nil {
+		// boxd refuses a name a machine has, CreateVm with
+		// FailedPrecondition and a restore with AlreadyExists (2026-11-16),
+		// and FailedPrecondition is not that refusal alone, so the machine
+		// of the name is looked for on those two only: a create whose answer
+		// was lost is never reported as another's name.
+		if code := status.Code(err); code == codes.FailedPrecondition || code == codes.AlreadyExists {
+			if vm, lookErr := machineNamed(ctx, api, name); lookErr == nil && vm != nil {
+				return machine.Instance{}, fmt.Errorf("boxd: a VM named %q: %w", spec.Name, machine.ErrExists)
+			}
+		}
 		if limit, full := d.atLimit(ctx); full {
 			return machine.Instance{}, fmt.Errorf("boxd: org %s has %d machines, its limit, stopped ones and every member's counted; destroy one, or have the org's owner ask boxd for more: %w (create %s: %w)",
 				limit.GetOrgName(), limit.GetVmCount(), machine.ErrCapacity, name, err)
@@ -439,52 +465,116 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 		return nil, err
 	}
 	ref := vmRef{ID: inst.ID, Name: d.machineName(inst.Name)}
-	info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: ref.ID})
-	if err != nil {
-		return nil, d.refuseCommitted(ctx, api, inst, fmt.Errorf("boxd: machine %s: %w", ref.Name, err))
-	}
-	if info.GetStatus() == "stopping" {
-		// A stop is still settling: a `disco-vm stop` a moment ago. Start
-		// what it leaves.
-		if _, err := waitVM(ctx, api, ref.ID, "stopped"); err != nil {
+	// The expected machine is stopped, at the size it asks for, so StartVm
+	// is asked first, with nothing read before it. boxd answers it OK for a
+	// machine starting or running too, and resumes a suspended one; a
+	// machine in any other state is seen, and booted, by the wait.
+	if _, err := api.StartVm(ctx, &boxdapi.StartVmRequest{VmId: ref.ID}); err != nil {
+		err = d.refuseCommitted(ctx, api, inst, fmt.Errorf("boxd: boot %s: %w", ref.Name, err))
+		if errors.Is(err, machine.ErrCommitted) || isNotFound(err) {
 			return nil, err
 		}
-		if info, err = api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: ref.ID}); err != nil {
-			return nil, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
-		}
-	}
-	switch state := info.GetStatus(); state {
-	case "stopped":
-		cpus, memory := uint32(inst.CPUs), inst.Memory
-		if (cpus != 0 && cpus != info.GetVcpu()) || (memory != 0 && memory != info.GetMemoryBytes()) {
-			// A stopped machine takes the new size at its next start.
-			if _, err := api.ResizeVm(ctx, &boxdapi.ResizeVmRequest{VmId: ref.ID, Vcpu: cpus, MemoryBytes: memory}); err != nil {
-				return nil, fmt.Errorf("boxd: resize %s: %w", ref.Name, err)
-			}
-		}
-		_, err = api.StartVm(ctx, &boxdapi.StartVmRequest{VmId: ref.ID})
-	case "standby", "suspended":
-		_, err = api.ResumeVm(ctx, &boxdapi.ResumeVmRequest{VmId: ref.ID})
-	case "hibernated":
-		_, err = api.WakeVm(ctx, &boxdapi.WakeVmRequest{VmId: ref.ID})
-	case "running", "starting":
-	default:
-		return nil, fmt.Errorf("boxd: machine %s is %s", ref.Name, state)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("boxd: boot %s: %w", ref.Name, err)
 	}
 	// Running is boxd's word, and the boot's end: nothing in the guest is
 	// waited for. boxd holds an Exec sent while the guest boots until it
 	// answers, and one that does not reach it is machine.ErrUnreachable,
 	// which the engine tries again.
-	if _, err := waitVM(ctx, api, ref.ID, "running"); err != nil {
+	if err := untilRunning(ctx, api, ref, inst); err != nil {
 		return nil, err
 	}
 	if opts.Console != nil {
 		fmt.Fprintf(opts.Console, "boxd: %s (%s) is running\n", ref.Name, ref.ID)
 	}
 	return newVM(api, ref), nil
+}
+
+// untilRunning polls a machine Boot has asked StartVm of until boxd says it
+// runs, and boots it from whatever else it finds: a stop still settling (a
+// `disco-vm stop` a moment ago) is waited out and what it leaves started, a
+// suspended machine resumed, a hibernated one woken. A machine that stops
+// once it has been seen coming up ends the wait: a concurrent stop, or the
+// guest's own power-off, is not undone.
+//
+// A machine at another size than inst asks (zero asks for none) is resized
+// once, stopped first, since boxd resizes only a stopped machine: before its
+// start where the wait finds it stopped, and otherwise, where this Boot's
+// StartVm started it at its old size, by flushing its writes and stopping it
+// mid-boot, then starting it again. One already running when the wait first
+// sees it is left at its size, as a machine Boot did not start.
+func untilRunning(ctx context.Context, api boxdapi.BoxdApiClient, ref vmRef, inst machine.Instance) error {
+	ctx, cancel := context.WithTimeout(ctx, waitLimit)
+	defer cancel()
+	cpus, memory := uint32(inst.CPUs), inst.Memory
+	last := ""
+	// ranBefore: the wait first found the machine running, so Boot did not
+	// start it. up: the wait has seen it come up since it was last started.
+	// resized: its one resize has begun. stopped: the wait stopped it
+	// itself, to resize it.
+	first, ranBefore, up, resized, stopped := true, false, false, false, false
+	for {
+		info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: ref.ID})
+		if isNotFound(err) {
+			return fmt.Errorf("boxd: machine %s is gone: %w", ref.Name, err)
+		}
+		if err == nil {
+			last = info.GetStatus()
+			if first {
+				ranBefore, first = last == "running", false
+			}
+			resize := !resized && ((cpus != 0 && cpus != info.GetVcpu()) || (memory != 0 && memory != info.GetMemoryBytes()))
+			switch last {
+			case "running", "starting":
+				if stopped {
+					// The wait's own stop has not shown yet: boxd's stop
+					// settles after StopVm answers.
+					break
+				}
+				if resize && !ranBefore {
+					// This Boot's StartVm started it at its old size.
+					resized, stopped = true, true
+					if err := syncDisks(ctx, api, ref.ID); err != nil {
+						return fmt.Errorf("boxd: resize %s: %w", ref.Name, err)
+					}
+					_, err = api.StopVm(ctx, &boxdapi.StopVmRequest{VmId: ref.ID})
+					break
+				}
+				if last == "running" {
+					return nil
+				}
+				up = true
+			case "stopping":
+				if up && !stopped {
+					return fmt.Errorf("boxd: machine %s stopped before it ran", ref.Name)
+				}
+			case "stopped":
+				if up && !stopped {
+					return fmt.Errorf("boxd: machine %s stopped before it ran", ref.Name)
+				}
+				if resize || stopped {
+					resized = true
+					if _, err := api.ResizeVm(ctx, &boxdapi.ResizeVmRequest{VmId: ref.ID, Vcpu: cpus, MemoryBytes: memory}); err != nil {
+						return fmt.Errorf("boxd: resize %s: %w", ref.Name, err)
+					}
+				}
+				up, stopped = false, false
+				_, err = api.StartVm(ctx, &boxdapi.StartVmRequest{VmId: ref.ID})
+			case "standby", "suspended":
+				_, err = api.ResumeVm(ctx, &boxdapi.ResumeVmRequest{VmId: ref.ID})
+			case "hibernated":
+				_, err = api.WakeVm(ctx, &boxdapi.WakeVmRequest{VmId: ref.ID})
+			default:
+				return fmt.Errorf("boxd: machine %s is %s", ref.Name, last)
+			}
+			if err != nil {
+				return fmt.Errorf("boxd: boot %s, which is %s: %w", ref.Name, last, err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("boxd: machine %s is %q, waiting for it to run: %w", ref.Name, last, ctx.Err())
+		case <-time.After(waitEvery):
+		}
+	}
 }
 
 // Attach finds the instance's machine through the API, as any process can.
@@ -777,7 +867,7 @@ func waitVM(ctx context.Context, api boxdapi.BoxdApiClient, vm string, want ...s
 		select {
 		case <-ctx.Done():
 			return last, fmt.Errorf("boxd: machine %s is %q, waiting for %v: %w", vm, last, want, ctx.Err())
-		case <-time.After(time.Second):
+		case <-time.After(waitEvery):
 		}
 	}
 }
