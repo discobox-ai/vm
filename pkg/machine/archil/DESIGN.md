@@ -9,9 +9,12 @@ the provider mounts in them. A sandbox has no labels and its name never
 changes, which is all a VM needs. The driver has nothing of disco-vm's in
 the guest and nothing on the host:
 
-- **A driver is one region's**, its configuration's `region`
-  (`aws-us-east-1` by default). Each region is its own control plane, with
-  its own sandboxes and disks, so a pool sees only its region's VMs.
+- **A driver is one region's**, its configuration's `region`, which is
+  required, as boxd's is: each region is its own control plane, with its
+  own sandboxes and disks, so a pool sees only its region's VMs, and a
+  default that changed would lose sight of VMs still billed in the old one.
+  `aws-us-east-1` is where a pool made before it was required keeps its
+  VMs, and the refusal says so.
 - **A VM is the sandbox `dvm-<pool>--<name>`** (`names.go`). Archil
   refuses a sandbox name it has, so a Create takes the name before it makes
   anything else, and the refusal is `machine.ErrExists`. A listing reads the
@@ -61,7 +64,10 @@ the guest and nothing on the host:
   done: a large copy is silent for a while before it streams. Shutdown
   is Archil's stop; a reboot is refused.
 - **Power is Archil's.** Start resumes a sandbox Archil paused at its 24-hour
-  limit. Attach reports a paused one running and leaves it paused: the
+  limit. Any request to the exposed 7302 starts a stopped sandbox or
+  resumes a paused one (seen 2026-11-16: a stopped VM ran 2.8 s after an
+  anonymous `GET` of its ingress URL), so a VM stopped by the engine can be
+  running at its next listing. Attach reports a paused one running and leaves it paused: the
   machine's first exec or copy resumes it (a stop stops it as it is), so a listing, which
   attaches to every VM, wakes none. A guest that powers itself off halts its VM, which
   Archil goes on reporting `running`: unsupported, as on boxd.

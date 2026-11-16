@@ -84,8 +84,8 @@ INSTANCE` give the one asked, never the other's in its place:
 
 No URL takes a credential, so the service authenticates its callers. Both
 are refused while the instance is not running (but on boxd and archil,
-whose URLs last), and an instance with no URL in the scope asked is
-`machine.ErrUnsupported`.
+whose URLs last; a request to archil's starts a stopped instance), and an
+instance with no URL in the scope asked is `machine.ErrUnsupported`.
 
 **Each URL is asked for, on or off, strictly or not** (`CreateOptions.URLs`,
 `disco-vm create --url SCOPE=on|off[,strict]`; ADR 26-11-12-604), one
@@ -188,9 +188,9 @@ A driver whose configuration names a region (boxd's and archil's `region`)
 is also made for one region, and lists and makes only that region's VMs:
 the same pool in two regions is two sets of VMs that share a name, and
 neither lists the other's. The region a driver lists is the one its
-configuration names, never one the provider picks: boxd's is required, since
-its default (the org's, in its console) can move, and archil's default is
-the driver's own, fixed.
+configuration names, never one the provider picks: both are required, since
+boxd's default (the org's, in its console) can move, and a default of the
+driver's own would move a pool's VMs out of sight the day it changed.
 
 There are no orphans in disco-vm (ADR 26-10-23-417): everything under a
 pool's names in a region is that pool's, and is listed by a driver made for
