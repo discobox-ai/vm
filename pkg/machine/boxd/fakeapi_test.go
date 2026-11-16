@@ -80,9 +80,13 @@ type fakeAPI struct {
 	calls []string
 	// syncFails makes the guest's sync exit 1.
 	syncFails atomic.Bool
-	// readyHangs makes `systemctl is-system-running --wait` hang until its
-	// call ends, as one sent early in a boot can.
-	readyHangs atomic.Bool
+	// readyHangs makes the next that many of the driver's waits for a settled
+	// guest (readyCommand, whatever it runs) hang until their call ends, as
+	// `systemctl is-system-running --wait` sent early in a boot can.
+	readyHangs atomic.Int32
+	// readyAnswers, under mu, are what the next readyCommands answer, in
+	// order, each "stdout|stderr|exit"; with none left, "running" and 0.
+	readyAnswers []string
 	// unreachable is how many Execs to come answer Unavailable before the
 	// guest answers anything: gRPC's code for a connection it cannot make,
 	// which boxd itself was not seen to give (see rpc Exec in the proto).
@@ -842,12 +846,23 @@ func (f *fakeAPI) Exec(stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdap
 	arg := func() string { return guest.Resolve(root, req.Argv[len(req.Argv)-1]) }
 	switch {
 	case slices.Equal(req.Argv, readyCommand.Argv):
-		if f.readyHangs.Load() {
+		if f.readyHangs.Add(-1) >= 0 {
 			<-stream.Context().Done()
 			return stream.Context().Err()
 		}
-		_, _ = stdout.Write([]byte("running\n"))
-		return exit(0, "")
+		f.mu.Lock()
+		answer := "running||0"
+		if len(f.readyAnswers) > 0 {
+			answer, f.readyAnswers = f.readyAnswers[0], f.readyAnswers[1:]
+		}
+		f.mu.Unlock()
+		parts := strings.SplitN(answer, "|", 3)
+		out, errOut, code := parts[0], parts[1], parts[2]
+		if out != "" {
+			_, _ = stdout.Write([]byte(out + "\n"))
+		}
+		n, _ := strconv.ParseInt(code, 10, 32)
+		return exit(int32(n), errOut)
 	case slices.Equal(req.Argv, []string{"sync"}):
 		// The host's disks are not the guest's to flush.
 		if f.syncFails.Load() {

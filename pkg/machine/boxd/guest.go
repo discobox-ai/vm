@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -337,42 +338,78 @@ func runAsRoot(ctx context.Context, api boxdapi.BoxdApiClient, vm string, req ma
 	return err
 }
 
-// readyCommand returns once systemd has finished starting the guest, whether
-// every unit came up or not. Commit waits for it, so a snapshot is of a
-// settled guest, and Create's power-off of a new machine, so its disk is one
-// its first boot finished. Sent early in a boot it can hang until its
-// attempt's timeout, so a start waits for nothing in the guest (Boot).
-var readyCommand = machine.ExecRequest{Argv: []string{"systemctl", "is-system-running", "--wait"}}
+// readyCommand asks systemd how far the guest has booted, without waiting:
+// waitGuest asks it again until systemd says it has finished starting the
+// guest, whether every unit came up or not (settled). Commit waits for that,
+// so a snapshot is of a settled guest, and so does Create's power-off of a
+// new machine, so its disk is one its first boot finished. Nothing in the
+// guest waits: `systemctl is-system-running --wait` sent early in a boot has
+// hung until its attempt's timeout though the guest booted seconds in, and
+// has returned at once with "offline" or a bus error while systemd was still
+// initializing; `systemctl start default.target` sent then failed at once on
+// the bus, or returned while systemd was still starting (sandbox image, nyc,
+// 2026-11-16). A start waits for nothing in the guest (Boot).
+var readyCommand = machine.ExecRequest{Argv: []string{"systemctl", "is-system-running"}}
+
+// settled is what readyCommand prints once systemd has finished starting the
+// guest: everything up, some unit failed, or the rescue or emergency target.
+// Anything else, or nothing (systemd's bus not up yet), is a guest still
+// booting, or stopping.
+var settled = []string{"running", "degraded", "maintenance"}
+
+const (
+	// readyAttempt bounds each readyCommand, which answers at once, so that
+	// an Exec the guest does not answer is asked again.
+	readyAttempt = 5 * time.Second
+	// readyPoll is the pause between readyCommands.
+	readyPoll = 200 * time.Millisecond
+)
 
 // waitGuest waits until boxd's Exec reaches the guest and systemd has
 // finished starting it.
 func waitGuest(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	var last error
 	for {
-		attempt, cancelAttempt := context.WithTimeout(ctx, 2*time.Minute)
-		p, err := startExec(attempt, api, vm, readyCommand)
-		if err == nil {
-			_ = p.CloseStdin()
-			var out bytes.Buffer
-			stop := context.AfterFunc(attempt, func() { _ = p.Close() })
-			_, err = p.Wait(&out, &out)
-			stop()
-			_ = p.Close()
-			if err == nil && out.Len() == 0 {
-				err = errors.New("systemd said nothing")
-			}
-		}
-		cancelAttempt()
-		if err == nil {
+		last := guestSettled(ctx, api, vm)
+		if last == nil {
 			return nil
 		}
-		last = err
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("boxd: %s did not answer: %w (last: %w)", vm, ctx.Err(), last)
-		case <-time.After(time.Second):
+			return fmt.Errorf("boxd: %s did not settle: %w (last: %w)", vm, ctx.Err(), last)
+		case <-time.After(readyPoll):
 		}
 	}
+}
+
+// guestSettled asks readyCommand once, within readyAttempt, and fails unless
+// it prints a settled state, with what it printed, its exit code, and its
+// stderr: a guest that is still booting, or a failure that will not clear
+// (sudo refused, no systemctl), says which.
+func guestSettled(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
+	ctx, cancel := context.WithTimeout(ctx, readyAttempt)
+	defer cancel()
+	p, err := startExec(ctx, api, vm, readyCommand)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	stop := context.AfterFunc(ctx, func() { _ = p.Close() })
+	defer stop()
+	_ = p.CloseStdin()
+	var out, stderr bytes.Buffer
+	code, err := p.Wait(&out, &stderr)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	}
+	// Its exit code is 0 for running alone, so only what it prints decides.
+	state := strings.TrimSpace(out.String())
+	if slices.Contains(settled, state) {
+		return nil
+	}
+	return fmt.Errorf("systemd is %q (exit %d: %s)", state, code, bytes.TrimSpace(stderr.Bytes()))
 }

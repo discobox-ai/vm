@@ -26,3 +26,13 @@
   0) leaves an open proxy unguarded, and a failed create whose destroy
   fails too can leave it so. (Bot protection was first turned off before
   the close.)
+- **A wait for the guest accepts only what a settled guest prints, and keeps
+  what it was told when it gives up.** Early in a boot, systemd answers
+  `offline` or a bus error at once, so a wait that took any answer for
+  settled let Commit snapshot a guest still initializing, and one that drops
+  stderr fails after minutes with no reason. Its exit code alone decides
+  nothing: `is-system-running` exits 0 only for `running`. (vm#180.)
+- **A wait for the guest is proven on boxd itself, on the image it is for,
+  not on the fake alone.** The fake answers whatever the test tells it, and
+  systemd's early-boot answers differ by image: the default image never
+  showed `--wait`'s hang or its early `offline`. (vm#179, vm#180.)
