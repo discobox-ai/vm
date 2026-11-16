@@ -248,6 +248,49 @@ func TestDiskPages(t *testing.T) {
 	}
 }
 
+// TestListingPages: the sandbox listing follows a nextCursor, at the
+// envelope or in its data, to the last page, and a listing whose cursor
+// comes back again fails rather than read short, as the disks' does.
+func TestListingPages(t *testing.T) {
+	loop := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cursor := r.URL.Query().Get("cursor")
+		if loop && cursor != "" {
+			cursor = "again"
+		}
+		switch {
+		case r.URL.Path == "/api/sandboxes" && cursor == "":
+			_, _ = io.WriteString(w, `{"success":true,"data":{"sandboxes":[{"sandbox_id":"a","name":"a"}]},"nextCursor":"c2"}`)
+		case r.URL.Path == "/api/sandboxes" && cursor == "c2":
+			_, _ = io.WriteString(w, `{"success":true,"data":{"sandboxes":[{"sandbox_id":"b","name":"b"}],"nextCursor":"c3"}}`)
+		case r.URL.Path == "/api/sandboxes" && cursor == "c3":
+			_, _ = io.WriteString(w, `{"success":true,"data":{"sandboxes":[{"sandbox_id":"c","name":"c"}]}}`)
+		case cursor == "again" && r.URL.Path == "/api/sandboxes":
+			_, _ = io.WriteString(w, `{"success":true,"data":{"sandboxes":[]},"nextCursor":"again"}`)
+		case r.URL.Path == "/api/disks" && loop:
+			_, _ = io.WriteString(w, `{"success":true,"data":[],"nextCursor":"again"}`)
+		default:
+			http.Error(w, "bad cursor", http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+	a := &api{base: srv.URL, keys: machine.StaticKey(machine.Key{Driver: "archil", Secret: "k"}), http: srv.Client()}
+	all, err := a.sandboxes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 || all[0].ID != "a" || all[2].ID != "c" {
+		t.Fatalf("listed %+v", all)
+	}
+	loop = true
+	if _, err := a.sandboxes(context.Background()); err == nil || !strings.Contains(err.Error(), "came back again") {
+		t.Fatalf("a sandbox listing whose cursor repeats: %v", err)
+	}
+	if _, err := a.disks(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "came back again") {
+		t.Fatalf("a disk listing whose cursor repeats: %v", err)
+	}
+}
+
 // fakeCopy serves a process API that plays copyOutScript over blob: R, then
 // a chunk for each count asked on stdin, as the script answers. With drop,
 // the second chunk's bytes come after a gap in the offsets, as Archil sends

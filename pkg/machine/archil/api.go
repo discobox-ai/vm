@@ -206,11 +206,35 @@ func (a *api) sandbox(ctx context.Context, id string) (sandbox, error) {
 	return out, a.call(ctx, http.MethodGet, "/api/sandboxes/"+url.PathEscape(id), nil, nil, &out)
 }
 
+// sandboxes lists the account's sandboxes, every page of them. Archil's
+// document gives this listing no pages, and it returned every sandbox when
+// asked for fewer (2026-11-16), but a listing read short would lose sight of
+// VMs, so a nextCursor, wherever Archil puts it, is followed as the disks'
+// is.
 func (a *api) sandboxes(ctx context.Context) ([]sandbox, error) {
-	var out struct {
-		Sandboxes []sandbox `json:"sandboxes"`
+	query := url.Values{}
+	var all []sandbox
+	for {
+		var out struct {
+			Sandboxes []sandbox `json:"sandboxes"`
+			Next      string    `json:"nextCursor"`
+		}
+		next, err := a.page(ctx, http.MethodGet, "/api/sandboxes", query, nil, &out)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, out.Sandboxes...)
+		if next == "" {
+			next = out.Next
+		}
+		if next == "" {
+			return all, nil
+		}
+		if next == query.Get("cursor") {
+			return nil, fmt.Errorf("archil: list sandboxes: the cursor %q came back again", next)
+		}
+		query.Set("cursor", next)
 	}
-	return out.Sandboxes, a.call(ctx, http.MethodGet, "/api/sandboxes", nil, nil, &out)
 }
 
 // start cold-starts a stopped sandbox, with mounts in place of its own
@@ -294,8 +318,11 @@ func (a *api) disks(ctx context.Context, name string) ([]disk, error) {
 			return nil, err
 		}
 		all = append(all, out...)
-		if next == "" || next == query.Get("cursor") {
+		if next == "" {
 			return all, nil
+		}
+		if next == query.Get("cursor") {
+			return nil, fmt.Errorf("archil: list disks: the cursor %q came back again", next)
 		}
 		query.Set("cursor", next)
 	}
