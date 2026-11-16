@@ -476,6 +476,79 @@ func TestCreateUndone(t *testing.T) {
 	}
 }
 
+// TestCreateAndCommitOutlastAGuestThatDoesNotAnswer creates and commits a VM
+// whose first ask of each boot whether the guest is settled never answers,
+// as `systemctl is-system-running --wait` sent early in a boot has hung until
+// its timeout though the guest booted seconds in: each asks again once
+// readyAttempt is up, and finishes within seconds of that.
+func TestCreateAndCommitOutlastAGuestThatDoesNotAnswer(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	d, fake := fakeDriver(t, t.TempDir())
+	within := func(what string, step func(context.Context) error) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), readyAttempt+15*time.Second)
+		defer cancel()
+		fake.readyHangs.Store(1)
+		began := time.Now()
+		if err := step(ctx); err != nil {
+			t.Fatalf("%s after %s: %v", what, time.Since(began).Round(time.Second), err)
+		}
+		if took := time.Since(began); took > readyAttempt+5*time.Second {
+			t.Errorf("%s took %s; want it within seconds of the unanswered ask's %s", what, took.Round(time.Second), readyAttempt)
+		}
+		if left := fake.readyHangs.Load(); left > 0 {
+			t.Errorf("%s did not wait for a settled guest", what)
+		}
+	}
+	var inst machine.Instance
+	within("create", func(ctx context.Context) (err error) {
+		inst, err = d.Create(ctx, machine.InstanceSpec{Name: "early"})
+		return err
+	})
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
+	within("commit", func(ctx context.Context) (err error) {
+		inst, err = d.Commit(ctx, inst)
+		return err
+	})
+}
+
+// TestCommitWaitsForASettledGuest commits a VM whose guest is still booting
+// when it is first asked, with systemd's bus not up and then systemd
+// starting, and that finishes with a unit failed: the commit waits for
+// systemd to finish starting it, and a degraded guest is settled.
+func TestCommitWaitsForASettledGuest(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	d, fake := fakeDriver(t, t.TempDir())
+	ctx := context.Background()
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "booting"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
+	booting := []string{
+		"|Failed to connect to bus: No such file or directory|1",
+		"initializing||1",
+		"starting||1",
+		"degraded||1",
+	}
+	fake.mu.Lock()
+	fake.readyAnswers = slices.Clone(booting)
+	fake.mu.Unlock()
+	if inst, err = d.Commit(ctx, inst); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	fake.mu.Lock()
+	left := len(fake.readyAnswers)
+	fake.mu.Unlock()
+	if left != 0 {
+		t.Errorf("the commit snapshotted the guest with %d of systemd's %d answers unasked", left, len(booting))
+	}
+}
+
 // TestCreateWaitsForAMachineNotYetSeen checks that a create whose machine
 // boxd does not find for a moment after CreateVm succeeds: the NotFound boxd
 // answered the idle-timer call with (region fra, 2026-11-15) is made again,

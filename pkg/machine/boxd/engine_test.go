@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -329,7 +330,7 @@ func TestStartDoesNotWaitForSystemd(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
 
-	fake.readyHangs.Store(true)
+	fake.readyHangs.Store(math.MaxInt32)
 	began := time.Now()
 	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 15 * time.Second}); err != nil {
 		t.Fatalf("start after %s: %v", time.Since(began).Round(time.Second), err)

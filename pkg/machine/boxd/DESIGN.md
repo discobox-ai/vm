@@ -56,15 +56,21 @@ machines and snapshots (the root
   byte once it has found the path and then `tar -c`, so a missing path is an
   error, not an empty tar. Info is `uname -m` and `hostname`. Boot and
   Start return once boxd says the machine is `running`, and wait for
-  nothing in the guest: `systemctl is-system-running --wait` sent early in a
-  boot can hang until its timeout. boxd holds an Exec sent while the guest
+  nothing in the guest. boxd holds an Exec sent while the guest
   boots until it answers; one boxd answers `Unavailable` before the guest
   has answered anything is `machine.ErrUnreachable`, which the engine's
-  start tries again ([engine](../../engine/DESIGN.md)). Commit waits for
-  `systemctl is-system-running --wait`, so its snapshot is of a settled
-  guest, and so does Create before it powers a new machine off, so the disk
-  is one its first boot finished; a Shutdown's flush waits for nothing but
-  the Exec. boxd authenticates every stream. An image
+  start tries again ([engine](../../engine/DESIGN.md)). Commit waits
+  until the guest is settled, so its snapshot is of one, and so does Create
+  before it powers a new machine off, so the disk is one its first boot
+  finished: settled is `systemctl is-system-running`, asked every 200 ms and
+  each time for up to 5 s, printing `running`, `degraded` or `maintenance`,
+  waited for up to 5 minutes by Commit and 2 by Create.
+  Nothing in the guest waits. Early in a boot, `is-system-running --wait`
+  has hung until its timeout, and returned at once with `offline` or a bus
+  error while systemd was still initializing; `systemctl start
+  default.target` failed at once on the bus, or returned while systemd was
+  still `starting` (sandbox image, nyc, 2026-11-16). A Shutdown's flush
+  waits for nothing but the Exec. boxd authenticates every stream. An image
   installed before this carries an agent that nothing reaches; it does no
   harm.
 - **The ingress URL is the machine's default proxy, unless it is asked
