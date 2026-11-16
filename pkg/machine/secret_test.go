@@ -92,10 +92,10 @@ func TestSecretSends(t *testing.T) {
 			exchange("app.boxd.sh:443", "/api/v1/auth/token"), grpcBearer("boxd.sh:9443")}}},
 		{"boxd", `{"addr":"boxd.example:8443","tokenUrl":"http://127.0.0.1:9/t","region":"nyc"}`, map[string][]machine.SecretSend{"apiKey": {
 			exchange("127.0.0.1:9", "/t"), grpcBearer("boxd.example:8443")}}},
-		{"archil", ``, map[string][]machine.SecretSend{"apiKey": {archil("/api/",
+		{"archil", `{"region":"aws-us-east-1"}`, map[string][]machine.SecretSend{"apiKey": {archil("/api/",
 			"control.green.eu-west-1.aws.prod.archil.com:443", "control.green.us-east-1.aws.prod.archil.com:443",
 			"control.green.us-west-2.aws.prod.archil.com:443")}}},
-		{"archil", `{"baseUrl":"https://archil.example:8443/v2/"}`, map[string][]machine.SecretSend{"apiKey": {
+		{"archil", `{"region":"aws-us-east-1","baseUrl":"https://archil.example:8443/v2/"}`, map[string][]machine.SecretSend{"apiKey": {
 			archil("/v2/api/", "archil.example:8443")}}},
 		{"fake", ``, map[string][]machine.SecretSend{"key": {}}},
 		{"docker", ``, map[string][]machine.SecretSend{}},

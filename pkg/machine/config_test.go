@@ -127,7 +127,7 @@ func TestValidateRefusesWhatTheDriverDoesNotTake(t *testing.T) {
 		{"boxd", `{}`, "region is required"},
 		{"boxd", `{"region":"New York"}`, "region: not a boxd region ID"},
 		{"archil", `{"region":"mars"}`, "region: not one that runs sandboxes"},
-		{"archil", `{"baseUrl":"https://h/?k=v"}`, "baseUrl: a URL the key is sent to has no userinfo, query"},
+		{"archil", `{"region":"aws-us-east-1","baseUrl":"https://h/?k=v"}`, "baseUrl: a URL the key is sent to has no userinfo, query"},
 		{"nope", `{}`, `no driver "nope"`},
 	} {
 		err := machine.Validate(c.driver, json.RawMessage(c.config))
