@@ -1,7 +1,10 @@
 package archil
 
 import (
+	"context"
 	"os"
+	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,12 +17,12 @@ import (
 const ImageEnv = "DISCO_VM_ARCHIL_IMAGE"
 
 // TestConformance runs the conformance suite against Archil itself. It needs
-// ARCHIL_API_KEY and ImageEnv, so it runs only where both are set; it makes
-// sandboxes and disks in a pool of its own and removes them.
+// ARCHIL_API_KEY, ARCHIL_REGION, and ImageEnv, so it runs only where all are
+// set; it makes sandboxes and disks in a pool of its own and removes them.
 func TestConformance(t *testing.T) {
 	image := os.Getenv(ImageEnv)
-	if image == "" || os.Getenv(APIKeyEnv) == "" {
-		t.Skipf("set %s and %s (an image, such as debian:sid) to run the conformance suite against Archil", APIKeyEnv, ImageEnv)
+	if image == "" || os.Getenv(APIKeyEnv) == "" || os.Getenv(RegionEnv) == "" {
+		t.Skipf("set %s, %s (such as aws-us-east-1), and %s (an image, such as debian:sid) to run the conformance suite against Archil", APIKeyEnv, RegionEnv, ImageEnv)
 	}
 	config, err := machine.ConfigFromValues("archil", machine.ConfigFromEnv("archil"))
 	if err != nil {
@@ -35,4 +38,143 @@ func TestConformance(t *testing.T) {
 		Timeout:    5 * time.Minute,
 		ScratchDir: "/var/lib",
 	})
+}
+
+// TestConformanceFakeAPI runs the conformance suite against the fake Archil
+// (fakeAPI), whose every listing pages two at a time, and finds nothing left
+// behind in it.
+func TestConformanceFakeAPI(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake Archil's guests run on the host, and Archil's guests are linux")
+	}
+	f := newFakeAPI(t, t.TempDir())
+	// Registered first, so it runs once the suite's own cleanups have.
+	t.Cleanup(func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, s := range f.sandboxes {
+			t.Errorf("sandbox %s (%s) was left behind", s.name, s.status)
+		}
+		for _, d := range f.disks {
+			t.Errorf("disk %s was left behind", d.name)
+		}
+	})
+	machinetest.Run(t, f.driver(t, machine.DefaultPool, "debian:sid"), machinetest.Config{
+		// Not Archil's default size, so a size not kept shows.
+		CPUs:       3,
+		Memory:     3 << 30,
+		Timeout:    30 * time.Second,
+		ScratchDir: "/var/lib",
+		// The fake's ports are at names under archil.test.
+		UnreachedIngress: true,
+	})
+}
+
+// TestFreshVMsUseTheConfiguredImage: a fresh VM is a sandbox of the driver's
+// base, or of Archil's default image when it has none, and a VM made from
+// another carries the other's.
+func TestFreshVMsUseTheConfiguredImage(t *testing.T) {
+	f := newFakeAPI(t, t.TempDir())
+	ctx := context.Background()
+	for _, c := range []struct{ base, want string }{{"", fakeDefaultImage}, {"debian:sid", "debian:sid"}} {
+		d := f.driver(t, "images", c.base)
+		inst, err := d.Create(ctx, machine.InstanceSpec{Name: "fresh"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		copied, err := d.Create(ctx, machine.InstanceSpec{Name: "copy", From: &inst})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.mu.Lock()
+		for _, s := range f.sandboxes {
+			if s.image != c.want {
+				t.Errorf("base %q: sandbox %s runs %s, want %s", c.base, s.name, s.image, c.want)
+			}
+		}
+		f.mu.Unlock()
+		for _, inst := range []machine.Instance{copied, inst} {
+			if err := d.Destroy(ctx, inst); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+// TestTerminal: an exec with a TTY starts its process with the request's
+// terminal, or 24 rows and 80 columns when it names none, and a resize
+// reaches the process API naming that process.
+func TestTerminal(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake Archil's guests run on the host, and Archil's guests are linux")
+	}
+	f := newFakeAPI(t, t.TempDir())
+	ctx := context.Background()
+	d := f.driver(t, "tty", "")
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "tty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
+	m, err := d.Start(ctx, inst, machine.BootOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, req := range []machine.ExecRequest{
+		{Argv: []string{"cat"}, TTY: true, Rows: 45, Cols: 123},
+		{Argv: []string{"cat"}, TTY: true},
+	} {
+		p, err := m.Exec(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.Resize(50, 100); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.CloseStdin(); err != nil {
+			t.Fatal(err)
+		}
+		if code, err := p.Wait(nil, nil); err != nil || code != 0 {
+			t.Fatalf("exit %d, %v", code, err)
+		}
+		// The fake resizes only the process a resize names, which is gone.
+		if err := p.Resize(1, 1); err == nil {
+			t.Error("a resize of a process that exited was answered")
+		}
+		_ = p.Close()
+	}
+	f.mu.Lock()
+	got := f.terminals
+	f.mu.Unlock()
+	want := [][2]uint16{{45, 123}, {50, 100}, {24, 80}, {50, 100}}
+	if len(got) != len(want) {
+		t.Fatalf("terminals %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("terminals %v, want %v", got, want)
+		}
+	}
+	if err := m.Kill(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCommandLinesAreWhatShRuns: every line the driver makes, as sh reads it
+// in the fake, is the request's argv, and its account for another, whatever
+// a word holds.
+func TestCommandLinesAreWhatShRuns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs sh")
+	}
+	argv := []string{"printf", "%s\n", "it's", "two words", "", "$HOME", "`id`", "a\\b", "line\nbreak", "--", "*"}
+	for _, user := range []string{"", "disco", "o'neil"} {
+		gotUser, got, err := parseLine(command(machine.ExecRequest{Argv: argv, User: user}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotUser != user || !slices.Equal(got, argv) {
+			t.Errorf("as %q: sh read %q as %q, want %q", user, got, gotUser, argv)
+		}
+	}
 }

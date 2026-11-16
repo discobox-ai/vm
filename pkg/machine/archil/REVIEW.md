@@ -3,8 +3,11 @@
 - **Every Archil listing is read to its last page.** `GET /api/disks` pages
   by `nextCursor`, and a listing read short is a failed one that reads as
   success: a VM's data disk on page two would be missed by Destroy and
-  Commit, and left billed. A lookup of one name uses Archil's `?name=`
-  filter instead of a listing.
+  Commit, and left billed. `GET /api/sandboxes` is followed the same way,
+  though Archil sends every sandbox at once today, and a cursor that comes
+  back again fails the listing rather than end it. The fake API pages both
+  two at a time under the conformance suite. A lookup of one name uses
+  Archil's `?name=` filter instead of a listing.
 - **Asking about a VM changes nothing about it.** `Engine.State` attaches to
   every VM a listing shows, so Attach neither resumes a paused sandbox nor
   starts a watcher; only an operation that needs the guest resumes it, and
@@ -43,3 +46,17 @@
   leaves only the disk: listing, Create (`ErrExists`), Start, and Destroy
   treat it as that VM, and nothing removes it as stale. Create once deleted
   such a disk, which would now delete the data of a VM mid-upgrade.
+- **The fake API (`fakeapi_test.go`) answers as Archil was seen to.** A
+  name taken is `sandbox_name_conflict`, a fork boots at once with its
+  source's mounts and policy, a sandbox with forks is `sandbox_has_forks`, a
+  policy is set only on a running sandbox, and a disk's create answers the
+  disk of its name. A behavior added to the driver is added to the fake
+  from what Archil does, checked on Archil, not from what the driver
+  expects.
+- **The fake reads the driver's command lines with sh, not a Go parser.**
+  `parseLine` gives the line to `sh` with its `exec` made a `printf` of
+  each word, so a word the driver quotes wrong reaches the fake as a guest's
+  shell would run it. A parser written from the driver's own idea of the
+  line agrees with the driver's mistakes, as boxd's fake did (the root
+  `REVIEW.md`); `TestCommandLinesAreWhatShRuns` round-trips words that need
+  quoting.
