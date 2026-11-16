@@ -319,8 +319,10 @@ func (e *Engine) CheckGUI(gui bool) error {
 	return nil
 }
 
-// Start boots an instance so that it outlives this process, waits for its
-// guest, and tells the guest where its service listens.
+// Start boots an instance so that it outlives this process, and tells the
+// guest where its service listens, trying again while the guest is not
+// reachable yet (machine.ErrUnreachable): a driver's Start may return once
+// the machine runs, before its guest answers.
 func (e *Engine) Start(ctx context.Context, inst Instance, opts StartOptions) error {
 	if e.State(ctx, inst) == Running {
 		return fmt.Errorf("instance %s is already running", inst.Name)
@@ -476,13 +478,18 @@ func (e *Engine) URL(ctx context.Context, inst Instance, scope machine.URLScope)
 }
 
 // announceService tells a started guest where its service listens, in its
-// guest.ServiceFile, before the start returns.
+// guest.ServiceFile, before the start returns. A write that does not reach
+// the guest yet is made again until it does, or ctx ends; one that reaches it
+// and fails is an error.
 func (e *Engine) announceService(ctx context.Context, inst Instance, g machine.Guest) error {
 	service, err := e.Driver.Service(ctx, inst)
 	if err != nil && !errors.Is(err, machine.ErrNotRunning) {
 		return err
 	}
-	if err := guest.SetService(ctx, g, string(inst.GuestOS), service.Listen); err != nil {
+	err = machine.UntilReachable(ctx, func() error {
+		return guest.SetService(ctx, g, string(inst.GuestOS), service.Listen)
+	})
+	if err != nil {
 		return fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
 	return nil
@@ -505,7 +512,9 @@ type BootOptions struct {
 }
 
 // Boot starts an instance in this process, and returns once its guest
-// answers.
+// answers, or once its machine runs, on a driver whose guest operations
+// return machine.ErrUnreachable until the guest answers (boxd): a caller
+// tries those again (machine.UntilReachable).
 func (e *Engine) Boot(ctx context.Context, inst Instance, opts BootOptions) (*Booted, error) {
 	if err := e.CheckGUI(opts.GUI); err != nil {
 		return nil, err

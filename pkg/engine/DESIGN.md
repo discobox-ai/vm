@@ -46,6 +46,12 @@ guest's CopyTo to its `guest.ServiceFile` (`/var/lib/disco-vm/service`, or
 guest. A program the caller copies in reads it, or calls
 `guest.ListenService()`, and listens there.
 
+That write is where a start waits for its guest. A driver's Start may return
+once its machine runs, before its guest answers (boxd), so a copy that does
+not reach the guest yet (`machine.ErrUnreachable`) is made again, backing
+off, until it does or the start's timeout ends. One that reaches the guest
+and fails fails the start at once.
+
 A service has a URL for each of two audiences
 ([ADR 26-11-14-610](../../docs/adr/26-11-14-610-a-services-urls-are-named-by-who-reaches-them-ingress-and-pool-and-a-caller-asks-for-the-one-it-means.md)),
 and `Engine.URL(ctx, inst, scope)` and `disco-vm url [--scope ingress|pool]

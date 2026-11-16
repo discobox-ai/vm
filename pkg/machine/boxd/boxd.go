@@ -474,42 +474,17 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 	if err != nil {
 		return nil, fmt.Errorf("boxd: boot %s: %w", ref.Name, err)
 	}
+	// Running is boxd's word, and the boot's end: nothing in the guest is
+	// waited for. boxd holds an Exec sent while the guest boots until it
+	// answers, and one that does not reach it is machine.ErrUnreachable,
+	// which the engine tries again.
 	if _, err := waitVM(ctx, api, ref.ID, "running"); err != nil {
-		return nil, err
-	}
-	m := newVM(api, ref)
-	watch, stopWatching := context.WithCancel(ctx)
-	defer stopWatching()
-	if err := waitGuest(ctx, api, ref.ID, stopped(watch, api, ref.ID)); err != nil {
-		_ = m.Kill(context.Background())
 		return nil, err
 	}
 	if opts.Console != nil {
 		fmt.Fprintf(opts.Console, "boxd: %s (%s) is running\n", ref.Name, ref.ID)
 	}
-	return m, nil
-}
-
-// stopped is closed if the machine stops, or is gone, before ctx ends. It is
-// not the machine's Done, whose watcher would outlive Boot in a program that
-// embeds the engine: Boot ends ctx when it returns.
-func stopped(ctx context.Context, api boxdapi.BoxdApiClient, vm string) <-chan struct{} {
-	ch := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(pollEvery):
-			}
-			info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: vm})
-			if isNotFound(err) || (err == nil && info.GetStatus() != "running" && info.GetStatus() != "starting") {
-				close(ch)
-				return
-			}
-		}
-	}()
-	return ch
+	return newVM(api, ref), nil
 }
 
 // Attach finds the instance's machine through the API, as any process can.
@@ -571,7 +546,7 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 	if _, err := waitVM(ctx, api, ref.ID, "running"); err != nil {
 		return machine.Instance{}, err
 	}
-	if err := waitGuest(ctx, api, ref.ID, nil); err != nil {
+	if err := waitGuest(ctx, api, ref.ID); err != nil {
 		return machine.Instance{}, err
 	}
 	created, err := api.CreateSnapshot(ctx, &boxdapi.CreateSnapshotRequest{Vm: ref.ID, Name: ref.Name})
@@ -686,13 +661,22 @@ func waitSnapshot(ctx context.Context, api boxdapi.BoxdApiClient, name string, v
 	}
 }
 
-// powerOff stops a machine: the guest's writes flushed (syncDisks), then
-// StopVm, and the wait until boxd says it stopped. A guest that cannot be
-// asked to flush is still stopped, so it costs nothing, but powerOff fails: a
-// disk cut off mid-write is not one to boot clones from, which is the rule a
-// snapshot follows too.
+// powerOff stops a new machine in its first boot: once systemd has finished
+// starting it (waitGuest), its writes flushed (syncDisks), then StopVm, and
+// the wait until boxd says it stopped, so the disk a VM's first start boots
+// is one its first boot finished writing. A guest that cannot be asked to
+// flush is still stopped, so it costs nothing, but powerOff fails: a disk cut
+// off mid-write is not one to boot clones from, which is the rule a snapshot
+// follows too.
 func powerOff(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
-	flushed := syncDisks(ctx, api, vm)
+	ready, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	flushed := waitGuest(ready, api, vm)
+	cancel()
+	if flushed != nil {
+		flushed = fmt.Errorf("boxd: flush %s: %w", vm, flushed)
+	} else {
+		flushed = syncDisks(ctx, api, vm)
+	}
 	if _, err := api.StopVm(ctx, &boxdapi.StopVmRequest{VmId: vm}); err != nil && !isNotFound(err) {
 		return errors.Join(flushed, fmt.Errorf("boxd: stop %s: %w", vm, err))
 	}
@@ -702,17 +686,19 @@ func powerOff(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 	return flushed
 }
 
-// syncDisks flushes the guest's writes to its disk, once it answers. boxd does
-// not say whether StopVm shuts a guest down in order or cuts its power, so
-// every stop that keeps the disk (Shutdown, a cold clone's)
-// flushes it first.
+// syncDisks flushes the guest's writes to its disk, once boxd's Exec reaches
+// it. boxd does not say whether StopVm shuts a guest down in order or cuts
+// its power, so every stop that keeps the disk (Shutdown, a cold clone's)
+// flushes it first. It waits for nothing else in the guest: a stop just after
+// a start (which returns once the machine runs) flushes what the boot has
+// written so far.
 func syncDisks(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 	ready, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	if err := waitGuest(ready, api, vm, nil); err != nil {
-		return fmt.Errorf("boxd: flush %s: %w", vm, err)
-	}
-	if err := runAsRoot(ready, api, vm, machine.ExecRequest{Argv: []string{"sync"}}); err != nil {
+	err := machine.UntilReachable(ready, func() error {
+		return runAsRoot(ready, api, vm, machine.ExecRequest{Argv: []string{"sync"}})
+	})
+	if err != nil {
 		return fmt.Errorf("boxd: flush %s: %w", vm, err)
 	}
 	return nil
