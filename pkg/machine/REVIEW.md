@@ -150,3 +150,10 @@
   any VM or cache of its run still in a pool it used, sweeping every pool
   in the same rounds, since hcs chains a VM to one in another pool. An `_ = driver.Destroy(...)` in a cleanup let
   an hcs run pass while leaving two VMs in its pool (vm#166).
+- **A new machine sentinel gets a wire code in `errors.go` the same
+  change.** The served driver and the guest relay carry a sentinel's
+  identity only through `errorCodes`, so one left out reads as a plain
+  error behind them, and a caller's `errors.Is` fails there alone; add it to
+  `TestGuestOperationSentinelsCrossTheStream` too when a guest operation
+  returns it. `ErrUnreachable` was added without one (vm#179), which would
+  have made a served boxd start fail where it should try again.

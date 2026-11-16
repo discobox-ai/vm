@@ -69,6 +69,13 @@ type fakeAPI struct {
 	namedProxy string
 	// syncFails makes the guest's sync exit 1.
 	syncFails atomic.Bool
+	// readyHangs makes `systemctl is-system-running --wait` hang until its
+	// call ends, as one sent early in a boot can.
+	readyHangs atomic.Bool
+	// unreachable is how many Execs to come answer Unavailable before the
+	// guest answers anything: gRPC's code for a connection it cannot make,
+	// which boxd itself was not seen to give (see rpc Exec in the proto).
+	unreachable atomic.Int32
 	// egressIgnored makes SetVmEgressAllow answer and keep nothing, so
 	// GetVm reports the machine unrestricted.
 	egressIgnored atomic.Bool
@@ -726,6 +733,10 @@ func (f *fakeAPI) Exec(stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdap
 	if !running {
 		return status.Errorf(codes.FailedPrecondition, "%s is not running", v.name)
 	}
+	if f.unreachable.Add(-1) >= 0 {
+		return status.Errorf(codes.Unavailable, "%s does not answer yet", v.name)
+	}
+	f.unreachable.Store(0)
 	// A command's stdout and stderr are copied from goroutines of their own,
 	// and a gRPC stream takes one Send at a time.
 	var sends sync.Mutex
@@ -769,6 +780,10 @@ func (f *fakeAPI) Exec(stream grpc.BidiStreamingServer[boxdapi.ExecChunk, boxdap
 	arg := func() string { return guest.Resolve(root, req.Argv[len(req.Argv)-1]) }
 	switch {
 	case slices.Equal(req.Argv, readyCommand.Argv):
+		if f.readyHangs.Load() {
+			<-stream.Context().Done()
+			return stream.Context().Err()
+		}
 		_, _ = stdout.Write([]byte("running\n"))
 		return exit(0, "")
 	case slices.Equal(req.Argv, []string{"sync"}):

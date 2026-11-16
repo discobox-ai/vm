@@ -77,6 +77,16 @@ var ErrCapacity = errors.New("machine: the provider already runs, or holds, as m
 // ErrNotRunning reports that an instance has no running machine to attach to.
 var ErrNotRunning = errors.New("machine: the instance is not running")
 
+// ErrUnreachable reports a guest operation that failed before its guest
+// answered anything, because the guest, or the provider that reaches it,
+// could not be reached. What it asked may not have run, or may have run in
+// part, so a caller tries again only an operation it can repeat
+// (UntilReachable). A driver whose Boot and Start return before its guest
+// answers (boxd) returns it until the guest does, and a caller acting
+// straight after a start tries again. An operation the guest answered, with
+// output or an exit code, is never ErrUnreachable.
+var ErrUnreachable = errors.New("machine: the guest is not reachable yet")
+
 // ErrStale reports a running instance held by a process of another build
 // that this one cannot reach its guest through: a shim an older (or newer)
 // disco-vm started, which outlived the engine that started it. The instance
@@ -827,7 +837,9 @@ type Driver interface {
 	Destroy(ctx context.Context, inst Instance) error
 
 	// Boot starts a stopped VM in this process and returns once its guest
-	// operations answer. A committed VM whose provider has no machine left
+	// operations answer, or, on a driver that reaches its guest through its
+	// provider (boxd), once the provider says the machine runs: its guest
+	// operations then return ErrUnreachable until the guest answers. A committed VM whose provider has no machine left
 	// is ErrCommitted, and one whose disk a VM created from it differences
 	// over is ErrInUse, as they are to Start. The machine is this process's: it lives
 	// until it powers off or is killed, and a driver whose machines die
@@ -835,7 +847,8 @@ type Driver interface {
 	// bound to ctx, which only bounds starting it.
 	Boot(ctx context.Context, inst Instance, opts BootOptions) (Machine, error)
 	// Start starts a stopped instance that outlives this process, and
-	// returns once its guest operations answer: under a shim of its own
+	// returns once its guest operations answer, or once the machine runs as
+	// Boot does: under a shim of its own
 	// where the machine would die with its process, or as its service
 	// owns it. The machine returned is attached, as Attach's is.
 	Start(ctx context.Context, inst Instance, opts BootOptions) (Machine, error)

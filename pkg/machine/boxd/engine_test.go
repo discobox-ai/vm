@@ -306,3 +306,130 @@ func TestAFailedSnapshotIsRemovable(t *testing.T) {
 		t.Fatal("the failed snapshot is left after its Remove")
 	}
 }
+
+// TestStartDoesNotWaitForSystemd starts a VM whose `systemctl
+// is-system-running --wait` never answers, as one sent early in a boot can
+// hang until its timeout: the start returns once boxd says the machine runs,
+// with the guest's service file written, and waits on no systemd. A stop
+// straight after flushes the guest and stops it, waiting on no systemd either.
+func TestStartDoesNotWaitForSystemd(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	dir := t.TempDir()
+	d, fake := fakeDriver(t, dir)
+	ctx := context.Background()
+	e, err := engine.Open(d, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := e.Create(ctx, engine.CreateOptions{Name: "early"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
+
+	fake.readyHangs.Store(true)
+	began := time.Now()
+	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 15 * time.Second}); err != nil {
+		t.Fatalf("start after %s: %v", time.Since(began).Round(time.Second), err)
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Errorf("start took %s; want it to return once the machine runs", took.Round(time.Second))
+	}
+	readService(t, e, inst)
+
+	began = time.Now()
+	if err := e.Stop(ctx, inst, 15*time.Second); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Errorf("stop took %s; want it to flush the guest and stop it at once", took.Round(time.Second))
+	}
+	if state := e.State(ctx, inst); state != engine.Stopped {
+		t.Fatalf("after the stop: %s", state)
+	}
+}
+
+// TestStartRetriesAnUnreachableGuest starts a VM whose first Execs boxd
+// answers Unavailable, as for a guest it cannot reach yet: the start writes
+// the service file once one reaches the guest, and does not fail.
+func TestStartRetriesAnUnreachableGuest(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	d, fake := fakeDriver(t, t.TempDir())
+	ctx := context.Background()
+	e, err := engine.Open(d, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := e.Create(ctx, engine.CreateOptions{Name: "unreachable"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
+
+	fake.unreachable.Store(3)
+	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 15 * time.Second}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if left := fake.unreachable.Load(); left > 0 {
+		t.Fatalf("%d unreachable Execs were never sent", left)
+	}
+	readService(t, e, inst)
+}
+
+// TestStartFailsAGuestThatAnswersAnError starts a VM whose service file
+// cannot be written: the copy reached the guest and failed, so the start
+// fails rather than trying again until its timeout.
+func TestStartFailsAGuestThatAnswersAnError(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	dir := t.TempDir()
+	d, fake := fakeDriver(t, dir)
+	ctx := context.Background()
+	e, err := engine.Open(d, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst, err := e.Create(ctx, engine.CreateOptions{Name: "refuses"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
+	// A file where the service file's directory goes: the copy's mkdir fails.
+	fake.mu.Lock()
+	root := fake.root(fake.vms[inst.ID])
+	fake.mu.Unlock()
+	if err := os.MkdirAll(filepath.Join(root, "var/lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "var/lib/disco-vm"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	began := time.Now()
+	err = e.Start(ctx, inst, engine.StartOptions{Timeout: 15 * time.Second})
+	if err == nil {
+		t.Fatal("a start whose service file could not be written succeeded")
+	}
+	if errors.Is(err, machine.ErrUnreachable) || time.Since(began) > 5*time.Second {
+		t.Fatalf("start failed after %s with %v; want the copy's own error at once", time.Since(began).Round(time.Second), err)
+	}
+}
+
+// readService reads the guest's service file through the engine.
+func readService(t *testing.T, e *engine.Engine, inst engine.Instance) {
+	t.Helper()
+	ctx := context.Background()
+	g, err := e.Guest(ctx, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	read := machine.ExecRequest{Argv: []string{"cat", "var/lib/disco-vm/service"}}
+	if code, err := machine.Run(ctx, g, read, nil, &out, io.Discard); err != nil || code != 0 || out.Len() == 0 {
+		t.Fatalf("the guest's service file: %d, %v, %q", code, err, out.String())
+	}
+}

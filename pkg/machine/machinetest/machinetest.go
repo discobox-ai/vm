@@ -210,6 +210,21 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		return inst
 	}
+	// reachable waits until a machine just booted or started answers: a
+	// driver may return once its machine runs, its guest operations
+	// ErrUnreachable until the guest answers (machine.UntilReachable).
+	reachable := func(t *testing.T, m machine.Machine) {
+		t.Helper()
+		waitCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
+		err := machine.UntilReachable(waitCtx, func() error {
+			_, err := m.Info(waitCtx)
+			return err
+		})
+		if err != nil {
+			t.Fatalf("the guest of a machine just started: %v", err)
+		}
+	}
 	boot := func(t *testing.T, inst machine.Instance) machine.Machine {
 		t.Helper()
 		bootCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
@@ -219,6 +234,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("boot %s: %v", inst.Name, err)
 		}
 		t.Cleanup(func() { _ = m.Kill(context.Background()) })
+		reachable(t, m)
 		return m
 	}
 	shutdown := func(t *testing.T, m machine.Machine) {
@@ -588,6 +604,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("start: %v", err)
 		}
 		t.Cleanup(func() { _ = started.Kill(context.Background()) })
+		reachable(t, started)
 		m, err := driver.Attach(ctx, inst)
 		if err != nil {
 			t.Fatalf("attach: %v", err)
@@ -663,6 +680,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 				t.Fatalf("start %s: %v", inst.Name, err)
 			}
 			t.Cleanup(func() { _ = m.Kill(context.Background()) })
+			reachable(t, m)
 			return m
 		}
 		peer := create(t, copied)
@@ -789,6 +807,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("boot %s of pool %s: %v", src.Name, other, err)
 		}
 		t.Cleanup(func() { _ = sm.Kill(context.Background()) })
+		reachable(t, sm)
 		if err := sm.CopyTo(ctx, marker, tarOf(t, "pool.txt", proof)); err != nil {
 			t.Fatal(err)
 		}
@@ -865,6 +884,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("start %s: %v", inst.Name, err)
 		}
 		t.Cleanup(func() { _ = m.Kill(context.Background()) })
+		reachable(t, m)
 		if got := readMarker(t, m, marker+"/pool.txt"); got != proof {
 			t.Fatalf("a VM from pool %s's committed VM reads %q, want its proof", other, got)
 		}
@@ -878,6 +898,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("start %s of pool %s: %v", peer.Name, other, err)
 		}
 		t.Cleanup(func() { _ = pm.Kill(context.Background()) })
+		reachable(t, pm)
 		request := "GET /v1/files?path=" + marker + "/pool.txt HTTP/1.0\r\nHost: guest\r\n\r\n"
 		argv := []string{"/bin/sh", "-c", `printf "$1" | "$0" dial-host 7402`, cfg.GuestAgent, strings.ReplaceAll(request, "\r\n", `\r\n`)}
 		if guestOS == machine.Windows {
@@ -906,6 +927,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("start: %v", err)
 		}
 		t.Cleanup(func() { _ = started.Kill(context.Background()) })
+		reachable(t, started)
 		m, err := driver.Attach(ctx, inst)
 		if err != nil {
 			t.Fatalf("attach to a running instance: %v", err)
@@ -974,6 +996,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("start: %v", err)
 		}
 		t.Cleanup(func() { _ = started.Kill(context.Background()) })
+		reachable(t, started)
 		service, err := driver.Service(ctx, inst)
 		if err != nil {
 			t.Fatalf("service of a running instance: %v", err)
@@ -1054,6 +1077,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("start with the issued key: %v", err)
 		}
 		t.Cleanup(func() { _ = m.Kill(context.Background()) })
+		reachable(t, m)
 		if err := m.CopyTo(ctx, marker, tarOf(t, "keyed.txt", "keyed")); err != nil {
 			t.Fatalf("copy in with the issued key: %v", err)
 		}

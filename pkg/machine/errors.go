@@ -15,6 +15,7 @@ var errorCodes = []struct {
 	{"capacity", ErrCapacity},
 	{"not-running", ErrNotRunning},
 	{"stale", ErrStale},
+	{"unreachable", ErrUnreachable},
 	{"unsupported", ErrUnsupported},
 	{"not-implemented", ErrNotImplemented},
 	{"no-key", ErrNoKey},

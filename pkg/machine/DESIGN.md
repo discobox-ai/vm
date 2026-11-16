@@ -31,7 +31,10 @@ Attach, from any process; and Service
 ([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-an-ingress-url-and-a-pool-url)).
 A machine also dials the agent's port and the service's (`Machine.Dial`)
 where the driver lists `Capabilities.Ports` ([below](#ports-not-guids)).
-Boot and Start return once the guest answers. A running `Machine` is the
+Boot and Start return once the guest answers, or, on boxd, which reaches its
+guest through its provider, once the provider says the machine runs: its
+guest operations then return `ErrUnreachable` until the guest answers, and a
+caller acting straight after a start tries again (`UntilReachable`). A running `Machine` is the
 guest's operations (`machine.Guest`: Exec with stdio, a TTY and its resizes,
 a user, environment, and directory; CopyTo and CopyFrom, as tar; Info;
 Shutdown), and Kill and Done. And keys: IssueKey, IssuedKeys, and RevokeKey

@@ -2,7 +2,10 @@ package machine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"time"
 )
 
 // Guest is what a caller does inside a running guest: run processes, copy
@@ -102,4 +105,23 @@ func Run(ctx context.Context, g Guest, req ExecRequest, stdin io.Reader, stdout,
 		return -1, ctx.Err()
 	}
 	return code, err
+}
+
+// UntilReachable runs op again while it fails with ErrUnreachable, backing
+// off up to two seconds between tries, until it returns anything else or ctx
+// ends. op must be safe to repeat.
+func UntilReachable(ctx context.Context, op func() error) error {
+	wait := 100 * time.Millisecond
+	for {
+		err := op()
+		if !errors.Is(err, ErrUnreachable) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w (last: %w)", ctx.Err(), err)
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, 2*time.Second)
+	}
 }

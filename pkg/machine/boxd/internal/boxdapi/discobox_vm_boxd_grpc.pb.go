@@ -86,7 +86,12 @@ type BoxdApiClient interface {
 	ListVms(ctx context.Context, in *ListVmsRequest, opts ...grpc.CallOption) (*ListVmsResponse, error)
 	// The first request chunk carries vm_id/command; later chunks carry stdin.
 	// The stream ends with a final chunk carrying exit_code. Cancelling the
-	// call kills the remote command.
+	// call kills the remote command. Found against boxd (nyc and fra,
+	// 2026-11-16, vm#179): an Exec sent while a machine boots, before GetVm
+	// says running, is held until the guest answers, about a second after
+	// StartVm, and then runs; one to a stopped machine is FAILED_PRECONDITION
+	// ("is stopped, so it won't be resumed automatically"). boxd was not seen
+	// to answer UNAVAILABLE, which gRPC gives for a connection it cannot make.
 	Exec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ExecChunk, ExecChunk], error)
 	Whoami(ctx context.Context, in *WhoamiRequest, opts ...grpc.CallOption) (*WhoamiResponse, error)
 	// The image a machine gets when CreateVm names none. boxd lists no others.
@@ -513,7 +518,12 @@ type BoxdApiServer interface {
 	ListVms(context.Context, *ListVmsRequest) (*ListVmsResponse, error)
 	// The first request chunk carries vm_id/command; later chunks carry stdin.
 	// The stream ends with a final chunk carrying exit_code. Cancelling the
-	// call kills the remote command.
+	// call kills the remote command. Found against boxd (nyc and fra,
+	// 2026-11-16, vm#179): an Exec sent while a machine boots, before GetVm
+	// says running, is held until the guest answers, about a second after
+	// StartVm, and then runs; one to a stopped machine is FAILED_PRECONDITION
+	// ("is stopped, so it won't be resumed automatically"). boxd was not seen
+	// to answer UNAVAILABLE, which gRPC gives for a connection it cannot make.
 	Exec(grpc.BidiStreamingServer[ExecChunk, ExecChunk]) error
 	Whoami(context.Context, *WhoamiRequest) (*WhoamiResponse, error)
 	// The image a machine gets when CreateVm names none. boxd lists no others.

@@ -55,8 +55,16 @@ machines and snapshots (the root
   A copy in is `tar -x` reading the stream, and a copy out writes one ready
   byte once it has found the path and then `tar -c`, so a missing path is an
   error, not an empty tar. Info is `uname -m` and `hostname`. Boot and
-  Commit wait until `systemctl is-system-running --wait` answers, so a
-  command runs in a booted system. boxd authenticates every stream. An image
+  Start return once boxd says the machine is `running`, and wait for
+  nothing in the guest: `systemctl is-system-running --wait` sent early in a
+  boot can hang until its timeout. boxd holds an Exec sent while the guest
+  boots until it answers; one boxd answers `Unavailable` before the guest
+  has answered anything is `machine.ErrUnreachable`, which the engine's
+  start tries again ([engine](../../engine/DESIGN.md)). Commit waits for
+  `systemctl is-system-running --wait`, so its snapshot is of a settled
+  guest, and so does Create before it powers a new machine off, so the disk
+  is one its first boot finished; a Shutdown's flush waits for nothing but
+  the Exec. boxd authenticates every stream. An image
   installed before this carries an agent that nothing reaches; it does no
   harm.
 - **The ingress URL is the machine's default proxy, unless it is asked

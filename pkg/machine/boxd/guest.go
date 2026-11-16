@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/boxd/internal/boxdapi"
@@ -99,7 +101,7 @@ func startExec(ctx context.Context, api boxdapi.BoxdApiClient, vm string, req ma
 	stream, err := api.Exec(streamCtx)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("boxd: exec: %w", err)
+		return nil, execError(err, false)
 	}
 	first := &boxdapi.ExecChunk{VmId: vm, Command: command(req), Tty: req.TTY}
 	if req.TTY {
@@ -107,7 +109,7 @@ func startExec(ctx context.Context, api boxdapi.BoxdApiClient, vm string, req ma
 	}
 	if err := stream.Send(first); err != nil {
 		cancel()
-		return nil, fmt.Errorf("boxd: exec: %w", err)
+		return nil, execError(err, false)
 	}
 	if !stop() {
 		cancel()
@@ -116,11 +118,29 @@ func startExec(ctx context.Context, api boxdapi.BoxdApiClient, vm string, req ma
 	return &process{stream: stream, cancel: cancel, tty: req.TTY}, nil
 }
 
+// execError is an Exec stream's err. gRPC's Unavailable before the guest
+// has answered anything (no output, no exit code) is the guest, or boxd's
+// API, not reached: machine.ErrUnreachable, which a caller straight after a
+// start tries again. gRPC gives it for a connection it cannot make; boxd has
+// not been seen to give one itself: an Exec sent while a machine boots is
+// held until the guest answers, and one to a stopped machine is
+// FailedPrecondition. A stream cut after the command ran, before its exit
+// code, reads the same, which is why only an operation that can be repeated
+// is tried again.
+func execError(err error, answered bool) error {
+	if !answered && status.Code(err) == codes.Unavailable {
+		return fmt.Errorf("boxd: exec: %w: %w", machine.ErrUnreachable, err)
+	}
+	return fmt.Errorf("boxd: exec: %w", err)
+}
+
 // process is one Exec stream.
 type process struct {
 	stream execStream
 	cancel context.CancelFunc
 	tty    bool
+	// answered is set once the guest has sent anything, Wait's alone.
+	answered bool
 
 	sendMu sync.Mutex
 }
@@ -174,8 +194,9 @@ func (p *process) Wait(stdout, stderr io.Writer) (int, error) {
 			return int(code), nil
 		}
 		if err != nil {
-			return -1, fmt.Errorf("boxd: exec: %w", err)
+			return -1, execError(err, p.answered)
 		}
+		p.answered = true
 		if msg.GetExitCode() != 0 {
 			code = msg.GetExitCode()
 		}
@@ -317,14 +338,15 @@ func runAsRoot(ctx context.Context, api boxdapi.BoxdApiClient, vm string, req ma
 }
 
 // readyCommand returns once systemd has finished starting the guest, whether
-// every unit came up or not.
+// every unit came up or not. Commit waits for it, so a snapshot is of a
+// settled guest, and Create's power-off of a new machine, so its disk is one
+// its first boot finished. Sent early in a boot it can hang until its
+// attempt's timeout, so a start waits for nothing in the guest (Boot).
 var readyCommand = machine.ExecRequest{Argv: []string{"systemctl", "is-system-running", "--wait"}}
 
-// waitGuest waits until the guest's operations answer: until boxd's Exec
-// reaches the guest and systemd has finished starting it, so a command runs
-// in a booted system, as one an agent started would. stopped, when it is
-// closed, ends the wait.
-func waitGuest(ctx context.Context, api boxdapi.BoxdApiClient, vm string, stopped <-chan struct{}) error {
+// waitGuest waits until boxd's Exec reaches the guest and systemd has
+// finished starting it.
+func waitGuest(ctx context.Context, api boxdapi.BoxdApiClient, vm string) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	var last error
@@ -350,8 +372,6 @@ func waitGuest(ctx context.Context, api boxdapi.BoxdApiClient, vm string, stoppe
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("boxd: %s did not answer: %w (last: %w)", vm, ctx.Err(), last)
-		case <-stopped:
-			return fmt.Errorf("boxd: %s stopped before it answered", vm)
 		case <-time.After(time.Second):
 		}
 	}
