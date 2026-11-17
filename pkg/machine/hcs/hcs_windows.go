@@ -103,10 +103,11 @@ func imageDisk(vm local.Layer) string { return filepath.Join(vm.Dir, diskName) }
 
 // instanceState is what the driver remembers about an instance between boots.
 type instanceState struct {
-	// MAC is asked for again on every boot, so the guest keeps one adapter.
+	// MAC is asked for again on every boot, so the guest keeps its address.
 	MAC string `json:"mac,omitempty"`
-	// NIC is the ID of the HNS endpoint of the latest boot, or of the
-	// install's first boot, recorded before the endpoint is made. The
+	// NIC is the ID of the instance's HNS endpoint, or of the install's
+	// first boot's, recorded before the endpoint is first made and kept for
+	// every boot after: it, not the MAC, keys the guest's adapter. The
 	// process holding the VM frees it when the VM stops, but one killed
 	// first does not, and HNS keeps the endpoint and its MAC: the next boot,
 	// Commit, and Destroy free it.
@@ -234,22 +235,43 @@ func freeStaleNIC(dir string) {
 	}
 }
 
-// newNIC records a new endpoint ID in dir's state.json, then makes the
-// endpoint, asking for st.MAC, and records the MAC HNS gave it. A NIC that
-// cannot be recorded is not made.
+// newNIC makes the VM's endpoint under the ID dir's state.json records, or a
+// new one it records first, asking for st.MAC, and records the MAC HNS gave
+// it. A NIC that cannot be recorded is not made. The guest's adapter is the
+// VMBus device keyed by the endpoint's ID, not its MAC, so an instance keeps
+// one ID across its boots, or every boot gives the guest a new adapter; the
+// boot has freed the endpoint under it first (freeStaleNIC).
 func newNIC(dir string, st instanceState) (*endpoint, error) {
-	st.NIC = newID()
+	if st.NIC == "" {
+		st.NIC = newID()
+	}
 	if err := writeState(dir, st); err != nil {
 		return nil, fmt.Errorf("hcs: record the VM's NIC: %w", err)
 	}
 	nic, err := createEndpoint(st.NIC, st.MAC)
 	var refused *hcsError
+	if errors.As(err, &refused) && refused.HR == eAlreadyExists {
+		// HNS still has an endpoint under the ID the boot freed: the
+		// delete failed, or HCS was still tearing the killed VM down. It is
+		// this instance's, whose VM is gone, so it is freed once more; if
+		// HNS keeps it, a new ID beats not booting, though the guest then
+		// gets another adapter.
+		deleteEndpoint(st.NIC)
+		if nic, err = createEndpoint(st.NIC, st.MAC); errors.As(err, &refused) && refused.HR == eAlreadyExists {
+			st.NIC = newID()
+			if err := writeState(dir, st); err != nil {
+				return nil, fmt.Errorf("hcs: record the VM's NIC: %w", err)
+			}
+			nic, err = createEndpoint(st.NIC, st.MAC)
+		}
+	}
 	if errors.As(err, &refused) && refused.HR == eAddressReserved && st.MAC != "" {
 		// An endpoint no record names holds the MAC: a killed shim's from
 		// before NIC was recorded, or another VM's, which HNS gave the MAC
 		// once this instance's endpoint freed it. Which, nothing here can
-		// tell, so the boot takes another MAC, and the guest another
-		// adapter, rather than not booting or deleting a running VM's NIC.
+		// tell, so the boot takes another MAC, under the same endpoint ID
+		// that keys the guest's adapter, rather than not booting or
+		// deleting a running VM's NIC.
 		st.MAC = ""
 		nic, err = createEndpoint(st.NIC, "")
 	}
