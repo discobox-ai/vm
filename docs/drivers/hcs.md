@@ -55,15 +55,24 @@ What building it found, beyond the recipes below:
   no orphan sweep is needed.
 - **Every VM gets a NIC** on an HNS network of the driver's own (`disco-vm`,
   ICS, Flags 35, as sandboxi measured), since the example builds download.
-  An instance asks for the same MAC on every boot. An endpoint outlives a
+  An instance makes its endpoint under the same ID, and asks for the same
+  MAC, on every boot: the guest's adapter is the VMBus device keyed by the
+  endpoint's ID, not its MAC, so a new ID each boot gave the guest a new
+  adapter every boot (vm#176). The ID is new for an install, a VM created
+  from a committed one, and an instance whose `state.json` records none. A
+  boot that finds HNS still holding an endpoint under the ID
+  (`0x80071392`) deletes it once more and tries again, and failing that
+  takes a new ID: a second adapter beats a guest that cannot boot. An
+  endpoint outlives a
   process killed while its VM runs, and HNS refuses its MAC to another
   (`0x803B002F`), so the next boot could not start: every boot, an
   install's first boot too, records its endpoint's ID in `state.json` before
   HNS makes it, and the next boot, Commit, and Destroy delete a recorded one.
   A boot whose MAC HNS refuses all the same (an endpoint leaked before the ID
   was recorded, or another VM's, which HNS gave the MAC once the instance's
-  endpoint freed it) takes another MAC: nothing tells the two apart, and a
-  guest with a second adapter beats one that cannot boot. A killed install's endpoint is freed once its
+  endpoint freed it) takes another MAC, under the same endpoint ID: nothing
+  tells the two apart, and a guest whose address changes beats one that
+  cannot boot. A killed install's endpoint is freed once its
   directory is destroyed, which nothing does yet: removing a killed install
   is vm#165.
 - **Commit freezes the disk where it is**, so its parent locator, written
