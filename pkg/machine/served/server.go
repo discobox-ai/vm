@@ -527,6 +527,8 @@ func statusOf(code string) int {
 		return http.StatusConflict
 	case "capacity":
 		return http.StatusServiceUnavailable
+	case "unavailable":
+		return http.StatusBadGateway
 	case "unsupported", "not-implemented", "no-key":
 		return http.StatusNotImplemented
 	}

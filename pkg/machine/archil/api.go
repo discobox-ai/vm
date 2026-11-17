@@ -69,6 +69,13 @@ func statusOf(err error) (int, string) {
 	return 0, ""
 }
 
+// unavailable reports an HTTP status that says Archil, or its gateway, could
+// not serve the request for now: machine.ErrUnavailable. A 500 or a 429 is
+// Archil answering, and stays its own error.
+func unavailable(status int) bool {
+	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
 func isNotFound(err error) bool { s, _ := statusOf(err); return s == http.StatusNotFound }
 
 func isConflict(err error) bool { s, _ := statusOf(err); return s == http.StatusConflict }
@@ -145,8 +152,11 @@ func (a *api) page(ctx context.Context, method, path string, query url.Values, i
 			msg = resp.Status
 		}
 		ae := &apiError{Status: resp.StatusCode, Code: env.Code, Message: msg}
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden && env.Code == "" {
+		switch {
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden && env.Code == "":
 			return "", fmt.Errorf("%w: %w", machine.ErrUnauthorized, ae)
+		case unavailable(resp.StatusCode):
+			return "", fmt.Errorf("%w: %w", machine.ErrUnavailable, ae)
 		}
 		return "", ae
 	}

@@ -50,7 +50,7 @@ func (m goneMachine) Shutdown(context.Context, bool) error { return m.gone("shut
 // the client's errors.Is, as one from any other call does, and health
 // through the relay does not report a machine that cannot answer as well.
 func TestGuestOperationSentinelsCrossTheStream(t *testing.T) {
-	for _, sentinel := range []error{machine.ErrNotRunning, machine.ErrStale, machine.ErrUnreachable} {
+	for _, sentinel := range []error{machine.ErrNotRunning, machine.ErrStale, machine.ErrUnreachable, machine.ErrUnavailable} {
 		t.Run(machine.ErrorCode(sentinel), func(t *testing.T) { guestOperationSentinels(t, sentinel) })
 	}
 }

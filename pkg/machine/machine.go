@@ -87,6 +87,15 @@ var ErrNotRunning = errors.New("machine: the instance is not running")
 // output or an exit code, is never ErrUnreachable.
 var ErrUnreachable = errors.New("machine: the guest is not reachable yet")
 
+// ErrUnavailable reports a call to a remote driver's service that the
+// service, or the gateway in front of it, answered as unable to serve for now
+// (HTTP 502, 503, or 504). What was asked may not have been done, or may have
+// been done in part, so a caller asks again only what it can repeat. A
+// failure to reach the service at all is its transport's own error (a
+// net.Error), and any other answer is never ErrUnavailable: the service
+// answered.
+var ErrUnavailable = errors.New("machine: the driver's service is unavailable")
+
 // ErrStale reports a running instance held by a process of another build
 // that this one cannot reach its guest through: a shim an older (or newer)
 // disco-vm started, which outlived the engine that started it. The instance
