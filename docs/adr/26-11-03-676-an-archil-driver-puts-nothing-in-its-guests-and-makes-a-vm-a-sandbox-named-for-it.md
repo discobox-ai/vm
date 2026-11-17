@@ -1,6 +1,7 @@
 # 26-11-03-676 — An archil driver puts nothing in its guests, and makes a VM a sandbox named for it
 
-- **Status**: Accepted
+- **Status**: Accepted (its Create exposing port 7302, and its service
+  row, superseded by [26-11-17-311](26-11-17-311-a-driver-can-fence-a-machine-at-its-providers-edge-and-its-urls-answer-only-a-credential-it-mints-for-its-caller.md))
 - **Date**: 2026-11-03
 
 Accepted by the owner by merging #51, 2026-11-03.

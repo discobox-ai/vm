@@ -3,7 +3,9 @@
 - **Status**: Accepted (supersedes in part 26-11-12-604 §1 and §2, its
   scope names and reach table; 26-11-04-412 §4, its internal URL,
   selection order, and host relay; and 26-10-29-129 §1, the names `URL` and
-  `PrivateURL`)
+  `PrivateURL`; §1's ingress with no credential of the driver's, §2's
+  archil row, and §6's archil always giving ingress, superseded by
+  [26-11-17-311](26-11-17-311-a-driver-can-fence-a-machine-at-its-providers-edge-and-its-urls-answer-only-a-credential-it-mints-for-its-caller.md))
 - **Date**: 2026-11-14
 - **Supersedes in part**: 26-11-12-604 §1 and §2, their three scope names
   (internal, private, public), §2's reach table, and that a URL on the
