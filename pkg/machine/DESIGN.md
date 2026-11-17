@@ -193,7 +193,10 @@ one), never the caller's own key. Issued keys are named for the pool, so
 `IssuedKeys` finds them by name, and `RevokeKey` refuses one the driver did
 not issue for the pool; `disco-vm key revoke` refuses an ID it does not
 list, so a typo never reads as revoked. A provider's refusal of a key is
-`ErrUnauthorized`.
+`ErrUnauthorized`. A call that the provider's service, or the gateway in
+front of it, answers as unable to serve for now (HTTP 502, 503, or 504) is
+`ErrUnavailable`, so a caller waits it out as it would a network fault and
+never takes it for a refusal (archil; boxd's gRPC says so in its own codes).
 
 `Isolated` and `Networks` at create strip what a provider gives a machine by
 default and place it on the caller's networks; a driver without

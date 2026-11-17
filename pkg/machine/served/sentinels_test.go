@@ -20,7 +20,7 @@ func TestSentinelsCrossByCode(t *testing.T) {
 		code string
 		err  error
 	}{}, sentinels...)
-	for _, err := range []error{machine.ErrNotFound, machine.ErrExists, machine.ErrInUse, machine.ErrCommitted, machine.ErrCapacity, machine.ErrNotRunning, machine.ErrStale, machine.ErrUnsupported, machine.ErrNotImplemented, machine.ErrNoKey} {
+	for _, err := range []error{machine.ErrNotFound, machine.ErrExists, machine.ErrInUse, machine.ErrCommitted, machine.ErrCapacity, machine.ErrNotRunning, machine.ErrStale, machine.ErrUnavailable, machine.ErrUnsupported, machine.ErrNotImplemented, machine.ErrNoKey} {
 		all = append(all, struct {
 			code string
 			err  error

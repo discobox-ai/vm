@@ -65,6 +65,12 @@ the guest and nothing on the host:
   machine's first exec or copy resumes it (a stop stops it as it is), so a listing, which
   attaches to every VM, wakes none. A guest that powers itself off halts its VM, which
   Archil goes on reporting `running`: unsupported, as on boxd.
+- **A 502, 503, or 504 is `machine.ErrUnavailable`,** from the REST API or
+  the process API's WebSocket handshake: Archil, or its gateway, not
+  serving for now. From the REST API, a 401, or a 403 with no code, is
+  `machine.ErrUnauthorized`, and any other answer, a 500 or a 429 included,
+  is Archil's own error. The handshake follows a REST call that asks for its
+  URL with the same key, so a refused key fails there first.
 - **The ingress URL** is the hostname Archil gives the exposed port 7302,
   the same across stop and start, and the pool URL is the ingress URL. It is
   on the internet and the only path to a sandbox, so every VM has both

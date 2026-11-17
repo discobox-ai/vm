@@ -96,6 +96,9 @@ func (a *api) dialProcess(ctx context.Context, sandbox string) (*websocket.Conn,
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
+	if err != nil && resp != nil && unavailable(resp.StatusCode) {
+		return nil, fmt.Errorf("archil: the process API of %s: %w: %w", sandbox, machine.ErrUnavailable, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("archil: the process API of %s: %w", sandbox, err)
 	}

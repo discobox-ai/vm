@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -374,5 +375,40 @@ func TestCopyFrom(t *testing.T) {
 	_ = rc.Close()
 	if !killed.Load() {
 		t.Error("a copy that ended at a gap, with no exit, was not killed in the guest")
+	}
+}
+
+// TestUnavailable: a 502, 503, or 504, from Archil's REST API or its process
+// API's handshake, is machine.ErrUnavailable; a 500 or a 429 is Archil
+// answering, and is not.
+func TestUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   bool
+	}{
+		{http.StatusBadGateway, true},
+		{http.StatusServiceUnavailable, true},
+		{http.StatusGatewayTimeout, true},
+		{http.StatusInternalServerError, false},
+		{http.StatusTooManyRequests, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/sandboxes/sb1/connections" {
+				_, _ = io.WriteString(w, `{"success":true,"data":{"url":"ws://`+r.Host+`/process"}}`)
+				return
+			}
+			w.WriteHeader(tc.status)
+			_, _ = io.WriteString(w, `{"success":false,"error":"down"}`)
+		}))
+		a := &api{base: srv.URL, keys: machine.StaticKey(machine.Key{Driver: "archil", Secret: "k"}), http: srv.Client()}
+		_, err := a.sandboxes(context.Background())
+		if err == nil || errors.Is(err, machine.ErrUnavailable) != tc.want {
+			t.Errorf("REST %d: %v, want ErrUnavailable %v", tc.status, err, tc.want)
+		}
+		_, err = a.dialProcess(context.Background(), "sb1")
+		if err == nil || errors.Is(err, machine.ErrUnavailable) != tc.want {
+			t.Errorf("process API handshake %d: %v, want ErrUnavailable %v", tc.status, err, tc.want)
+		}
+		srv.Close()
 	}
 }
