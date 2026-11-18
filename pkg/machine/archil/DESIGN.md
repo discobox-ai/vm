@@ -93,8 +93,9 @@ the guest and nothing on the host:
     ingress URL is withheld where it was asked off.
   - **A token never outlives its machine:** Destroy, Commit, and Upgrade
     revoke the sandbox's tokens before they delete or freeze it, and a fork's
-    are revoked at Create (and by a failed Create's undo), since Archil says
-    neither that a delete revokes them nor that a fork copies none. Archil
+    are revoked at Create (and by a failed Create's undo), since Archil documents
+    neither that a delete revokes them nor that a fork copies none (it was
+    seen to do both, 2026-11-18). Archil
     shows a sandbox's forks only by refusing its delete, and lists no tokens
     of a sandbox deleted, so the revoke comes first (ADR 26-11-17-311 §4): a
     destroy or upgrade refused for forks leaves the VM as it was but for its

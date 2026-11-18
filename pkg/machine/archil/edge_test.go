@@ -146,8 +146,8 @@ func TestOldVMsAreUnexposed(t *testing.T) {
 	}
 }
 
-// A fork carries no token of its source's: Archil does not say it copies
-// none, and the fake does.
+// A fork carries no token of its source's: Archil was seen to copy none,
+// and documents nothing of it, and the fake copies them.
 func TestForkRevokesItsSourcesTokens(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()

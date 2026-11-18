@@ -69,9 +69,11 @@
   minted at a start would mint for no holder. Every path that deletes,
   freezes, or forks a sandbox revokes its tokens first, and a revoke that
   fails fails the call.
-- **The fake keeps tokens as Archil may.** They outlive their sandbox and a
-  fork copies its source's, the worst case Archil does not rule out, so a
-  revoke the driver drops shows as a token left honored.
+- **The fake keeps tokens worse than Archil does, on purpose.** They outlive
+  their sandbox and a fork copies its source's, where Archil was seen to do
+  neither (2026-11-18), so a revoke the driver drops shows as a token left
+  honored. It is the one place the fake departs from what Archil was seen
+  to do, and its comment says so.
 - **A migration covers every state an old VM can be in.** A VM made
   before ports were left unexposed has 7302 public, and a request there
   wakes it with no call of the driver's, so unexposing it at a cold start
