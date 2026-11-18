@@ -83,3 +83,12 @@ disco-vm rm -f dev2 && disco-vm rm dev
 - **Whether Archil revokes a sandbox's tokens at its delete, copies them to
   a fork, or caps them per sandbox** is not documented. The driver revokes
   them itself either way, so the answer changes only this page.
+- **Unverified on Archil itself** (vm#186; the driver and its fake follow
+  Archil's OpenAPI document, and `go tool task test:archil` has not yet run
+  against them): a guest fenced with `--close-dns` resolving no name; `401`
+  without a port token, and a stopped VM left stopped by one; the port and
+  port-token calls taken on a stopped sandbox, which every Start, Destroy,
+  and Commit makes; `DELETE …/ports/7302` of a port not exposed answering
+  `404`; `enable_service_ingress: false` and a `deny` list read back as
+  sent; and the ingress mark changing no traffic. The proof table's archil
+  cells for them are ⬜ until that run.
