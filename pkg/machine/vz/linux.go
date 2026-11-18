@@ -12,7 +12,8 @@ import (
 )
 
 // DefaultLinuxBase is the Linux guest image a fresh VM starts from when the
-// driver is configured with no base (machine.Config.Base).
+// driver is configured with no base (machine.Config.Base). It uses the
+// shared digest pin in linuximage.DefaultBase.
 const DefaultLinuxBase = linuximage.DefaultBase
 
 // AgentEnv is where the command line reads Config.Agent from.

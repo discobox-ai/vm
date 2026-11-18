@@ -57,15 +57,13 @@ The runtime is one directory (`pkg/machine/libkrun/runtime`, built by
   one job. It builds the runtime and boots the pinned guest image on it
   (`test:libkrun` with `DISCO_VM_LIBKRUN_BASE=default`). Then it pushes that
   same build from the cache and prints the digest to pin. Until the first
-  release, `DefaultRuntime` is the `v1` tag, as `DefaultBase` is. Prepare
+  release, `DefaultRuntime` is the `v1` tag. Prepare
   asks the registry for it, and Boot uses the cached pull.
-- **Release order.** The default base and runtime work only once both are
-  published. First comes a `linux/v*` guest release carrying `krun/vmlinux`,
-  pinned as `linuximage.DefaultBase`. Then comes a `krun/v*` release, whose
-  boot needs that guest, pinned as `DefaultRuntime`. Until then a fresh VM of
-  the defaults fails at Create, naming the image that is missing or that
-  lacks `krun/vmlinux`. `DISCO_VM_BASE` and `DISCO_VM_KRUN_RUNTIME` name local
-  builds in the meantime.
+- **Release order.** `linuximage.DefaultBase` pins the published
+  `disco-vm-linux:v2` image, which carries `krun/vmlinux`. The `krun/v*`
+  release boots that guest before publishing the runtime to pin as
+  `DefaultRuntime`. Until the runtime is published, set
+  `DISCO_VM_KRUN_RUNTIME` to a local runtime build.
 - Every source the runtime and the kernel are built from (libkrun, passt,
   libkrunfw, Linux) is pinned by its SHA-256 in its Dockerfile. Both build on
   Debian sid at the Taskfile's snapshot, the runtime with sid's own `rustc`,

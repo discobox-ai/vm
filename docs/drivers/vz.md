@@ -280,8 +280,8 @@ guests has none and is macOS.
   from the driver's one base, `machine.Config.Base`: a registry reference,
   or the absolute path of a directory holding the three artifacts, used as
   it is (how a guest built with `go tool task build:linux-guest` boots
-  unpublished); empty is `vz.DefaultLinuxBase`, disco-vm's own image, a
-  placeholder tag until its first `linux/v*` release is pinned by digest.
+  unpublished); empty is `vz.DefaultLinuxBase`, disco-vm's published
+  `disco-vm-linux:v2` image, pinned by digest.
   The driver refuses a base that is neither when it is made. Nothing lists
   bases. Install of a Linux guest is refused (`Capabilities.Install` is
   darwin alone).
