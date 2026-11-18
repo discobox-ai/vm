@@ -51,7 +51,7 @@ func TestService(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
 	service, err := d.Service(ctx, inst)
-	if err != nil || !strings.HasPrefix(service.IngressURL, "https://") || service.Listen != "tcp:0.0.0.0:7302" {
+	if listen, lerr := d.Listen(ctx, inst); err != nil || lerr != nil || !strings.HasPrefix(service.IngressURL, "https://") || listen != "tcp:0.0.0.0:7302" {
 		t.Fatalf("service %+v, %v", service, err)
 	}
 	url, port := service.IngressURL, guest.ServicePort
@@ -126,7 +126,7 @@ func TestNoIngressURL(t *testing.T) {
 	}
 	d := envDriver(t, machine.KeyFromEnv("boxd"))
 	ctx := context.Background()
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "noingress-" + randomID()[:8], Isolated: true, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "noingress-" + randomID()[:8], Bare: true, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
 	if err != nil {
 		t.Fatalf("create a VM with its ingress URL off: %v", err)
 	}

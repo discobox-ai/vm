@@ -82,8 +82,11 @@ const (
 	// OpStop stops a running VM: in order (Guest.Shutdown), or forced
 	// (Machine.Kill).
 	OpStop Op = "stop"
-	// OpService is where a VM's service listens, and its URLs
-	// (Driver.Service).
+	// OpService is a VM's service's URLs, with the credential they answer
+	// where the driver mints one (Driver.Service): the allow-list that
+	// grants it decides who gets a credential. Where the service listens
+	// in the guest (Driver.Listen), which a start needs and which mints
+	// nothing, is OpStart's.
 	OpService Op = "service"
 	// OpExec runs a process in a running VM (Guest.Exec).
 	OpExec Op = "exec"
@@ -122,8 +125,10 @@ const (
 	FieldMemory Field = "memory"
 	// FieldForwards is InstanceSpec.Forwards.
 	FieldForwards Field = "forwards"
-	// FieldIsolated is InstanceSpec.Isolated.
-	FieldIsolated Field = "isolated"
+	// FieldBare is InstanceSpec.Bare. A driver that gives no machine
+	// anything of its account (machine.BareAlways) needs no request, so the
+	// client sends none, and reports it allowed or not.
+	FieldBare Field = "bare"
 	// FieldNetworks is InstanceSpec.Networks.
 	FieldNetworks Field = "networks"
 	// FieldEgress is InstanceSpec.Egress.
@@ -143,7 +148,7 @@ const (
 // Fields is every field a create can carry. A cache volume is not one:
 // caches are not served.
 var Fields = []Field{
-	FieldFrom, FieldCPUs, FieldMemory, FieldForwards, FieldIsolated, FieldNetworks, FieldEgress, FieldData, FieldURLs,
+	FieldFrom, FieldCPUs, FieldMemory, FieldForwards, FieldBare, FieldNetworks, FieldEgress, FieldData, FieldURLs,
 }
 
 // ErrRefused reports a call, or a field of one, that the embedder's
@@ -191,7 +196,7 @@ type createRequest struct {
 	CPUs     int                  `json:"cpus,omitempty"`
 	Memory   uint64               `json:"memory,omitempty"`
 	Forwards []machine.Forward    `json:"forwards,omitempty"`
-	Isolated bool                 `json:"isolated,omitempty"`
+	Bare     bool                 `json:"bare,omitempty"`
 	Networks []string             `json:"networks,omitempty"`
 	Egress   *machine.Egress      `json:"egress,omitempty"`
 	Data     *machine.DataVolume  `json:"data,omitempty"`
@@ -210,7 +215,7 @@ func (r createRequest) set() []Field {
 	add(FieldCPUs, r.CPUs != 0)
 	add(FieldMemory, r.Memory != 0)
 	add(FieldForwards, len(r.Forwards) > 0)
-	add(FieldIsolated, r.Isolated)
+	add(FieldBare, r.Bare)
 	add(FieldNetworks, len(r.Networks) > 0)
 	add(FieldEgress, r.Egress != nil)
 	add(FieldData, r.Data != nil)

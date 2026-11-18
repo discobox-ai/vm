@@ -25,7 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -76,13 +75,18 @@ func (*Driver) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.Linux},
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
-		Egress:  []machine.EgressFence{machine.EgressNone, machine.EgressAllow},
+		Egress:  []machine.EgressFence{machine.EgressNone, machine.EgressAllow, machine.EgressCloseDNS},
 		Volumes: []machine.Volume{machine.VolumeData},
 		// A committed VM is its stopped sandbox, and a copy a fork of it.
 		Commit: true,
-		// Archil reaches a sandbox only at its exposed port's hostname,
-		// its ingress URL, which is its pool URL too.
-		URLs: machine.URLCapabilities{Ingress: machine.URLAlways, Pool: machine.URLAlways},
+		// A sandbox holds nothing of the account: the driver puts nothing
+		// in it, and Archil gives it no credential. A data disk's mount
+		// token is the guest's own disk's (ADR 26-11-17-311 §1).
+		Bare: machine.BareAlways,
+		// Archil reaches a sandbox only at its port's hostname, with a
+		// port token Service mints: its ingress URL, unless asked off, and
+		// its pool URL either way (ADR 26-11-17-311 §3).
+		URLs: machine.URLCapabilities{Ingress: machine.URLOptional, Pool: machine.URLAlways, Credential: true},
 	}
 }
 
@@ -147,52 +151,9 @@ func (d *Driver) stopAndWait(ctx context.Context, id string) error {
 
 func stopped(s sandbox) bool { return s.Status == "stopped" || s.Status == "exited" }
 
-// policy is the network policy of an egress fence; nil is none.
-func policy(e *machine.Egress) *egressPolicy {
-	if e == nil {
-		return nil
-	}
-	p := &egressPolicy{}
-	p.Egress = &struct {
-		Default string `json:"default"`
-		Allow   []any  `json:"allow,omitempty"`
-	}{Default: "deny"}
-	for _, a := range e.Allow {
-		p.Egress.Allow = append(p.Egress.Allow, a)
-	}
-	return p
-}
-
-// fenceOf is the fence a policy holds: nil when egress is not denied by
-// default.
-func fenceOf(p egressPolicy) *machine.Egress {
-	if p.Egress == nil || p.Egress.Default != "deny" {
-		return nil
-	}
-	e := &machine.Egress{}
-	for _, a := range p.Egress.Allow {
-		switch v := a.(type) {
-		case string:
-			e.Allow = append(e.Allow, v)
-		case map[string]any:
-			if t, ok := v["target"].(string); ok {
-				e.Allow = append(e.Allow, t)
-			}
-		}
-	}
-	return e
-}
-
-func sameFence(a, b *machine.Egress) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return slices.Equal(a.Allow, b.Allow)
-}
-
 // Create makes the VM's sandbox, of the base or forked from spec.From, with
-// its port 7302 exposed and its fence in place, and its data volume, and
-// stops it. Archil refuses a sandbox name it has, so the name is taken
+// its fence in place and no port exposed, and its data volume, and stops
+// it. Archil refuses a sandbox name it has, so the name is taken
 // atomically, before anything else is made.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	if err := machine.ValidateName(spec.Name); err != nil {
@@ -206,13 +167,18 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("archil: forwards: %w", machine.ErrUnsupported)
 	case spec.From != nil && machine.OtherPool(spec.From.Pool, d.pool):
 		return machine.Instance{}, fmt.Errorf("archil: a VM from another pool's (%s): %w", spec.From.Pool, machine.ErrUnsupported)
-	case spec.Isolated || len(spec.Networks) > 0:
-		return machine.Instance{}, fmt.Errorf("archil: isolation: %w", machine.ErrUnsupported)
+	case len(spec.Networks) > 0:
+		return machine.Instance{}, fmt.Errorf("archil: networks: %w", machine.ErrUnsupported)
+	case !d.Capabilities().Fences(spec.Egress):
+		return machine.Instance{}, fmt.Errorf("archil: a fence of %+v: %w", *spec.Egress, machine.ErrUnsupported)
 	case spec.Cache != nil:
 		return machine.Instance{}, fmt.Errorf("archil: a cache volume: %w", machine.ErrUnsupported)
 	}
 	if err := spec.URLs.Check(d.Capabilities().URLs); err != nil {
 		return machine.Instance{}, fmt.Errorf("archil: %w", err)
+	}
+	if err := checkAllow(spec.Egress); err != nil {
+		return machine.Instance{}, err
 	}
 	// A data disk of the name with no sandbox is a VM caught mid-upgrade,
 	// or one a Destroy stopped before its last step: listed, so the name is
@@ -243,6 +209,8 @@ func (m *made) undo() {
 	defer cancel()
 	if m.sandbox != "" {
 		_ = m.d.stopAndWait(ctx, m.sandbox)
+		// A fork may carry its source's tokens.
+		_ = m.d.revokeTokens(ctx, m.sandbox)
 		_ = m.d.api.deleteSandbox(ctx, m.sandbox)
 	}
 	if m.disk != "" {
@@ -264,6 +232,11 @@ func (d *Driver) create(ctx context.Context, spec machine.InstanceSpec, made *ma
 		from, err := d.source(ctx, *spec.From, spec.CPUs, spec.Memory)
 		if err != nil {
 			return machine.Instance{}, err
+		}
+		// A committed VM made before ports were left unexposed is never
+		// started, so its first copy is what fences it.
+		if err := d.unexposeService(ctx, from.ID); err != nil {
+			return machine.Instance{}, fmt.Errorf("archil: %s: %w", spec.From.Name, err)
 		}
 		src = &from
 	}
@@ -312,8 +285,10 @@ func (d *Driver) source(ctx context.Context, from machine.Instance, cpus int, me
 }
 
 // makeSandbox makes the VM's sandbox, fresh from the base or a fork of src,
-// with the spec's size and fence, which it reads back; exposes 7302; and
-// leaves it stopped. It returns the sandbox and the fence Archil holds.
+// with the spec's size, fence, and ingress (setNetwork), which it reads back,
+// and service ingress off; exposes no port, and leaves none a fork carried
+// exposed, nor any token a fork carried; and leaves it stopped. It returns
+// the sandbox and the fence Archil holds.
 func (d *Driver) makeSandbox(ctx context.Context, spec machine.InstanceSpec, src *sandbox, made *made) (sandbox, *machine.Egress, error) {
 	var sb sandbox
 	var err error
@@ -335,28 +310,20 @@ func (d *Driver) makeSandbox(ctx context.Context, spec machine.InstanceSpec, src
 	if sb, err = d.api.waitFor(ctx, sb.ID, "running"); err != nil {
 		return sb, nil, err
 	}
-	if src != nil {
-		// The fence is the spec's, never its source's, which a fork keeps.
-		if p := policy(spec.Egress); p != nil {
-			err = d.api.setNetwork(ctx, sb.ID, *p)
-		} else if had, gerr := d.api.network(ctx, sb.ID); gerr != nil {
-			err = gerr
-		} else if fenceOf(had) != nil {
-			err = d.api.setNetwork(ctx, sb.ID, egressPolicy{})
-		}
-		if err != nil {
-			return sb, nil, fmt.Errorf("archil: fence %s: %w", spec.Name, err)
-		}
-	}
-	got, err := d.api.network(ctx, sb.ID)
+	got, err := d.setNetwork(ctx, sb.ID, spec.Egress, spec.URLs.Ingress.Mode == machine.URLOff)
 	if err != nil {
-		return sb, nil, err
+		return sb, nil, fmt.Errorf("archil: fence %s: %w", spec.Name, err)
 	}
-	if !sameFence(fenceOf(got), spec.Egress) {
-		return sb, nil, fmt.Errorf("archil: %s was fenced to %v, and Archil holds %v", spec.Name, spec.Egress, fenceOf(got))
-	}
-	if _, err := d.api.exposePort(ctx, sb.ID, guest.ServicePort); err != nil {
-		return sb, nil, fmt.Errorf("archil: expose port %d: %w", guest.ServicePort, err)
+	if src != nil {
+		// A fork of a VM made before ports were left unexposed may carry
+		// its source's exposed port, and Archil does not say whether a
+		// fork carries its source's tokens: it answers neither.
+		if err := d.unexposeService(ctx, sb.ID); err != nil {
+			return sb, nil, fmt.Errorf("archil: %s: %w", spec.Name, err)
+		}
+		if err := d.revokeTokens(ctx, sb.ID); err != nil {
+			return sb, nil, fmt.Errorf("archil: %s: %w", spec.Name, err)
+		}
 	}
 	if err := d.stopAndWait(ctx, sb.ID); err != nil {
 		return sb, nil, err
@@ -370,14 +337,19 @@ func (d *Driver) makeSandbox(ctx context.Context, spec machine.InstanceSpec, src
 // Upgrade gives the stopped VM a new root (ADR 26-11-03-782): its sandbox
 // deleted and made again under its name, fresh from the base or a fork of
 // from, with its size and fence, mounting its data disk at each start as
-// before. Everything that could refuse it is checked before the sandbox is
-// deleted. One stopped between the two is listed by its data disk, and
-// Upgrade again finishes it with the size and fence inst carries: the
-// listing's are none and the strictest fence. A VM with no data disk is
+// before, and its ingress as it was. Everything that could refuse it is
+// checked before the sandbox is deleted, and its port tokens are revoked
+// before it is. One stopped between the two is listed by its data disk, and
+// Upgrade again finishes it with the size and fence inst carries, and ingress
+// off: the listing's are none and the strictest fence. A VM with no data disk is
 // gone if the upgrade fails or stops after its sandbox is deleted, since
 // nothing of it is left.
 func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machine.Instance) (machine.Instance, error) {
-	spec := machine.InstanceSpec{Name: inst.Name, From: from, CPUs: inst.CPUs, Memory: inst.Memory, Egress: inst.Egress}
+	// Mid-upgrade, the strictest: the fence inst carries, and ingress off.
+	spec := machine.InstanceSpec{
+		Name: inst.Name, From: from, CPUs: inst.CPUs, Memory: inst.Memory, Egress: inst.Egress,
+		URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff}},
+	}
 	old, err := d.sandboxOf(ctx, inst)
 	switch {
 	case errors.Is(err, errUpgrading):
@@ -396,6 +368,9 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 			return machine.Instance{}, err
 		}
 		spec.CPUs, spec.Memory, spec.Egress = old.VCPUs, old.MemoryMiB<<20, fenceOf(got)
+		if ingressOf(got) {
+			spec.URLs.Ingress = machine.URLRequest{}
+		}
 	}
 	var src *sandbox
 	if from != nil {
@@ -409,6 +384,10 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 		if err != nil {
 			return machine.Instance{}, err
 		}
+		// As Create's: a committed VM is fenced by its first copy.
+		if err := d.unexposeService(ctx, sb.ID); err != nil {
+			return machine.Instance{}, fmt.Errorf("archil: %s: %w", from.Name, err)
+		}
 		src = &sb
 	}
 	data, err := d.dataDisk(ctx, inst.Name)
@@ -416,6 +395,10 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 		return machine.Instance{}, err
 	}
 	if old.ID != "" {
+		// Its tokens would reach the sandbox made again under its name.
+		if err := d.revokeTokens(ctx, old.ID); err != nil {
+			return machine.Instance{}, fmt.Errorf("archil: %s: %w", inst.Name, err)
+		}
 		if err := d.api.deleteSandbox(ctx, old.ID); err != nil {
 			if _, code := statusOf(err); code == "sandbox_has_forks" {
 				return machine.Instance{}, fmt.Errorf("archil: %s has forks: %w", inst.Name, machine.ErrInUse)
@@ -478,7 +461,7 @@ func (d *Driver) baseName() string {
 func (d *Driver) instance(name string, sb sandbox, data bool) machine.Instance {
 	inst := machine.Instance{
 		ID: sb.ID, Name: name, Pool: d.pool, GuestOS: machine.Linux,
-		CPUs: sb.VCPUs, Memory: sb.MemoryMiB << 20, Created: sb.Created,
+		CPUs: sb.VCPUs, Memory: sb.MemoryMiB << 20, Created: sb.Created, Bare: true,
 	}
 	if data {
 		inst.Data = &machine.DataVolume{}
@@ -533,7 +516,7 @@ func (d *Driver) instances(ctx context.Context, name string) ([]machine.Instance
 	for n, dk := range data {
 		if !has[n] {
 			out = append(out, machine.Instance{
-				ID: dk.ID, Name: n, Pool: d.pool, GuestOS: machine.Linux, Created: dk.Created,
+				ID: dk.ID, Name: n, Pool: d.pool, GuestOS: machine.Linux, Created: dk.Created, Bare: true,
 				Egress: &machine.Egress{}, Data: &machine.DataVolume{},
 			})
 		}
@@ -598,7 +581,8 @@ func (d *Driver) sandboxOf(ctx context.Context, inst machine.Instance) (sandbox,
 	return sandbox{}, &apiError{Status: http.StatusNotFound, Message: fmt.Sprintf("VM %s is gone", inst.Name)}
 }
 
-// Destroy stops and deletes the VM's sandbox, then its data volume. Archil
+// Destroy stops the VM's sandbox, revokes its port tokens, and deletes it,
+// then its data volume. Archil
 // refuses a sandbox with forks, which is machine.ErrInUse: a VM created from
 // it still needs it. A sandbox already gone still has its data volume
 // removed.
@@ -612,6 +596,10 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	}
 	if err := d.stopAndWait(ctx, sb.ID); err != nil {
 		return err
+	}
+	// Archil does not say that deleting a sandbox revokes its tokens.
+	if err := d.revokeTokens(ctx, sb.ID); err != nil {
+		return fmt.Errorf("archil: %s: %w", inst.Name, err)
 	}
 	if err := d.api.deleteSandbox(ctx, sb.ID); err != nil {
 		if _, code := statusOf(err); code == "sandbox_has_forks" {
@@ -648,8 +636,9 @@ func (d *Driver) removeDataDisk(ctx context.Context, name string) error {
 	return nil
 }
 
-// Start starts the sandbox with its data volume mounted, or resumes one
-// Archil paused, and waits until a process runs in it. Archil runs the
+// Start starts the sandbox with its data volume mounted, and port 7302
+// unexposed, or resumes one Archil paused, and waits until a process runs in
+// it. Archil runs the
 // sandbox, so Boot is Start. A committed VM is not refused: Archil can't
 // tell it from any stopped one, and the caller never starts one.
 func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
@@ -664,6 +653,11 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 		if sb, err = d.api.waitFor(ctx, sb.ID, "stopped", "exited", "paused"); err != nil {
 			return nil, err
 		}
+	}
+	// A VM made before ports were left unexposed has 7302 exposed: fenced
+	// from its next start, whatever state it is in.
+	if err := d.unexposeService(ctx, sb.ID); err != nil {
+		return nil, fmt.Errorf("archil: %s: %w", inst.Name, err)
 	}
 	switch sb.Status {
 	case "paused":
@@ -727,8 +721,8 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	return m, nil
 }
 
-// Commit leaves the stopped VM's sandbox as it stands, with no mounts and no
-// data volume: what is in it is the caller's. A sandbox with mounts is
+// Commit leaves the stopped VM's sandbox as it stands, with no mounts, no
+// data volume, and no port token: what is in it is the caller's. A sandbox with mounts is
 // started once with none and stopped, since only a start changes a sandbox's
 // mounts and a fork boots with its source's, and a fork of a disk deleted
 // fails. Nothing records the commit (ADR 26-11-03-606).
@@ -755,29 +749,19 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 			return machine.Instance{}, err
 		}
 	}
+	// A committed VM never runs, and a request to it, with a token or at an
+	// exposed port (a VM made before ports were left unexposed), would
+	// start it.
+	if err := d.unexposeService(ctx, sb.ID); err != nil {
+		return machine.Instance{}, fmt.Errorf("archil: %s: %w", inst.Name, err)
+	}
+	if err := d.revokeTokens(ctx, sb.ID); err != nil {
+		return machine.Instance{}, fmt.Errorf("archil: %s: %w", inst.Name, err)
+	}
 	if err := d.removeDataDisk(ctx, inst.Name); err != nil {
 		return machine.Instance{}, err
 	}
 	return d.Instance(ctx, inst.Name)
-}
-
-// Service is guest.ServicePort, exposed at Create, at the hostname Archil
-// gives it, which lasts across stop and start: its ingress URL. Archil gives
-// sandboxes no path to each other, and that URL reaches them, so it is the
-// pool URL too.
-func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
-	service := machine.Service{Listen: fmt.Sprintf("tcp:0.0.0.0:%d", guest.ServicePort)}
-	sb, err := d.sandboxOf(ctx, inst)
-	if err != nil {
-		return service, fmt.Errorf("archil: %s's service: %w", inst.Name, err)
-	}
-	host, err := d.api.exposePort(ctx, sb.ID, guest.ServicePort)
-	if err != nil {
-		return service, fmt.Errorf("archil: %s's service: %w", inst.Name, err)
-	}
-	service.IngressURL = "https://" + host
-	service.PoolURL = service.IngressURL
-	return service, nil
 }
 
 // IssueKey can't: an Archil API token never expires, and reaches the whole

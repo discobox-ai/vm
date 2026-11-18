@@ -123,7 +123,8 @@ func (d *Driver) Capabilities() machine.Capabilities {
 		GuestOS:     []machine.OS{machine.Linux},
 		Commit:      true,
 		Keys:        keyCapabilities,
-		Isolation:   true,
+		Bare:        machine.BareStrip,
+		Networks:    true,
 		Egress:      []machine.EgressFence{machine.EgressNone, machine.EgressAllow},
 		// Ingress is the default proxy, closed for a VM whose ingress URL
 		// is asked off; the pool URL is the direct one on networks, else
@@ -222,6 +223,10 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if err := spec.URLs.Check(d.Capabilities().URLs); err != nil {
 		return machine.Instance{}, fmt.Errorf("boxd: %w", err)
 	}
+	if !d.Capabilities().Fences(spec.Egress) {
+		// boxd's allowlist leaves DNS open: it cannot close it.
+		return machine.Instance{}, fmt.Errorf("boxd: a fence of %+v: %w", *spec.Egress, machine.ErrUnsupported)
+	}
 	if spec.URLs.Pool == (machine.URLRequest{Mode: machine.URLOn, Strict: true}) && len(spec.Networks) == 0 && spec.URLs.Ingress.Mode == machine.URLOff {
 		// Peers reach a machine on no networks at its ingress URL alone.
 		return machine.Instance{}, fmt.Errorf("boxd: a pool URL on no networks, with the ingress URL off: %w", machine.ErrUnsupported)
@@ -230,7 +235,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("boxd: a data or cache volume: %w", machine.ErrUnsupported)
 	}
 	restore := spec.From != nil
-	if restore && len(spec.Networks) > 0 && !spec.Isolated {
+	if restore && len(spec.Networks) > 0 && !spec.Bare {
 		// A restore takes no networks: they are set once it is made, and a
 		// machine that is not isolated is on the default network until then.
 		return machine.Instance{}, fmt.Errorf("boxd: networks on a VM created from a committed one need it isolated, or it peers on the default network until they are set: %w", machine.ErrUnsupported)
@@ -271,7 +276,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		}
 		// By name, as boxd's own restores are: a committed VM's name is
 		// its snapshot's, and no second VM of the pool takes it.
-		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: d.machineName(spec.From.Name), Name: name, Isolated: spec.Isolated}
+		req := &boxdapi.CreateVmFromSnapshotRequest{Snapshot: d.machineName(spec.From.Name), Name: name, Isolated: spec.Bare}
 		if spec.CPUs != 0 || spec.Memory != 0 {
 			// With none asked for, the snapshot's own size.
 			req.Config = config
@@ -288,7 +293,7 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		}
 		created, err = api.CreateVm(ctx, &boxdapi.CreateVmRequest{
 			Name: name, ImageRef: image, RestartPolicy: "never", Config: config,
-			Isolated: spec.Isolated, Networks: spec.Networks,
+			Isolated: spec.Bare, Networks: spec.Networks,
 		})
 	}
 	if err != nil {

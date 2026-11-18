@@ -24,7 +24,17 @@ embedder authenticates the channel; the handler authenticates no one.
   where a driver may learn a cap from its provider (`MaxMachines`). A capability that covers two listed things is reported only where
   the first is allowed, and the server refuses the second: `Ports` is
   dial and forwards, reported where `OpDial` is, and a forward is refused
-  unless `FieldForwards` is listed too.
+  unless `FieldForwards` is listed too. `Bare` is the driver's where
+  `FieldBare` is listed, `BareAlways` whether or not it is (a driver whose
+  every machine is bare needs no request, so the client sends none), and
+  never otherwise; `Networks` is the driver's where `FieldNetworks` is.
+- **Where the service listens, and its URLs, are two calls** (ADR
+  26-11-17-311 §6). `GET /v1/vms/{name}/listen` (`Driver.Listen`) is
+  `OpStart`'s, since a start writes it to the guest, and mints nothing.
+  `OpService` (`Driver.Service`) carries the driver's `Credential` where its
+  URLs need one, so the allow-list that grants `OpService` decides who gets
+  a credential. A client and server of different builds are refused by
+  `Disco-Vm-Version`, so neither misreads a field the other renamed.
 - **What the engine checks, the server's side checks again.** The engine
   runs on the client, which is the caller's. A forward to a host socket is
   refused by the server whatever the list says (`ErrRefused`), and so is

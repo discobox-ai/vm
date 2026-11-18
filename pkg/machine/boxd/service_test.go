@@ -44,8 +44,8 @@ func TestServiceFakeAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("service: %v", err)
 	}
-	if service.Listen != "tcp:0.0.0.0:7302" {
-		t.Errorf("service %+v", service)
+	if listen, err := d.Listen(ctx, inst); err != nil || listen != "tcp:0.0.0.0:7302" || service.Credential != nil {
+		t.Errorf("service %+v, listening at %q: %v", service, listen, err)
 	}
 	fake.mu.Lock()
 	v := fake.vms[inst.ID]
@@ -69,7 +69,7 @@ func TestServiceFakeAPI(t *testing.T) {
 	fake.namedProxy = "extra"
 	fake.mu.Unlock()
 	for _, from := range []*machine.Instance{&base, nil} {
-		peer, err := d.Create(ctx, machine.InstanceSpec{Name: "peer", From: from, Isolated: true, Networks: []string{"pool"}, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
+		peer, err := d.Create(ctx, machine.InstanceSpec{Name: "peer", From: from, Bare: true, Networks: []string{"pool"}, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}})
 		if err != nil {
 			t.Fatalf("create on a network (from %v): %v", from != nil, err)
 		}

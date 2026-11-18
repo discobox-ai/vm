@@ -48,6 +48,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -77,6 +78,23 @@ type Config struct {
 	// process does not reach, as a stand-in of the provider's API gives:
 	// the suite checks the URL, and does not connect to it.
 	UnreachedIngress bool
+	// URLClient is the HTTP client the suite reaches a credentialed URL
+	// with (URLCapabilities.Credential): one that trusts a stand-in's TLS.
+	// Nil is a client of the system's roots, speaking HTTP/1.1.
+	URLClient *http.Client
+	// Credentials lists the credentials the provider still honors for an
+	// instance, by ID: on a driver that reports URLCapabilities.Credential,
+	// the suite reads it after a commit and after a destroy, and wants
+	// none. Nil skips those reads. A provider that lists nothing for a
+	// machine it deleted shows nothing after a destroy, so there the read
+	// after a commit, of a machine still there, is the one that tells; a
+	// stand-in that keeps a deleted machine's credentials tells both.
+	Credentials func(ctx context.Context, inst machine.Instance) ([]string, error)
+	// SkipGuestDNS, when set, says why the suite must not look for a
+	// resolver from inside a guest whose fence closes DNS
+	// (Egress.CloseDNS): a stand-in whose guest is this host's process. The
+	// fence is still checked as the driver reports it.
+	SkipGuestDNS string
 	// GuestAgent is where the disco-vm agent is in the guest, which the
 	// suite runs as `dial-host` to reach a peer through a forward. Empty
 	// skips that subtest.
@@ -591,6 +609,184 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 	})
 
+	// A fence that closes DNS, to an allowed host, is reported so, and,
+	// from inside the guest, no name resolves: neither through the guest's
+	// resolver, nor at any resolver its resolv.conf names, nor at 8.8.8.8 or
+	// 1.1.1.1 (ADR 26-11-17-311 §§2, 5). A driver that holds a list and not
+	// this refuses it.
+	t.Run("close-dns", func(t *testing.T) {
+		spec := copied
+		spec.Egress = &machine.Egress{Allow: []string{"example.com"}, CloseDNS: true}
+		if !caps.Fences(spec.Egress) {
+			if !slices.Contains(caps.Egress, machine.EgressAllow) {
+				t.Skip("the driver holds no list")
+			}
+			spec.Name, spec.CPUs, spec.Memory = newName(), cfg.CPUs, cfg.Memory
+			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+				if err == nil {
+					remove(t, driver, inst)
+				}
+				t.Fatalf("a driver that does not close DNS made an instance fenced to close it: %v, want ErrUnsupported", err)
+			}
+			return
+		}
+		inst := create(t, spec)
+		if got, err := driver.Instance(ctx, inst.Name); err != nil || got.Egress == nil || !got.Egress.CloseDNS || !slices.Equal(got.Egress.Allow, spec.Egress.Allow) {
+			t.Fatalf("an instance fenced to %+v reports %+v: %v", *spec.Egress, got.Egress, err)
+		}
+		if guestOS != machine.Linux && inst.GuestOS != machine.Linux {
+			t.Skip("the suite looks for a resolver from a linux guest")
+		}
+		if cfg.SkipGuestDNS != "" {
+			t.Skip(cfg.SkipGuestDNS)
+		}
+		m := boot(t, inst)
+		var out bytes.Buffer
+		code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"bash", "-c", resolveScript}}, nil, &out, &out)
+		if err != nil {
+			t.Fatalf("look for a resolver in the guest: %v\n%s", err, out.String())
+		}
+		if code != 0 {
+			t.Fatalf("a guest whose fence closes DNS resolves names:\n%s", out.String())
+		}
+	})
+
+	// A driver whose URLs answer only a credential it mints gives one with
+	// every Service, new at each call and finite; each URL refuses a request
+	// with none, or a wrong one, before the guest answers, and passes one
+	// with it; a request with none leaves a stopped instance stopped; and a
+	// commit and a destroy leave the provider honoring none of its
+	// credentials (ADR 26-11-17-311 §§3-5). Any other driver gives none.
+	t.Run("credentialed-url", func(t *testing.T) {
+		if !caps.URLs.Credential {
+			// start-attach-and-stop checks it gives none.
+			t.Skip("the driver's URLs need no credential")
+		}
+		inst := create(t, copied)
+		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
+		m, err := driver.Start(startCtx, inst, machine.BootOptions{})
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		t.Cleanup(func() { _ = m.Kill(context.Background()) })
+		reachable(t, m)
+		service, err := driver.Service(ctx, inst)
+		if err != nil {
+			t.Fatalf("service of a running instance: %v", err)
+		}
+		cred := service.Credential
+		switch {
+		case cred == nil || cred.Header == "" || cred.Token == "":
+			t.Fatalf("a driver whose URLs need a credential gave %+v", cred)
+		case !cred.Expires.After(time.Now()) || cred.Expires.After(time.Now().AddDate(1, 0, 1)):
+			t.Fatalf("a credential that expires %s: want a finite life from now", cred.Expires)
+		}
+		again, err := driver.Service(ctx, inst)
+		if err != nil || again.Credential == nil || again.Credential.Token == cred.Token {
+			t.Fatalf("a second Service gave %+v, %v: want a credential of its own", again.Credential, err)
+		}
+		var urls []string
+		for _, u := range []string{service.IngressURL, service.PoolURL} {
+			if u != "" && !slices.Contains(urls, u) {
+				urls = append(urls, u)
+			}
+		}
+		reach := !cfg.UnreachedIngress
+		if reach {
+			for _, u := range urls {
+				for _, c := range []*machine.Credential{nil, {Header: cred.Header, Token: "not-" + cred.Token}} {
+					if code := urlStatus(ctx, t, cfg.URLClient, u, c); code != http.StatusUnauthorized {
+						t.Fatalf("GET %s with credential %v: %d, want %d", u, c != nil, code, http.StatusUnauthorized)
+					}
+				}
+				if code := urlStatus(ctx, t, cfg.URLClient, u, cred); code == http.StatusUnauthorized {
+					t.Fatalf("GET %s with its credential: %d", u, code)
+				}
+			}
+		}
+		shutdown(t, m)
+		stopped := func(when string) {
+			t.Helper()
+			if _, err := driver.Attach(ctx, inst); !errors.Is(err, machine.ErrNotRunning) {
+				t.Fatalf("an instance %s attaches: %v, want ErrNotRunning", when, err)
+			}
+		}
+		stopped("once it stopped")
+		if reach {
+			for _, u := range urls {
+				if code := urlStatus(ctx, t, cfg.URLClient, u, nil); code != http.StatusUnauthorized {
+					t.Fatalf("GET %s of a stopped instance with no credential: %d, want %d", u, code, http.StatusUnauthorized)
+				}
+			}
+			time.Sleep(5 * time.Second)
+			stopped("asked for with no credential")
+		}
+		none := func(when string) {
+			t.Helper()
+			if cfg.Credentials == nil {
+				return
+			}
+			left, err := cfg.Credentials(ctx, inst)
+			if err != nil || len(left) > 0 {
+				t.Fatalf("%s, the provider honors credentials %v: %v", when, left, err)
+			}
+		}
+		if caps.Commit {
+			committed, err := driver.Commit(ctx, inst)
+			if err != nil {
+				t.Fatalf("commit %s: %v", inst.Name, err)
+			}
+			none("once it is committed")
+			if reach {
+				for _, u := range urls {
+					if code := urlStatus(ctx, t, cfg.URLClient, u, cred); code != http.StatusUnauthorized {
+						t.Fatalf("GET %s of a committed VM with a credential from before: %d, want %d", u, code, http.StatusUnauthorized)
+					}
+				}
+				time.Sleep(5 * time.Second)
+				stopped("once committed and asked for with an old credential")
+			}
+			inst = committed
+		}
+		if err := driver.Destroy(ctx, inst); err != nil {
+			t.Fatalf("destroy %s: %v", inst.Name, err)
+		}
+		none("once it is destroyed")
+	})
+
+	// A bare instance is made where the driver strips one or gives none
+	// anything, and reported bare; a driver that cannot refuses it. A
+	// driver that does not place machines on networks refuses them.
+	t.Run("bare", func(t *testing.T) {
+		spec := copied
+		spec.Bare = true
+		if !caps.Bare.Strips() {
+			spec.Name, spec.CPUs, spec.Memory = newName(), cfg.CPUs, cfg.Memory
+			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+				if err == nil {
+					remove(t, driver, inst)
+				}
+				t.Fatalf("a driver whose machines are never bare made a bare one: %v, want ErrUnsupported", err)
+			}
+		} else {
+			inst := create(t, spec)
+			if got, err := driver.Instance(ctx, inst.Name); err != nil || !got.Bare {
+				t.Fatalf("an instance made bare reports %+v: %v", got, err)
+			}
+		}
+		if !caps.Networks {
+			spec := copied
+			spec.Name, spec.CPUs, spec.Memory, spec.Networks = newName(), cfg.CPUs, cfg.Memory, []string{"conformance"}
+			if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+				if err == nil {
+					remove(t, driver, inst)
+				}
+				t.Fatalf("a driver that places no machine on networks made one on them: %v, want ErrUnsupported", err)
+			}
+		}
+	})
+
 	// A guest port is dialed through a machine another call attached to: the
 	// agent's, where an HTTP request for its health is answered. Any port but
 	// the agent's and the service's is refused (ADR 26-11-03-247). A driver
@@ -935,11 +1131,14 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if info, err := m.Info(ctx); err != nil || info.OS != string(guestOS) {
 			t.Fatalf("info through an attached machine: %+v, %v", info, err)
 		}
+		if listen, err := driver.Listen(ctx, inst); err != nil || listen == "" {
+			t.Fatalf("where a running instance's service listens: %q, %v", listen, err)
+		}
 		service, err := driver.Service(ctx, inst)
-		if err != nil || service.Listen == "" {
+		if err != nil {
 			t.Fatalf("service of a running instance: %+v, %v", service, err)
 		}
-		checkServiceURLs(ctx, t, caps.URLs, service, !cfg.UnreachedIngress)
+		checkServiceURLs(ctx, t, caps.URLs, service, !cfg.UnreachedIngress && !caps.URLs.Credential)
 		if err := m.Shutdown(ctx, false); err != nil {
 			t.Fatalf("shutdown request: %v", err)
 		}
@@ -1001,12 +1200,12 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if err != nil {
 			t.Fatalf("service of a running instance: %v", err)
 		}
-		if service.Listen == "" || service.IngressURL != "" {
+		if service.IngressURL != "" {
 			t.Fatalf("an instance whose ingress URL is asked off has service %+v, with an ingress URL", service)
 		}
 		// A driver with networks gives a peer on none no URL but the
 		// ingress one (boxd); any other always giving a pool URL keeps it.
-		if caps.URLs.Pool == machine.URLAlways && !caps.Isolation && service.PoolURL == "" {
+		if caps.URLs.Pool == machine.URLAlways && !caps.Networks && service.PoolURL == "" {
 			t.Fatalf("an instance whose ingress URL is asked off has service %+v, with no pool URL, which the driver always gives", service)
 		}
 	})
@@ -1655,6 +1854,10 @@ func checkServiceURLs(ctx context.Context, t *testing.T, reach machine.URLCapabi
 		t.Fatalf("a running instance asked for the driver's default has no ingress URL: %+v", service)
 	case reach.Pool == machine.URLNever && service.PoolURL != "":
 		t.Fatalf("the driver gives no pool URL, and a running instance has %q", service.PoolURL)
+	case !reach.Credential && service.Credential != nil:
+		t.Fatalf("a driver whose URLs need no credential gave one: %+v", service.Credential)
+	case reach.Credential && service.Credential == nil:
+		t.Fatalf("a driver whose URLs need a credential gave none: %+v", service)
 	}
 	if p := service.PoolURL; p != "" && p != service.IngressURL && !strings.HasPrefix(p, "http://") && !strings.HasPrefix(p, "https://") {
 		t.Fatalf("the pool URL of a running instance is %q, neither an HTTP URL nor its ingress URL", p)
@@ -1669,4 +1872,45 @@ func checkServiceURLs(ctx context.Context, t *testing.T, reach machine.URLCapabi
 		t.Fatalf("connect to the ingress URL %s of a running instance: %v", service.IngressURL, err)
 	}
 	_ = conn.Close()
+}
+
+// resolveScript looks for a name resolved, or a resolver that answers, from
+// inside a guest whose fence closes DNS, and exits 1 at any. It asks the
+// guest's own resolver for a name, then sends a DNS query for example.com
+// over UDP, and opens TCP, to port 53 of every resolver resolv.conf names and
+// of 8.8.8.8 and 1.1.1.1. It needs bash, timeout, and getent.
+const resolveScript = `
+open=0
+if timeout 10 getent hosts example.com; then echo "example.com resolved"; open=1; fi
+for r in $(awk '$1 == "nameserver" {print $2}' /etc/resolv.conf) 8.8.8.8 1.1.1.1; do
+	if timeout 5 bash -c 'exec 3<>/dev/udp/'"$r"'/53 && printf "\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01" >&3 && head -c 1 <&3 >/dev/null'; then
+		echo "$r answered a query over UDP"; open=1
+	fi
+	if timeout 5 bash -c 'exec 3<>/dev/tcp/'"$r"'/53'; then echo "$r accepted a connection to 53/tcp"; open=1; fi
+done
+exit $open
+`
+
+// urlStatus is the status of a GET of a service's URL, with cred's header
+// where it is not nil, over HTTP/1.1, which a credentialed URL may need.
+func urlStatus(ctx context.Context, t *testing.T, client *http.Client, url string, cred *machine.Credential) int {
+	t.Helper()
+	if client == nil {
+		client = &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: false}}
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred != nil {
+		req.Header.Set(cred.Header, cred.Token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode
 }

@@ -29,10 +29,11 @@ type createFlags struct {
 	// fresh VM.
 	fromSet  func() bool
 	cpus     int
-	isolated bool
+	bare     bool
 	urls     []string
 	networks []string
 	egress   []string
+	closeDNS bool
 	// data and cacheSize are sizes; data unset is no data volume, and cache
 	// unset no cache volume.
 	data, cache, cacheSize string
@@ -43,12 +44,13 @@ func (f *createFlags) register(cmd *cobra.Command) {
 	f.fromSet = func() bool { return cmd.Flags().Changed("from") }
 	cmd.Flags().IntVar(&f.cpus, "cpus", 0, "vCPUs (default: the driver's)")
 	cmd.Flags().StringVar(&f.memory, "memory", "", "memory, e.g. 8GiB (default: the driver's)")
-	cmd.Flags().BoolVar(&f.isolated, "isolated", false, "strip the machine of what its provider gives one by default (boxd: the in-VM CLI and token, git credentials, integrations, default-network peers), for good")
+	cmd.Flags().BoolVar(&f.bare, "bare", false, "make a machine that holds nothing of the provider's account (boxd strips the in-VM CLI and token, git credentials, integrations, and default-network peers, for good; archil's machines hold none of it already)")
 	cmd.Flags().StringArrayVar(&f.urls, "url", nil, "ask for one of the service's URLs, SCOPE=on|off[,strict], SCOPE ingress (where you reach it) or pool (where its peers do) (repeatable; default: the driver's); strict refuses a VM the driver cannot give that, e.g. ingress=off,strict for none but its peers' URL")
 	cmd.Flags().StringSliceVar(&f.networks, "network", nil, "a provider network the machine peers on, in place of its default one (repeatable)")
 	// An array, not a slice: a slice reads --egress="" as no entries at all,
 	// which would fence the machine to nothing rather than be refused.
 	cmd.Flags().StringArrayVar(&f.egress, "egress", nil, "fence the machine's egress to hosts, *.domains, IPv4 addresses, or ranges beyond its networks, comma-separated (repeatable); none alone is nothing beyond them")
+	cmd.Flags().BoolVar(&f.closeDNS, "close-dns", false, "with --egress, let no resolver answer the machine beyond its networks; it still reaches the hosts --egress names")
 	cmd.Flags().StringVar(&f.data, "data", "", "give the instance a data volume of this size at /.discobox/data, e.g. 20GiB; 0 is the driver's default size")
 	cmd.Flags().StringVar(&f.cache, "cache", "", "give the instance a cache volume at /.discobox/cache, cloned from this cache key's current generation")
 	cmd.Flags().StringVar(&f.cacheSize, "cache-size", "", "the cache volume's size, e.g. 50GiB (default: the driver's)")
@@ -82,6 +84,9 @@ func (f *createFlags) volumes() (*machine.DataVolume, *machine.CacheVolume, erro
 // unset variable in --egress "$HOSTS" never fences a machine to nothing.
 func (f *createFlags) fence() (*machine.Egress, error) {
 	if f.egress == nil {
+		if f.closeDNS {
+			return nil, errors.New("--close-dns needs --egress")
+		}
 		return nil, nil
 	}
 	var allow []string
@@ -92,11 +97,12 @@ func (f *createFlags) fence() (*machine.Egress, error) {
 	case slices.Contains(allow, ""):
 		return nil, errors.New("--egress takes no empty entry")
 	case slices.Equal(allow, []string{"none"}):
-		return &machine.Egress{}, nil
+		// Nothing beyond the networks closes DNS already.
+		return &machine.Egress{CloseDNS: f.closeDNS}, nil
 	case slices.Contains(allow, "none"):
 		return nil, errors.New("--egress none fences the machine to its networks alone, and takes no other entry")
 	}
-	return &machine.Egress{Allow: allow}, nil
+	return &machine.Egress{Allow: allow, CloseDNS: f.closeDNS}, nil
 }
 
 // create makes the VM name, or one of a random name when name is empty.
@@ -121,7 +127,7 @@ func (f *createFlags) create(ctx context.Context, e *engine.Engine, name string)
 		return engine.Instance{}, err
 	}
 	return e.Create(ctx, engine.CreateOptions{
-		Name: name, From: f.from, CPUs: f.cpus, Memory: memory, Isolated: f.isolated, Networks: f.networks, URLs: urls, Egress: egress,
+		Name: name, From: f.from, CPUs: f.cpus, Memory: memory, Bare: f.bare, Networks: f.networks, URLs: urls, Egress: egress,
 		Data: data, Cache: cache,
 	})
 }
@@ -391,14 +397,18 @@ func dialCommand(g *globals) *cobra.Command {
 
 func urlCommand(g *globals) *cobra.Command {
 	var scope string
+	var credential bool
 	cmd := &cobra.Command{
 		Use:   "url INSTANCE",
 		Short: "Print the URL of an instance's service",
 		Long: "Print the URL of the instance's one service: what a program in the guest\n" +
 			"serves on the address in its service file (/var/lib/disco-vm/service, or\n" +
 			"C:\\ProgramData\\disco-vm\\service), which the driver picks and every start\n" +
-			"writes. Neither scope's URL needs a credential, so the service must\n" +
-			"authenticate its callers.\n\n" +
+			"writes. On archil each URL answers only a request that carries a\n" +
+			"credential the driver mints when asked, which --credential prints on a\n" +
+			"second line as HEADER: TOKEN, and its expiry on a third; each run mints a\n" +
+			"new one. Elsewhere neither scope's URL needs a credential, so the service\n" +
+			"must authenticate its callers.\n\n" +
 			"--scope ingress (the default) prints where you, the instance's caller,\n" +
 			"reach it: on boxd and archil an HTTPS URL, the same across stop and start;\n" +
 			"on docker and fake http://127.0.0.1:PORT while it runs, a new port at each\n" +
@@ -429,11 +439,15 @@ func urlCommand(g *globals) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Println(u)
+			fmt.Println(u.URL)
+			if credential && u.Credential != nil {
+				fmt.Printf("%s: %s\n%s\n", u.Credential.Header, u.Credential.Token, u.Credential.Expires.UTC().Format(time.RFC3339))
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&scope, "scope", string(machine.URLIngress), "the URL's audience: ingress (you) or pool (the instance's peers)")
+	cmd.Flags().BoolVar(&credential, "credential", false, "also print the credential the URL answers, where the driver mints one, as HEADER: TOKEN, then when it expires")
 	return cmd
 }
 

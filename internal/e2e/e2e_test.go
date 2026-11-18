@@ -940,15 +940,28 @@ func TestURL(t *testing.T) {
 		}
 		go func() { _ = server.Serve(l) }()
 		t.Cleanup(func() { _ = server.Close() })
-		if got, err := get(t.Context(), url); err != nil || got != greeting {
+		if got, err := get(t.Context(), url, ""); err != nil || got != greeting {
 			t.Fatalf("GET %s: %q, %v", url, got, err)
 		}
 	case guestOS.OS == string(machine.Linux) && strings.HasPrefix(url, "http") && e.serveInGuest("svc"):
 		// A server in the guest, listening where the service file says,
-		// answers at the ingress URL.
+		// answers at the ingress URL, with the credential the driver
+		// mints where its URLs answer only one, and refuses a request
+		// without it (archil).
+		credential := ""
+		if e.caps.URLs.Credential {
+			lines := strings.Split(strings.TrimSpace(e.ok("url", "--credential", "svc")), "\n")
+			if len(lines) != 3 || lines[0] != url || !strings.Contains(lines[1], ": ") {
+				t.Fatalf("url --credential svc printed %q", lines)
+			}
+			credential = lines[1]
+			if _, err := get(t.Context(), url, ""); err == nil || !strings.Contains(err.Error(), "401") {
+				t.Fatalf("GET %s with no credential: %v, want 401", url, err)
+			}
+		}
 		var got string
 		for deadline := time.Now().Add(2 * time.Minute); got != greeting && time.Now().Before(deadline); time.Sleep(2 * time.Second) {
-			got, err = get(t.Context(), url)
+			got, err = get(t.Context(), url, credential)
 		}
 		if got != greeting {
 			t.Fatalf("GET %s of the guest's server: %q, %v", url, got, err)
@@ -961,12 +974,18 @@ func TestURL(t *testing.T) {
 const greeting = "hello from the service"
 
 // get is the body a GET of url answers with 200.
-func get(ctx context.Context, url string) (string, error) {
+// get is the body of a GET of url, refused unless it answers 200. A
+// credential, "HEADER: TOKEN" as url --credential prints it, is sent where it
+// is not empty.
+func get(ctx context.Context, url, credential string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
+	}
+	if header, token, ok := strings.Cut(credential, ": "); ok {
+		req.Header.Set(header, token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1044,18 +1063,23 @@ func TestEgress(t *testing.T) {
 			t.Fatalf("create %q: exit %d\n%s", empty, code, out)
 		}
 	}
+	if out, code := e.run(append(slices.Clone(fenced), "--close-dns")...); code == 0 || !strings.Contains(out, "needs --egress") {
+		t.Fatalf("create --close-dns with no --egress: exit %d\n%s", code, out)
+	}
 	for _, c := range []struct {
-		flag  string
-		fence machine.EgressFence
-		allow []string
+		flags    []string
+		fence    machine.EgressFence
+		allow    []string
+		closeDNS bool
 	}{
-		{"example.com", machine.EgressAllow, []string{"example.com"}},
-		{"none", machine.EgressNone, nil},
+		{[]string{"--egress", "example.com"}, machine.EgressAllow, []string{"example.com"}, false},
+		{[]string{"--egress", "example.com", "--close-dns"}, machine.EgressCloseDNS, []string{"example.com"}, true},
+		{[]string{"--egress", "none"}, machine.EgressNone, nil, false},
 	} {
-		out, code := e.run(append(slices.Clone(fenced), "--egress", c.flag)...)
+		out, code := e.run(append(slices.Clone(fenced), c.flags...)...)
 		if !slices.Contains(e.caps.Egress, c.fence) {
-			if code == 0 || !strings.Contains(out, "cannot fence") {
-				t.Fatalf("create --egress %s on %s: exit %d\n%s", c.flag, tg.driver, code, out)
+			if code == 0 || !strings.Contains(out, "cannot") {
+				t.Fatalf("create %q on %s: exit %d\n%s", c.flags, tg.driver, code, out)
 			}
 			if out, code := e.run("inspect", "fenced"); code == 0 {
 				t.Fatalf("a refused create made an instance:\n%s", out)
@@ -1063,13 +1087,13 @@ func TestEgress(t *testing.T) {
 			continue
 		}
 		if code != 0 {
-			t.Fatalf("create --egress %s on %s: exit %d\n%s", c.flag, tg.driver, code, out)
+			t.Fatalf("create %q on %s: exit %d\n%s", c.flags, tg.driver, code, out)
 		}
 		var inspected struct {
 			Egress *machine.Egress `json:"egress"`
 		}
-		if err := json.Unmarshal([]byte(e.ok("inspect", "fenced")), &inspected); err != nil || inspected.Egress == nil || !slices.Equal(inspected.Egress.Allow, c.allow) {
-			t.Fatalf("inspect of an instance fenced to %s reports %+v, %v", c.flag, inspected.Egress, err)
+		if err := json.Unmarshal([]byte(e.ok("inspect", "fenced")), &inspected); err != nil || inspected.Egress == nil || !slices.Equal(inspected.Egress.Allow, c.allow) || (c.closeDNS && !inspected.Egress.CloseDNS) {
+			t.Fatalf("inspect of an instance fenced to %q reports %+v, %v", c.flags, inspected.Egress, err)
 		}
 		e.ok("rm", "fenced")
 	}

@@ -27,7 +27,7 @@ refuses one only where its provider has no machine left to run
 (`ErrCommitted`: docker's image, boxd's snapshot), or where a boot would
 write to a disk another VM's differences over (`ErrInUse`: hcs). And a VM's
 machine: Boot, in this process; Start, outliving it;
-Attach, from any process; and Service
+Attach, from any process; and Listen and Service
 ([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-an-ingress-url-and-a-pool-url)).
 A machine also dials the agent's port and the service's (`Machine.Dial`)
 where the driver lists `Capabilities.Ports` ([below](#ports-not-guids)).
@@ -60,11 +60,13 @@ a `Capabilities` field, never a faked method:
 | a committed VM (`Commit`) | its record and disk, left in place | its record and bundle, left in place | a snapshot `dvm-<pool>--<name>`; the machine deleted | an image `disco-vm-vm:<pool>--<name>`; the container removed | its record and bundle, left in place | its record and tree, left in place | the stopped sandbox `dvm-<pool>--<name>`, its mounts and data disk dropped; nothing marks it committed |
 | disks chain below the seam (`local.Hypervisor.Chains`) | yes: a copy is a differencing VHDX over the committed VM's | no | no | no | no: a reflink, else a sparse copy | no | yes: a copy forks the committed VM's sandbox, which Archil keeps while it has forks (`ErrInUse`) |
 | keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | none (`ErrNoKey`) | issue, scope `pool` | none (`ErrCannotIssue`: an Archil token never expires) |
-| isolation (`Isolated`, `Networks`) | no | no | yes: `isolated`, `networks` | no | no | no | no |
-| egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | `none`: no network device (else a NIC on passt) | none | `none` and `allow`: `network.egress`, default `deny` |
-| ingress URL (`Service.IngressURL`) | the shim's owner-only named pipe, `npipe:////./pipe/disco-vm-…` | the shim's owner-only `unix:///…/service.sock` | the default proxy, `https://<machine>.<zone>`, the domain `ListProxies` reports (the zone is the region's: `boxd.sh` in fra, `nyc.boxd.sh` in nyc) | the port the daemon publishes, `http://127.0.0.1:N`; none for a daemon on another host | the shim's owner-only `unix:///…/service.sock` | the shim's loopback port, `http://127.0.0.1:N` (with `noLoopback`, its `service.sock`) | the exposed port, `https://…archil.app` |
+| bare (`Bare`: a machine holding nothing of the account) | never | never | **strip**: boxd's `isolated` | never | never | never | **always**: nothing of the account is in a sandbox |
+| networks (`Networks`) | no | no | yes: `networks` | no | no | no | no |
+| egress (`Egress`: the fences held) | none | `none`: no network device | `none` and `allow`: the egress allowlist | none | `none`: no network device (else a NIC on passt) | none | `none`, `allow`, and `close-dns`: `network.egress`, default `deny`, denying 8.8.8.8 and 1.1.1.1 to close DNS |
+| ingress URL (`Service.IngressURL`) | the shim's owner-only named pipe, `npipe:////./pipe/disco-vm-…` | the shim's owner-only `unix:///…/service.sock` | the default proxy, `https://<machine>.<zone>`, the domain `ListProxies` reports (the zone is the region's: `boxd.sh` in fra, `nyc.boxd.sh` in nyc) | the port the daemon publishes, `http://127.0.0.1:N`; none for a daemon on another host | the shim's owner-only `unix:///…/service.sock` | the shim's loopback port, `http://127.0.0.1:N` (with `noLoopback`, its `service.sock`) | 7302's hostname, `https://…archil.app`, unexposed, with a port token (`Service.Credential`) |
+| credential (`URLs.Credential`: a URL answers only one the driver mints) | no | no | no | no | no | no | **yes**: a port token per `Service`, a day long, in `X-Archil-Token` |
 | pool URL (`Service.PoolURL`) | the ingress URL | the ingress URL | `http://<machine>.boxd:7302` on networks, else the ingress URL | the container's address on its network | the ingress URL | the ingress URL (a shared loopback) | the ingress URL |
-| URLs (`URLs`: given never, when asked, or always) | ingress when asked (its default), pool always | ingress when asked (its default), pool always | ingress when asked (the default proxy, its default); pool always on networks (direct), on none the ingress one, so none with that off | both always (ingress never for a daemon on another host) | ingress when asked (its default), pool always | both always (with `noLoopback`, as vz) | both always |
+| URLs (`URLs`: given never, when asked, or always) | ingress when asked (its default), pool always | ingress when asked (its default), pool always | ingress when asked (the default proxy, its default); pool always on networks (direct), on none the ingress one, so none with that off | both always (ingress never for a daemon on another host) | ingress when asked (its default), pool always | both always (with `noLoopback`, as vz) | ingress when asked (its default), pool always |
 | volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<pool>--<name>--data` |
 | upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
 
@@ -198,9 +200,13 @@ front of it, answers as unable to serve for now (HTTP 502, 503, or 504) is
 `ErrUnavailable`, so a caller waits it out as it would a network fault and
 never takes it for a refusal (archil; boxd's gRPC says so in its own codes).
 
-`Isolated` and `Networks` at create strip what a provider gives a machine by
-default and place it on the caller's networks; a driver without
-`Capabilities.Isolation` refuses them.
+`Bare` at create asks for a machine that holds nothing of the provider's
+account, and `Networks` places it on the caller's networks (ADR
+26-11-17-311 §1). `Capabilities.Bare` says whether a driver strips one when
+asked (`BareStrip`, boxd), gives none anything (`BareAlways`, archil, which
+takes the request as met), or neither (`BareNever`, which refuses it), and
+`Capabilities.Networks` whether it places one on networks. They are two
+facts, not one: a driver is bare without networks (archil).
 
 `Egress` at create fences what an instance reaches beyond its networks, where
 its root cannot loosen it (ADR 26-10-29-129). It is in place before Create
@@ -209,8 +215,11 @@ report fenced as asked is destroyed and Create fails; it holds across stop
 and start, and is the spec's, never a committed VM's. An empty `Allow` is
 nothing beyond the networks; nil is the provider's default.
 `Capabilities.Egress` lists the fences a driver holds (`Capabilities.Fences`):
-`none`, an empty `Allow`, and `allow`, a list (ADR 26-10-31-990). A driver
-refuses a fence it does not hold. vz holds `none` alone, as an instance with
+`none`, an empty `Allow`, and `allow`, a list (ADR 26-10-31-990), and
+`close-dns`, `CloseDNS` with a list: no resolver answers beyond the
+networks, while the listed hosts are still reached by name (ADR
+26-11-17-311 §2). `none` closes DNS already. A driver refuses a fence it
+does not hold. vz holds `none` alone, as an instance with
 no network device, whose only reach is the vsock its spec forwards; its
 read-back is the instance's record, which Boot reads to attach no NIC.
 `Instance.Egress` is the fence the provider reports.
@@ -229,7 +238,15 @@ says how public the network under it is: an ingress URL may be on the
 internet, a VLAN, the host's loopback, or a socket only the owner opens. A
 URL is `http`, `https`, `unix`, or `npipe`, and `DialURL` connects to any
 of them. The provider reports no request on `Instance`: `Service` says
-which URLs an instance has.
+which URLs an instance has. Where a driver reports `URLs.Credential`, every
+URL answers only the credential `Service` mints beside it
+(`Service.Credential`: a header, a token, an expiry), checked at the
+provider's edge, outside the guest (ADR 26-11-17-311 §§3-4). `Service` mints
+one at each call and the driver keeps none, so only a caller that means to
+reach the service calls it, and keeps the credential until it expires; where
+the guest listens is `Listen`, which mints nothing, so a start never does.
+A driver revokes a machine's credentials when it destroys, upgrades, or
+commits it, and when it forks one, so none outlives its machine.
 
 ## Two volumes, at fixed paths, and a cache is saved only on request
 

@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +60,30 @@ type fakeAPI struct {
 	// terminals logs each TTY process's terminal, as {rows, cols} at its
 	// start and at each resize.
 	terminals [][2]uint16
+	// tokens are every port token minted, revoked or not. A sandbox's
+	// outlive it, and a fork is given its source's, since Archil says
+	// neither that a delete revokes them nor that a fork does not copy
+	// them: the worst case.
+	tokens []*fakeToken
+	// gateways serve each sandbox port's hostname, as Archil's edge does,
+	// over TLS at a loopback address of their own.
+	gateways []*httptest.Server
+	// gatewayTLS trusts the gateways' certificate, httptest's, which every
+	// TLS server it starts shares.
+	gatewayTLS *tls.Config
+}
+
+// fakeToken is a port token.
+type fakeToken struct {
+	id, secret, sandbox string
+	port                int
+	created, expires    time.Time
+	revoked             bool
+}
+
+// honored reports whether the token still opens a connection.
+func (t *fakeToken) honored() bool {
+	return !t.revoked && (t.expires.IsZero() || time.Now().Before(t.expires))
 }
 
 type fakeSandbox struct {
@@ -66,8 +93,12 @@ type fakeSandbox struct {
 	created                 time.Time
 	mounts                  []mount
 	network                 json.RawMessage
-	ports                   map[int]string
-	forkOf, route           string
+	ports                   map[int]bool
+	// gateways are the hostnames of its ports, each served by a gateway of
+	// the fake's, made at the first token or exposure.
+	gateways       map[int]string
+	serviceIngress bool
+	forkOf, route  string
 	// root is the directory standing in for its root disk.
 	root string
 }
@@ -95,24 +126,31 @@ const imageMarker = ".archil-image"
 func newFakeAPI(t *testing.T, dir string) *fakeAPI {
 	t.Helper()
 	f := &fakeAPI{dir: dir, procs: map[string]*fakeProc{}, pageSize: 2}
+	probe := httptest.NewTLSServer(http.NotFoundHandler())
+	f.gatewayTLS = probe.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	probe.Close()
 	mux := http.NewServeMux()
 	for pattern, h := range map[string]func(w http.ResponseWriter, r *http.Request){
-		"GET /api/sandboxes":                    f.listSandboxes,
-		"POST /api/sandboxes":                   f.createSandbox,
-		"GET /api/sandboxes/{sid}":              f.getSandbox,
-		"DELETE /api/sandboxes/{sid}":           f.deleteSandbox,
-		"POST /api/sandboxes/{sid}/start":       f.startSandbox,
-		"POST /api/sandboxes/{sid}/stop":        f.stopSandbox,
-		"POST /api/sandboxes/{sid}/resume":      f.resumeSandbox,
-		"POST /api/sandboxes/{sid}/fork":        f.forkSandbox,
-		"GET /api/sandboxes/{sid}/network":      f.getNetwork,
-		"PUT /api/sandboxes/{sid}/network":      f.putNetwork,
-		"PUT /api/sandboxes/{sid}/ports/{port}": f.exposePort,
-		"POST /api/sandboxes/{sid}/connections": f.connection,
-		"GET /api/disks":                        f.listDisks,
-		"POST /api/disks":                       f.createDisk,
-		"DELETE /api/disks/{id}":                f.deleteDisk,
-		"GET /ws/{sid}":                         f.processAPI,
+		"GET /api/sandboxes":                                 f.listSandboxes,
+		"POST /api/sandboxes":                                f.createSandbox,
+		"GET /api/sandboxes/{sid}":                           f.getSandbox,
+		"DELETE /api/sandboxes/{sid}":                        f.deleteSandbox,
+		"POST /api/sandboxes/{sid}/start":                    f.startSandbox,
+		"POST /api/sandboxes/{sid}/stop":                     f.stopSandbox,
+		"POST /api/sandboxes/{sid}/resume":                   f.resumeSandbox,
+		"POST /api/sandboxes/{sid}/fork":                     f.forkSandbox,
+		"GET /api/sandboxes/{sid}/network":                   f.getNetwork,
+		"PUT /api/sandboxes/{sid}/network":                   f.putNetwork,
+		"PUT /api/sandboxes/{sid}/ports/{port}":              f.exposePort,
+		"DELETE /api/sandboxes/{sid}/ports/{port}":           f.unexposePort,
+		"GET /api/sandboxes/{sid}/port-tokens":               f.listTokens,
+		"POST /api/sandboxes/{sid}/port-tokens":              f.mintToken,
+		"DELETE /api/sandboxes/{sid}/port-tokens/{token_id}": f.revokeToken,
+		"POST /api/sandboxes/{sid}/connections":              f.connection,
+		"GET /api/disks":                                     f.listDisks,
+		"POST /api/disks":                                    f.createDisk,
+		"DELETE /api/disks/{id}":                             f.deleteDisk,
+		"GET /ws/{sid}":                                      f.processAPI,
 	} {
 		mux.HandleFunc(pattern, h)
 	}
@@ -123,8 +161,35 @@ func newFakeAPI(t *testing.T, dir string) *fakeAPI {
 		}
 		mux.ServeHTTP(w, r)
 	}))
-	t.Cleanup(f.srv.Close)
+	t.Cleanup(func() {
+		f.srv.Close()
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, g := range f.gateways {
+			g.Close()
+		}
+	})
 	return f
+}
+
+// honoredTokens are the IDs of a sandbox's tokens that still open a
+// connection, whether or not the sandbox is still there.
+func (f *fakeAPI) honoredTokens(sandbox string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var ids []string
+	for _, t := range f.tokens {
+		if t.sandbox == sandbox && t.honored() {
+			ids = append(ids, t.id)
+		}
+	}
+	return ids
+}
+
+// gatewayClient reaches the fake's gateways, over HTTP/1.1, as Archil's
+// edge is reached.
+func (f *fakeAPI) gatewayClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: f.gatewayTLS.Clone()}}
 }
 
 // driver is an archil driver of pool whose fresh VMs run base, calling the
@@ -225,7 +290,7 @@ func (f *fakeAPI) newSandbox(name string) (*fakeSandbox, error) {
 	f.seq++
 	s := &fakeSandbox{
 		id: fmt.Sprintf("01a1e580-0000-7000-8000-%012x", f.seq), name: name, created: time.Now(),
-		ports: map[int]string{}, route: fmt.Sprintf("route%04d", f.seq), network: json.RawMessage(`{}`),
+		ports: map[int]bool{}, gateways: map[int]string{}, route: fmt.Sprintf("route%04d", f.seq), network: json.RawMessage(`{}`),
 		root: filepath.Join(f.dir, fmt.Sprintf("sandbox-%d", f.seq)),
 	}
 	return s, os.MkdirAll(s.root, 0o755)
@@ -255,7 +320,7 @@ func (f *fakeAPI) createSandbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.mounts = body.Mounts
+	s.mounts, s.serviceIngress = body.Mounts, body.ServiceIngress
 	if err := os.WriteFile(filepath.Join(s.root, imageMarker), []byte(s.image), 0o644); err != nil {
 		fail(w, http.StatusInternalServerError, "", err.Error())
 		return
@@ -423,6 +488,17 @@ func (f *fakeAPI) forkSandbox(w http.ResponseWriter, r *http.Request) {
 	// carries; boot makes them again.
 	s.image, s.vcpus, s.memMiB, s.forkOf = src.image, src.vcpus, src.memMiB, src.id
 	s.mounts, s.network = slices.Clone(src.mounts), slices.Clone(src.network)
+	s.serviceIngress = src.serviceIngress
+	for port := range src.ports {
+		s.ports[port] = true
+	}
+	for _, t := range slices.Clone(f.tokens) {
+		if t.sandbox == src.id && t.honored() {
+			c := *t
+			c.id, c.sandbox = randomTokenID(), s.id
+			f.tokens = append(f.tokens, &c)
+		}
+	}
 	f.sandboxes = append(f.sandboxes, s)
 	if err := f.boot(s); err != nil {
 		fail(w, http.StatusInternalServerError, "", err.Error())
@@ -480,10 +556,19 @@ func (f *fakeAPI) putNetwork(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, s.network, "")
 }
 
-func (f *fakeAPI) exposePort(w http.ResponseWriter, r *http.Request) {
+// port is r's port, or 0 after answering 400.
+func port(w http.ResponseWriter, r *http.Request) int {
 	port, err := strconv.Atoi(r.PathValue("port"))
 	if err != nil || port < 1 || port > 65535 {
 		fail(w, http.StatusBadRequest, "", "bad port")
+		return 0
+	}
+	return port
+}
+
+func (f *fakeAPI) exposePort(w http.ResponseWriter, r *http.Request) {
+	port := port(w, r)
+	if port == 0 {
 		return
 	}
 	f.mu.Lock()
@@ -493,10 +578,170 @@ func (f *fakeAPI) exposePort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := http.StatusOK
-	if _, ok := s.ports[port]; !ok {
-		s.ports[port], status = fmt.Sprintf("%d-%s.prod-aws-us-east-1-green.archil.test", port, s.route), http.StatusCreated
+	if !s.ports[port] {
+		s.ports[port], status = true, http.StatusCreated
 	}
-	reply(w, status, map[string]any{"port": port, "hostname": s.ports[port]}, "")
+	reply(w, status, map[string]any{"port": port, "hostname": f.gateway(s, port)}, "")
+}
+
+func (f *fakeAPI) unexposePort(w http.ResponseWriter, r *http.Request) {
+	port := port(w, r)
+	if port == 0 {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.sandbox(w, r)
+	switch {
+	case s == nil:
+		return
+	case !s.ports[port]:
+		fail(w, http.StatusNotFound, "port_not_found", "the port is not exposed")
+		return
+	}
+	delete(s.ports, port)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func randomTokenID() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func (t *fakeToken) view() map[string]any {
+	v := map[string]any{"id": t.id, "port": t.port, "created_at": t.created}
+	if !t.expires.IsZero() {
+		v["expires_at"] = t.expires
+	}
+	return v
+}
+
+func (f *fakeAPI) mintToken(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Port int    `json:"port"`
+		TTL  string `json:"ttl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Port < 1 || body.Port > 65535 {
+		fail(w, http.StatusBadRequest, "", "bad body")
+		return
+	}
+	var ttl time.Duration
+	if body.TTL != "" {
+		var err error
+		if ttl, err = time.ParseDuration(body.TTL); err != nil || ttl <= 0 || ttl > 8760*time.Hour {
+			fail(w, http.StatusBadRequest, "", "bad ttl "+body.TTL)
+			return
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.sandbox(w, r)
+	if s == nil {
+		return
+	}
+	t := &fakeToken{id: randomTokenID(), secret: randomTokenID(), sandbox: s.id, port: body.Port, created: time.Now()}
+	if ttl > 0 {
+		t.expires = t.created.Add(ttl)
+	}
+	f.tokens = append(f.tokens, t)
+	v := t.view()
+	v["token"], v["hostname"] = t.secret, f.gateway(s, body.Port)
+	reply(w, http.StatusCreated, v, "")
+}
+
+func (f *fakeAPI) listTokens(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.sandbox(w, r)
+	if s == nil {
+		return
+	}
+	var mine []*fakeToken
+	for _, t := range f.tokens {
+		if t.sandbox == s.id && t.honored() {
+			mine = append(mine, t)
+		}
+	}
+	from, to, next, err := f.page(r, len(mine))
+	if err != nil {
+		fail(w, http.StatusBadRequest, "", err.Error())
+		return
+	}
+	views := []map[string]any{}
+	for _, t := range mine[from:to] {
+		views = append(views, t.view())
+	}
+	reply(w, http.StatusOK, map[string]any{"tokens": views}, next)
+}
+
+func (f *fakeAPI) revokeToken(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.sandbox(w, r)
+	if s == nil {
+		return
+	}
+	for _, t := range f.tokens {
+		if t.sandbox == s.id && t.id == r.PathValue("token_id") && t.honored() {
+			t.revoked = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
+	fail(w, http.StatusNotFound, "port_token_not_found", "no port token "+r.PathValue("token_id"))
+}
+
+// gateway is the hostname of a sandbox's port, served from its first use
+// for as long as the fake runs. The caller holds mu.
+func (f *fakeAPI) gateway(s *fakeSandbox, port int) string {
+	if host, ok := s.gateways[port]; ok {
+		return host
+	}
+	id := s.id
+	g := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.serveGateway(w, r, id, port)
+	}))
+	g.StartTLS()
+	f.gateways = append(f.gateways, g)
+	s.gateways[port] = g.Listener.Addr().String()
+	return s.gateways[port]
+}
+
+// serveGateway is Archil's edge at a sandbox port's hostname: an exposed
+// port answers anyone, and any other only a request carrying a token for it,
+// refusing the rest with 401 before the sandbox sees them. A request let
+// through starts a stopped sandbox, or resumes a paused one, and is answered
+// 502, since no guest service runs behind the fake.
+func (f *fakeAPI) serveGateway(w http.ResponseWriter, r *http.Request, id string, port int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var s *fakeSandbox
+	for _, o := range f.sandboxes {
+		if o.id == id {
+			s = o
+		}
+	}
+	if s == nil {
+		http.Error(w, "no such sandbox", http.StatusNotFound)
+		return
+	}
+	if !s.ports[port] && !slices.ContainsFunc(f.tokens, func(t *fakeToken) bool {
+		return t.sandbox == id && t.port == port && t.honored() && t.secret == r.Header.Get(tokenHeader)
+	}) {
+		http.Error(w, "a port token is required", http.StatusUnauthorized)
+		return
+	}
+	switch s.status {
+	case "stopped", "exited":
+		if err := f.boot(s); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	case "paused":
+		s.status = "running"
+	}
+	http.Error(w, "nothing serves the port", http.StatusBadGateway)
 }
 
 func (f *fakeAPI) connection(w http.ResponseWriter, r *http.Request) {

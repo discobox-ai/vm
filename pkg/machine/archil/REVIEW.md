@@ -60,3 +60,23 @@
   line agrees with the driver's mistakes, as boxd's fake did (the root
   `REVIEW.md`); `TestCommandLinesAreWhatShRuns` round-trips words that need
   quoting.
+- **Nothing opens 7302 but a token.** No call exposes a port, a sandbox is
+  made with `enable_service_ingress: false`, and a request without a token
+  must neither reach the guest nor wake it. A change that exposes a port, or
+  mints a token anywhere but `Service`, opens the machine to the internet.
+- **The driver keeps no token.** A token's secret is returned once; a
+  driver that cached one would keep state (ADR 26-10-23-417), and one that
+  minted at a start would mint for no holder. Every path that deletes,
+  freezes, or forks a sandbox revokes its tokens first, and a revoke that
+  fails fails the call.
+- **The fake keeps tokens as Archil may.** They outlive their sandbox and a
+  fork copies its source's, the worst case Archil does not rule out, so a
+  revoke the driver drops shows as a token left honored.
+- **A migration covers every state an old VM can be in.** A VM made
+  before ports were left unexposed has 7302 public, and a request there
+  wakes it with no call of the driver's, so unexposing it at a cold start
+  alone left running, paused, woken, and committed ones public while
+  `Service` handed out a credential for them. Every Start, Commit, and
+  Service unexposes it, and so does every copy made from a VM, a Create or
+  an Upgrade from it, for both the source and the copy: a committed VM is
+  never started, so its copies are what fence it.

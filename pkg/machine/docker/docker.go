@@ -412,8 +412,8 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	if spec.From != nil && machine.OtherPool(spec.From.Pool, d.pool) {
 		return machine.Instance{}, fmt.Errorf("docker: a VM from another pool's (%s): %w", spec.From.Pool, machine.ErrUnsupported)
 	}
-	if spec.Isolated || len(spec.Networks) > 0 {
-		return machine.Instance{}, fmt.Errorf("docker: isolation: %w", machine.ErrUnsupported)
+	if spec.Bare || len(spec.Networks) > 0 {
+		return machine.Instance{}, fmt.Errorf("docker: a bare machine, or networks: %w", machine.ErrUnsupported)
 	}
 	if err := spec.URLs.Check(d.Capabilities().URLs); err != nil {
 		return machine.Instance{}, fmt.Errorf("docker: %w", err)
@@ -805,6 +805,11 @@ func (d *Driver) removeImages(ctx context.Context, own, name string) error {
 	return nil
 }
 
+// Listen is guest.ServicePort on every address of the container's.
+func (*Driver) Listen(context.Context, machine.Instance) (string, error) {
+	return fmt.Sprintf("tcp:0.0.0.0:%d", guest.ServicePort), nil
+}
+
 // servicePortKey is guest.ServicePort as the daemon's API names a port.
 var servicePortKey = fmt.Sprintf("%d/tcp", guest.ServicePort)
 
@@ -816,7 +821,7 @@ var servicePortKey = fmt.Sprintf("%d/tcp", guest.ServicePort)
 // is the port at the container's address on its network, which another
 // container there dials, as it does every other port.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
-	service := machine.Service{Listen: fmt.Sprintf("tcp:0.0.0.0:%d", guest.ServicePort)}
+	var service machine.Service
 	if image(inst) {
 		return service, fmt.Errorf("docker: VM %s is committed, an image with no container: %w", inst.Name, machine.ErrNotRunning)
 	}
