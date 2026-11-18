@@ -584,6 +584,20 @@ func (f *fakeAPI) exposePort(w http.ResponseWriter, r *http.Request) {
 	reply(w, status, map[string]any{"port": port, "hostname": f.gateway(s, port)}, "")
 }
 
+// The edge below (unexposePort, the port tokens, the gateway) is modeled from
+// Archil's OpenAPI document (2026-11-17), not yet from a run on Archil
+// itself, against the archil REVIEW.md note that the fake answers as Archil
+// was seen to. Unseen, and each one every Start, Destroy, or Commit depends
+// on:
+//   - DELETE …/ports/{port} of a port not exposed answers 404 (the driver
+//     takes a 404 or any 2xx as done);
+//   - the port and port-token calls are taken on a stopped sandbox, as the
+//     network policy's PUT is not;
+//   - a token minted on a stopped sandbox gives its hostname without waking
+//     it, and a request without a token answers 401 and wakes nothing.
+//
+// A run on Archil (go tool task test:archil) confirms or corrects each, and
+// this comment then says what was seen, where, and when.
 func (f *fakeAPI) unexposePort(w http.ResponseWriter, r *http.Request) {
 	port := port(w, r)
 	if port == 0 {
