@@ -22,9 +22,11 @@ var resolvers = []string{"8.8.8.8", "1.1.1.1"}
 // ingressOff is the mark, in a sandbox's network policy, of a VM whose
 // ingress URL is asked off: a sandbox has no labels, and the driver keeps
 // nothing of its own. It is a denied address in TEST-NET-1 (RFC 5737), which
-// nothing routes to, so denying it should change no traffic (not yet seen on
-// Archil itself); and an address, not a name, since a domain rule has Archil
-// terminate the guest's TLS on 443.
+// nothing routes to, so denying it changes no traffic (seen 2026-11-18: an
+// unfenced VM with it resolved names and reached example.com over HTTP and
+// over HTTPS with the site's own certificate, as one without it did); and an
+// address, not a name, since a domain rule has Archil terminate the guest's
+// TLS on 443.
 const ingressOff = "192.0.2.86"
 
 // tokenHeader carries a port token.

@@ -316,8 +316,9 @@ func (d *Driver) makeSandbox(ctx context.Context, spec machine.InstanceSpec, src
 	}
 	if src != nil {
 		// A fork of a VM made before ports were left unexposed may carry
-		// its source's exposed port, and Archil does not say whether a
-		// fork carries its source's tokens: it answers neither.
+		// its source's exposed port. Archil was seen to give a fork none of
+		// its source's tokens (2026-11-18), and documents nothing of it:
+		// it answers neither.
 		if err := d.unexposeService(ctx, sb.ID); err != nil {
 			return sb, nil, fmt.Errorf("archil: %s: %w", spec.Name, err)
 		}
@@ -597,7 +598,8 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 	if err := d.stopAndWait(ctx, sb.ID); err != nil {
 		return err
 	}
-	// Archil does not say that deleting a sandbox revokes its tokens.
+	// Archil was seen to refuse a deleted sandbox's tokens (2026-11-18),
+	// and documents nothing of it.
 	if err := d.revokeTokens(ctx, sb.ID); err != nil {
 		return fmt.Errorf("archil: %s: %w", inst.Name, err)
 	}

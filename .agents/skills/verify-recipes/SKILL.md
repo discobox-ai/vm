@@ -110,9 +110,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
 ## archil
 
 - Credentials: `ARCHIL_API_KEY`. Inside a discobox, ask `discobox-access`
-  for it on `*.archil.com` (the control plane and the process API) and
-  `*.archil.app` (exposed ports), then `eval "$(discobox-access env)"`. Any
-  build drives it: nothing of disco-vm's goes in the guest.
+  for it on `*.archil.com` alone (the control plane; the process API's URL
+  is signed by Archil, and a sandbox's port hostname under `*.archil.app`
+  takes a port token, never the key), then `eval "$(discobox-access env)"`.
+  Any build drives it: nothing of disco-vm's goes in the guest.
 - Isolate state: `export DISCO_VM_DRIVER=archil ARCHIL_REGION=aws-us-east-1
   DISCO_VM_POOL=<scratch> DISCO_VM_BASE=debian:sid` (the region is
   required). A VM is the sandbox `dvm-<pool>--<name>`, its data volume the
@@ -128,8 +129,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   `go test ./pkg/machine/archil -run TestConformanceFakeAPI`.
 - A guest's server through the ingress URL: run it under Archil's own
   supervisor so it outlives the exec, `exec dev /opt/archil/archil-client
-  services create web --tcp-port 7302 -- <server>`, then `curl $(disco-vm
-  url dev)`. A request to that URL starts a stopped VM.
+  services create web --tcp-port 7302 -- <server>`, then `disco-vm url
+  --credential dev` (the URL, then `X-Archil-Token: …`, then its expiry) and
+  `curl --http1.1 -H '<that second line>' <the URL>`. Without the header it
+  is `401`; with it, a request starts a stopped VM.
 - Clean up: `ls -a` is empty, and the control plane lists no sandbox or disk
   of the pool (`GET /api/sandboxes`, `GET /api/disks` at
   `https://control.green.us-east-1.aws.prod.archil.com`).

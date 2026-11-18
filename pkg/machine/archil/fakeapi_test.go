@@ -584,20 +584,16 @@ func (f *fakeAPI) exposePort(w http.ResponseWriter, r *http.Request) {
 	reply(w, status, map[string]any{"port": port, "hostname": f.gateway(s, port)}, "")
 }
 
-// The edge below (unexposePort, the port tokens, the gateway) is modeled from
-// Archil's OpenAPI document (2026-11-17), not yet from a run on Archil
-// itself, against the archil REVIEW.md note that the fake answers as Archil
-// was seen to. Unseen, and each one every Start, Destroy, or Commit depends
-// on:
-//   - DELETE …/ports/{port} of a port not exposed answers 404 (the driver
-//     takes a 404 or any 2xx as done);
-//   - the port and port-token calls are taken on a stopped sandbox, as the
-//     network policy's PUT is not;
-//   - a token minted on a stopped sandbox gives its hostname without waking
-//     it, and a request without a token answers 401 and wakes nothing.
-//
-// A run on Archil (go tool task test:archil) confirms or corrects each, and
-// this comment then says what was seen, where, and when.
+// The edge below (unexposePort, the port tokens, the gateway) answers as
+// Archil did (2026-11-18, aws-us-east-1, by hand and under go tool task
+// test:archil): DELETE …/ports/{port} of a port not exposed is a 404
+// "not_found"; the port and port-token calls are taken on a stopped
+// sandbox, and a mint there gives the hostname without waking it; a request
+// without a token, or a wrong one, is a 401 that wakes nothing, and one with
+// it wakes a stopped sandbox. Two things it does on purpose that Archil
+// does not: a sandbox's tokens outlive its delete, and a fork is given its
+// source's, where Archil was seen to answer 401 for both. That is the worst
+// case, so a revoke the driver drops shows as a token left honored.
 func (f *fakeAPI) unexposePort(w http.ResponseWriter, r *http.Request) {
 	port := port(w, r)
 	if port == 0 {
@@ -610,7 +606,7 @@ func (f *fakeAPI) unexposePort(w http.ResponseWriter, r *http.Request) {
 	case s == nil:
 		return
 	case !s.ports[port]:
-		fail(w, http.StatusNotFound, "port_not_found", "the port is not exposed")
+		fail(w, http.StatusNotFound, "not_found", "Sandbox port not found")
 		return
 	}
 	delete(s.ports, port)
