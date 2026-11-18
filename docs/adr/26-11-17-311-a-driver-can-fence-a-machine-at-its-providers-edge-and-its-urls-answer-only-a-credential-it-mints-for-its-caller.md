@@ -1,6 +1,6 @@
 # 26-11-17-311 — A driver can fence a machine at its provider's edge, and its URLs answer only a credential it mints for its caller
 
-- **Status**: Proposed
+- **Status**: Accepted (by the owner, merging #188, 2026-11-18)
 - **Date**: 2026-11-17
 - **Issue**: #186 (for discobox-ai/discobox's ADR 26-11-16-619 §§1–2)
 - **Supersedes in part** (both shipped, so superseded, not amended):
