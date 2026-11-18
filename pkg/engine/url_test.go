@@ -82,11 +82,13 @@ func testURL(t *testing.T, noLoopback bool, urls machine.URLRequests, prefix str
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() { _ = server.Serve(l) }()
-		pool, err := e.URL(ctx, inst, machine.URLPool)
-		if err != nil || !strings.HasPrefix(pool, prefix) {
+		poolEndpoint, err := e.URL(ctx, inst, machine.URLPool)
+		pool := poolEndpoint.URL
+		if err != nil || !strings.HasPrefix(pool, prefix) || poolEndpoint.Credential != nil {
 			t.Fatalf("pool URL %q, %v; want one starting %s", pool, err, prefix)
 		}
-		ingress, err := e.URL(ctx, inst, machine.URLIngress)
+		ingressEndpoint, err := e.URL(ctx, inst, machine.URLIngress)
+		ingress := ingressEndpoint.URL
 		switch {
 		case noIngress && !errors.Is(err, machine.ErrUnsupported):
 			t.Fatalf("the ingress URL of an instance whose ingress is asked off: %q, %v; want ErrUnsupported", ingress, err)

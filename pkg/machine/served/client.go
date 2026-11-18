@@ -106,7 +106,9 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	}
 	req := createRequest{
 		Name: spec.Name, CPUs: spec.CPUs, Memory: spec.Memory, Forwards: spec.Forwards,
-		Isolated: spec.Isolated, Networks: spec.Networks, Egress: spec.Egress, Data: spec.Data,
+		Networks: spec.Networks, Egress: spec.Egress, Data: spec.Data,
+		// A driver whose every machine is bare needs no request of it.
+		Bare: spec.Bare && d.Capabilities().Bare != machine.BareAlways,
 	}
 	if asked := asked(spec.URLs, reach); len(asked) > 0 {
 		switch {
@@ -201,10 +203,18 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 	return upgraded, d.call(ctx, http.MethodPost, vmPath(inst.Name, "/upgrade"), req, &upgraded)
 }
 
-// Service is the served driver's, unnarrowed (ADR 26-11-14-610): its URLs
-// are where the server's host and the instance's peers reach the service,
-// and a client of another host reaches it by Dial. An embedder that must
-// withhold an ingress URL forces it off in Options.Create.
+// Listen is the served driver's, which OpStart allows, since a start
+// writes it to the guest.
+func (d *Driver) Listen(ctx context.Context, inst machine.Instance) (string, error) {
+	var resp listenResponse
+	return resp.Listen, d.call(ctx, http.MethodGet, vmPath(inst.Name, "/listen"), nil, &resp)
+}
+
+// Service is the served driver's, unnarrowed (ADR 26-11-14-610), with the
+// credential it minted, if any (ADR 26-11-17-311 §6): its URLs are where the
+// server's host and the instance's peers reach the service, and a client of
+// another host reaches it by Dial. An embedder that must withhold an
+// ingress URL forces it off in Options.Create.
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	var service machine.Service
 	return service, d.call(ctx, http.MethodGet, vmPath(inst.Name, "/service"), nil, &service)

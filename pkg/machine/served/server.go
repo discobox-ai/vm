@@ -68,6 +68,7 @@ func Handler(driver machine.Driver, opts Options) (http.Handler, error) {
 	mux.HandleFunc("POST /v1/vms/{name}/commit", s.vm(OpCommit, s.commit))
 	mux.HandleFunc("POST /v1/vms/{name}/upgrade", s.vm(OpUpgrade, s.upgrade))
 	mux.HandleFunc("GET /v1/vms/{name}/service", s.vm(OpService, s.service))
+	mux.HandleFunc("GET /v1/vms/{name}/listen", s.vm(OpStart, s.listen))
 	mux.HandleFunc("GET /v1/vms/{name}/guest", s.guestOps)
 	mux.HandleFunc("GET /v1/vms/{name}/dial", s.vm(OpDial, s.dial))
 	return s.versioned(mux), nil
@@ -152,10 +153,17 @@ func (s *server) capabilities() machine.Capabilities {
 		Keys:        machine.KeyCapabilities{Mode: machine.KeysNone},
 		Ports:       caps.Ports && s.allowed(OpDial),
 		Commit:      caps.Commit && s.allowed(OpCommit) && s.field(FieldFrom),
-		Isolation:   caps.Isolation && s.field(FieldIsolated) && s.field(FieldNetworks),
+		Networks:    caps.Networks && s.field(FieldNetworks),
 		// What the driver gives is what an instance gets, whatever a client
 		// may ask; FieldURLs only lets it ask of an optional one.
 		URLs: caps.URLs,
+	}
+	switch {
+	case caps.Bare == machine.BareAlways:
+		// Every machine is bare already: a create need not ask.
+		out.Bare = machine.BareAlways
+	case s.field(FieldBare):
+		out.Bare = caps.Bare
 	}
 	if s.field(FieldEgress) {
 		out.Egress = caps.Egress
@@ -227,7 +235,7 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	spec := machine.InstanceSpec{
 		Name: req.Name, CPUs: req.CPUs, Memory: req.Memory, Forwards: req.Forwards,
-		Isolated: req.Isolated, Networks: req.Networks, Egress: req.Egress, Data: req.Data,
+		Bare: req.Bare, Networks: req.Networks, Egress: req.Egress, Data: req.Data,
 	}
 	if req.URLs != nil {
 		spec.URLs = *req.URLs
@@ -356,6 +364,20 @@ func (s *server) upgrade(w http.ResponseWriter, r *http.Request, inst machine.In
 		return
 	}
 	writeJSON(w, http.StatusOK, upgraded)
+}
+
+// listenResponse is GET /v1/vms/{name}/listen.
+type listenResponse struct {
+	Listen string `json:"listen"`
+}
+
+func (s *server) listen(w http.ResponseWriter, r *http.Request, inst machine.Instance) {
+	listen, err := s.driver.Listen(r.Context(), inst)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, listenResponse{Listen: listen})
 }
 
 func (s *server) service(w http.ResponseWriter, r *http.Request, inst machine.Instance) {

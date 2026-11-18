@@ -565,7 +565,7 @@ func TestCreateWaitsForAMachineNotYetSeen(t *testing.T) {
 		t.Cleanup(func() { _ = os.RemoveAll(dir) })
 		d, fake := fakeDriver(t, dir)
 		ctx := context.Background()
-		spec := machine.InstanceSpec{Name: "unseen", Isolated: true, Egress: egress, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}}
+		spec := machine.InstanceSpec{Name: "unseen", Bare: true, Egress: egress, URLs: machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}}
 		// The first call on the machine, and the one made again after it.
 		fake.unseen.Store(2)
 		inst, err := d.Create(ctx, spec)

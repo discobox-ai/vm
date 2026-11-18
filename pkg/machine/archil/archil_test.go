@@ -70,8 +70,13 @@ func TestNameLimits(t *testing.T) {
 	}
 }
 
+// A fence is read back as it was made, closing DNS where it denies every
+// resolver, and a policy that allows by default is none.
 func TestFences(t *testing.T) {
-	for _, e := range []*machine.Egress{nil, {}, {Allow: []string{"example.com", "1.2.3.0/24"}}} {
+	for _, e := range []*machine.Egress{
+		nil, {}, {Allow: []string{"example.com", "1.2.3.0/24"}},
+		{Allow: []string{"example.com"}, CloseDNS: true},
+	} {
 		var p egressPolicy
 		if q := policy(e); q != nil {
 			raw, err := json.Marshal(q)
@@ -90,6 +95,50 @@ func TestFences(t *testing.T) {
 	_ = json.Unmarshal([]byte(`{"egress":{"default":"allow","deny":["x.com"]}}`), &open)
 	if fenceOf(open) != nil {
 		t.Error("a policy that allows by default read as a fence")
+	}
+	// A VM made before DNS could close: its fence leaves DNS open.
+	var old egressPolicy
+	_ = json.Unmarshal([]byte(`{"egress":{"default":"deny","allow":["example.com"]}}`), &old)
+	if f := fenceOf(old); f == nil || f.CloseDNS {
+		t.Errorf("an allow-list with no resolver denied read as %+v", f)
+	}
+	var half egressPolicy
+	_ = json.Unmarshal([]byte(`{"egress":{"default":"deny","allow":["example.com"],"deny":["8.8.8.8"]}}`), &half)
+	if f := fenceOf(half); f == nil || f.CloseDNS {
+		t.Errorf("an allow-list with one resolver of two denied read as %+v", f)
+	}
+	if err := checkAllow(&machine.Egress{Allow: []string{"example.com", "8.8.8.8"}, CloseDNS: true}); err == nil {
+		t.Error("a fence that closes DNS and allows a resolver was taken")
+	}
+}
+
+// The ingress mark goes on a policy alongside a fence, or on none, keeping
+// the provider's default, and comes off with nothing else.
+func TestIngressMark(t *testing.T) {
+	fence := &machine.Egress{Allow: []string{"example.com"}, CloseDNS: true}
+	for _, c := range []struct {
+		name  string
+		had   egressPolicy
+		fence *machine.Egress
+	}{
+		{"none", egressPolicy{}, nil},
+		{"a fence", *policy(fence), fence},
+		{"a fork of a fenced VM", *policy(fence), nil},
+	} {
+		for _, off := range []bool{true, false} {
+			want := wantPolicy(c.had, c.fence, off)
+			if ingressOf(want) == off {
+				t.Errorf("%s, ingress off %t: %+v", c.name, off, want.Egress)
+			}
+			if !sameFence(fenceOf(want), c.fence) {
+				t.Errorf("%s, ingress off %t: fence %+v, want %+v", c.name, off, fenceOf(want), c.fence)
+			}
+			// Marked and unmarked again, the policy is as it would be
+			// never marked.
+			if !samePolicy(wantPolicy(want, c.fence, false), wantPolicy(c.had, c.fence, false)) {
+				t.Errorf("%s: unmarking %+v leaves more", c.name, want.Egress)
+			}
+		}
 	}
 }
 

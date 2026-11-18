@@ -124,11 +124,11 @@ func TestIsolatedInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inst, err := e.Create(ctx, engine.CreateOptions{Name: "iso", Isolated: true, Networks: []string{"pool"}})
+	inst, err := e.Create(ctx, engine.CreateOptions{Name: "iso", Bare: true, Networks: []string{"pool"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !inst.Isolated || len(inst.Networks) != 1 || inst.Networks[0] != "pool" {
+	if !inst.Bare || len(inst.Networks) != 1 || inst.Networks[0] != "pool" {
 		t.Fatalf("created %+v", inst)
 	}
 	img, err := e.Commit(ctx, inst)
@@ -139,12 +139,12 @@ func TestIsolatedInstances(t *testing.T) {
 	if _, err := e.Create(ctx, engine.CreateOptions{Name: "open", From: img.Name, Networks: []string{"pool"}}); !errors.Is(err, machine.ErrUnsupported) {
 		t.Fatalf("networks on a restore not asked isolated: %v, want ErrUnsupported", err)
 	}
-	clone, err := e.Create(ctx, engine.CreateOptions{Name: "clone", From: img.Name, Isolated: true, Networks: []string{"pool", "web"}})
+	clone, err := e.Create(ctx, engine.CreateOptions{Name: "clone", From: img.Name, Bare: true, Networks: []string{"pool", "web"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Destroy(context.Background(), clone) })
-	if got, err := d.Instance(ctx, "clone"); err != nil || !got.Isolated || len(got.Networks) != 2 {
+	if got, err := d.Instance(ctx, "clone"); err != nil || !got.Bare || len(got.Networks) != 2 {
 		t.Fatalf("a VM created from a committed isolated one: %+v, %v", got, err)
 	}
 }
@@ -168,7 +168,7 @@ func TestFencedInstances(t *testing.T) {
 	}
 
 	inst, err := e.Create(ctx, engine.CreateOptions{
-		Name: "sealed", Isolated: true, Networks: []string{"pool"}, Egress: &machine.Egress{},
+		Name: "sealed", Bare: true, Networks: []string{"pool"}, Egress: &machine.Egress{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestFencedInstances(t *testing.T) {
 
 	allow := []string{"api.example.com", "*.npmjs.org", "203.0.113.0/24"}
 	open, err := e.Create(ctx, engine.CreateOptions{
-		From: img.Name, Name: "open", Isolated: true, Networks: []string{"pool"}, Egress: &machine.Egress{Allow: allow},
+		From: img.Name, Name: "open", Bare: true, Networks: []string{"pool"}, Egress: &machine.Egress{Allow: allow},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +199,7 @@ func TestFencedInstances(t *testing.T) {
 	if got, err := d.Instance(ctx, "open"); err != nil || got.Egress == nil || !slices.Equal(got.Egress.Allow, allow) {
 		t.Fatalf("a restore fenced to %q: %+v, %v", allow, got, err)
 	}
-	free, err := e.Create(ctx, engine.CreateOptions{Name: "free", From: img.Name, Isolated: true})
+	free, err := e.Create(ctx, engine.CreateOptions{Name: "free", From: img.Name, Bare: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestFencedInstances(t *testing.T) {
 
 	fake.egressIgnored.Store(true)
 	for _, ref := range []string{"", img.Name} {
-		if _, err := e.Create(ctx, engine.CreateOptions{Name: "leaky", From: ref, Isolated: true, Egress: &machine.Egress{}}); err == nil {
+		if _, err := e.Create(ctx, engine.CreateOptions{Name: "leaky", From: ref, Bare: true, Egress: &machine.Egress{}}); err == nil {
 			t.Fatalf("a machine from %q whose fence boxd does not report was created", ref)
 		}
 		if _, err := d.Instance(ctx, "leaky"); !errors.Is(err, machine.ErrNotFound) {

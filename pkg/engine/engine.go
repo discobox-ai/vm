@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -92,10 +93,12 @@ type CreateOptions struct {
 	From   string
 	CPUs   int
 	Memory uint64
-	// Isolated and Networks strip the instance of what its provider gives a
-	// machine by default, and place it on networks of the caller's
-	// (machine.InstanceSpec); the driver must list Capabilities.Isolation.
-	Isolated bool
+	// Bare asks for an instance that holds nothing of the provider's
+	// account (machine.InstanceSpec.Bare); the driver must strip one or
+	// give none anything (Capabilities.Bare). Networks places it on
+	// networks of the caller's; the driver must report
+	// Capabilities.Networks.
+	Bare     bool
 	Networks []string
 	// URLs asks for each of the service's URLs, on or off, strictly or not
 	// (machine.InstanceSpec.URLs); the zero value is the driver's default. A
@@ -119,15 +122,21 @@ func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, erro
 	if err := e.checkForwards(e.Forwards); err != nil {
 		return Instance{}, err
 	}
-	if (opts.Isolated || len(opts.Networks) > 0) && !e.Driver.Capabilities().Isolation {
-		return Instance{}, fmt.Errorf("driver %s cannot isolate an instance or place it on networks: %w", e.Driver.Name(), machine.ErrUnsupported)
+	if opts.Bare && !e.Driver.Capabilities().Bare.Strips() {
+		return Instance{}, fmt.Errorf("driver %s cannot make an instance that holds nothing of its provider's account: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
+	if len(opts.Networks) > 0 && !e.Driver.Capabilities().Networks {
+		return Instance{}, fmt.Errorf("driver %s cannot place an instance on networks: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
 	if err := opts.URLs.Check(e.Driver.Capabilities().URLs); err != nil {
 		return Instance{}, fmt.Errorf("driver %s: %w", e.Driver.Name(), err)
 	}
 	if !e.Driver.Capabilities().Fences(opts.Egress) {
-		if len(opts.Egress.Allow) == 0 {
+		switch {
+		case len(opts.Egress.Allow) == 0:
 			return Instance{}, fmt.Errorf("driver %s cannot fence an instance to nothing beyond its networks: %w", e.Driver.Name(), machine.ErrUnsupported)
+		case opts.Egress.CloseDNS && slices.Contains(e.Driver.Capabilities().Egress, machine.EgressAllow):
+			return Instance{}, fmt.Errorf("driver %s cannot close DNS in an instance's fence: %w", e.Driver.Name(), machine.ErrUnsupported)
 		}
 		return Instance{}, fmt.Errorf("driver %s cannot fence an instance's egress to a list: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
@@ -136,7 +145,7 @@ func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, erro
 	}
 	spec := machine.InstanceSpec{
 		Name: opts.Name, CPUs: opts.CPUs, Memory: opts.Memory, Forwards: e.Forwards,
-		Isolated: opts.Isolated, Networks: opts.Networks, URLs: opts.URLs, Egress: opts.Egress,
+		Bare: opts.Bare, Networks: opts.Networks, URLs: opts.URLs, Egress: opts.Egress,
 	}
 	if opts.Data != nil {
 		spec.Data = &machine.DataVolume{Bytes: opts.Data.Bytes}
@@ -446,48 +455,52 @@ func (e *Engine) Dial(ctx context.Context, inst Instance, port uint32) (net.Conn
 }
 
 // URL is where scope's audience reaches an instance's one service over
-// HTTP (machine.Service.URL, ADR 26-11-14-610): for ingress, the caller,
-// at boxd's HTTPS URL, archil's exposed port, a loopback port the Docker
-// daemon publishes or fake's shim serves, or the owner-only local socket a
-// held VM's shim serves (machine.DialURL); for pool, the instance's peers.
-// None needs a credential, so the service authenticates its callers. It is
-// refused while the instance is not running, and with machine.ErrUnsupported
-// where the instance has no URL in scope: one asked off, or a driver that
-// gives none. One scope's request is never answered with the other's URL.
-func (e *Engine) URL(ctx context.Context, inst Instance, scope machine.URLScope) (string, error) {
+// HTTP (machine.Service.URL, ADR 26-11-14-610), with the credential it
+// answers where the driver's URLs answer only one (ADR 26-11-17-311 §3):
+// for ingress, the caller, at boxd's HTTPS URL, archil's port hostname, a
+// loopback port the Docker daemon publishes or fake's shim serves, or the
+// owner-only local socket a held VM's shim serves (machine.DialURL); for
+// pool, the instance's peers. Where it has no credential, the service
+// authenticates its callers. Each call on a driver whose URLs need a
+// credential mints a new one, so a holder keeps it until it expires rather
+// than asking per request. It is refused while the instance is not running,
+// and with machine.ErrUnsupported where the instance has no URL in scope:
+// one asked off, or a driver that gives none. One scope's request is never
+// answered with the other's URL.
+func (e *Engine) URL(ctx context.Context, inst Instance, scope machine.URLScope) (machine.Endpoint, error) {
 	if _, err := machine.ParseURLScope(string(scope)); err != nil {
-		return "", err
+		return machine.Endpoint{}, err
 	}
 	service, err := e.Driver.Service(ctx, inst)
 	if errors.Is(err, machine.ErrNotRunning) {
-		return "", fmt.Errorf("instance %s is not running", inst.Name)
+		return machine.Endpoint{}, fmt.Errorf("instance %s is not running", inst.Name)
 	}
 	if err != nil {
-		return "", err
+		return machine.Endpoint{}, err
 	}
 	if url := service.URL(scope); url != "" {
-		return url, nil
+		return machine.Endpoint{URL: url, Credential: service.Credential}, nil
 	}
 	switch e.Driver.Capabilities().URLs.Of(scope) {
 	case machine.URLNever:
-		return "", fmt.Errorf("instance %s has no %s URL: the %s driver gives none: %w", inst.Name, scope, e.Driver.Name(), machine.ErrUnsupported)
+		return machine.Endpoint{}, fmt.Errorf("instance %s has no %s URL: the %s driver gives none: %w", inst.Name, scope, e.Driver.Name(), machine.ErrUnsupported)
 	case machine.URLOptional:
-		return "", fmt.Errorf("instance %s has no %s URL: the %s driver gives none to an instance whose %s URL is asked off: %w", inst.Name, scope, e.Driver.Name(), scope, machine.ErrUnsupported)
+		return machine.Endpoint{}, fmt.Errorf("instance %s has no %s URL: the %s driver gives none to an instance whose %s URL is asked off: %w", inst.Name, scope, e.Driver.Name(), scope, machine.ErrUnsupported)
 	}
-	return "", fmt.Errorf("instance %s: the %s driver gave its service no %s URL", inst.Name, e.Driver.Name(), scope)
+	return machine.Endpoint{}, fmt.Errorf("instance %s: the %s driver gave its service no %s URL", inst.Name, e.Driver.Name(), scope)
 }
 
-// announceService tells a started guest where its service listens, in its
-// guest.ServiceFile, before the start returns. A write that does not reach
-// the guest yet is made again until it does, or ctx ends; one that reaches it
-// and fails is an error.
+// announceService tells a started guest where its service listens
+// (Driver.Listen, which mints nothing), in its guest.ServiceFile, before the
+// start returns. A write that does not reach the guest yet is made again
+// until it does, or ctx ends; one that reaches it and fails is an error.
 func (e *Engine) announceService(ctx context.Context, inst Instance, g machine.Guest) error {
-	service, err := e.Driver.Service(ctx, inst)
-	if err != nil && !errors.Is(err, machine.ErrNotRunning) {
-		return err
+	listen, err := e.Driver.Listen(ctx, inst)
+	if err != nil {
+		return fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
 	err = machine.UntilReachable(ctx, func() error {
-		return guest.SetService(ctx, g, string(inst.GuestOS), service.Listen)
+		return guest.SetService(ctx, g, string(inst.GuestOS), listen)
 	})
 	if err != nil {
 		return fmt.Errorf("instance %s: %w", inst.Name, err)

@@ -70,8 +70,8 @@ func (*Hypervisor) Name() string { return "libkrun" }
 // Capabilities: Linux guests from the base, with no install, no cap on how
 // many run, commits and copies of them, virtiofs shares, the agent handed in
 // at every boot, the agent's and the service's guest ports and forwards out,
-// and no network device as the empty fence. No keys, no isolation, and no
-// volumes yet, so no upgrade.
+// and no network device as the empty fence. No keys, no bare machine or
+// networks, and no volumes yet, so no upgrade.
 func (*Hypervisor) Capabilities() machine.Capabilities {
 	return machine.Capabilities{
 		GuestOS:           []machine.OS{machine.Linux},

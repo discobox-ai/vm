@@ -15,6 +15,11 @@ import (
 // the machine over its network, at guest.ServicePort.
 var serviceListen = "tcp:0.0.0.0:" + strconv.FormatUint(uint64(guest.ServicePort), 10)
 
+// Listen is serviceListen.
+func (*Driver) Listen(context.Context, machine.Instance) (string, error) {
+	return serviceListen, nil
+}
+
 // Service is the guest's TCP port behind the HTTPS URL of the machine's
 // default proxy, which Create pinned to it unless its ingress URL was asked
 // off: its ingress URL, the same across stop and start. A machine whose
@@ -42,7 +47,7 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 			return machine.Service{}, d.refuseCommitted(ctx, api, inst, err)
 		}
 	}
-	service := machine.Service{Listen: serviceListen}
+	var service machine.Service
 	if def != nil && !closed(def) {
 		if def.GetDomain() == "" {
 			return machine.Service{}, fmt.Errorf("boxd: %s's proxy has no domain", d.machineName(inst.Name))

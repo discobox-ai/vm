@@ -33,11 +33,28 @@ func TestConformance(t *testing.T) {
 		t.Fatal(err)
 	}
 	machinetest.Run(t, d, machinetest.Config{
-		CPUs:       2,
-		Memory:     2 << 30,
-		Timeout:    5 * time.Minute,
-		ScratchDir: "/var/lib",
+		CPUs:        2,
+		Memory:      2 << 30,
+		Timeout:     5 * time.Minute,
+		ScratchDir:  "/var/lib",
+		Credentials: d.(*Driver).honoredTokens,
 	})
+}
+
+// honoredTokens lists the port tokens Archil still honors for a VM's
+// sandbox, by ID: none for a sandbox gone, since Archil lists no tokens of
+// a sandbox it deleted. After a commit, of a sandbox still there, it tells;
+// after a destroy, the fake's own count, which outlives the sandbox, does.
+func (d *Driver) honoredTokens(ctx context.Context, inst machine.Instance) ([]string, error) {
+	tokens, err := d.api.portTokens(ctx, inst.ID)
+	if isNotFound(err) {
+		return nil, nil
+	}
+	var ids []string
+	for _, t := range tokens {
+		ids = append(ids, t.ID)
+	}
+	return ids, err
 }
 
 // TestConformanceFakeAPI runs the conformance suite against the fake Archil
@@ -58,6 +75,11 @@ func TestConformanceFakeAPI(t *testing.T) {
 		for _, d := range f.disks {
 			t.Errorf("disk %s was left behind", d.name)
 		}
+		for _, tok := range f.tokens {
+			if tok.honored() {
+				t.Errorf("a port token of sandbox %s was left honored", tok.sandbox)
+			}
+		}
 	})
 	machinetest.Run(t, f.driver(t, machine.DefaultPool, "debian:sid"), machinetest.Config{
 		// Not Archil's default size, so a size not kept shows.
@@ -65,8 +87,12 @@ func TestConformanceFakeAPI(t *testing.T) {
 		Memory:     3 << 30,
 		Timeout:    30 * time.Second,
 		ScratchDir: "/var/lib",
-		// The fake's ports are at names under archil.test.
-		UnreachedIngress: true,
+		URLClient:  f.gatewayClient(),
+		// Its tokens as the fake keeps them, past their sandbox's delete.
+		Credentials: func(_ context.Context, inst machine.Instance) ([]string, error) {
+			return f.honoredTokens(inst.ID), nil
+		},
+		SkipGuestDNS: "the fake Archil's guest is a process on this host, on its network",
 	})
 }
 

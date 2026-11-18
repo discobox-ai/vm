@@ -160,7 +160,8 @@ machines and snapshots (the root
   an API key it is `ErrCannotIssue`. `IssuedKeys` and `RevokeKey` read
   `ListApiKeys`, keep only the caller's `member` keys named for the pool,
   and `RevokeKey` deletes nothing else (ADR 26-10-24-562).
-- **Isolation is boxd's.** `Isolated` is `CreateVm`'s and
+- **A bare machine is boxd's `isolated`** (`Capabilities.Bare`: strip).
+  `Bare` is `CreateVm`'s and
   `CreateVmFromSnapshot`'s `isolated`, which a restore inherits from its
   snapshot; `Networks` is `CreateVm`'s `networks`, or `SetVmNetworks` after a
   restore, which takes none. A restore given networks must be isolated, so

@@ -60,7 +60,7 @@ func (d *Driver) instance(vm *boxdapi.GetVmResponse) machine.Instance {
 		CPUs:     int(vm.GetVcpu()),
 		Memory:   vm.GetMemoryBytes(),
 		Created:  unixTime(vm.GetCreatedAt(), time.Second),
-		Isolated: vm.GetIsolated(),
+		Bare:     vm.GetIsolated(),
 		Networks: vm.GetNetworks(),
 		Egress:   egressOf(vm.GetEgressAllow()),
 	}

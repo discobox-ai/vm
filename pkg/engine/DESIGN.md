@@ -60,8 +60,8 @@ INSTANCE` give the one asked, never the other's in its place:
 - **Ingress** (`Service.IngressURL`, the default): where the caller, the
   controller managing the pool, reaches it. boxd's
   `https://<machine>.<zone>` (the zone is the region's, `boxd.sh` in fra), its default proxy pinned to 7302 at
-  Create unless ingress is asked off, and archil's exposed port, both the
-  same across stop and start; Docker's `http://127.0.0.1:N`, a port the
+  Create unless ingress is asked off, and archil's port hostname, reached
+  with a port token, both the same across stop and start; Docker's `http://127.0.0.1:N`, a port the
   daemon publishes at each start; fake's `http://127.0.0.1:N`, a loopback
   port its shim binds at each start; and on vz, libkrun, and hcs the
   owner-only socket the shim serves, `unix:///…/service.sock` in the
@@ -82,10 +82,17 @@ INSTANCE` give the one asked, never the other's in its place:
   On vz, libkrun, and hcs the pool URL is given whether or not ingress is
   withheld; boxd on no networks has none with ingress off.
 
-No URL takes a credential, so the service authenticates its callers. Both
-are refused while the instance is not running (but on boxd and archil,
-whose URLs last; a request to archil's starts a stopped instance), and an
-instance with no URL in the scope asked is `machine.ErrUnsupported`.
+`Engine.URL` returns a `machine.Endpoint`: the URL, and the credential it
+answers where the driver's URLs answer only one (`URLs.Credential`, archil;
+ADR 26-11-17-311 §3), which `Service` mints at each call. A holder keeps it
+until it expires rather than asking per request; `disco-vm url --credential`
+prints it as `HEADER: TOKEN` and its expiry. Elsewhere no URL takes a
+credential, so the service authenticates its callers. Both are refused
+while the instance is not running (but on boxd and archil, whose URLs last;
+a request to archil's with its credential starts a stopped instance, and one
+without is refused at the edge), and an instance with no URL in the scope
+asked is `machine.ErrUnsupported`. A start writes the guest's service file
+from `Driver.Listen`, never `Service`, so it mints nothing.
 
 **Each URL is asked for, on or off, strictly or not** (`CreateOptions.URLs`,
 `disco-vm create --url SCOPE=on|off[,strict]`; ADR 26-11-12-604), one
@@ -142,7 +149,7 @@ volume and cache clone go, and its disk is what VMs are created from. A
 running VM is refused. On a driver that does not report
 `Capabilities.Commit` (ADR 26-11-03-868), the engine refuses `Commit`, a
 `From`, and an upgrade's `--from` with an error wrapping `machine.ErrUnsupported` that names the
-driver, before it asks the driver, as it refuses `Isolated` and `Egress`; so
+driver, before it asks the driver, as it refuses `Bare`, `Networks`, and `Egress`; so
 do `commit`, and `--from` on `create`, `run`, and `upgrade`. A caller there makes every
 VM fresh, and `info` reports `"commit": false` up front. To change a committed VM, create a VM from it, change
 that, and commit it under a new name; versions are names (`app-v1`,

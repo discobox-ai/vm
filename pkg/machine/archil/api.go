@@ -189,10 +189,15 @@ type mount struct {
 
 // egressPolicy is a sandbox's network policy (SandboxNetwork).
 type egressPolicy struct {
-	Egress *struct {
-		Default string `json:"default"`
-		Allow   []any  `json:"allow,omitempty"`
-	} `json:"egress,omitempty"`
+	Egress *egressRules `json:"egress,omitempty"`
+}
+
+// egressRules is a policy's egress (SandboxEgressPolicy): Deny wins over
+// Allow where both match.
+type egressRules struct {
+	Default string   `json:"default"`
+	Allow   []any    `json:"allow,omitempty"`
+	Deny    []string `json:"deny,omitempty"`
 }
 
 // createSandbox is the body of POST /api/sandboxes.
@@ -204,6 +209,9 @@ type createSandbox struct {
 	IdleTTL   int           `json:"idle_ttl_seconds"`
 	Mounts    []mount       `json:"mounts,omitempty"`
 	Network   *egressPolicy `json:"network,omitempty"`
+	// ServiceIngress lets a service in the guest publish a port of its own
+	// choosing. It is always sent, false: the guest's root opens nothing.
+	ServiceIngress bool `json:"enable_service_ingress"`
 }
 
 func (a *api) createSandbox(ctx context.Context, body createSandbox) (sandbox, error) {
@@ -287,14 +295,73 @@ func (a *api) setNetwork(ctx context.Context, id string, p egressPolicy) error {
 	return a.call(ctx, http.MethodPut, "/api/sandboxes/"+url.PathEscape(id)+"/network", nil, p, nil)
 }
 
-// exposePort makes a port public and returns its hostname; a port already
-// exposed answers its hostname again.
-func (a *api) exposePort(ctx context.Context, id string, port uint32) (string, error) {
-	var out struct {
-		Hostname string `json:"hostname"`
+// unexposePort makes a port public no more. One not exposed is not an
+// error.
+func (a *api) unexposePort(ctx context.Context, id string, port uint32) error {
+	err := a.call(ctx, http.MethodDelete, fmt.Sprintf("/api/sandboxes/%s/ports/%d", url.PathEscape(id), port), nil, nil, nil)
+	if isNotFound(err) {
+		return nil
 	}
-	err := a.call(ctx, http.MethodPut, fmt.Sprintf("/api/sandboxes/%s/ports/%d", url.PathEscape(id), port), nil, nil, &out)
-	return out.Hostname, err
+	return err
+}
+
+// portToken is a sandbox's port token as Archil lists it: never its secret.
+type portToken struct {
+	ID      string    `json:"id"`
+	Port    uint32    `json:"port"`
+	Created time.Time `json:"created_at"`
+	Expires time.Time `json:"expires_at"`
+}
+
+// mintedToken is a port token as Archil makes it: its secret, which it
+// never returns again, and the port's stable hostname.
+type mintedToken struct {
+	portToken
+	Hostname string `json:"hostname"`
+	Token    string `json:"token"`
+}
+
+// mintToken makes a token for a sandbox's port that lasts ttl.
+func (a *api) mintToken(ctx context.Context, id string, port uint32, ttl time.Duration) (mintedToken, error) {
+	var out mintedToken
+	body := map[string]any{"port": port, "ttl": ttl.String()}
+	return out, a.call(ctx, http.MethodPost, "/api/sandboxes/"+url.PathEscape(id)+"/port-tokens", nil, body, &out)
+}
+
+// portTokens lists a sandbox's unexpired port tokens, every page of them.
+func (a *api) portTokens(ctx context.Context, id string) ([]portToken, error) {
+	query := url.Values{"limit": {"100"}}
+	var all []portToken
+	for {
+		var out struct {
+			Tokens []portToken `json:"tokens"`
+			Next   string      `json:"nextCursor"`
+		}
+		next, err := a.page(ctx, http.MethodGet, "/api/sandboxes/"+url.PathEscape(id)+"/port-tokens", query, nil, &out)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, out.Tokens...)
+		if next == "" {
+			next = out.Next
+		}
+		if next == "" {
+			return all, nil
+		}
+		if next == query.Get("cursor") {
+			return nil, fmt.Errorf("archil: list port tokens: the cursor %q came back again", next)
+		}
+		query.Set("cursor", next)
+	}
+}
+
+// revokeToken revokes a port token. One expired or gone is not an error.
+func (a *api) revokeToken(ctx context.Context, id, token string) error {
+	err := a.call(ctx, http.MethodDelete, "/api/sandboxes/"+url.PathEscape(id)+"/port-tokens/"+url.PathEscape(token), nil, nil, nil)
+	if isNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // connection is a short-lived URL of the sandbox's process API.

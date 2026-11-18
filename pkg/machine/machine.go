@@ -183,14 +183,18 @@ type Capabilities struct {
 	// Keys is whether the driver issues keys (IssueKey), and the narrowest
 	// scope one reaches.
 	Keys KeyCapabilities `json:"keys"`
-	// Isolation reports that an instance can be created stripped of what
-	// the provider gives a machine by default (InstanceSpec.Isolated) and
-	// placed on networks of the caller's (InstanceSpec.Networks).
-	Isolation bool `json:"isolation"`
+	// Bare is whether a machine holds nothing of the provider's account
+	// (InstanceSpec.Bare): never, when asked, or always (ADR 26-11-17-311
+	// §1).
+	Bare BareReach `json:"bare,omitempty"`
+	// Networks reports that the driver places a machine on networks of the
+	// caller's (InstanceSpec.Networks).
+	Networks bool `json:"networks"`
 	// Egress is every fence an instance can be created with
 	// (InstanceSpec.Egress), held outside the guest, where its root cannot
-	// loosen it: EgressNone, nothing beyond its networks, and EgressAllow, a
-	// list beyond them. Empty is none at all.
+	// loosen it: EgressNone, nothing beyond its networks, EgressAllow, a
+	// list beyond them, and EgressCloseDNS, either with no resolver
+	// answering (Egress.CloseDNS). Empty is none at all.
 	Egress []EgressFence `json:"egress,omitempty"`
 	// Volumes is every volume the driver attaches to an instance
 	// (InstanceSpec.Data, InstanceSpec.Cache), mounted at VolumePath. Empty
@@ -201,6 +205,28 @@ type Capabilities struct {
 	// (InstanceSpec.URLs).
 	URLs URLCapabilities `json:"urls"`
 }
+
+// BareReach is whether a driver's machines hold nothing of its provider's
+// account (Capabilities.Bare): no credential of the account, no in-guest
+// tool that acts as it, no integration it set up, and no peer on its default
+// network.
+type BareReach string
+
+const (
+	// BareNever is a driver that claims nothing and cannot strip a machine:
+	// it refuses InstanceSpec.Bare with ErrUnsupported.
+	BareNever BareReach = ""
+	// BareStrip is a driver whose machines hold something of the account
+	// unless InstanceSpec.Bare asks for one stripped at create (boxd).
+	BareStrip BareReach = "strip"
+	// BareAlways is a driver that gives a machine nothing of the account,
+	// so InstanceSpec.Bare is already met (archil).
+	BareAlways BareReach = "always"
+)
+
+// Strips reports whether the driver makes a machine bare when asked:
+// BareStrip or BareAlways.
+func (r BareReach) Strips() bool { return r == BareStrip || r == BareAlways }
 
 // URLReach is whether a driver gives an instance one of its service's URLs
 // (Capabilities.URLs).
@@ -223,8 +249,10 @@ type URLScope string
 const (
 	// URLIngress is where the driver's caller, the controller managing the
 	// pool, reaches the instance's service with no credential of the
-	// driver's: an internet URL, a VLAN address, a loopback port, or an
-	// owner-only local socket a shim serves (Service.IngressURL).
+	// driver's, or with the one the driver gave it beside the URL
+	// (Service.Credential, ADR 26-11-17-311 §3): an internet URL, a VLAN
+	// address, a loopback port, or an owner-only local socket a shim serves
+	// (Service.IngressURL).
 	URLIngress URLScope = "ingress"
 	// URLPool is where the instance's peers, the other instances of the
 	// driver in its pool, reach its service (Service.PoolURL).
@@ -242,10 +270,17 @@ func ParseURLScope(s string) (URLScope, error) {
 	return "", fmt.Errorf("a URL scope of %q, not ingress or pool", s)
 }
 
-// URLCapabilities is a driver's URLReach for each URLScope.
+// URLCapabilities is a driver's URLReach for each URLScope, and whether its
+// URLs answer only a credential it mints.
 type URLCapabilities struct {
 	Ingress URLReach `json:"ingress,omitempty"`
 	Pool    URLReach `json:"pool,omitempty"`
+	// Credential reports that every URL the driver gives answers only a
+	// request carrying the credential Service mints beside it
+	// (Service.Credential). The provider checks it outside the guest, where
+	// the guest's root cannot loosen or answer it, and refuses a request
+	// without it before the guest sees it.
+	Credential bool `json:"credential,omitempty"`
 }
 
 // Of is the reach of scope.
@@ -332,6 +367,9 @@ const (
 	// EgressAllow is an Egress.Allow that lists hosts, wildcards,
 	// addresses, or ranges.
 	EgressAllow EgressFence = "allow"
+	// EgressCloseDNS is Egress.CloseDNS: no resolver answers the guest
+	// beyond its networks. EgressNone closes DNS already.
+	EgressCloseDNS EgressFence = "close-dns"
 )
 
 // SupportsOS reports whether the driver can run the given guest OS.
@@ -342,7 +380,8 @@ func (c Capabilities) SupportsOS(os OS) bool { return slices.Contains(c.GuestOS,
 func (c Capabilities) Installs(os OS) bool { return slices.Contains(c.Install, os) }
 
 // Fences reports whether the driver holds the fence e asks for: EgressNone
-// for an empty Allow, EgressAllow for any other. A nil fence is the
+// for an empty Allow, which closes DNS too, and EgressAllow for any other,
+// with EgressCloseDNS where it asks for CloseDNS. A nil fence is the
 // provider's default, which every driver holds.
 func (c Capabilities) Fences(e *Egress) bool {
 	switch {
@@ -350,6 +389,8 @@ func (c Capabilities) Fences(e *Egress) bool {
 		return true
 	case len(e.Allow) == 0:
 		return slices.Contains(c.Egress, EgressNone)
+	case e.CloseDNS && !slices.Contains(c.Egress, EgressCloseDNS):
+		return false
 	default:
 		return slices.Contains(c.Egress, EgressAllow)
 	}
@@ -613,15 +654,17 @@ type InstanceSpec struct {
 	// Forwards are served whenever the instance runs, by a driver that lists
 	// Capabilities.Ports.
 	Forwards []Forward
-	// Isolated strips the machine of what its provider gives one by default
-	// (boxd: the in-VM CLI and its token, the git credential helper and
+	// Bare asks for a machine that holds nothing of the provider's account
+	// (Capabilities.Bare). A BareStrip driver strips it at create (boxd:
+	// the in-VM CLI and its token, the git credential helper and
 	// integrations, and the default network's peers), for good: a VM
-	// committed from it, and a VM created from that, stay isolated. A driver that does not
-	// list Capabilities.Isolation refuses it.
-	Isolated bool
+	// committed from it, and a VM created from that, stay bare. A
+	// BareAlways driver has met it already, and a BareNever driver refuses
+	// it with ErrUnsupported.
+	Bare bool
 	// Networks are the provider's networks the machine peers on, in place
-	// of its default one. A driver that does not list
-	// Capabilities.Isolation refuses them.
+	// of its default one. A driver that does not report
+	// Capabilities.Networks refuses them.
 	Networks []string
 	// URLs asks for each of the service's URLs, or for none; the zero value
 	// is the driver's default for each. An ingress URL on the internet is an
@@ -649,6 +692,13 @@ type Egress struct {
 	// Allow is the hostnames, wildcards (*.example.com), IPv4 addresses,
 	// and IPv4 ranges the instance may reach. Empty is nothing.
 	Allow []string `json:"allow,omitempty"`
+	// CloseDNS asks that no resolver answer the guest beyond its networks:
+	// no name is resolved through the fence, so no query carries anything
+	// out. Hosts in Allow are still reached by name at whatever address the
+	// guest dials, where the provider connects by name. A driver that does
+	// not list EgressCloseDNS refuses it with a non-empty Allow; an empty
+	// Allow closes DNS already.
+	CloseDNS bool `json:"closeDNS,omitempty"`
 }
 
 // Instance is one VM, as its provider has it, committed or not: which it is
@@ -674,9 +724,9 @@ type Instance struct {
 	Created  time.Time `json:"created,omitzero"`
 	// Forwards are served whenever it runs.
 	Forwards []Forward `json:"forwards,omitempty"`
-	// Isolated and Networks are as InstanceSpec's, as the provider reports
-	// them.
-	Isolated bool     `json:"isolated,omitempty"`
+	// Bare and Networks are as InstanceSpec's, as the provider reports
+	// them: Bare is set on a BareAlways driver's every VM.
+	Bare     bool     `json:"bare,omitempty"`
 	Networks []string `json:"networks,omitempty"`
 	// Egress is the fence the provider holds, as InstanceSpec's: nil is
 	// none.
@@ -744,18 +794,14 @@ type InstallSpec struct {
 	Log io.Writer
 }
 
-// Service is an instance's one service: where a program in the guest listens,
-// and where its caller and its peers reach it. The driver picks it, never the caller or
-// a committed VM, and it is the same for every boot of a VM.
+// Service is where an instance's one service is reached: by its caller and
+// by its peers, with the credential the driver minted for them where its URLs
+// need one. Where a program in the guest listens is Driver.Listen's. The
+// driver picks both, never the caller or a committed VM.
 type Service struct {
-	// Listen is the address a guest program listens on, in guest.Listen's
-	// form: vsock:PORT (AF_VSOCK on vz, the hvsocket service ID of the port
-	// on hcs), tcp:ADDR. The engine writes it to the guest's
-	// guest.ServiceFile at every start.
-	Listen string
 	// IngressURL is where the driver's caller reaches the service over HTTP
-	// with no credential of the driver's (URLIngress): boxd's
-	// https://<machine>.<zone>, archil's exposed port, a port the Docker
+	// (URLIngress), with Credential where there is one: boxd's
+	// https://<machine>.<zone>, archil's port hostname, a port the Docker
 	// daemon publishes on its host's loopback, a loopback port fake's shim
 	// serves, or the owner-only local socket a held VM's shim serves
 	// (unix:///PATH, or npipe:////./pipe/NAME on Windows; DialURL). It is
@@ -774,6 +820,11 @@ type Service struct {
 	// IngressURL is withheld; on boxd on no networks it is the ingress URL,
 	// so none with that withheld.
 	PoolURL string
+	// Credential is what every URL above answers, on a driver that reports
+	// URLCapabilities.Credential, and nil on any other. Each call to
+	// Service mints a new one, which the driver neither keeps nor puts in
+	// the guest (ADR 26-11-17-311 §§3-4).
+	Credential *Credential `json:"credential,omitempty"`
 }
 
 // URL is the service's URL in scope, empty where it has none.
@@ -782,6 +833,29 @@ func (s Service) URL(scope URLScope) string {
 		return s.PoolURL
 	}
 	return s.IngressURL
+}
+
+// Credential is what a request to a service's URL carries, on a driver
+// whose URLs answer only one (URLCapabilities.Credential): Token, in the
+// header Header names. A holder keeps it until Expires, and asks Service
+// for a new one before then, rather than one per request.
+type Credential struct {
+	// Header is the HTTP header that carries Token (X-Archil-Token on
+	// archil). A caller sends it under this name and hard-codes none.
+	Header string `json:"header"`
+	// Token is the secret. It reaches one service of one machine, never the
+	// driver's API.
+	Token string `json:"token"`
+	// Expires is when Token stops opening connections. A connection
+	// already open is not cut.
+	Expires time.Time `json:"expires"`
+}
+
+// Endpoint is one of a service's URLs, with the credential it answers, if
+// any (Service.Credential).
+type Endpoint struct {
+	URL        string      `json:"url"`
+	Credential *Credential `json:"credential,omitempty"`
 }
 
 // Share is a host directory exported to the guest.
@@ -885,7 +959,7 @@ type Driver interface {
 	// VM from, or, where from is nil, a fresh one from the driver's base
 	// (ADR 26-11-03-782). The VM keeps its name, its data volume and its
 	// cache clone as they are, and what its spec set (CPUs, Memory,
-	// Forwards, Isolated, Networks, Egress). Its old root is removed. It
+	// Forwards, Bare, Networks, Egress). Its old root is removed. It
 	// returns the VM as the provider now has it, whose ID, From, and
 	// Created may differ; an Instance from before still names it.
 	//
@@ -914,10 +988,20 @@ type Driver interface {
 	// ErrNotRunning. Waiting for a desktop to show is reported to log. A
 	// driver that does not report Capabilities.View returns ErrUnsupported.
 	ViewInstall(ctx context.Context, name, title string, log io.Writer) error
-	// Service is the instance's service. A URL that exists only while the
-	// instance runs (a port the daemon publishes, a shim's) is asked for
-	// while it is stopped: then the driver returns ErrNotRunning. A URL
-	// that outlives a stop (boxd's) is the same across stop and start.
+	// Listen is the address a program in the instance's guest listens on
+	// for its service, in guest.Listen's form: vsock:PORT (AF_VSOCK on vz,
+	// the hvsocket service ID of the port on hcs), tcp:ADDR. It is the same
+	// for every boot of a VM, and the engine writes it to the guest's
+	// guest.ServiceFile at every start. It mints nothing, so a start never
+	// does.
+	Listen(ctx context.Context, inst Instance) (string, error)
+	// Service is where the instance's service is reached. A URL that
+	// exists only while the instance runs (a port the daemon publishes, a
+	// shim's) is asked for while it is stopped: then the driver returns
+	// ErrNotRunning. A URL that outlives a stop (boxd's, archil's) is the
+	// same across stop and start. A driver that reports
+	// URLCapabilities.Credential mints a credential at each call, so only a
+	// caller that means to reach the service calls it.
 	Service(ctx context.Context, inst Instance) (Service, error)
 
 	// Caches lists the pool's cache keys, each with its current

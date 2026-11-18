@@ -404,8 +404,8 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 			}
 		}
 	}
-	if spec.Isolated || len(spec.Networks) > 0 {
-		return machine.Instance{}, fmt.Errorf("%s: isolation: %w", d.hv.Name(), machine.ErrUnsupported)
+	if spec.Bare || len(spec.Networks) > 0 {
+		return machine.Instance{}, fmt.Errorf("%s: a bare machine, or networks: %w", d.hv.Name(), machine.ErrUnsupported)
 	}
 	if err := spec.URLs.Check(d.Capabilities().URLs); err != nil {
 		return machine.Instance{}, fmt.Errorf("%s: %w", d.hv.Name(), err)
@@ -892,10 +892,27 @@ func (d *Driver) Commit(ctx context.Context, inst machine.Instance) (machine.Ins
 	return rec.Instance, nil
 }
 
-// Service is the hypervisor's address in the guest, and the URL the
-// instance's shim serves it at while it runs (listenService): both scopes'
-// where the guests share the host's loopback, and otherwise the pool's, and
-// the ingress's unless it was asked off (urlCapabilities).
+// Listen is the hypervisor's address in the guest.
+func (d *Driver) Listen(ctx context.Context, inst machine.Instance) (string, error) {
+	if err := d.authorizeInstance(ctx, inst); err != nil {
+		return "", err
+	}
+	rec, err := d.runnable(inst)
+	if err != nil {
+		return "", err
+	}
+	hs, err := d.spec(rec)
+	if err != nil {
+		return "", err
+	}
+	listen, _, err := d.hv.Service(hs)
+	return listen, err
+}
+
+// Service is the URL the instance's shim serves its service at while it
+// runs (listenService): both scopes' where the guests share the host's
+// loopback, and otherwise the pool's, and the ingress's unless it was asked
+// off (urlCapabilities).
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return machine.Service{}, err
@@ -904,15 +921,7 @@ func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Se
 	if err != nil {
 		return machine.Service{}, err
 	}
-	hs, err := d.spec(rec)
-	if err != nil {
-		return machine.Service{}, err
-	}
-	listen, _, err := d.hv.Service(hs)
-	if err != nil {
-		return machine.Service{}, err
-	}
-	service := machine.Service{Listen: listen}
+	var service machine.Service
 	shim, err := d.openShim(inst.ID)
 	if err != nil || shim.status(ctx) != nil {
 		return service, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrNotRunning)
