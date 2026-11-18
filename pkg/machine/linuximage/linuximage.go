@@ -61,9 +61,8 @@ const (
 // driver is configured with no base (machine.Config.Base): disco-vm's own
 // (pkg/guest/linux), from its linux/v* release line.
 //
-// It is a tag until the first release is published and its digest pinned
-// here; ADR 26-10-31-990 pins it by digest.
-const DefaultBase = "ghcr.io/discobox-ai/disco-vm-linux:v1"
+// The reference pins the published multi-platform image index by digest.
+const DefaultBase = "ghcr.io/discobox-ai/disco-vm-linux:v2@sha256:146c71ff2b3221c673000472aeb577e57e4b9ab7a94465b8ca7588b4b528316b"
 
 // artifacts are every file a pull extracts.
 var artifacts = []string{Kernel, KrunKernel, Initrd, Root}

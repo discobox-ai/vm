@@ -14,7 +14,7 @@ func TestTagsAreReleaseVersions(t *testing.T) {
 			t.Errorf("CheckTag(%q): %v", tag, err)
 		}
 	}
-	for _, tag := range []string{"", "1.2.3", "v1.2", "v01.2.3", "v1.2.3-beta.1", "v1.2.3-rc1", "v1.2.3+meta", "linux/v1", "v1.2.3'"} {
+	for _, tag := range []string{"", "1.2.3", "v1.2", "v01.2.3", "v1.2.3-beta.1", "v1.2.3-rc1", "v1.2.3+meta", "linux/v2", "v1.2.3'"} {
 		if err := CheckTag(tag); err == nil {
 			t.Errorf("CheckTag(%q) accepted it", tag)
 		}
