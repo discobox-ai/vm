@@ -51,4 +51,5 @@ Follow `template.md` and the `repostd` skill.
 | [26-11-14-816](26-11-14-816-hcs-installs-windows-inside-the-vm-from-the-iso-and-attaches-and-mounts-nothing-on-the-host.md) | hcs installs Windows inside the VM from the ISO, and attaches and mounts nothing on the host | Accepted |
 | [26-11-15-274](26-11-15-274-a-providers-cap-on-the-vms-that-exist-is-maxmachines-read-at-check.md) | A provider's cap on the VMs that exist is `MaxMachines`, read at `Check`, and boxd's key is refused while a host-bound secret reaches its machines | Proposed |
 | [26-11-17-311](26-11-17-311-a-driver-can-fence-a-machine-at-its-providers-edge-and-its-urls-answer-only-a-credential-it-mints-for-its-caller.md) | A driver can fence a machine at its provider's edge, and its URLs answer only a credential it mints for its caller | Accepted (by the owner, merging #188, 2026-11-18) |
+| [26-11-20-547](26-11-20-547-a-base-says-when-it-is-an-oci-image-and-an-embedder-sets-such-a-base-itself.md) | A base says when it is an OCI image, and an embedder sets such a base itself | Proposed |
 <!-- /repostd:adr-index -->
