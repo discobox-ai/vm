@@ -42,7 +42,7 @@ nothing.
 | seam | archil |
 |---|---|
 | `Install` | not offered: a fresh VM runs the base. |
-| base | `Config.Base` (`$DISCO_VM_BASE`), an OCI image Archil pulls, or Archil's default image when empty. |
+| base | `Config.Base` (`$DISCO_VM_BASE`), an OCI image Archil pulls, or Archil's default image when empty; declared `machine.OCIImage`, so an embedder sets it to an image of its own. |
 | VM | the sandbox `dvm-<pool>--<name>`. `Instances` lists the sandboxes under the pool's prefix whose rest is a VM name, with each one's size, creation, fence (`GET .../network`), and data disk. Archil does not say which sandbox a fork came from: `From` is set only by the Create that made it. |
 | `Create`, fresh | a sandbox of the base at the size asked, with its fence and `enable_service_ingress: false`; then the ingress mark where ingress is asked off, read back with the fence, a stop, and the data disk. No port is exposed. `sandbox_name_conflict` is `ErrExists`. |
 | `Create`, `From` | a fork of the source's sandbox, which must be stopped and have no mounts (commit it first); the spec's fence and ingress mark set (an unfenced spec clears the source's fence); 7302 unexposed and every token the fork carried revoked; then a stop, and the data disk. A size other than the source's is refused. |

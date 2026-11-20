@@ -42,7 +42,7 @@ func regions() []string { return slices.Sorted(maps.Keys(controlPlanes)) }
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Linux VMs as Archil's Firecracker sandboxes, in the cloud, from any host.",
-		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Placeholder: "debian:sid",
+		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Format: machine.OCIImage, Placeholder: "debian:sid",
 			Description: "The public OCI image a fresh VM runs; empty is Archil's default image."},
 		ConfigFields: []machine.ConfigField{
 			{Key: "region", Label: "Region", Type: machine.ConfigString, Env: RegionEnv, Required: true, Placeholder: legacyRegion,

@@ -110,6 +110,35 @@ func TestPrivileged(t *testing.T) {
 	}
 }
 
+// TestBaseFormat holds the drivers whose base names an OCI image, which an
+// embedder sets to one of its own (ADR 26-11-20-547): a driver whose base
+// takes one is in this list or argued out of it. libkrun's and vz's base is
+// a registry reference too, but to a Linux guest image's artifacts (a
+// kernel, an initrd, a root), not a container image; boxd's is boxd's own
+// image name; fake's a name; hcs takes none.
+func TestBaseFormat(t *testing.T) {
+	want := map[string]machine.ImageFormat{
+		"archil": machine.OCIImage,
+		"docker": machine.OCIImage,
+	}
+	for _, name := range machine.Names() {
+		if name == testDriver {
+			continue
+		}
+		def, err := machine.DefinitionOf(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got machine.ImageFormat
+		if def.TakesBase() {
+			got = def.Base.Format
+		}
+		if got != want[name] {
+			t.Errorf("%s's base has format %q, want %q", name, got, want[name])
+		}
+	}
+}
+
 func TestValidateRefusesWhatTheDriverDoesNotTake(t *testing.T) {
 	for _, c := range []struct {
 		driver, config, want string
@@ -330,6 +359,12 @@ func TestRegistration(t *testing.T) {
 		"a retired alias of nothing": {New: newFn, Validate: validate,
 			Definition: machine.Definition{ConfigFields: []machine.ConfigField{
 				{Key: "old", Type: machine.ConfigString, Retired: true, ReplacedBy: "a"}}}},
+		"a format on a field": {New: newFn, Validate: validate,
+			Definition: machine.Definition{ConfigFields: []machine.ConfigField{{Key: "a", Type: machine.ConfigString, Format: machine.OCIImage}}}},
+		"a base of an unknown format": {New: newFn, Validate: validate,
+			Definition: machine.Definition{Base: &machine.ConfigField{Type: machine.ConfigString, Format: "tarball"}}},
+		"an OCI image base not a string": {New: newFn, Validate: validate,
+			Definition: machine.Definition{Base: &machine.ConfigField{Type: machine.ConfigBoolean, Format: machine.OCIImage}}},
 		"a base with a key": {New: newFn, Validate: validate,
 			Definition: machine.Definition{Base: &machine.ConfigField{Key: "base"}}},
 		"a secret of another type": {New: newFn, Validate: validate,
