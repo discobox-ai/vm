@@ -103,9 +103,15 @@ driver takes `Config.DriverConfig`, a JSON object of fields no other driver
 shares. `machine.Register` takes its factory, its `Definition` (a
 description, its base, a `ConfigField` per field, in the shape of
 discobox's `sandbox.ProviderDefinition`, plus `Default`, `Env`,
-`Privileged`, and `Retired`, and its secret), and its `Validator`, all
-required. `Config.Base` stays common, described per driver by
+`Privileged`, `AgentOS`, `Format`, and `Retired`, and its secret), and
+its `Validator`, all required. `Config.Base` stays common, described per driver by
 `Definition.Base`, nil where the driver takes none (hcs; ADR 26-11-12-461).
+A base that names an OCI image says so (`Format: machine.OCIImage`; archil
+and docker; ADR 26-11-20-547): an embedder holding a public image of that
+format, pulled with no credential, sets every such driver's base to it
+unless its own configuration names another, so the driver's default is the
+command line's alone. A base only the driver knows
+the form of (a guest image, boxd's image name, fake's name) has no format.
 
 - **A driver decodes its own type** (`machine.DecodeConfig[T]`, refusing a
   key T lacks) in one `decode` that applies its defaults and checks its

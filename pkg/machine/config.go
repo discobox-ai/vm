@@ -25,6 +25,20 @@ const (
 	ConfigNumber  = "number"
 )
 
+// ImageFormat is the format of the image a driver's base names
+// (ConfigField.Format).
+type ImageFormat string
+
+// OCIImage is a base that names an OCI image by reference, which the
+// driver or its provider pulls (ADR 26-11-20-547). An embedder that holds
+// an image of the base's format sets the base to it on every driver that
+// declares that format, unless its own configuration names another, so
+// the driver's default, or its provider's, is the command line's alone.
+// Such an image is public, pulled with no credential: a provider such as
+// Archil pulls it from its own cloud, with none of the embedder's
+// credentials, dialer, or trust roots.
+const OCIImage ImageFormat = "oci-image"
+
 // BaseEnv is where the command line reads Config.Base from, for every
 // driver; Definition.Base describes what a driver takes there.
 const BaseEnv = "DISCO_VM_BASE"
@@ -33,7 +47,7 @@ const BaseEnv = "DISCO_VM_BASE"
 // (Config.DriverConfig): a key of its JSON object (ADR 26-11-11-215). Its
 // shape is discobox's sandbox.ProviderConfigField, so a provider that
 // embeds the engine can list a driver's fields as its own, plus Default,
-// Env, Privileged, AgentOS, and Retired.
+// Env, Privileged, AgentOS, Format, and Retired.
 type ConfigField struct {
 	// Key is the field's key in the JSON object, in lowerCamelCase.
 	Key string `json:"key"`
@@ -69,6 +83,12 @@ type ConfigField struct {
 	// it carries, and leaves it absent when it has neither. An embedder that
 	// is not disco-vm sets it itself.
 	AgentOS OS `json:"agentOS,omitempty"`
+	// Format is set on a base (Definition.Base, ADR 26-11-20-547) that
+	// names an image in a format another program can name too, and is
+	// that format: OCIImage. Absent is a base only the driver knows the
+	// form of (a guest image, a provider's own image name). It is set on
+	// no other field.
+	Format ImageFormat `json:"format,omitempty"`
 	// Retired fields are accepted for good and listed nowhere a person
 	// reads: decoded into ReplacedBy's field, or, with none, ignored with a
 	// warning. One given beside its replacement is refused.
@@ -139,7 +159,8 @@ func (d Definition) Keys() []string {
 // check refuses a definition a driver should never register: a field with
 // no key, a key twice, a type that is not one of the three, a retired field
 // whose replacement is missing, retired, of another type, or more
-// privileged than it, a base described with a key, a secret malformed,
+// privileged than it, a format on a field, a base described with a key or
+// of an unknown format, a secret malformed,
 // more than one, or with a field's key, or in-machine auth malformed.
 func (d Definition) check() error {
 	seen := map[string]bool{}
@@ -158,6 +179,9 @@ func (d Definition) check() error {
 		}
 		if f.ReplacedBy != "" && !f.Retired {
 			return fmt.Errorf("field %q is replaced but not retired", f.Key)
+		}
+		if f.Format != "" {
+			return fmt.Errorf("field %q has a format, which only the base has", f.Key)
 		}
 		switch f.AgentOS {
 		case "":
@@ -185,6 +209,9 @@ func (d Definition) check() error {
 	}
 	if d.Base != nil && d.Base.Key != "" {
 		return errors.New("the base is not a field of the configuration: it has no key")
+	}
+	if d.Base != nil && d.Base.Format != "" && (d.Base.Format != OCIImage || d.Base.Type != ConfigString) {
+		return fmt.Errorf("the base has format %q: a base's format is %q, and the base a string", d.Base.Format, OCIImage)
 	}
 	if len(d.Secrets) > 1 {
 		return errors.New("more than one secret: a driver's secret is its key, which Config.Keys carries")

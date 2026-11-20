@@ -302,6 +302,9 @@ func fieldDetails(field machine.ConfigField, key, agentDefault string) string {
 	} else if field.Placeholder != "" {
 		details = append(details, "e.g. "+field.Placeholder)
 	}
+	if field.Format != "" {
+		details = append(details, "format: "+string(field.Format))
+	}
 	if field.Required {
 		details = append(details, "required")
 	}
