@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -300,11 +303,16 @@ func TestDiskPages(t *testing.T) {
 
 // TestListingPages: the sandbox listing follows a nextCursor, at the
 // envelope or in its data, to the last page, and a listing whose cursor
-// comes back again fails rather than read short, as the disks' does.
+// comes back again fails rather than read short, as the disks' does. Its
+// filter is sent with every page.
 func TestListingPages(t *testing.T) {
 	loop := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cursor := r.URL.Query().Get("cursor")
+		if r.URL.Path == "/api/sandboxes" && r.URL.Query().Get("name_prefix") != "dvm-p--" {
+			http.Error(w, "no filter", http.StatusBadRequest)
+			return
+		}
 		if loop && cursor != "" {
 			cursor = "again"
 		}
@@ -325,7 +333,7 @@ func TestListingPages(t *testing.T) {
 	}))
 	defer srv.Close()
 	a := &api{base: srv.URL, keys: machine.StaticKey(machine.Key{Driver: "archil", Secret: "k"}), http: srv.Client()}
-	all, err := a.sandboxes(context.Background())
+	all, err := a.sandboxes(context.Background(), url.Values{"name_prefix": {"dvm-p--"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +341,7 @@ func TestListingPages(t *testing.T) {
 		t.Fatalf("listed %+v", all)
 	}
 	loop = true
-	if _, err := a.sandboxes(context.Background()); err == nil || !strings.Contains(err.Error(), "came back again") {
+	if _, err := a.sandboxes(context.Background(), url.Values{"name_prefix": {"dvm-p--"}}); err == nil || !strings.Contains(err.Error(), "came back again") {
 		t.Fatalf("a sandbox listing whose cursor repeats: %v", err)
 	}
 	if _, err := a.disks(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "came back again") {
@@ -493,7 +501,7 @@ func TestUnavailable(t *testing.T) {
 			_, _ = io.WriteString(w, `{"success":false,"error":"down"}`)
 		}))
 		a := &api{base: srv.URL, keys: machine.StaticKey(machine.Key{Driver: "archil", Secret: "k"}), http: srv.Client()}
-		_, err := a.sandboxes(context.Background())
+		_, err := a.sandboxes(context.Background(), nil)
 		if err == nil || errors.Is(err, machine.ErrUnavailable) != tc.want {
 			t.Errorf("REST %d: %v, want ErrUnavailable %v", tc.status, err, tc.want)
 		}
@@ -502,5 +510,118 @@ func TestUnavailable(t *testing.T) {
 			t.Errorf("process API handshake %d: %v, want ErrUnavailable %v", tc.status, err, tc.want)
 		}
 		srv.Close()
+	}
+}
+
+// TestLabels: every sandbox the driver makes is labeled with its pool, its
+// VM, and the VM it was copied from (a fork with its own labels, never its
+// source's), so a listing by the pool's label finds exactly the pool's VMs,
+// and a listing reports a copy's From; every listing asks Archil for the
+// pool's names alone.
+func TestLabels(t *testing.T) {
+	f := newFakeAPI(t, t.TempDir())
+	ctx := context.Background()
+	p, q := f.driver(t, "p", "debian:sid"), f.driver(t, "q", "debian:sid")
+	a, err := p.Create(ctx, machine.InstanceSpec{Name: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := p.Create(ctx, machine.InstanceSpec{Name: "b", From: &a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := p.Create(ctx, machine.InstanceSpec{Name: "c", Data: &machine.DataVolume{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, err = p.Upgrade(ctx, c, &a); err != nil {
+		t.Fatal(err)
+	}
+	other, err := q.Create(ctx, machine.InstanceSpec{Name: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]map[string]string{
+		"dvm-p--a": {labelPool: "p", labelInstance: "a"},
+		"dvm-p--b": {labelPool: "p", labelInstance: "b", labelFrom: "a"},
+		"dvm-p--c": {labelPool: "p", labelInstance: "c", labelFrom: "a"},
+		"dvm-q--a": {labelPool: "q", labelInstance: "a"},
+	}
+	f.mu.Lock()
+	for _, s := range f.sandboxes {
+		if !maps.Equal(s.labels, want[s.name]) {
+			t.Errorf("sandbox %s is labeled %v, want %v", s.name, s.labels, want[s.name])
+		}
+	}
+	f.mu.Unlock()
+
+	listed, err := f.driver(t, "p", "").Instances(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := map[string]string{}
+	for _, inst := range listed {
+		from[inst.Name] = inst.From
+	}
+	if !maps.Equal(from, map[string]string{"a": "", "b": "a", "c": "a"}) {
+		t.Errorf("listed with From %v", from)
+	}
+
+	// A pool's VMs, found by label, are the ones the driver lists.
+	for d, insts := range map[*Driver][]machine.Instance{p: {a, b, c}, q: {other}} {
+		byLabel, err := d.api.sandboxes(ctx, url.Values{"label": {labelPool + "=" + d.pool}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got, wantIDs []string
+		for _, sb := range byLabel {
+			got = append(got, sb.ID)
+		}
+		for _, inst := range insts {
+			wantIDs = append(wantIDs, inst.ID)
+		}
+		slices.Sort(got)
+		slices.Sort(wantIDs)
+		if !slices.Equal(got, wantIDs) {
+			t.Errorf("pool %s by label: %v, want %v", d.pool, got, wantIDs)
+		}
+	}
+
+	f.mu.Lock()
+	for _, l := range f.listings {
+		if !l.Has("label") && !strings.HasPrefix(l.Get("name"), "dvm-") && !strings.HasPrefix(l.Get("name_prefix"), "dvm-") {
+			t.Errorf("a listing of every sandbox in the account: %v", l)
+		}
+	}
+	f.mu.Unlock()
+	for _, inst := range []machine.Instance{b, c, a} {
+		if err := p.Destroy(ctx, inst); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := q.Destroy(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestUnlabeledVMsAreListed: a sandbox made before the driver labeled
+// them is still its VM, listed by its name, with no From.
+func TestUnlabeledVMsAreListed(t *testing.T) {
+	f := newFakeAPI(t, t.TempDir())
+	ctx := context.Background()
+	d := f.driver(t, "p", "debian:sid")
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.sandboxes[0].labels = nil
+	f.mu.Unlock()
+	got, err := d.Instance(ctx, "old")
+	if err != nil || got.ID != inst.ID || got.From != "" {
+		t.Fatalf("an unlabeled VM: %+v, %v", got, err)
+	}
+	if err := d.Destroy(ctx, inst); err != nil {
+		t.Fatal(err)
 	}
 }

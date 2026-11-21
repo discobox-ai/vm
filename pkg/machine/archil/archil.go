@@ -92,9 +92,9 @@ func (*Driver) Capabilities() machine.Capabilities {
 	}
 }
 
-// Check lists the account's sandboxes, which needs a region and a key.
+// Check lists the pool's sandboxes, which needs a region and a key.
 func (d *Driver) Check(ctx context.Context) error {
-	_, err := d.api.sandboxes(ctx)
+	_, err := d.api.sandboxes(ctx, d.filter(""))
 	return err
 }
 
@@ -298,13 +298,13 @@ func (d *Driver) makeSandbox(ctx context.Context, spec machine.InstanceSpec, src
 	if src == nil {
 		sb, err = d.api.createSandbox(ctx, createSandbox{
 			Name: d.sandboxName(spec.Name), BaseImage: d.base, VCPUs: spec.CPUs, MemoryMiB: spec.Memory >> 20,
-			Network: policy(spec.Egress),
+			Network: policy(spec.Egress), Labels: d.labels(spec),
 		})
 		if err != nil {
 			return sb, nil, taken(spec.Name, fmt.Errorf("archil: create a sandbox of %s: %w", d.baseName(), err))
 		}
 	} else {
-		sb, err = d.api.fork(ctx, src.ID, d.sandboxName(spec.Name))
+		sb, err = d.api.fork(ctx, src.ID, d.sandboxName(spec.Name), d.labels(spec))
 		if err != nil {
 			return sb, nil, taken(spec.Name, fmt.Errorf("archil: fork %s: %w", spec.From.Name, err))
 		}
@@ -478,10 +478,11 @@ func (d *Driver) baseName() string {
 }
 
 // instance is a VM as its sandbox reports it. Archil does not say which
-// sandbox a fork came from, so From is empty.
+// sandbox a fork came from: From is its label's, empty on a sandbox made
+// before the driver labeled them.
 func (d *Driver) instance(name string, sb sandbox, data bool) machine.Instance {
 	inst := machine.Instance{
-		ID: sb.ID, Name: name, Pool: d.pool, GuestOS: machine.Linux,
+		ID: sb.ID, Name: name, Pool: d.pool, From: sb.Labels[labelFrom], GuestOS: machine.Linux,
 		CPUs: sb.VCPUs, Memory: sb.MemoryMiB << 20, Created: sb.Created, Bare: true,
 	}
 	if data {
@@ -496,7 +497,7 @@ func (d *Driver) instance(name string, sb sandbox, data bool) machine.Instance {
 // by the disk's ID, with no size, and the strictest fence, since Archil keeps
 // nothing else of it while it has no sandbox.
 func (d *Driver) instances(ctx context.Context, name string) ([]machine.Instance, error) {
-	all, err := d.api.sandboxes(ctx)
+	all, err := d.api.sandboxes(ctx, d.filter(name))
 	if err != nil {
 		return nil, fmt.Errorf("archil: list sandboxes: %w", err)
 	}
@@ -585,7 +586,7 @@ func (d *Driver) sandboxOf(ctx context.Context, inst machine.Instance) (sandbox,
 			return sb, err
 		}
 	}
-	all, err := d.api.sandboxes(ctx)
+	all, err := d.api.sandboxes(ctx, d.filter(inst.Name))
 	if err != nil {
 		return sandbox{}, err
 	}

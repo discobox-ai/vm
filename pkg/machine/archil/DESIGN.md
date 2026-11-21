@@ -5,8 +5,8 @@ A VM is the sandbox named for it, and nothing else is kept (ADR
 [docs/drivers/archil.md](../../../docs/drivers/archil.md).
 
 Archil's sandboxes are Firecracker microVMs behind a REST API, beside disks
-the provider mounts in them. A sandbox has no labels and its name never
-changes, which is all a VM needs. The driver has no agent in the guest and
+the provider mounts in them. A sandbox's name and labels never change, and
+the name is all a VM needs. The driver has no agent in the guest and
 nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
 
 - **A driver is one region's**, its configuration's `region`, which is
@@ -20,7 +20,21 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   anything else, and the refusal is `machine.ErrExists`. A listing reads the
   sandboxes under the pool's prefix, and Archil holds each one's fence and
   data disk. A sandbox whose name is no VM's, such as an earlier driver's
-  `dvm-<pool>-<key>`, is not listed.
+  `dvm-<pool>-<key>`, is not listed. Archil filters every sandbox listing
+  to the pool's prefix, or a VM's name (`filter`); the pool's disks are
+  still read from the whole account's, or one by its name.
+- **Every sandbox the driver makes is labeled** (`names.go`):
+  `ai.discobox.vm.pool`, `ai.discobox.vm.instance`, and
+  `ai.discobox.vm.from` for a copy, at a fresh Create, a fork, and an
+  upgrade's new sandbox, so a pool's sandboxes are found in Archil with
+  `label=ai.discobox.vm.pool=<pool>`, and a listing reports a copy's
+  `From`, which Archil does not keep. Archil sets labels only when it makes
+  a sandbox, and a fork given none copies its source's, so a fork is always
+  given its own. Labels are not the VM: a sandbox made before them has none,
+  can't be given any, and is listed by its name with no `From`. The guest
+  sees none of them (seen 2026-11-21: not in its environment, its kernel
+  command line, or its disk). The ingress mark stays in the network policy,
+  which every VM carries, labeled or not.
 - **The data volume is the disk `dvm-<pool>--<name>--data`**, made once
   the name is taken and mounted at each start. Archil answers a disk of a
   name it has rather than making one, so a data disk with no sandbox is a
@@ -131,7 +145,7 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
     tokens, which their holders renew with `Service`. Stop revokes nothing: a holder's
     request starts the VM, as Archil does.
   - **Ingress off is a mark in the network policy:** the denied address
-    `ingressOff` (TEST-NET-1), since a sandbox has no labels. It is read
+    `ingressOff` (TEST-NET-1), which a VM made before labels carries too. It is read
     back with the fence, kept across an upgrade (one finished after an
     interruption, which left nothing of the sandbox, ends with ingress off,
     the strictest), set or cleared on a fork

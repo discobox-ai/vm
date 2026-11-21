@@ -32,6 +32,13 @@
   without an exit is still killed in the guest; an exec whose output has a gap fails once it exits
   rather than pass a short stream as whole. The fake that serves a copy
   out drops part of a chunk to prove it (`TestCopyFrom`).
+- **A fork is always sent its labels.** Archil copies a source's labels to
+  a fork given none, so a fork would carry its source's VM name and pool.
+  The fake copies them as Archil does, so a fork sent none shows.
+- **A label never decides what the driver lists.** A sandbox made before
+  the driver labeled them has none and can't be given any (Archil has no
+  update), so a VM is found by its name, and a label is read only for
+  `From`.
 - **Every name sent to Archil is checked against its OpenAPI limit.** A
   sandbox's is 63 characters, a disk's 100; a name past one fails with
   Archil's raw 400 after the checks passed it.

@@ -13,8 +13,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,6 +75,8 @@ type fakeAPI struct {
 	gatewayTLS *tls.Config
 	// creates are the body of every sandbox create, as sent.
 	creates []map[string]any
+	// listings are the query of every sandbox listing.
+	listings []url.Values
 	// containers, when set, runs each sandbox as a Docker container, and
 	// its processes in it, rather than on this host (container_test.go).
 	containers *fakeContainers
@@ -104,6 +108,9 @@ type fakeSandbox struct {
 	gateways       map[int]string
 	serviceIngress bool
 	forkOf, route  string
+	// labels are set at create or fork and never changed: Archil has no
+	// update.
+	labels map[string]string
 	// root is the directory standing in for its root disk.
 	root string
 }
@@ -254,8 +261,48 @@ func (f *fakeAPI) page(r *http.Request, n int) (from, to int, next string, err e
 func (s *fakeSandbox) view() map[string]any {
 	return map[string]any{
 		"sandbox_id": s.id, "name": s.name, "status": s.status, "vcpu_count": s.vcpus, "mem_size_mib": s.memMiB,
-		"base_image": s.image, "created_at": s.created, "mounts": s.mounts,
+		"base_image": s.image, "created_at": s.created, "mounts": s.mounts, "labels": s.labels,
 	}
+}
+
+// checkLabels refuses labels as Archil was seen to (2026-11-21): at most
+// 32, keys and values 1-63 letters, digits, ".", "_", or "-", and no key
+// under "archil.".
+func checkLabels(labels map[string]string) error {
+	if len(labels) > 32 {
+		return errors.New("labels may have at most 32 entries")
+	}
+	for k, v := range labels {
+		if strings.HasPrefix(strings.ToLower(k), "archil.") {
+			return fmt.Errorf("label key %q uses the reserved archil. prefix", k)
+		}
+		if !labelPart(k) || !labelPart(v) {
+			return fmt.Errorf("label %q value must be 1-63 letters, numbers, or . _ -", k)
+		}
+	}
+	return nil
+}
+
+func labelPart(s string) bool {
+	return len(s) >= 1 && len(s) <= 63 && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") == ""
+}
+
+// matches reports whether a sandbox passes a listing's filters, as
+// Archil's: name, name_prefix, and every label, given as key=value.
+func (s *fakeSandbox) matches(q url.Values) (bool, error) {
+	if q.Has("name") && s.name != q.Get("name") || !strings.HasPrefix(s.name, q.Get("name_prefix")) {
+		return false, nil
+	}
+	for _, l := range q["label"] {
+		k, v, ok := strings.Cut(l, "=")
+		if !ok {
+			return false, fmt.Errorf("label %q must be key=value", l)
+		}
+		if got, has := s.labels[k]; !has || got != v {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // sandbox is the sandbox of r's sid, or nil after answering 404. The caller
@@ -273,13 +320,25 @@ func (f *fakeAPI) sandbox(w http.ResponseWriter, r *http.Request) *fakeSandbox {
 func (f *fakeAPI) listSandboxes(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	from, to, next, err := f.page(r, len(f.sandboxes))
+	var found []*fakeSandbox
+	for _, s := range f.sandboxes {
+		ok, err := s.matches(r.URL.Query())
+		if err != nil {
+			fail(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		if ok {
+			found = append(found, s)
+		}
+	}
+	f.listings = append(f.listings, r.URL.Query())
+	from, to, next, err := f.page(r, len(found))
 	if err != nil {
 		fail(w, http.StatusBadRequest, "", err.Error())
 		return
 	}
 	views := []map[string]any{}
-	for _, s := range f.sandboxes[from:to] {
+	for _, s := range found[from:to] {
 		views = append(views, s.view())
 	}
 	reply(w, http.StatusOK, map[string]any{"sandboxes": views}, next)
@@ -318,6 +377,10 @@ func (f *fakeAPI) createSandbox(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.creates = append(f.creates, fields)
+	if err := checkLabels(body.Labels); err != nil {
+		fail(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	if f.taken(body.Name) {
 		fail(w, http.StatusConflict, "sandbox_name_conflict", "a sandbox named "+body.Name+" exists")
 		return
@@ -334,7 +397,7 @@ func (f *fakeAPI) createSandbox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.mounts, s.serviceIngress = body.Mounts, body.ServiceIngress
+	s.mounts, s.serviceIngress, s.labels = body.Mounts, body.ServiceIngress, body.Labels
 	if err := os.WriteFile(filepath.Join(s.root, imageMarker), []byte(s.image), 0o644); err != nil {
 		fail(w, http.StatusInternalServerError, "", err.Error())
 		return
@@ -485,14 +548,22 @@ func (f *fakeAPI) resumeSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 // forkSandbox branches the source's disk into a sandbox that boots at once,
-// with the source's mounts and network policy, as Archil's fork does.
+// with the source's mounts and network policy, and its labels unless the
+// fork is given its own, as Archil's fork does.
 func (f *fakeAPI) forkSandbox(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
+		Name   string             `json:"name"`
+		Labels *map[string]string `json:"labels"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		fail(w, http.StatusBadRequest, "", err.Error())
 		return
+	}
+	if body.Labels != nil {
+		if err := checkLabels(*body.Labels); err != nil {
+			fail(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -520,6 +591,10 @@ func (f *fakeAPI) forkSandbox(w http.ResponseWriter, r *http.Request) {
 	s.image, s.vcpus, s.memMiB, s.forkOf = src.image, src.vcpus, src.memMiB, src.id
 	s.mounts, s.network = slices.Clone(src.mounts), slices.Clone(src.network)
 	s.serviceIngress = src.serviceIngress
+	s.labels = maps.Clone(src.labels)
+	if body.Labels != nil {
+		s.labels = *body.Labels
+	}
 	for port := range src.ports {
 		s.ports[port] = true
 	}

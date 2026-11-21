@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -179,6 +180,8 @@ type sandbox struct {
 	ExitReason string    `json:"exit_reason"`
 	Checkpoint string    `json:"checkpoint"`
 	Mounts     []mount   `json:"mounts"`
+	// Labels are set when it is made and never change (names.go).
+	Labels map[string]string `json:"labels"`
 }
 
 // mount is a disk Archil mounts in a sandbox (SandboxMount).
@@ -202,13 +205,14 @@ type egressRules struct {
 
 // createSandbox is the body of POST /api/sandboxes.
 type createSandbox struct {
-	Name      string        `json:"name"`
-	BaseImage string        `json:"base_image,omitempty"`
-	VCPUs     int           `json:"vcpu_count,omitempty"`
-	MemoryMiB uint64        `json:"mem_size_mib,omitempty"`
-	IdleTTL   int           `json:"idle_ttl_seconds"`
-	Mounts    []mount       `json:"mounts,omitempty"`
-	Network   *egressPolicy `json:"network,omitempty"`
+	Name      string            `json:"name"`
+	BaseImage string            `json:"base_image,omitempty"`
+	VCPUs     int               `json:"vcpu_count,omitempty"`
+	MemoryMiB uint64            `json:"mem_size_mib,omitempty"`
+	IdleTTL   int               `json:"idle_ttl_seconds"`
+	Mounts    []mount           `json:"mounts,omitempty"`
+	Network   *egressPolicy     `json:"network,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
 	// ServiceIngress lets a service in the guest publish a port of its own
 	// choosing. It is always sent, false: the guest's root opens nothing.
 	ServiceIngress bool `json:"enable_service_ingress"`
@@ -224,13 +228,17 @@ func (a *api) sandbox(ctx context.Context, id string) (sandbox, error) {
 	return out, a.call(ctx, http.MethodGet, "/api/sandboxes/"+url.PathEscape(id), nil, nil, &out)
 }
 
-// sandboxes lists the account's sandboxes, every page of them. Archil's
+// sandboxes lists the account's sandboxes that pass filter's filters
+// (name, name_prefix, label), every page of them. Archil's
 // document gives this listing no pages, and it returned every sandbox when
 // asked for fewer (2026-11-16), but a listing read short would lose sight of
 // VMs, so a nextCursor, wherever Archil puts it, is followed as the disks'
 // is.
-func (a *api) sandboxes(ctx context.Context) ([]sandbox, error) {
-	query := url.Values{}
+func (a *api) sandboxes(ctx context.Context, filter url.Values) ([]sandbox, error) {
+	query := maps.Clone(filter)
+	if query == nil {
+		query = url.Values{}
+	}
 	var all []sandbox
 	for {
 		var out struct {
@@ -273,9 +281,15 @@ func (a *api) resume(ctx context.Context, id string) error {
 	return a.call(ctx, http.MethodPost, "/api/sandboxes/"+url.PathEscape(id)+"/resume", nil, nil, nil)
 }
 
-func (a *api) fork(ctx context.Context, id, name string) (sandbox, error) {
+// fork forks a sandbox under a name, with labels in place of its source's,
+// which Archil copies to a fork given none: always sent, even empty.
+func (a *api) fork(ctx context.Context, id, name string, labels map[string]string) (sandbox, error) {
 	var out sandbox
-	return out, a.call(ctx, http.MethodPost, "/api/sandboxes/"+url.PathEscape(id)+"/fork", nil, map[string]string{"name": name}, &out)
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	body := map[string]any{"name": name, "labels": labels}
+	return out, a.call(ctx, http.MethodPost, "/api/sandboxes/"+url.PathEscape(id)+"/fork", nil, body, &out)
 }
 
 func (a *api) deleteSandbox(ctx context.Context, id string) error {

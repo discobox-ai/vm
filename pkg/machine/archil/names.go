@@ -2,6 +2,7 @@ package archil
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -60,4 +61,36 @@ func (d *Driver) checkName(name string) error {
 			name, d.pool, n, maxSandboxName, maxSandboxName-len(d.sandboxName(""))+len(d.pool))
 	}
 	return nil
+}
+
+// A sandbox the driver makes carries labels naming its pool, its VM, and
+// the VM it was copied from, as a Docker driver's container does, so a
+// pool's sandboxes are found in Archil by label (label=ai.discobox.vm.pool=
+// <pool>), and a listing reports a copy's From, which Archil does not keep.
+// The name stays the VM's identity: Archil sets labels only when it makes
+// a sandbox, so one made before they were set has none and never will.
+const (
+	labelPool     = "ai.discobox.vm.pool"
+	labelInstance = "ai.discobox.vm.instance"
+	labelFrom     = "ai.discobox.vm.from"
+)
+
+// labels are the labels of the sandbox of a VM spec makes. A pool and a VM
+// name are within Archil's 63 characters of a value, and of its alphabet.
+func (d *Driver) labels(spec machine.InstanceSpec) map[string]string {
+	labels := map[string]string{labelPool: d.pool, labelInstance: spec.Name}
+	if spec.From != nil {
+		labels[labelFrom] = spec.From.Name
+	}
+	return labels
+}
+
+// filter has Archil list a VM's sandbox, by name, or with name "" every
+// sandbox under the pool's prefix, labeled or not. The listing's caller
+// still reads each name (nameOf).
+func (d *Driver) filter(name string) url.Values {
+	if name != "" {
+		return url.Values{"name": {d.sandboxName(name)}}
+	}
+	return url.Values{"name_prefix": {d.prefix()}}
 }
