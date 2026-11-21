@@ -90,6 +90,20 @@ tasks:
       - mkdir -p build/linux-{{.AGENT_ARCH}}
       - CGO_ENABLED=0 GOOS=linux GOARCH={{.AGENT_ARCH}} go build -ldflags '{{.LDFLAGS}}' -o build/linux-{{.AGENT_ARCH}}/disco-vm {{.MAIN}}
 
+  # The pinned Debian base, pulled into the Docker daemon's store with retries
+  # before a local buildx build starts FROM it: the docker driver then builds
+  # from the store and never asks the registry, so a transient registry error
+  # (vm#203) is retried, and a digest gone upstream is named with how to move
+  # the pin. Once for each PLATFORM. Depot's builders, and a buildx builder
+  # other than the docker driver, pull for themselves, unretried.
+  pull:debian:
+    internal: true
+    run: when_changed
+    requires:
+      vars: [PLATFORM]
+    cmds:
+      - scripts/pull-base.sh '{{.DEBIAN_IMAGE}}' '{{.PLATFORM}}' 'set DEBIAN_IMAGE in Taskfile.yml to the newest dated sid-*-slim image by digest, and DEBIAN_SNAPSHOT to a snapshot no older than its own (the root DESIGN.md, Debian is sid, at one snapshot)'
+
   # disco-vm's Linux guest image (pkg/guest/linux, ADR 26-10-31-990), for one
   # architecture: assembled and verified inside the build, so a broken one
   # fails here and not as a blank console. Boot the result on vz by naming the
@@ -98,6 +112,15 @@ tasks:
     desc: Build the Linux guest image's artifacts for linux/GUEST_ARCH (this host's unless set) into build/linux-guest/GUEST_ARCH
     vars:
       GUEST_ARCH: '{{.GUEST_ARCH | default ARCH}}'
+    # Its krun-kernel stage runs on the build platform, so a cross build
+    # needs the base for this host too.
+    deps:
+      - task: pull:debian
+        vars:
+          PLATFORM: linux/{{.GUEST_ARCH}}
+      - task: pull:debian
+        vars:
+          PLATFORM: linux/{{ARCH}}
     cmds:
       - docker buildx build --platform linux/{{.GUEST_ARCH}} {{.DEBIAN_ARGS}} --output type=local,dest=build/linux-guest/{{.GUEST_ARCH}} pkg/guest/linux
 
@@ -152,6 +175,10 @@ tasks:
     desc: Build the libkrun runtime for linux/amd64 into build/krun-runtime
     vars:
       VERSION: '{{trimPrefix "krun/" (.RUNTIME_VERSION | default "dev")}}'
+    deps:
+      - task: pull:debian
+        vars:
+          PLATFORM: linux/amd64
     cmds:
       - docker buildx build --platform linux/amd64 {{.DEBIAN_ARGS}} --build-arg RUNTIME_VERSION={{.VERSION}} --output type=local,dest=build/krun-runtime pkg/machine/libkrun/runtime
 
@@ -166,6 +193,10 @@ tasks:
     vars:
       VERSION: '{{trimPrefix "krun/" .TAG}}'
       IMAGE: ghcr.io/discobox-ai/disco-vm-krun:{{trimPrefix "krun/" .TAG}}
+    deps:
+      - task: pull:debian
+        vars:
+          PLATFORM: linux/amd64
     cmds:
       - printenv GITHUB_TOKEN | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - mkdir -p build/krun-runtime
