@@ -172,10 +172,16 @@ func (e *Engine) Pause(ctx context.Context, inst Instance) error
 `Driver.Start` of a paused VM resumes it, boots nothing, and returns once
 its guest operations answer, as a start does. `Engine.Start` reads
 `Driver.State` and refuses only `Running`, so it reaches the driver for a
-paused VM. After a resume it writes nothing to the guest, as #205 has it:
-the guest kept its memory and its disk, so the service file its boot was
-given still stands. A write that failed would otherwise kill a machine
-that was alive before the start.
+paused VM.
+
+**After a resume, the engine writes the guest's service file again,** as
+at every start. The write is idempotent: a guest that kept its file gets
+the same one. **A write that fails stops the machine, and says so** (the
+owner's choice, 2026-11-21: fail closed). `Engine.Start` stops the VM as
+`Engine.Stop` does, and returns an error saying the machine resumed, its
+service file could not be written, and so it was stopped, and to start it
+again to retry. A VM that `Start` returns running always holds the service
+file this start wrote.
 
 **Only `Start` resumes a paused machine.** No `State` read, no `Attach`,
 no guest operation, and no listing resumes one. There is no resume call of
@@ -318,6 +324,14 @@ None of these is decided here, and none is decided by default.
   makes it the one way to undo one. A second way would make every caller
   choose between them, and a caller that chose wrong would boot or refuse
   where it meant to resume.
+- **Write nothing to the guest after a resume** (#205 as first written).
+  The guest kept its memory and its disk, so the file its boot was given
+  usually still stands, and no failed write can take down a machine that
+  was alive before the start. But a `Start` that returns would then vouch
+  for a file it never checked: one the guest lost or changed while it ran
+  stays wrong, and the caller has no way to tell. The owner chose to fail
+  closed: write it at every start, and stop a machine it cannot be written
+  to.
 - **Stop of a paused VM by killing it.** It is faster, and every provider
   can kill a paused machine. But a guest killed while paused loses
   everything it had not written to disk, a data volume's writes included,
