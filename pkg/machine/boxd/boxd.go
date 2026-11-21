@@ -456,12 +456,33 @@ func (d *Driver) settle(ctx context.Context, api boxdapi.BoxdApiClient, vm strin
 	return nil
 }
 
-// Start is Boot: boxd owns the machine, whatever process started it.
-func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
-	return d.Boot(ctx, inst, opts)
+// heldPaused reports a status of a machine boxd holds paused: suspended or
+// in standby, its memory kept, or hibernated, its memory on disk. Start
+// resumes or wakes it (untilRunning); nothing else does.
+func heldPaused(status string) bool {
+	return status == "suspended" || status == "standby" || status == "hibernated"
 }
 
+// Start is Boot, since boxd owns the machine, whatever process started it,
+// but for a machine boxd holds paused, which it resumes rather than refuse.
+func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+	return d.boot(ctx, inst, opts)
+}
+
+// Boot boots the stopped machine; one boxd holds paused is
+// machine.ErrPaused.
 func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+	state, err := d.State(ctx, inst)
+	if err != nil {
+		return nil, err
+	}
+	if state == machine.StatePaused {
+		return nil, fmt.Errorf("boxd: %s: %w", inst.Name, machine.ErrPaused)
+	}
+	return d.boot(ctx, inst, opts)
+}
+
+func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
 	if opts.GUI {
 		return nil, fmt.Errorf("boxd: a window on the guest's display: %w", machine.ErrUnsupported)
 	}
@@ -582,6 +603,24 @@ func untilRunning(ctx context.Context, api boxdapi.BoxdApiClient, ref vmRef, ins
 	}
 }
 
+// State is boxd's, as Attach reads it: a machine suspended, in standby, or
+// hibernated is paused (the driver turns boxd's idle timers off, so only
+// someone else's SuspendVm leaves one so); running or starting is running;
+// anything else is stopped.
+func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.State, error) {
+	_, err := d.Attach(ctx, inst)
+	switch {
+	case err == nil:
+		return machine.StateRunning, nil
+	case errors.Is(err, machine.ErrPaused):
+		return machine.StatePaused, nil
+	case errors.Is(err, machine.ErrNotRunning):
+		return machine.StateStopped, nil
+	default:
+		return "", err
+	}
+}
+
 // Attach finds the instance's machine through the API, as any process can.
 // Its state is boxd's: a guest that powered itself off from inside is left
 // running by boxd, and reads as running until `disco-vm stop`.
@@ -604,9 +643,11 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 		}
 		return nil, fmt.Errorf("boxd: machine %s: %w", ref.Name, err)
 	}
-	switch state := info.GetStatus(); state {
-	case "running", "starting":
+	switch state := info.GetStatus(); {
+	case state == "running" || state == "starting":
 		return newVM(api, ref), nil
+	case heldPaused(state):
+		return nil, fmt.Errorf("boxd: machine %s is %s: %w", ref.Name, state, machine.ErrPaused)
 	default:
 		return nil, fmt.Errorf("boxd: machine %s is %s: %w", ref.Name, state, machine.ErrNotRunning)
 	}

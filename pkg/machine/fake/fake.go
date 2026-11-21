@@ -258,6 +258,10 @@ func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 	}
 	addrFile := filepath.Join(inst.Dir, addrName)
 	_ = os.Remove(addrFile)
+	// A machine stopped while paused boots running.
+	if err := unpause(inst.Dir); err != nil {
+		return nil, err
+	}
 	//nolint:gosec,noctx // G204: the agent is the driver's own disco-vm binary; noctx: the guest outlives Boot's ctx and stops through Stop or Kill
 	cmd := exec.Command(d.Agent, "guest",
 		"--listen", "tcp:127.0.0.1:0",
@@ -334,7 +338,7 @@ func (d *Hypervisor) Commit(_ context.Context, inst local.InstanceSpec) error {
 			}
 		}
 	}
-	for _, name := range []string{addrName, hostPortsName} {
+	for _, name := range []string{addrName, hostPortsName, pausedName} {
 		if err := os.RemoveAll(filepath.Join(inst.Dir, name)); err != nil {
 			return err
 		}

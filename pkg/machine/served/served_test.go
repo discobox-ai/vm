@@ -97,13 +97,16 @@ func client(t *testing.T, dial func(context.Context) (net.Conn, error), version 
 func TestConformance(t *testing.T) {
 	bin := agent(t)
 	dir := t.TempDir()
-	dial := serve(t, fakeDriver(t, bin, dir, "served"), served.Options{
+	server := fakeDriver(t, bin, dir, "served")
+	dial := serve(t, server, served.Options{
 		Version: "v1", Allow: served.Ops, Fields: served.Fields,
 	})
 	machinetest.Run(t, client(t, dial, "v1"), machinetest.Config{
 		Timeout:    30 * time.Second,
 		ScratchDir: "/scratch",
 		GuestAgent: bin,
+		// The server's fake pauses it, as a provider would.
+		Pause: func(ctx context.Context, inst machine.Instance) error { return fake.Pause(ctx, server, inst) },
 	})
 }
 

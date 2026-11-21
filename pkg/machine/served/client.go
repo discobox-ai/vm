@@ -151,8 +151,11 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 }
 
 // Boot is Start: the machine is the server's, and outlives this process,
-// as a boxd machine does.
+// as a boxd machine does. A paused VM is ErrPaused: Start resumes it.
 func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+	if state, err := d.State(ctx, inst); err == nil && state == machine.StatePaused {
+		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
+	}
 	return d.Start(ctx, inst, opts)
 }
 
@@ -168,22 +171,40 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 	return d.machine(inst.Name), nil
 }
 
-// Attach returns the running VM's machine, or ErrNotRunning.
-func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
-	running, err := d.running(ctx, inst.Name)
-	if err != nil {
-		return nil, err
+// State is the server's Driver.State. One this client does not know is an
+// error, not a guess.
+func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.State, error) {
+	var resp stateResponse
+	if err := d.call(ctx, http.MethodGet, vmPath(inst.Name, "/state"), nil, &resp); err != nil {
+		return "", err
 	}
-	if !running {
+	switch resp.State {
+	case machine.StateStopped, machine.StateRunning, machine.StatePaused:
+		return resp.State, nil
+	default:
+		return "", fmt.Errorf("served: instance %s is in a state this client does not know: %q", inst.Name, resp.State)
+	}
+}
+
+// Attach returns the running VM's machine, ErrNotRunning, or ErrPaused.
+func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
+	state, err := d.State(ctx, inst)
+	switch {
+	case err != nil:
+		return nil, err
+	case state == machine.StatePaused:
+		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
+	case state == machine.StateStopped:
 		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrNotRunning)
 	}
 	return d.machine(inst.Name), nil
 }
 
-func (d *Driver) running(ctx context.Context, name string) (bool, error) {
-	var state stateResponse
-	err := d.call(ctx, http.MethodGet, vmPath(name, "/state"), nil, &state)
-	return state.Running, err
+// running is whether the VM has not stopped: a paused one is held, and has
+// not.
+func (d *Driver) running(ctx context.Context, inst machine.Instance) (bool, error) {
+	state, err := d.State(ctx, inst)
+	return state != machine.StateStopped, err
 }
 
 // Commit commits the stopped VM on the server.
@@ -429,7 +450,7 @@ func (m *remoteMachine) Done() <-chan struct{} {
 			var failing time.Time
 			for {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				running, err := m.d.running(ctx, m.name)
+				running, err := m.d.running(ctx, machine.Instance{Name: m.name})
 				cancel()
 				switch {
 				case errors.Is(err, machine.ErrNotFound):

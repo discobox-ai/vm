@@ -722,13 +722,43 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 	return m, nil
 }
 
+// Boot is Start, since Archil runs the sandbox, but for one Archil paused (or
+// is pausing), which is machine.ErrPaused: it is held, and Start resumes it.
 func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+	sb, err := d.sandboxOf(ctx, inst)
+	if err != nil {
+		return nil, err
+	}
+	if sb.Status == "paused" || sb.Status == "pausing" {
+		return nil, fmt.Errorf("archil: %s is %s: %w", inst.Name, sb.Status, machine.ErrPaused)
+	}
 	return d.Start(ctx, inst, opts)
 }
 
-// Attach is the running sandbox's machine. One Archil paused at its session's
-// limit is running as far as the VM goes, and is left paused: the machine's
-// first exec or copy resumes it, so a listing (Engine.State) wakes nothing.
+// State is the sandbox's as Archil has it, read without waking it: running,
+// paused (or pausing) at its session's limit, which Start resumes, or else
+// stopped, as Attach has it.
+func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.State, error) {
+	sb, err := d.sandboxOf(ctx, inst)
+	switch {
+	case errors.Is(err, errUpgrading), isNotFound(err):
+		return machine.StateStopped, nil
+	case err != nil:
+		return "", err
+	}
+	switch sb.Status {
+	case "running":
+		return machine.StateRunning, nil
+	case "paused", "pausing":
+		return machine.StatePaused, nil
+	default:
+		return machine.StateStopped, nil
+	}
+}
+
+// Attach is the running sandbox's machine. One Archil paused (or is pausing),
+// at its session's limit, is machine.ErrPaused, and is left paused: Start
+// alone resumes it.
 func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
 	sb, err := d.sandboxOf(ctx, inst)
 	switch {
@@ -739,17 +769,14 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	case err != nil:
 		return nil, err
 	}
-	m := newMachine(d.api, sb.ID, inst.Name)
 	switch sb.Status {
 	case "running":
 	case "paused", "pausing":
-		// Resumed by the first operation that needs the guest, so a
-		// listing (Engine.State) does not wake every paused sandbox.
-		m.paused.Store(true)
+		return nil, fmt.Errorf("archil: %s is %s: %w", inst.Name, sb.Status, machine.ErrPaused)
 	default:
 		return nil, fmt.Errorf("archil: %s is %s: %w", inst.Name, sb.Status, machine.ErrNotRunning)
 	}
-	return m, nil
+	return newMachine(d.api, sb.ID, inst.Name), nil
 }
 
 // Commit leaves the stopped VM's sandbox as it stands, with no mounts, no

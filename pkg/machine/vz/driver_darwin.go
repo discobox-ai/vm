@@ -91,6 +91,14 @@ func (*Hypervisor) Base() (machine.OS, bool) { return machine.Linux, true }
 // host's loopback.
 func (*Hypervisor) SharesLoopback() bool { return false }
 
+// Paused is false: the hypervisor never pauses a machine.
+func (*Hypervisor) Paused(local.InstanceSpec) bool { return false }
+
+// Resume is unsupported: the hypervisor never pauses a machine.
+func (*Hypervisor) Resume(context.Context, local.InstanceSpec) error {
+	return fmt.Errorf("vz pauses no machine: %w", machine.ErrUnsupported)
+}
+
 // Commit freezes the stopped VM's bundle in place: its layer files (its disk,
 // with a Linux guest's kernel and initrd) stay, and everything else goes,
 // the MAC address and the machine's identity among them, since they are the

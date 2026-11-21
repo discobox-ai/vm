@@ -17,7 +17,53 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
+// State is running while the instance's shim answers, paused where its
+// hypervisor paused the machine (Hypervisor.Paused), and stopped otherwise,
+// as Attach has it. A shim of another build is running too.
+func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.State, error) {
+	if err := d.authorizeInstance(ctx, inst); err != nil {
+		return "", err
+	}
+	if !d.shimAnswers(ctx, inst.ID) {
+		return machine.StateStopped, nil
+	}
+	paused, err := d.paused(inst)
+	if err != nil {
+		return "", err
+	}
+	if paused {
+		return machine.StatePaused, nil
+	}
+	return machine.StateRunning, nil
+}
+
+// shimAnswers reports that the instance's shim is up and answers its status.
+func (d *Driver) shimAnswers(ctx context.Context, id string) bool {
+	shim, err := d.openShim(id)
+	if err != nil {
+		return false
+	}
+	statusCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return shim.status(statusCtx) == nil
+}
+
+// paused asks the hypervisor whether it paused the running instance's
+// machine.
+func (d *Driver) paused(inst machine.Instance) (bool, error) {
+	rec, err := d.readPool(inst.ID)
+	if err != nil {
+		return false, err
+	}
+	hs, err := d.spec(rec)
+	if err != nil {
+		return false, err
+	}
+	return d.hv.Paused(hs), nil
+}
+
 // Attach reaches the instance's machine through its shim, as any process can.
+// One its hypervisor paused is ErrPaused, and left paused.
 func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return nil, err
@@ -30,6 +76,13 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	defer cancel()
 	if err := shim.status(statusCtx); err != nil {
 		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrNotRunning)
+	}
+	paused, err := d.paused(inst)
+	if err != nil {
+		return nil, err
+	}
+	if paused {
+		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
 	}
 	held := &shimProcess{shim: shim, done: make(chan struct{})}
 	if shim.stale != nil {

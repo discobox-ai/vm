@@ -8,10 +8,11 @@
   back again fails the listing rather than end it. The fake API pages both
   two at a time under the conformance suite. A lookup of one name uses
   Archil's `?name=` filter instead of a listing.
-- **Asking about a VM changes nothing about it.** `Engine.State` attaches to
-  every VM a listing shows, so Attach neither resumes a paused sandbox nor
-  starts a watcher; only an operation that needs the guest resumes it, and
-  only `Done`/`Err`/`Kill` watch. A poller started by Start, or a resume by
+- **Asking about a VM changes nothing about it.** `Engine.State` reads
+  every VM a listing shows (State), so neither State nor Attach resumes a
+  paused sandbox or starts a watcher; only Start resumes it (an Attach of
+  one is `machine.ErrPaused`, so no guest operation reaches it), and only
+  `Done`/`Err`/`Kill` watch. A poller started by Start, or a resume by
   `ps`, ran for as long as an embedder kept the VM.
 - **Output waits for its reader, and a kill ends the wait.** A process's
   unread output is bounded (`pipeLimit`), so the WebSocket reader blocks

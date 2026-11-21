@@ -3,6 +3,8 @@ package archil
 import (
 	"cmp"
 	"context"
+	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"slices"
@@ -39,7 +41,15 @@ func TestConformance(t *testing.T) {
 		Timeout:     5 * time.Minute,
 		ScratchDir:  "/var/lib",
 		Credentials: d.(*Driver).honoredTokens,
+		Pause:       d.(*Driver).pause,
 	})
+}
+
+// pause pauses a VM's sandbox as Archil does at its session's limit, by
+// Archil's own pause (POST .../pause), which answers 202 and goes through
+// pausing.
+func (d *Driver) pause(ctx context.Context, inst machine.Instance) error {
+	return d.api.call(ctx, http.MethodPost, "/api/sandboxes/"+url.PathEscape(inst.ID)+"/pause", nil, nil, nil)
 }
 
 // honoredTokens lists the port tokens Archil still honors for a VM's
@@ -82,7 +92,8 @@ func TestConformanceFakeAPI(t *testing.T) {
 			}
 		}
 	})
-	machinetest.Run(t, f.driver(t, machine.DefaultPool, "debian:sid"), machinetest.Config{
+	d := f.driver(t, machine.DefaultPool, "debian:sid")
+	machinetest.Run(t, d, machinetest.Config{
 		// Not Archil's default size, so a size not kept shows.
 		CPUs:       3,
 		Memory:     3 << 30,
@@ -94,6 +105,7 @@ func TestConformanceFakeAPI(t *testing.T) {
 			return f.honoredTokens(inst.ID), nil
 		},
 		SkipGuestDNS: "the fake Archil's guest is a process on this host, on its network",
+		Pause:        d.pause,
 	})
 }
 
@@ -207,4 +219,38 @@ func TestCommandLinesAreWhatShRuns(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestStateReadsPausedAndWakesNothing: a sandbox Archil paused, or is
+// pausing, reads as paused, one running as running, and any other as
+// stopped, and reading it leaves it as it was.
+func TestStateReadsPausedAndWakesNothing(t *testing.T) {
+	f := newFakeAPI(t, t.TempDir())
+	ctx := context.Background()
+	d := f.driver(t, "states", "debian:sid")
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "vm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
+	for status, want := range map[string]machine.State{
+		"running": machine.StateRunning, "paused": machine.StatePaused, "pausing": machine.StatePaused,
+		"pending": machine.StateStopped, "stopping": machine.StateStopped, "stopped": machine.StateStopped,
+	} {
+		f.mu.Lock()
+		f.sandboxes[0].status = status
+		f.mu.Unlock()
+		if got, err := d.State(ctx, inst); err != nil || got != want {
+			t.Errorf("a sandbox %s: state %q, %v; want %q", status, got, err, want)
+		}
+		f.mu.Lock()
+		after := f.sandboxes[0].status
+		f.mu.Unlock()
+		if after != status {
+			t.Errorf("a sandbox %s is %s once its state is read", status, after)
+		}
+	}
+	f.mu.Lock()
+	f.sandboxes[0].status = "stopped"
+	f.mu.Unlock()
 }
