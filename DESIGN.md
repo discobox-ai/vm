@@ -289,6 +289,19 @@ the snapshot is never older than the image's own (its `debian.sources`
 names it). A sid package broken at a snapshot moves the snapshot to the
 nearest one that works, never one image back to a stable suite.
 
+Every local build pulls `DEBIAN_IMAGE` first, for each platform its stages
+run on (`pull:debian`, `scripts/pull-base.sh`), retrying with a backoff.
+buildx's default builder, the docker driver, then builds from the daemon's
+store without asking the registry (seen on Docker 29.9.3 with the containerd
+store, 2026-11-21: a digest-pinned base built with its registry stopped once
+pulled, and failed to resolve when not), so public ECR failing a request now
+and then (vm#203) does not fail the build. When every attempt fails, the log
+says the pull failed before the build started, names the digest, and says
+whether the pin's tag still gives it, or another digest, which likely means
+it was removed upstream and how to move the pin (public ECR answers a digest
+it does not have with `401 Unauthorized`, so its error alone does not tell).
+Another builder (docker-container) and Depot pull for themselves, unretried.
+
 The guest's root keeps deb.debian.org's live sid for its own apt, not the
 snapshot. The risks are sid's: no security support, packages that break or
 change between snapshots (a bump is a build and a boot, not a formality),
