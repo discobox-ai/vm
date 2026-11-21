@@ -17,11 +17,12 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// An archil guest's operations are Archil's process API, with nothing of
-// disco-vm's in the guest (ADR 26-11-03-676): the image is the caller's. A
-// process runs as root, in the request's directory, with its variables, its
-// argv one quoted command line; another account is runuser's. Copies are tar
-// over a process, and a shutdown is Archil's stop.
+// An archil guest's operations are Archil's process API, with no agent of
+// disco-vm's in the guest (ADR 26-11-03-676), each entering systemd's
+// namespaces (systemd.go, ADR 26-11-20-447). A process runs as root, in the
+// request's directory, with its variables, its argv one quoted command line;
+// another account is runuser's. Copies are tar over a process, and a
+// shutdown is Archil's stop.
 
 // The scripts the copies and Info run, with sh, as root. Each takes its path
 // as $1.
@@ -43,7 +44,9 @@ exec tar -x -o -f - -C "$1"`
 	// from tar's pipe: dd reads a regular file in full blocks, and a pipe
 	// read through stdio (BusyBox's head) takes more than it was asked for.
 	// The file is in /var/tmp, since /tmp may be memory, and goes when the
-	// script ends, killed or not, short of SIGKILL.
+	// script ends, killed or not, short of SIGKILL, which is how Archil's
+	// kill ends a process's group (seen 2026-11-21): a copy killed midway
+	// leaves it (#198).
 	copyOutScript = `if [ ! -e "$1" ] && [ ! -L "$1" ]; then echo "$1: no such file or directory" >&2; exit 1; fi
 t=$(mktemp -p /var/tmp disco-vm-copy.XXXXXX) || exit 1
 trap 'rm -f "$t" "$t.chunk"' EXIT
@@ -75,13 +78,16 @@ func quoteAll(words []string) string {
 	return strings.Join(quoted, " ")
 }
 
-// command is the line a process runs for req: its argv, or runuser's of it
-// for another account, with that account's HOME.
+// command is the line a process runs for req: enterScript's, which runs
+// its argv in systemd's namespaces, in its directory ("/" when empty), as
+// root or as another account, with that account's HOME. The process itself
+// starts in Archil's namespaces, at "/".
 func command(req machine.ExecRequest) string {
-	if req.User == "" {
-		return "exec " + quoteAll(req.Argv)
+	dir := req.Dir
+	if dir == "" {
+		dir = "/"
 	}
-	return `exec runuser -u ` + quote(req.User) + ` -- env HOME="$(getent passwd ` + quote(req.User) + ` | cut -d: -f6)" ` + quoteAll(req.Argv)
+	return "exec " + quoteAll(append([]string{"sh", "-c", enterScript, "sh", dir, req.User}, req.Argv...))
 }
 
 // envOf is a request's variables as the process API takes them.
@@ -176,11 +182,7 @@ func (m *guestMachine) Exec(ctx context.Context, req machine.ExecRequest) (machi
 		}
 		terminal = map[string]uint16{"rows": rows, "cols": cols}
 	}
-	dir := req.Dir
-	if dir == "" {
-		dir = "/"
-	}
-	p, err := m.api.startProcess(ctx, m.id, command(req), dir, envOf(req), terminal, false)
+	p, err := m.api.startProcess(ctx, m.id, command(req), "/", envOf(req), terminal, false)
 	if err != nil {
 		return nil, err
 	}

@@ -6,8 +6,8 @@ A VM is the sandbox named for it, and nothing else is kept (ADR
 
 Archil's sandboxes are Firecracker microVMs behind a REST API, beside disks
 the provider mounts in them. A sandbox has no labels and its name never
-changes, which is all a VM needs. The driver has nothing of disco-vm's in
-the guest and nothing on the host:
+changes, which is all a VM needs. The driver has no agent in the guest and
+nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
 
 - **A driver is one region's**, its configuration's `region`, which is
   required, as boxd's is: each region is its own control plane, with its
@@ -48,6 +48,37 @@ the guest and nothing on the host:
   one: the caller never starts it.
 - **Copies chain.** A fork pins its source, so Destroy of a VM with forks is
   `machine.ErrInUse`, as hcs's chain is.
+- **Every guest runs systemd** (`systemd.go`), as PID 1 of a PID and mount
+  namespace of its own below Archil's init, which runs nothing of the
+  image's. While Create's sandbox runs, under its fence, `ensureScript`
+  installs systemd with apt where the base has none, and registers it once
+  as the service `disco-vm-systemd` of Archil's supervisor in the guest
+  (`archil-client services`), which starts it at every boot, however the VM
+  was started, and again when it exits. A base with no `apt-get`, or one
+  fenced from its mirror, fails Create naming `/lib/systemd/systemd`. A fork
+  carries the root and the service. Create and Start each return once
+  `systemctl is-system-running` has settled. Start installs nothing: it
+  registers the service where the root has systemd and the supervisor no
+  service (a VM made before), refuses one whose root has none (upgrade it),
+  and leaves no VM it refused running. Where the supervisor has no answer
+  for the service, a copy or a start waits ten seconds for systemd to come
+  up before it registers one, since a second would run a second systemd. The guest's root is made shared and
+  systemd's mounts its slaves, so a disk Archil mounts after systemd starts
+  reaches its units.
+- **Every guest operation enters systemd's namespaces** (`enterScript`):
+  the line finds the process whose PID in its namespace is 1 and runs the
+  request through `nsenter --all`, `cd` to its directory and `runuser` for
+  another account. Archil's kill SIGKILLs the process's whole group, which
+  the command stays in, so it ends in there too (seen 2026-11-21); should
+  `nsenter` alone die, `setpriv --pdeathsig TERM` (set again under
+  `runuser`, whose fork and change of account clear it) sends the command
+  TERM. With systemd not running, it fails saying so (exit 125): a VM
+  running since before its guests ran systemd gets it at its next start.
+- **An upgrade sees its new root only once it boots,** after the old
+  sandbox is gone: a fresh one of a base without systemd, fenced from its
+  mirror, fails there, as a base that does not pull does, and leaves a VM
+  with a data disk mid-upgrade, which an upgrade from a committed VM with
+  systemd, or of a base with it, finishes.
 - **The guest's operations are Archil's process API** (`process.go`,
   `guest.go`), ported from Archil's MIT TypeScript SDK, since the protocol is
   not in its OpenAPI document: a WebSocket per process, stdin as binary

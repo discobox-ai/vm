@@ -15,9 +15,10 @@
 // $DISCO_VM_E2E_IMAGE names, committed as a snapshot. It needs a key
 // ($BOXD_API_KEY or $BOXD_TOKEN), and its state root is optional, since boxd
 // keeps everything; the pool keeps a run apart. Nor does archil: e2e-base
-// is a fresh VM of debian:sid, or the image $DISCO_VM_E2E_IMAGE names,
-// committed as its stopped sandbox. It needs $ARCHIL_API_KEY and
-// $ARCHIL_REGION.
+// is a fresh VM of debian:sid, or the image $DISCO_VM_E2E_IMAGE names, which
+// has systemd installed at its Create, committed as its stopped sandbox, so
+// every VM made from it, fenced or not, runs systemd with nothing to
+// install. It needs $ARCHIL_API_KEY and $ARCHIL_REGION.
 //
 // A driver that does not report Capabilities.Commit (ADR 26-11-03-868) has
 // no e2e-base: every VM is fresh, the cases that commit are skipped, and

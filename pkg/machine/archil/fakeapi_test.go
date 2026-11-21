@@ -71,6 +71,11 @@ type fakeAPI struct {
 	// gatewayTLS trusts the gateways' certificate, httptest's, which every
 	// TLS server it starts shares.
 	gatewayTLS *tls.Config
+	// creates are the body of every sandbox create, as sent.
+	creates []map[string]any
+	// containers, when set, runs each sandbox as a Docker container, and
+	// its processes in it, rather than on this host (container_test.go).
+	containers *fakeContainers
 }
 
 // fakeToken is a port token.
@@ -297,13 +302,22 @@ func (f *fakeAPI) newSandbox(name string) (*fakeSandbox, error) {
 }
 
 func (f *fakeAPI) createSandbox(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
 	var body createSandbox
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	var fields map[string]any
+	if err == nil {
+		err = json.Unmarshal(raw, &body)
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &fields)
+	}
+	if err != nil {
 		fail(w, http.StatusBadRequest, "", err.Error())
 		return
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.creates = append(f.creates, fields)
 	if f.taken(body.Name) {
 		fail(w, http.StatusConflict, "sandbox_name_conflict", "a sandbox named "+body.Name+" exists")
 		return
@@ -324,6 +338,12 @@ func (f *fakeAPI) createSandbox(w http.ResponseWriter, r *http.Request) {
 	if err := os.WriteFile(filepath.Join(s.root, imageMarker), []byte(s.image), 0o644); err != nil {
 		fail(w, http.StatusInternalServerError, "", err.Error())
 		return
+	}
+	if f.containers != nil {
+		if err := f.containers.create(s, s.image); err != nil {
+			fail(w, http.StatusInternalServerError, "", err.Error())
+			return
+		}
 	}
 	f.sandboxes = append(f.sandboxes, s)
 	if err := f.boot(s); err != nil {
@@ -354,6 +374,14 @@ func (f *fakeAPI) disk(id string) *fakeDisk {
 // boot runs a sandbox with its mounts: each disk a link at its path in the
 // root. The caller holds mu.
 func (f *fakeAPI) boot(s *fakeSandbox) error {
+	if f.containers != nil {
+		if err := f.containers.boot(f, s); err != nil {
+			s.status = "failed"
+			return err
+		}
+		s.status = "running"
+		return nil
+	}
 	for _, m := range s.mounts {
 		d := f.disk(m.DiskID)
 		if d == nil {
@@ -381,6 +409,9 @@ func (f *fakeAPI) halt(s *fakeSandbox) {
 			p.cancel()
 			delete(f.procs, id)
 		}
+	}
+	if f.containers != nil {
+		f.containers.halt(s)
 	}
 	for _, m := range s.mounts {
 		_ = os.Remove(guest.Resolve(s.root, m.Path))
@@ -499,6 +530,12 @@ func (f *fakeAPI) forkSandbox(w http.ResponseWriter, r *http.Request) {
 			f.tokens = append(f.tokens, &c)
 		}
 	}
+	if f.containers != nil {
+		if err := f.containers.fork(src, s); err != nil {
+			fail(w, http.StatusInternalServerError, "", err.Error())
+			return
+		}
+	}
 	f.sandboxes = append(f.sandboxes, s)
 	if err := f.boot(s); err != nil {
 		fail(w, http.StatusInternalServerError, "", err.Error())
@@ -522,6 +559,9 @@ func (f *fakeAPI) deleteSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.sandboxes = slices.DeleteFunc(f.sandboxes, func(o *fakeSandbox) bool { return o == s })
+	if f.containers != nil {
+		f.containers.remove(s)
+	}
 	_ = os.RemoveAll(s.root)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -917,7 +957,7 @@ func (f *fakeAPI) processAPI(w http.ResponseWriter, r *http.Request) {
 	procCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	f.procs[id] = &fakeProc{sandbox: s.id, cancel: cancel}
-	root, name := s.root, s.name
+	root, name, sb, containers := s.root, s.name, s, f.containers
 	f.mu.Unlock()
 
 	event(map[string]any{"type": "started", "process_id": id})
@@ -941,7 +981,12 @@ func (f *fakeAPI) processAPI(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	code, err := runCommand(procCtx, req.startRequest, root, name, stdin, out)
+	var code int
+	if containers != nil {
+		code, err = containers.run(procCtx, sb, req.startRequest, stdin, out.stream(1), out.stream(2))
+	} else {
+		code, err = runCommand(procCtx, req.startRequest, root, name, stdin, out)
+	}
 	// Gone before its exit is sent, so nothing asked of it after the client
 	// reads its exit finds it.
 	f.mu.Lock()
@@ -995,28 +1040,29 @@ func (s streamWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// parseLine reads back a line command made, the account it runs as and its
-// argv, by having sh read it: the line's exec becomes a printf of each word
-// sh makes of the rest, so a word the driver quoted wrong comes back as sh
-// would run it, not as the driver meant it.
-func parseLine(line string) (user string, argv []string, err error) {
+// parseLine reads back a line the driver sends, by having sh read it: the
+// line's exec becomes a printf of each word sh makes of the rest, so a word
+// the driver quoted wrong comes back as sh would run it, not as the driver
+// meant it. A line command made, which enters systemd's namespaces
+// (enterScript), is read back as its directory, its account, and its argv,
+// and entered is set; any other is its argv alone.
+func parseLine(line string) (dir, user string, argv []string, entered bool, err error) {
 	rest, ok := strings.CutPrefix(line, "exec ")
 	if !ok {
-		return "", nil, fmt.Errorf("unknown command %q", line)
+		return "", "", nil, false, fmt.Errorf("unknown command %q", line)
 	}
 	out, err := exec.CommandContext(context.Background(), "sh", "-c", `printf '%s\0' `+rest).Output() //nolint:gosec // G204: the driver's own line, read by sh as the guest would
 	if err != nil {
-		return "", nil, fmt.Errorf("sh read %q: %w", line, err)
+		return "", "", nil, false, fmt.Errorf("sh read %q: %w", line, err)
 	}
 	words := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")
-	if words[0] != "runuser" {
-		return "", words, nil
+	if !isScript(words, enterScript) {
+		return "", "", words, false, nil
 	}
-	// runuser -u USER -- env HOME=... ARGV...
-	if len(words) < 7 || words[1] != "-u" || words[3] != "--" || words[4] != "env" || !strings.HasPrefix(words[5], "HOME=") {
-		return "", nil, fmt.Errorf("unknown runuser line %q", line)
+	if len(words) < 7 {
+		return "", "", nil, false, fmt.Errorf("an entered line with no argv: %q", line)
 	}
-	return words[2], words[6:], nil
+	return words[4], words[5], words[6:], true, nil
 }
 
 // isScript reports whether argv runs the driver's script text.
@@ -1024,25 +1070,81 @@ func isScript(argv []string, text string) bool {
 	return len(argv) >= 4 && argv[0] == "sh" && argv[1] == "-c" && argv[2] == text
 }
 
+// fakeNoSystemd are the images the fake has no systemd in and no apt-get
+// to install it with.
+var fakeNoSystemd = []string{"alpine"}
+
+// fakeServices is where the fake keeps a guest's Archil services, in its
+// root, so a fork carries them.
+const fakeServices = ".archil-services"
+
+// fakeSystemd plays ensureScript in a sandbox's root, in mode: at Create,
+// systemd installed but for an image in fakeNoSystemd; at a start, a root
+// without it refused; and the service registered.
+func fakeSystemd(root, mode string, stderr io.Writer) int {
+	image, _ := os.ReadFile(filepath.Join(root, imageMarker))
+	if !fileExists(filepath.Join(root, "lib/systemd/systemd")) {
+		if mode == ensureStart {
+			_, _ = io.WriteString(stderr, "the guest has no /lib/systemd/systemd (or util-linux)")
+			return 3
+		}
+		for _, no := range fakeNoSystemd {
+			if strings.HasPrefix(string(image), no) {
+				_, _ = io.WriteString(stderr, "the base has no /lib/systemd/systemd, and no apt-get to install it")
+				return 3
+			}
+		}
+	}
+	for _, path := range []string{"lib/systemd/systemd", filepath.Join(fakeServices, systemdService)} {
+		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(path)), 0o755); err != nil {
+			_, _ = io.WriteString(stderr, err.Error())
+			return 1
+		}
+		if err := os.WriteFile(filepath.Join(root, path), nil, 0o755); err != nil { //nolint:gosec // G306: the fake's systemd, an executable
+			_, _ = io.WriteString(stderr, err.Error())
+			return 1
+		}
+	}
+	return 0
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // runCommand runs a started process in a sandbox's root and returns its exit
-// code.
+// code. An entered command fails while the guest has no systemd service.
 func runCommand(ctx context.Context, req startRequest, root, hostname string, stdin io.Reader, out *frameWriter) (int, error) {
 	stdout, stderr := out.stream(1), out.stream(2)
 	if req.Command == "true" {
 		return 0, nil
 	}
-	_, argv, err := parseLine(req.Command)
+	dir, _, argv, entered, err := parseLine(req.Command)
 	if err != nil {
 		return 0, err
 	}
 	if len(argv) == 0 {
 		return 0, errors.New("no argv")
 	}
+	if !entered {
+		if !isScript(argv, ensureScript) {
+			return 0, fmt.Errorf("a line that enters no namespace: %q", req.Command)
+		}
+		return fakeSystemd(root, argv[5], stderr), nil
+	}
+	if !fileExists(filepath.Join(root, fakeServices, systemdService)) {
+		_, _ = io.WriteString(stderr, "systemd is not running in the guest")
+		return enterNotRunning, nil
+	}
 	arg := func() string { return guest.Resolve(root, argv[len(argv)-1]) }
 	switch {
 	case isScript(argv, infoScript):
 		arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
 		_, _ = io.WriteString(stdout, arch+"\n"+hostname+"\n")
+		return 0, nil
+	case isScript(argv, settleScript):
+		_, _ = io.WriteString(stdout, "running\n")
 		return 0, nil
 	case isScript(argv, copyInScript):
 		if err := guest.Unpack(stdin, arg()); err != nil {
@@ -1054,7 +1156,7 @@ func runCommand(ctx context.Context, req startRequest, root, hostname string, st
 		return copyOut(arg(), stdin, stdout, stderr), nil
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // G204: the test's own commands
-	cmd.Dir = guest.Resolve(root, req.Cwd)
+	cmd.Dir = guest.Resolve(root, dir)
 	cmd.Env = append(os.Environ(), guest.RootEnv+"="+root)
 	for k, v := range req.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)

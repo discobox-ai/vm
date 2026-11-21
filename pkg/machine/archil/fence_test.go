@@ -3,12 +3,8 @@ package archil
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
+	"runtime"
 	"slices"
-	"strings"
-	"sync"
 	"testing"
 
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -22,59 +18,33 @@ import (
 // (CloseDNS), since an allow-list closes it only when asked (ADR
 // 26-11-17-311 §2).
 func TestCreateFencesAtTheEdge(t *testing.T) {
-	var mu sync.Mutex
-	var calls []string
-	var created map[string]any
-	status := "running"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		calls = append(calls, r.Method+" "+r.URL.Path)
-		reply := func(data string) { _, _ = io.WriteString(w, `{"success":true,"data":`+data+`}`) }
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/sandboxes":
-			raw, _ := io.ReadAll(r.Body)
-			_ = json.Unmarshal(raw, &created)
-			reply(`{"sandbox_id":"sb-1","name":"dvm-p--dev","status":"pending"}`)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/sandboxes/sb-1/network":
-			reply(`{"egress":{"default":"deny","allow":["example.com"],"deny":["8.8.8.8","1.1.1.1"]}}`)
-		case r.Method == http.MethodPost && r.URL.Path == "/api/sandboxes/sb-1/stop":
-			status = "stopped"
-			reply(`{}`)
-		case r.Method == http.MethodGet && r.URL.Path == "/api/sandboxes/sb-1":
-			reply(`{"sandbox_id":"sb-1","name":"dvm-p--dev","status":"` + status + `"}`)
-		case strings.HasPrefix(r.URL.Path, "/api/sandboxes/sb-1/ports/"):
-			reply(`{"hostname":"7302-r.zone.archil.app"}`)
-		default:
-			reply(`{}`)
-		}
-	}))
-	defer srv.Close()
-	d := &Driver{pool: "p", api: &api{base: srv.URL, keys: machine.StaticKey(machine.Key{Driver: "archil", Secret: "k"}), http: srv.Client()}}
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake Archil reads the driver's lines with sh")
+	}
+	f := newFakeAPI(t, t.TempDir())
+	d := f.driver(t, "p", "")
 	spec := machine.InstanceSpec{Name: "dev", Egress: &machine.Egress{Allow: []string{"example.com"}, CloseDNS: true}}
-	if _, _, err := d.makeSandbox(context.Background(), spec, nil, &made{d: d}); err != nil {
+	inst, err := d.Create(context.Background(), spec)
+	if err != nil {
 		t.Fatal(err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	network, _ := created["network"].(map[string]any)
-	egress, _ := network["egress"].(map[string]any)
-	var deny []string
-	if list, ok := egress["deny"].([]any); ok {
-		for _, v := range list {
-			s, _ := v.(string)
-			deny = append(deny, s)
-		}
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.sandboxes[0]
+	var p egressPolicy
+	if err := json.Unmarshal(s.network, &p); err != nil || p.Egress == nil {
+		t.Fatalf("the sandbox's policy %s: %v", s.network, err)
 	}
-	if !slices.Contains(deny, "8.8.8.8") || !slices.Contains(deny, "1.1.1.1") {
-		t.Errorf("a fenced sandbox was created denying %q: DNS stays open through 8.8.8.8 and 1.1.1.1", deny)
+	if !slices.Contains(p.Egress.Deny, "8.8.8.8") || !slices.Contains(p.Egress.Deny, "1.1.1.1") {
+		t.Errorf("a fenced sandbox was created denying %q: DNS stays open through 8.8.8.8 and 1.1.1.1", p.Egress.Deny)
 	}
-	if v, ok := created["enable_service_ingress"]; !ok || v != false {
+	if v, ok := f.creates[0]["enable_service_ingress"]; !ok || v != false {
 		t.Errorf("a sandbox was created with enable_service_ingress %v, not false", v)
 	}
-	for _, c := range calls {
-		if strings.HasPrefix(c, "PUT /api/sandboxes/sb-1/ports/") {
-			t.Errorf("Create exposed a port (%s): anyone on the internet reaches and wakes it", c)
+	for port, exposed := range s.ports {
+		if exposed {
+			t.Errorf("Create exposed port %d: anyone on the internet reaches and wakes it", port)
 		}
 	}
 }
