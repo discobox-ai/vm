@@ -119,3 +119,47 @@ func TestResumeThatCannotTellItsServiceStops(t *testing.T) {
 		t.Fatalf("a resume whose service file cannot be written left the instance %s, want stopped", got)
 	}
 }
+
+// A paused instance is not stopped: Commit, Upgrade, and SaveCache refuse
+// it, saying it is paused, and leave it paused; Remove with force stops it
+// and removes it (vm ADR 26-11-21-438 §§6, 8).
+func TestPausedIsRefusedWhatNeedsItStopped(t *testing.T) {
+	ctx := context.Background()
+	e, _ := fakeEngine(t)
+	inst, err := e.Create(ctx, engine.CreateOptions{
+		From: "app", Name: "held",
+		Data:  &machine.DataVolume{},
+		Cache: &machine.CacheVolume{Key: "held"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
+	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.Pause(ctx, e.Driver, inst); err != nil {
+		t.Fatal(err)
+	}
+	refused := func(what string, err error) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), "is paused") {
+			t.Fatalf("%s a paused instance: %v, want it refused as paused", what, err)
+		}
+		if got := e.State(ctx, inst); got != engine.Paused {
+			t.Fatalf("%s refused left the instance %s, want paused", what, got)
+		}
+	}
+	_, err = e.Commit(ctx, inst)
+	refused("commit", err)
+	_, err = e.Upgrade(ctx, inst.Name, engine.UpgradeOptions{From: "app"})
+	refused("upgrade", err)
+	_, err = e.SaveCache(ctx, inst, engine.SaveOptions{})
+	refused("save the cache of", err)
+	if err := e.Remove(ctx, inst, true); err != nil {
+		t.Fatalf("remove a paused instance with force: %v", err)
+	}
+	if _, err := e.Get(ctx, inst.Name); !errors.Is(err, engine.ErrNotFound) {
+		t.Fatalf("a paused instance removed with force: %v, want ErrNotFound", err)
+	}
+}
