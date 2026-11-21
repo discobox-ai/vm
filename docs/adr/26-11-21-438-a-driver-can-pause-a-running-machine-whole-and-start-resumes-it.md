@@ -1,8 +1,8 @@
 # 26-11-21-438 — A driver can pause a running machine whole, reported as a capability, and Start resumes it
 
-- **Status**: Proposed (supersedes in part 26-11-03-676, its Attach of a
-  sandbox Archil paused, read as running and resumed by its first
-  operation)
+- **Status**: Accepted (by the owner, merging #202, 2026-11-21; supersedes
+  in part 26-11-03-676, its Attach of a sandbox Archil paused, read as
+  running and resumed by its first operation)
 - **Date**: 2026-11-21
 
 ## Context

@@ -4,7 +4,9 @@
   row, superseded by [26-11-17-311](26-11-17-311-a-driver-can-fence-a-machine-at-its-providers-edge-and-its-urls-answer-only-a-credential-it-mints-for-its-caller.md);
   §1's nothing installed or started in a guest, the rejected "systemd
   booted by disco-vm", and §4's operations in Archil's own namespaces,
-  superseded by [26-11-20-447](26-11-20-447-an-archil-guest-runs-systemd-which-the-driver-has-archils-supervisor-start-and-every-guest-operation-enters.md))
+  superseded by [26-11-20-447](26-11-20-447-an-archil-guest-runs-systemd-which-the-driver-has-archils-supervisor-start-and-every-guest-operation-enters.md);
+  its Attach of a sandbox Archil paused, read as running and resumed by
+  its first exec or copy, superseded by [26-11-21-438](26-11-21-438-a-driver-can-pause-a-running-machine-whole-and-start-resumes-it.md))
 - **Date**: 2026-11-03
 
 Accepted by the owner by merging #51, 2026-11-03.
