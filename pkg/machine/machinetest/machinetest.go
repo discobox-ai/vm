@@ -107,6 +107,10 @@ type Config struct {
 	// same provider (root). A driver that lists Capabilities.AcrossPools
 	// needs it.
 	Pool func(pool string) machine.Driver
+	// Pause pauses a running instance as its provider would (fake's Pause,
+	// a stand-in's paused sandbox). Nil skips the subtest of a paused
+	// instance, for a driver that cannot be made to pause one.
+	Pause func(ctx context.Context, inst machine.Instance) error
 	// SkipMaxMachines, when set, says why the suite must not fill the
 	// provider's Capabilities.MaxMachines: a cap others share, such as an
 	// account's, would refuse their creates while the suite holds it.
@@ -385,6 +389,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if _, err := driver.Attach(ctx, committed); !errors.Is(err, machine.ErrNotRunning) {
 			t.Fatalf("attach to a committed VM: %v, want ErrNotRunning", err)
 		}
+		wantState(t, driver, committed, machine.StateStopped, "committed")
 	})
 
 	t.Run("an-instance-is-found-listed-and-its-name-taken", func(t *testing.T) {
@@ -408,6 +413,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if _, err := driver.Attach(ctx, inst); !errors.Is(err, machine.ErrNotRunning) {
 			t.Fatalf("attach to a stopped instance: %v, want ErrNotRunning", err)
 		}
+		wantState(t, driver, inst, machine.StateStopped, "created")
 		if err := driver.Destroy(ctx, inst); err != nil {
 			t.Fatalf("destroy: %v", err)
 		}
@@ -1124,6 +1130,7 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		t.Cleanup(func() { _ = started.Kill(context.Background()) })
 		reachable(t, started)
+		wantState(t, driver, inst, machine.StateRunning, "started")
 		m, err := driver.Attach(ctx, inst)
 		if err != nil {
 			t.Fatalf("attach to a running instance: %v", err)
@@ -1150,6 +1157,66 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			}
 			if time.Now().After(deadline) {
 				t.Fatalf("a guest that powered itself off still attaches: %v", err)
+			}
+			time.Sleep(time.Second)
+		}
+		wantState(t, driver, inst, machine.StateStopped, "shut down")
+	})
+
+	// An instance its provider paused reads as paused, however often it is
+	// read, and still attaches; Start resumes it, and its guest answers;
+	// paused again, it stops.
+	t.Run("paused-read-and-resumed", func(t *testing.T) {
+		if cfg.Pause == nil {
+			t.Skip("the driver cannot be made to pause an instance")
+		}
+		inst := create(t, start)
+		startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
+		started, err := driver.Start(startCtx, inst, machine.BootOptions{})
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		t.Cleanup(func() { _ = started.Kill(context.Background()) })
+		reachable(t, started)
+		if err := cfg.Pause(ctx, inst); err != nil {
+			t.Fatalf("pause: %v", err)
+		}
+		wantState(t, driver, inst, machine.StatePaused, "paused")
+		wantState(t, driver, inst, machine.StatePaused, "paused, read again")
+		if _, err := driver.Attach(ctx, inst); err != nil {
+			t.Fatalf("attach to a paused instance: %v", err)
+		}
+		wantState(t, driver, inst, machine.StatePaused, "paused and attached")
+		resumed, err := driver.Start(startCtx, inst, machine.BootOptions{})
+		if err != nil {
+			t.Fatalf("start a paused instance: %v", err)
+		}
+		wantState(t, driver, inst, machine.StateRunning, "resumed")
+		reachable(t, resumed)
+		if info, err := resumed.Info(ctx); err != nil || info.OS != string(guestOS) {
+			t.Fatalf("info of a resumed instance: %+v, %v", info, err)
+		}
+
+		if err := cfg.Pause(ctx, inst); err != nil {
+			t.Fatalf("pause again: %v", err)
+		}
+		wantState(t, driver, inst, machine.StatePaused, "paused again")
+		m, err := driver.Attach(ctx, inst)
+		if err != nil {
+			t.Fatalf("attach to a paused instance: %v", err)
+		}
+		if err := m.Shutdown(ctx, false); err != nil {
+			t.Fatalf("stop a paused instance: %v", err)
+		}
+		deadline := time.Now().Add(cfg.Timeout)
+		for {
+			state, err := driver.State(ctx, inst)
+			if err == nil && state == machine.StateStopped {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("a paused instance stopped is %q, %v; want stopped", state, err)
 			}
 			time.Sleep(time.Second)
 		}
@@ -1679,6 +1746,15 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("a VM of the second committed VM reads %q from its own", got)
 		}
 	})
+}
+
+// wantState fails t unless the driver reads inst's state as want.
+func wantState(t *testing.T, d machine.Driver, inst machine.Instance, want machine.State, when string) {
+	t.Helper()
+	state, err := d.State(context.Background(), inst)
+	if err != nil || state != want {
+		t.Fatalf("the state of an instance %s: %q, %v; want %q", when, state, err, want)
+	}
 }
 
 // remove removes a VM the suite made, and fails t where the driver could

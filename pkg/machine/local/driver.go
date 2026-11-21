@@ -320,6 +320,19 @@ func (d *Driver) chain(fromID string) ([]Layer, error) {
 	return chain, nil
 }
 
+// Spec is the hypervisor's view of the pool's VM inst, for a hypervisor's
+// own test hooks (fake's Pause), which act on its files.
+func (d *Driver) Spec(ctx context.Context, inst machine.Instance) (InstanceSpec, error) {
+	if err := d.authorizeInstance(ctx, inst); err != nil {
+		return InstanceSpec{}, err
+	}
+	rec, err := d.readPool(inst.ID)
+	if err != nil {
+		return InstanceSpec{}, err
+	}
+	return d.spec(rec)
+}
+
 // spec is the hypervisor's view of a VM: its chain only for a hypervisor
 // that Chains, since a copy that does not is a disk of its own once
 // Prepare has made it.

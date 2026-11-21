@@ -858,6 +858,18 @@ type Endpoint struct {
 	Credential *Credential `json:"credential,omitempty"`
 }
 
+// State is an instance's power state, as its provider has it
+// (Driver.State).
+type State string
+
+const (
+	StateStopped State = "stopped"
+	StateRunning State = "running"
+	// StatePaused is a machine its provider paused, with its memory kept:
+	// it attaches, stops, and resumes at Start.
+	StatePaused State = "paused"
+)
+
 // Share is a host directory exported to the guest.
 type Share struct {
 	Tag      string
@@ -929,12 +941,23 @@ type Driver interface {
 	// with their process (vz) ends it when this process ends. It is not
 	// bound to ctx, which only bounds starting it.
 	Boot(ctx context.Context, inst Instance, opts BootOptions) (Machine, error)
-	// Start starts a stopped instance that outlives this process, and
+	// Start starts a stopped instance, or resumes a paused one (State), that
+	// outlives this process, and
 	// returns once its guest operations answer, or once the machine runs as
 	// Boot does: under a shim of its own
 	// where the machine would die with its process, or as its service
 	// owns it. The machine returned is attached, as Attach's is.
 	Start(ctx context.Context, inst Instance, opts BootOptions) (Machine, error)
+	// State is the instance's power state, as its provider has it now:
+	// StateRunning where Attach finds a machine its provider runs,
+	// StatePaused where the provider paused it (Archil at a session's
+	// limit), and StateStopped where Attach is ErrNotRunning. Reading it
+	// wakes nothing, and a paused machine stays paused. A paused machine
+	// still attaches, so it stops as a running one does, and Start resumes
+	// it: Start is the one way to undo a pause, though a driver may resume
+	// one at its first guest operation too (archil, fake). A provider that
+	// cannot be asked is an error.
+	State(ctx context.Context, inst Instance) (State, error)
 	// Attach returns the running machine of an instance, or ErrNotRunning.
 	// Any process may call it, any number of times, with its own
 	// credentials. A guest that shut itself down while nothing watched reads

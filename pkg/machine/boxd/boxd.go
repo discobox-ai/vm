@@ -582,6 +582,20 @@ func untilRunning(ctx context.Context, api boxdapi.BoxdApiClient, ref vmRef, ins
 	}
 }
 
+// State is boxd's, as Attach reads it: boxd pauses no machine of its own
+// accord, so one is running or stopped.
+func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.State, error) {
+	_, err := d.Attach(ctx, inst)
+	switch {
+	case err == nil:
+		return machine.StateRunning, nil
+	case errors.Is(err, machine.ErrNotRunning):
+		return machine.StateStopped, nil
+	default:
+		return "", err
+	}
+}
+
 // Attach finds the instance's machine through the API, as any process can.
 // Its state is boxd's: a guest that powered itself off from inside is left
 // running by boxd, and reads as running until `disco-vm stop`.

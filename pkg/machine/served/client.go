@@ -168,9 +168,25 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 	return d.machine(inst.Name), nil
 }
 
-// Attach returns the running VM's machine, or ErrNotRunning.
+// State is the server's Driver.State. One this client does not know is an
+// error, not a guess.
+func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.State, error) {
+	var resp stateResponse
+	if err := d.call(ctx, http.MethodGet, vmPath(inst.Name, "/state"), nil, &resp); err != nil {
+		return "", err
+	}
+	switch resp.State {
+	case machine.StateStopped, machine.StateRunning, machine.StatePaused:
+		return resp.State, nil
+	default:
+		return "", fmt.Errorf("served: instance %s is in a state this client does not know: %q", inst.Name, resp.State)
+	}
+}
+
+// Attach returns the running VM's machine, or a paused one's, or
+// ErrNotRunning.
 func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
-	running, err := d.running(ctx, inst.Name)
+	running, err := d.running(ctx, inst)
 	if err != nil {
 		return nil, err
 	}
@@ -180,10 +196,10 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	return d.machine(inst.Name), nil
 }
 
-func (d *Driver) running(ctx context.Context, name string) (bool, error) {
-	var state stateResponse
-	err := d.call(ctx, http.MethodGet, vmPath(name, "/state"), nil, &state)
-	return state.Running, err
+// running is whether the VM attaches: whether it is not stopped.
+func (d *Driver) running(ctx context.Context, inst machine.Instance) (bool, error) {
+	state, err := d.State(ctx, inst)
+	return state != machine.StateStopped, err
 }
 
 // Commit commits the stopped VM on the server.
@@ -429,7 +445,7 @@ func (m *remoteMachine) Done() <-chan struct{} {
 			var failing time.Time
 			for {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				running, err := m.d.running(ctx, m.name)
+				running, err := m.d.running(ctx, machine.Instance{Name: m.name})
 				cancel()
 				switch {
 				case errors.Is(err, machine.ErrNotFound):

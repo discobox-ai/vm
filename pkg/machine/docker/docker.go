@@ -563,6 +563,7 @@ func refuseCommitted(inst machine.Instance) error {
 }
 
 // Start is Boot: the daemon owns the container, whatever process started it.
+// A container someone paused is unpaused.
 func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
 	return d.Boot(ctx, inst, opts)
 }
@@ -579,6 +580,11 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 		return nil, fmt.Errorf("docker: container %s: %w", containerName(d.pool, inst.Name), err)
 	}
 	ref := containerRef{ID: c.ID, Name: containerName(d.pool, inst.Name)}
+	if c.State.Paused {
+		if err := d.api.unpause(ctx, ref.ID); err != nil {
+			return nil, fmt.Errorf("docker: unpause %s: %w", ref.Name, err)
+		}
+	}
 	if !c.State.Running {
 		res := hostConfig{NanoCPUs: int64(inst.CPUs) * 1e9}
 		if inst.Memory != 0 {
@@ -628,9 +634,34 @@ func (d *Driver) stopped(ctx context.Context, id string) <-chan struct{} {
 	return ch
 }
 
+// State is the daemon's: a container someone paused (`docker pause`) is
+// paused, which Start unpauses; one that runs is running; and one stopped,
+// gone, or committed is stopped, as Attach has it. Reading it unpauses
+// nothing.
+func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.State, error) {
+	if image(inst) {
+		return machine.StateStopped, nil
+	}
+	c, err := d.resolve(ctx, inst)
+	switch {
+	case isNotFound(err):
+		return machine.StateStopped, nil
+	case err != nil:
+		return "", fmt.Errorf("docker: container %s: %w", containerName(d.pool, inst.Name), err)
+	case !c.State.Running:
+		return machine.StateStopped, nil
+	case c.State.Paused:
+		return machine.StatePaused, nil
+	default:
+		return machine.StateRunning, nil
+	}
+}
+
 // Attach finds the instance's container through the daemon, as any process
 // can: the daemon owns it, so the engine runs no shim. A guest that powered
 // itself off has already stopped its container, because Init exits with it.
+// A paused container attaches, and is left paused until the machine's first
+// guest operation, or Start, unpauses it.
 func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
 	if image(inst) {
 		return nil, fmt.Errorf("docker: VM %s is committed, an image with no container: %w", inst.Name, machine.ErrNotRunning)
@@ -645,7 +676,9 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	case !c.State.Running:
 		return nil, fmt.Errorf("docker: container %s is %s: %w", ref.Name, c.State.Status, machine.ErrNotRunning)
 	}
-	return newContainer(d.api, ref), nil
+	m := newContainer(d.api, ref)
+	m.paused.Store(c.State.Paused)
+	return m, nil
 }
 
 // Commit commits the stopped VM's container as its committed image,
