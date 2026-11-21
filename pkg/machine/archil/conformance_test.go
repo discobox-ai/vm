@@ -1,6 +1,7 @@
 package archil
 
 import (
+	"cmp"
 	"context"
 	"os"
 	"runtime"
@@ -187,20 +188,23 @@ func TestTerminal(t *testing.T) {
 }
 
 // TestCommandLinesAreWhatShRuns: every line the driver makes, as sh reads it
-// in the fake, is the request's argv, and its account for another, whatever
-// a word holds.
+// in the fake, enters systemd's namespaces with the request's directory
+// ("/" for none), its account for another, and its argv, whatever a word
+// holds.
 func TestCommandLinesAreWhatShRuns(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs sh")
 	}
 	argv := []string{"printf", "%s\n", "it's", "two words", "", "$HOME", "`id`", "a\\b", "line\nbreak", "--", "*"}
 	for _, user := range []string{"", "disco", "o'neil"} {
-		gotUser, got, err := parseLine(command(machine.ExecRequest{Argv: argv, User: user}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if gotUser != user || !slices.Equal(got, argv) {
-			t.Errorf("as %q: sh read %q as %q, want %q", user, got, gotUser, argv)
+		for _, dir := range []string{"", "/a dir/it's"} {
+			gotDir, gotUser, got, entered, err := parseLine(command(machine.ExecRequest{Argv: argv, User: user, Dir: dir}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !entered || gotDir != cmp.Or(dir, "/") || gotUser != user || !slices.Equal(got, argv) {
+				t.Errorf("as %q in %q: sh read %q in %q as %q (entered %v), want %q", user, dir, got, gotDir, gotUser, entered, argv)
+			}
 		}
 	}
 }

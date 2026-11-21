@@ -35,12 +35,15 @@
 - **Every name sent to Archil is checked against its OpenAPI limit.** A
   sandbox's is 63 characters, a disk's 100; a name past one fails with
   Archil's raw 400 after the checks passed it.
-- **A guest script runs on BusyBox as well as GNU.** The image is the
-  caller's, Alpine included: copy-in passed GNU tar's `--no-overwrite-dir`,
+- **A guest script runs on BusyBox as well as GNU.** A base without apt
+  and without systemd (Alpine) is refused at Create now, but one with
+  systemd may still carry BusyBox's tools. Alpine was the case that showed
+  it: copy-in passed GNU tar's `--no-overwrite-dir`,
   and every Alpine VM failed to start, since Start writes the service file
   with it. A chunk read from a pipe with BusyBox's `head` takes more than it
   asked for (stdio), so copy out reads a regular file with `dd`. Run a
-  changed script on an Alpine guest.
+  changed script under BusyBox's `sh`, `tar`, `head`, and `dd`, beside
+  util-linux (`busybox sh` on a Debian base with `busybox` installed).
 - **A data disk with no sandbox is a VM, never a leftover.** An upgrade
   deletes the sandbox before it makes it again, and one stopped between
   leaves only the disk: listing, Create (`ErrExists`), Start, and Destroy
@@ -82,3 +85,28 @@
   Service unexposes it, and so does every copy made from a VM, a Create or
   an Upgrade from it, for both the source and the copy: a committed VM is
   never started, so its copies are what fence it.
+- **Every line a guest operation sends enters systemd's namespaces.** A
+  process the driver starts runs in Archil's, where `systemctl` reaches no
+  systemd and `/run` is not systemd's; only `ensureScript`, which makes
+  systemd run, and the readiness `true` may run there. A new guest script
+  goes through `command`, and the fake refuses a line that does not.
+- **Nothing installs at a boot.** systemd is installed at Create, under the
+  fence, and the boot service only runs it: a VM fenced from its mirror
+  needs a base with systemd, and a boot must not depend on the network.
+- **The fake container harness stands in for Archil's supervisor.**
+  `fakeArchilClient` and `fakeInit` (`container_test.go`) play what vm#86
+  saw of `archil-client services`; a change to how the driver uses it is
+  checked on Archil, not against the stand-in alone.
+- **An upgrade can fail only after its sandbox is deleted on what the new
+  root holds.** Archil can't rename a sandbox, so the new root boots under
+  the name only once the old one is gone, and a fresh base without systemd
+  fenced from its mirror fails there. Anything that can be known without
+  booting it is checked before the delete; nothing new is to be added after
+  it.
+- **A command entered into systemd's namespaces stays in its nsenter's
+  process group.** Archil's kill SIGKILLs the group (seen 2026-11-21: no
+  trap ran, and nothing was left), and that is what ends a killed command
+  in there; `nsenter` forwards nothing. Don't `setsid` or change the group
+  on that path. `setpriv --pdeathsig TERM`, set again under `runuser`
+  (whose fork and change of account clear it), covers `nsenter` dying
+  alone.
