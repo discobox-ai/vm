@@ -383,11 +383,13 @@ tasks:
 
   # Archil itself, from any host: machinetest (TestConformance, in pool
   # conformance) and internal/e2e (in pool e2e, or DISCO_VM_E2E_POOL's), each
-  # from a fresh VM of debian:sid (DISCO_VM_ARCHIL_IMAGE and
-  # DISCO_VM_E2E_IMAGE name others). Both make billable sandboxes and disks,
-  # and remove them.
+  # from a fresh VM of DISCO_VM_ARCHIL_IMAGE and of debian:sid (or
+  # DISCO_VM_E2E_IMAGE's). Both make billable sandboxes and disks,
+  # and remove them. A fresh VM fenced to nothing can't install systemd, so
+  # machinetest needs DISCO_VM_ARCHIL_IMAGE to name a base with systemd;
+  # internal/e2e's fenced VMs are copies of e2e-base, which has it.
   test:archil:
-    desc: Run the archil conformance suite and internal/e2e against Archil itself (needs ARCHIL_API_KEY and ARCHIL_REGION)
+    desc: Run the archil conformance suite and internal/e2e against Archil itself (needs ARCHIL_API_KEY, ARCHIL_REGION, and DISCO_VM_ARCHIL_IMAGE, a base with systemd)
     deps:
       - build
     preconditions:
@@ -395,13 +397,28 @@ tasks:
         msg: set ARCHIL_API_KEY to a key of the Archil account to run VMs in
       - sh: '[ -n "${ARCHIL_REGION}" ]'
         msg: set ARCHIL_REGION to the Archil region to run VMs in, such as aws-us-east-1
+      - sh: '[ -n "${DISCO_VM_ARCHIL_IMAGE}" ]'
+        msg: set DISCO_VM_ARCHIL_IMAGE to a base with systemd, which the conformance suite's VM fenced to nothing can't install
     env:
       DISCO_VM_TEST_BINARY: '{{.ROOT_DIR}}/{{.BINARY}}'
-      DISCO_VM_ARCHIL_IMAGE:
-        sh: echo "${DISCO_VM_ARCHIL_IMAGE:-debian:sid}"
     cmds:
       - go test -count=1 -timeout 60m -v -run '^TestConformance$' ./pkg/machine/archil
       - DISCO_VM_DRIVER=archil go test -count=1 -timeout 90m -v ./internal/e2e
+
+  # The archil driver against its fake, each sandbox a Docker container of
+  # DEBIAN_IMAGE (no systemd, its apt at DEBIAN_SNAPSHOT) whose PID 1 is sh,
+  # as an Archil guest's is Archil's own init: systemd installed at Create,
+  # started by a stand-in for Archil's supervisor, entered by every guest
+  # operation, and started again after a stop (TestSystemdInAContainer).
+  # Needs Docker, and the network for apt.
+  test:archil:container:
+    desc: Run the archil driver against its fake with Docker containers as its guests (needs Docker)
+    platforms: [linux]
+    env:
+      DISCO_VM_ARCHIL_CONTAINER_IMAGE: disco-vm-archil-container-base
+    cmds:
+      - docker build {{.DEBIAN_ARGS}} --tag disco-vm-archil-container-base pkg/machine/archil/testdata/container-base
+      - go test -count=1 -timeout 20m -v -run '^TestSystemdInAContainer$' ./pkg/machine/archil
 
   # disco-vm has nothing long-running to serve, so the loop only rebuilds.
   dev:

@@ -85,6 +85,20 @@ jobs:
         with:
           target: test:agent
 
+  # The archil driver against the fake whose sandboxes are Docker
+  # containers with sh as PID 1: systemd installed, started, entered, and
+  # started again (ADR 26-11-20-447).
+  archil-container:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        with:
+          target: test:archil:container
+
   # The linux and windows release binaries, as a tag's release builds them
   # (release.yml).
   release:
