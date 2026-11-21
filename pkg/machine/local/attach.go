@@ -63,6 +63,7 @@ func (d *Driver) paused(inst machine.Instance) (bool, error) {
 }
 
 // Attach reaches the instance's machine through its shim, as any process can.
+// One its hypervisor paused is ErrPaused, and left paused.
 func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return nil, err
@@ -75,6 +76,13 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	defer cancel()
 	if err := shim.status(statusCtx); err != nil {
 		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrNotRunning)
+	}
+	paused, err := d.paused(inst)
+	if err != nil {
+		return nil, err
+	}
+	if paused {
+		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
 	}
 	held := &shimProcess{shim: shim, done: make(chan struct{})}
 	if shim.stale != nil {

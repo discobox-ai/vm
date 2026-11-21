@@ -2,6 +2,7 @@ package served
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,20 +11,20 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// A client reads the state the server sends, and attaches to a VM that is
-// not stopped, a paused one too. A state it does not know is an error, not a
-// guess.
-func TestStateCrossesAndAPausedVMAttaches(t *testing.T) {
+// A client reads the state the server sends, attaches to a running VM, and
+// refuses a paused one with ErrPaused and a stopped one with ErrNotRunning.
+// A state it does not know is an error, not a guess.
+func TestStateCrossesAndAPausedVMIsErrPaused(t *testing.T) {
 	for _, c := range []struct {
-		body     string
-		want     machine.State
-		attaches bool
-		fails    bool
+		body   string
+		want   machine.State
+		attach error
+		fails  bool
 	}{
-		{`{"state":"running"}`, machine.StateRunning, true, false},
-		{`{"state":"paused"}`, machine.StatePaused, true, false},
-		{`{"state":"stopped"}`, machine.StateStopped, false, false},
-		{`{"state":"frozen"}`, "", false, true},
+		{`{"state":"running"}`, machine.StateRunning, nil, false},
+		{`{"state":"paused"}`, machine.StatePaused, machine.ErrPaused, false},
+		{`{"state":"stopped"}`, machine.StateStopped, machine.ErrNotRunning, false},
+		{`{"state":"frozen"}`, "", nil, true},
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/vms/vm/state" {
@@ -45,8 +46,11 @@ func TestStateCrossesAndAPausedVMAttaches(t *testing.T) {
 			t.Errorf("%s: state %q, %v; want %q (fails %v)", c.body, got, err, c.want, c.fails)
 		}
 		_, err = d.Attach(t.Context(), inst)
-		if (err == nil) != c.attaches {
-			t.Errorf("%s: attach: %v; want attached %v", c.body, err, c.attaches)
+		switch {
+		case c.fails && err == nil:
+			t.Errorf("%s: attached, want an error", c.body)
+		case !c.fails && !errors.Is(err, c.attach) && (err != nil || c.attach != nil):
+			t.Errorf("%s: attach: %v; want %v", c.body, err, c.attach)
 		}
 		srv.Close()
 	}

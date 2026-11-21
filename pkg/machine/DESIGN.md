@@ -67,7 +67,7 @@ a `Capabilities` field, never a faked method:
 | credential (`URLs.Credential`: a URL answers only one the driver mints) | no | no | no | no | no | no | **yes**: a port token per `Service`, a day long, in `X-Archil-Token` |
 | pool URL (`Service.PoolURL`) | the ingress URL | the ingress URL | `http://<machine>.boxd:7302` on networks, else the ingress URL | the container's address on its network | the ingress URL | the ingress URL (a shared loopback) | the ingress URL |
 | URLs (`URLs`: given never, when asked, or always) | ingress when asked (its default), pool always | ingress when asked (its default), pool always | ingress when asked (the default proxy, its default); pool always on networks (direct), on none the ingress one, so none with that off | both always (ingress never for a daemon on another host) | ingress when asked (its default), pool always | both always (with `noLoopback`, as vz) | ingress when asked (its default), pool always |
-| paused (`State`: `paused`, which Start resumes) | never | never | never | a container someone `docker pause`d | never | at its test hook, `fake.Pause` | at a sandbox's 24-hour session limit, or at Archil's pause (`paused`, `pausing`) |
+| paused (`State`: `paused`, which Start resumes) | never | never | `suspended`, `standby`, or `hibernated`, by someone else's `SuspendVm` (the driver turns boxd's idle timers off) | a container someone `docker pause`d | never | at its test hook, `fake.Pause` | at a sandbox's 24-hour session limit, or at Archil's pause (`paused`, `pausing`) |
 | volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<pool>--<name>--data` |
 | upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
 
@@ -88,17 +88,19 @@ before (ADR 26-11-15-274). The engine counts nothing. Every driver clones the sa
 (Archil at a sandbox's session limit; discobox ADR 26-11-16-619 §5). It is
 required of every driver, and one whose provider pauses nothing reads only
 running and stopped. Reading it wakes nothing, so a listing of every VM
-(`Engine.State`, `ps`) leaves a paused one paused. A paused machine still
-attaches, so it stops: `Kill` stops it as it is, and so does `Shutdown` on
-archil, while docker's unpauses it first, since its daemon runs no exec in a
-paused container. `Start` resumes it:
-that is the one way a caller undoes a pause. A driver may also resume one at
-its first guest operation, as a fallback (archil, docker, fake). The fake driver
-pauses a running VM at its test hook (`fake.Pause`), so a caller tests its
-resume with no account, and `machinetest` checks a paused VM read, resumed,
-and stopped on every driver given a way to pause one (`Config.Pause`): fake,
-served over fake, docker (`docker pause`), and archil (Archil's own pause,
-which its stand-in answers too). Reporting a provider's change of a
+(`Engine.State`, `ps`) leaves a paused one paused. `Start` resumes a paused
+machine, booting nothing, and nothing else does: no guest operation, no
+attach, no listing (discobox-ai/vm ADR 26-11-21-438 §5). `Attach` and `Boot`
+of a paused VM return `ErrPaused`, which does not wrap `ErrNotRunning`,
+since every caller reads that as stopped; served carries it as `paused`.
+`Engine.Stop` resumes a paused VM and shuts it down in order, so its guest
+writes out what it holds; `Engine.Guest`, `Dial`, and `GUI` refuse one,
+naming `start`; `Destroy` removes one as it is. The fake driver pauses a
+running VM at its test hook (`fake.Pause`), so a caller tests its resume
+with no account, and `machinetest` checks a paused VM read, refused an
+attach and a boot, resumed, and destroyed on every driver given a way to
+pause one (`Config.Pause`): fake, served over fake, docker (`docker
+pause`), and archil (Archil's own pause, which its stand-in answers too). Reporting a provider's change of a
 machine's state as it happens, rather than at a read, is not done yet.
 
 ## Commit is a capability, and a driver without it makes every VM fresh

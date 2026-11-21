@@ -77,6 +77,14 @@ var ErrCapacity = errors.New("machine: the provider already runs, or holds, as m
 // ErrNotRunning reports that an instance has no running machine to attach to.
 var ErrNotRunning = errors.New("machine: the instance is not running")
 
+// ErrPaused reports that the instance's machine is paused, whoever paused
+// it (its provider at a session's limit, someone with the daemon): it is
+// held, with its memory, and runs nothing. Driver.Attach and Boot return
+// it, and Start resumes the machine: nothing else does. It does not wrap
+// ErrNotRunning, which every caller reads as stopped (discobox-ai/vm ADR
+// 26-11-21-438 §3).
+var ErrPaused = errors.New("machine: the instance is paused; start it to resume it")
+
 // ErrUnreachable reports a guest operation that failed before its guest
 // answered anything, because the guest, or the provider that reaches it,
 // could not be reached. What it asked may not have run, or may have run in
@@ -865,8 +873,8 @@ type State string
 const (
 	StateStopped State = "stopped"
 	StateRunning State = "running"
-	// StatePaused is a machine its provider paused, with its memory kept:
-	// it attaches, stops, and resumes at Start.
+	// StatePaused is a machine paused, with its memory kept: it is held,
+	// attaches to nothing (ErrPaused), and resumes at Start.
 	StatePaused State = "paused"
 )
 
@@ -936,13 +944,14 @@ type Driver interface {
 	// provider (boxd), once the provider says the machine runs: its guest
 	// operations then return ErrUnreachable until the guest answers. A committed VM whose provider has no machine left
 	// is ErrCommitted, and one whose disk a VM created from it differences
-	// over is ErrInUse, as they are to Start. The machine is this process's: it lives
+	// over is ErrInUse, as they are to Start; a paused one is ErrPaused,
+	// held as a running one is, which Start resumes. The machine is this process's: it lives
 	// until it powers off or is killed, and a driver whose machines die
 	// with their process (vz) ends it when this process ends. It is not
 	// bound to ctx, which only bounds starting it.
 	Boot(ctx context.Context, inst Instance, opts BootOptions) (Machine, error)
-	// Start starts a stopped instance, or resumes a paused one (State), that
-	// outlives this process, and
+	// Start starts a stopped instance, or resumes a paused one (State,
+	// ErrPaused), booting nothing, that outlives this process, and
 	// returns once its guest operations answer, or once the machine runs as
 	// Boot does: under a shim of its own
 	// where the machine would die with its process, or as its service
@@ -950,15 +959,15 @@ type Driver interface {
 	Start(ctx context.Context, inst Instance, opts BootOptions) (Machine, error)
 	// State is the instance's power state, as its provider has it now:
 	// StateRunning where Attach finds a machine its provider runs,
-	// StatePaused where the provider paused it (Archil at a session's
-	// limit), and StateStopped where Attach is ErrNotRunning. Reading it
-	// wakes nothing, and a paused machine stays paused. A paused machine
-	// still attaches, so it stops as a running one does, and Start resumes
-	// it: Start is the one way to undo a pause, though a driver may resume
-	// one at its first guest operation too (archil, fake). A provider that
-	// cannot be asked is an error.
+	// StatePaused where Attach is ErrPaused (Archil at a session's limit, a
+	// container someone paused), and StateStopped where Attach is
+	// ErrNotRunning. Reading it wakes nothing, and a paused machine stays
+	// paused. Start is the one way to undo a pause: no guest operation, no
+	// attach, and no listing resumes one. A provider that cannot be asked is
+	// an error.
 	State(ctx context.Context, inst Instance) (State, error)
-	// Attach returns the running machine of an instance, or ErrNotRunning.
+	// Attach returns the running machine of an instance, ErrNotRunning, or
+	// ErrPaused for a paused one, which it leaves paused.
 	// Any process may call it, any number of times, with its own
 	// credentials. A guest that shut itself down while nothing watched reads
 	// as not running. The machine watches for its own stop only once Done,

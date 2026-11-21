@@ -46,6 +46,7 @@ func TestConformance(t *testing.T) {
 		// Not /tmp: Ubuntu clears it at boot, and the suite reads its marker
 		// back after one.
 		ScratchDir: "/var/lib",
+		Pause:      envDriver(t, machine.KeyFromEnv("boxd")).pause,
 		Keyed: func(keys machine.KeySource) machine.Driver {
 			return envDriver(t, keys)
 		},
@@ -59,6 +60,32 @@ func TestConformance(t *testing.T) {
 // requires anything.
 func live() bool {
 	return (os.Getenv(APIKeyEnv) != "" || os.Getenv(TokenEnv) != "") && os.Getenv(RegionEnv) != ""
+}
+
+// pause suspends the VM's machine as someone with boxd's API would
+// (SuspendVm), and waits until boxd holds it paused.
+func (d *Driver) pause(ctx context.Context, inst machine.Instance) error {
+	api, err := d.api.API(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := api.SuspendVm(ctx, &boxdapi.SuspendVmRequest{VmId: inst.ID}); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: inst.ID})
+		if err != nil {
+			return err
+		}
+		if heldPaused(info.GetStatus()) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("boxd: machine " + inst.Name + " is still " + info.GetStatus() + ", not suspended")
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 // envDriver is the driver the command line would make in livePool: its
@@ -135,6 +162,7 @@ func TestConformanceFakeAPI(t *testing.T) {
 				Memory:     16 << 30,
 				Timeout:    30 * time.Second,
 				ScratchDir: "/scratch",
+				Pause:      d.pause,
 				// The stand-in's proxies are at names under boxd.test.
 				UnreachedIngress: true,
 				Keyed: func(keys machine.KeySource) machine.Driver {

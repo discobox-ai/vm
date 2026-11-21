@@ -151,8 +151,11 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 }
 
 // Boot is Start: the machine is the server's, and outlives this process,
-// as a boxd machine does.
+// as a boxd machine does. A paused VM is ErrPaused: Start resumes it.
 func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+	if state, err := d.State(ctx, inst); err == nil && state == machine.StatePaused {
+		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
+	}
 	return d.Start(ctx, inst, opts)
 }
 
@@ -183,20 +186,22 @@ func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.Stat
 	}
 }
 
-// Attach returns the running VM's machine, or a paused one's, or
-// ErrNotRunning.
+// Attach returns the running VM's machine, ErrNotRunning, or ErrPaused.
 func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
-	running, err := d.running(ctx, inst)
-	if err != nil {
+	state, err := d.State(ctx, inst)
+	switch {
+	case err != nil:
 		return nil, err
-	}
-	if !running {
+	case state == machine.StatePaused:
+		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
+	case state == machine.StateStopped:
 		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrNotRunning)
 	}
 	return d.machine(inst.Name), nil
 }
 
-// running is whether the VM attaches: whether it is not stopped.
+// running is whether the VM has not stopped: a paused one is held, and has
+// not.
 func (d *Driver) running(ctx context.Context, inst machine.Instance) (bool, error) {
 	state, err := d.State(ctx, inst)
 	return state != machine.StateStopped, err

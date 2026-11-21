@@ -285,7 +285,7 @@ func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("fake: start guest agent %s: %w", d.Agent, err)
 	}
-	m := &proc{cmd: cmd, done: make(chan struct{}), hostPorts: hostPorts, dir: inst.Dir}
+	m := &proc{cmd: cmd, done: make(chan struct{}), hostPorts: hostPorts}
 	go func() {
 		err := cmd.Wait()
 		// A guest that exits 0 powered itself off; anything else crashed.
@@ -421,12 +421,10 @@ type proc struct {
 	cmd       *exec.Cmd
 	addr      string
 	hostPorts string
-	// dir is the instance's, where Pause marks it paused.
-	dir    string
-	done   chan struct{}
-	err    error
-	once   sync.Once
-	killed atomic.Bool
+	done      chan struct{}
+	err       error
+	once      sync.Once
+	killed    atomic.Bool
 }
 
 var _ machine.Machine = (*proc)(nil)

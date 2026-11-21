@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,15 +14,15 @@ import (
 
 // pausedName marks a running fake machine paused, as a provider pauses one
 // (Archil at a session's limit). Its guest process keeps running: the
-// pause is only what the driver reports, and what Start, or the guest's
-// first exec or copy, undoes.
+// pause is what the driver reports (State, Attach's ErrPaused), and what
+// Start alone undoes.
 const pausedName = "paused"
 
 // Pause pauses a running fake VM as a provider would: the driver then
-// reports it machine.StatePaused, reading that wakes nothing, its Start
-// resumes it, a stop stops it as it is, and its first exec or copy resumes
-// it as archil's does. It is a test hook, so that a caller can test how it
-// handles a pause with no provider account. d is a fake driver (machine.New
+// reports it machine.StatePaused, reading that wakes nothing, its Attach
+// and Boot are machine.ErrPaused, and its Start, alone, resumes it. It is a
+// test hook, so that a caller can test how it handles a pause with no
+// provider account. d is a fake driver (machine.New
 // "fake"); a VM already paused is left so, and one not running is
 // machine.ErrNotRunning.
 func Pause(ctx context.Context, d machine.Driver, inst machine.Instance) error {
@@ -66,28 +65,4 @@ func unpause(dir string) error {
 		return fmt.Errorf("fake: resume: %w", err)
 	}
 	return nil
-}
-
-// Exec resumes a paused guest first, as archil's first exec does.
-func (m *proc) Exec(ctx context.Context, req machine.ExecRequest) (machine.Process, error) {
-	if err := unpause(m.dir); err != nil {
-		return nil, err
-	}
-	return m.Client.Exec(ctx, req)
-}
-
-// CopyTo resumes a paused guest first, as archil's first copy does.
-func (m *proc) CopyTo(ctx context.Context, dir string, tarStream io.Reader) error {
-	if err := unpause(m.dir); err != nil {
-		return err
-	}
-	return m.Client.CopyTo(ctx, dir, tarStream)
-}
-
-// CopyFrom resumes a paused guest first, as archil's first copy does.
-func (m *proc) CopyFrom(ctx context.Context, path string) (io.ReadCloser, error) {
-	if err := unpause(m.dir); err != nil {
-		return nil, err
-	}
-	return m.Client.CopyFrom(ctx, path)
 }
