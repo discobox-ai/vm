@@ -39,7 +39,9 @@ embedder authenticates the channel; the handler authenticates no one.
   (`OpState`) answers `state`: running, stopped, or paused. The client
   attaches to a running VM, refuses a paused one with `machine.ErrPaused`
   (whose wire code is `paused`), and refuses a
-  state it does not know rather than guess.
+  state it does not know rather than guess. Its `Boot` (a Start) refuses a
+  paused VM with `ErrPaused`, and one whose state could not be read with
+  that error, never starting it, since a start resumes a paused VM.
 - **What the engine checks, the server's side checks again.** The engine
   runs on the client, which is the caller's. A forward to a host socket is
   refused by the server whatever the list says (`ErrRefused`), and so is

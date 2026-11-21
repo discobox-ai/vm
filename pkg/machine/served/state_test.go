@@ -55,3 +55,48 @@ func TestStateCrossesAndAPausedVMIsErrPaused(t *testing.T) {
 		srv.Close()
 	}
 }
+
+// Boot refuses a paused VM with ErrPaused, and a VM whose state the server
+// could not read with that error: it never starts either, since a start
+// would resume a paused VM.
+func TestBootRefusesAPausedVMAndAStateItCannotRead(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		status int
+		body   string
+		want   error
+	}{
+		{"paused", http.StatusOK, `{"state":"paused"}`, machine.ErrPaused},
+		{"unreadable", http.StatusBadGateway, `{"error":"the provider did not answer","code":"unavailable"}`, machine.ErrUnavailable},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			started := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/vms/vm/state":
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(c.status)
+					_, _ = w.Write([]byte(c.body))
+				case "/v1/vms/vm/start":
+					started = true
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			d := &Driver{http: &http.Client{Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					var dialer net.Dialer
+					return dialer.DialContext(ctx, "tcp", srv.Listener.Addr().String())
+				},
+			}}}
+			if _, err := d.Boot(t.Context(), machine.Instance{Name: "vm"}, machine.BootOptions{}); !errors.Is(err, c.want) {
+				t.Fatalf("boot: %v, want %v", err, c.want)
+			}
+			if started {
+				t.Fatal("boot asked the server to start the VM")
+			}
+		})
+	}
+}

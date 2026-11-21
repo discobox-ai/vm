@@ -151,9 +151,15 @@ func (d *Driver) Destroy(ctx context.Context, inst machine.Instance) error {
 }
 
 // Boot is Start: the machine is the server's, and outlives this process,
-// as a boxd machine does. A paused VM is ErrPaused: Start resumes it.
+// as a boxd machine does. A paused VM is ErrPaused: Start resumes it. A
+// state the server could not read is that error, never a Start, which
+// would resume a paused VM a boot must leave paused.
 func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
-	if state, err := d.State(ctx, inst); err == nil && state == machine.StatePaused {
+	state, err := d.State(ctx, inst)
+	if err != nil {
+		return nil, err
+	}
+	if state == machine.StatePaused {
 		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
 	}
 	return d.Start(ctx, inst, opts)
