@@ -332,9 +332,12 @@ func (e *Engine) CheckGUI(gui bool) error {
 // guest where its service listens, trying again while the guest is not
 // reachable yet (machine.ErrUnreachable): a driver's Start may return once
 // the machine runs, before its guest answers. A paused instance is resumed,
-// which is the one way to undo a pause, and told as at every start; one
-// whose guest cannot be told is left running, never killed, since it was
-// alive, with its memory, before this start.
+// which is the one way to undo a pause, and told as at every start. A guest
+// that cannot be told is stopped (Kill), so no instance runs whose service
+// does not know where to listen: a cold boot's, and a resumed one's too,
+// though it then loses the memory it kept while paused. A resumed one's
+// error says it resumed, was stopped, and that a start again retries, or,
+// where the stop failed too, that it may still be running.
 func (e *Engine) Start(ctx context.Context, inst Instance, opts StartOptions) error {
 	state := e.State(ctx, inst)
 	if state == Running {
@@ -353,10 +356,14 @@ func (e *Engine) Start(ctx context.Context, inst Instance, opts StartOptions) er
 		return fmt.Errorf("instance %s failed to start: %w", inst.Name, err)
 	}
 	if err := e.announceService(ctx, inst, m); err != nil {
-		if state != Paused {
-			_ = m.Kill(context.Background())
+		killErr := m.Kill(context.Background())
+		switch {
+		case state != Paused:
+			return err
+		case killErr != nil:
+			return fmt.Errorf("instance %s resumed, but its service file could not be written, and stopping it failed, so it may still be running; stop it: %w", inst.Name, errors.Join(err, killErr))
 		}
-		return err
+		return fmt.Errorf("instance %s resumed, but its service file could not be written, so it was stopped; start it again to retry: %w", inst.Name, err)
 	}
 	return nil
 }
