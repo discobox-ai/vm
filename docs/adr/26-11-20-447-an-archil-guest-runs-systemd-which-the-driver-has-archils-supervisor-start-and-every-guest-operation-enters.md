@@ -57,22 +57,21 @@ script in Archil's namespaces:
   util-linux`. The install is under the fence: a VM that can't reach its
   base's mirror (`--egress none`, or a list without it) fails Create, as
   does a base with no `apt-get`, each naming `/lib/systemd/systemd`.
-- **The service `disco-vm-systemd` registered**, unless the supervisor has
-  it, as `mount --make-rshared /` then `unshare --pid --fork --mount-proc
+- **The service `disco-vm-systemd` registered** where `services get` says
+  the supervisor has none (exit 1; a copy carries its source's, and any
+  other answer fails Create), as `mount --make-rshared /` then `unshare --pid --fork --mount-proc
   --propagation slave --kill-child /lib/systemd/systemd --system`. The root
   shared and systemd's mounts its slaves let a mount made outside after
   systemd starts (a data disk) reach its units.
 
-Where the supervisor has no answer for the service, a copy or a start waits
-ten seconds for systemd to come up before registering one, since a second
-would run a second systemd.
-
 A fork, and so a VM made from a committed one and an upgrade from one,
-carries the root and the service, and the script finds both. Start runs it
-too, installing nothing: a VM made before this whose root has systemd gets
-the service at its next start, and one whose root has none is refused and
-stopped (an upgrade gives it one). Create and Start each return once
-`systemctl is-system-running` is `running`, `degraded`, or `maintenance`.
+carries the root and the service, and the script finds both. Only Create
+registers: Start installs and registers nothing, since the supervisor
+starts systemd at every boot, and no archil VM made before this exists to
+migrate (the owner, 2026-11-21: the driver has not shipped). Create and
+Start each return once `systemctl is-system-running` is `running`,
+`degraded`, or `maintenance`; a Start whose systemd does not settle leaves
+the VM stopped.
 
 ### 3. Every guest operation enters systemd's namespaces
 
@@ -124,9 +123,6 @@ While systemd does not run, an operation fails saying so.
   base that does not pull does (ADR 26-11-03-676 §3a). A VM with a data disk
   is left mid-upgrade, which an upgrade from a committed VM with systemd, or
   of a base with it, finishes; one without is gone.
-- **A VM running since before this** fails its guest operations, saying
-  so, until its next start registers systemd. A copy of a VM committed
-  before this, fenced from its mirror, fails Create as a fresh one does.
 - **Create of a bare base takes a package install,** about 40 s on Archil
   for `debian:sid`, and needs its mirror (one fenced from it fails in
   about as long); a base with systemd (vm#194) skips it. Start waits for

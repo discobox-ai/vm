@@ -1078,16 +1078,11 @@ var fakeNoSystemd = []string{"alpine"}
 // root, so a fork carries them.
 const fakeServices = ".archil-services"
 
-// fakeSystemd plays ensureScript in a sandbox's root, in mode: at Create,
-// systemd installed but for an image in fakeNoSystemd; at a start, a root
-// without it refused; and the service registered.
-func fakeSystemd(root, mode string, stderr io.Writer) int {
+// fakeSystemd plays ensureScript in a sandbox's root: systemd installed but
+// for an image in fakeNoSystemd, and the service registered.
+func fakeSystemd(root string, stderr io.Writer) int {
 	image, _ := os.ReadFile(filepath.Join(root, imageMarker))
 	if !fileExists(filepath.Join(root, "lib/systemd/systemd")) {
-		if mode == ensureStart {
-			_, _ = io.WriteString(stderr, "the guest has no /lib/systemd/systemd (or util-linux)")
-			return 3
-		}
 		for _, no := range fakeNoSystemd {
 			if strings.HasPrefix(string(image), no) {
 				_, _ = io.WriteString(stderr, "the base has no /lib/systemd/systemd, and no apt-get to install it")
@@ -1131,7 +1126,7 @@ func runCommand(ctx context.Context, req startRequest, root, hostname string, st
 		if !isScript(argv, ensureScript) {
 			return 0, fmt.Errorf("a line that enters no namespace: %q", req.Command)
 		}
-		return fakeSystemd(root, argv[5], stderr), nil
+		return fakeSystemd(root, stderr), nil
 	}
 	if !fileExists(filepath.Join(root, fakeServices, systemdService)) {
 		_, _ = io.WriteString(stderr, "systemd is not running in the guest")

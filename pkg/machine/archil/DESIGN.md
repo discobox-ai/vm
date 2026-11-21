@@ -57,12 +57,11 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   was started, and again when it exits. A base with no `apt-get`, or one
   fenced from its mirror, fails Create naming `/lib/systemd/systemd`. A fork
   carries the root and the service. Create and Start each return once
-  `systemctl is-system-running` has settled. Start installs nothing: it
-  registers the service where the root has systemd and the supervisor no
-  service (a VM made before), refuses one whose root has none (upgrade it),
-  and leaves no VM it refused running. Where the supervisor has no answer
-  for the service, a copy or a start waits ten seconds for systemd to come
-  up before it registers one, since a second would run a second systemd. The guest's root is made shared and
+  `systemctl is-system-running` has settled. Only Create registers, where
+  `services get` says there is none (exit 1; any other answer fails, rather
+  than risk a second systemd): Start installs and registers nothing, and
+  leaves a VM whose systemd does not settle stopped. No VM from before
+  this exists to migrate. The guest's root is made shared and
   systemd's mounts its slaves, so a disk Archil mounts after systemd starts
   reaches its units.
 - **Every guest operation enters systemd's namespaces** (`enterScript`):
@@ -72,8 +71,7 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   the command stays in, so it ends in there too (seen 2026-11-21); should
   `nsenter` alone die, `setpriv --pdeathsig TERM` (set again under
   `runuser`, whose fork and change of account clear it) sends the command
-  TERM. With systemd not running, it fails saying so (exit 125): a VM
-  running since before its guests ran systemd gets it at its next start.
+  TERM. With systemd not running, it fails saying so (exit 125).
 - **An upgrade sees its new root only once it boots,** after the old
   sandbox is gone: a fresh one of a base without systemd, fenced from its
   mirror, fails there, as a base that does not pull does, and leaves a VM
