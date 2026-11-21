@@ -36,7 +36,7 @@
 //	GET    /v1/vms/{name}           Driver.Instance
 //	DELETE /v1/vms/{name}           Driver.Destroy
 //	POST   /v1/vms/{name}/start     Driver.Start
-//	GET    /v1/vms/{name}/state     whether Driver.Attach finds it running
+//	GET    /v1/vms/{name}/state     Driver.State
 //	POST   /v1/vms/{name}/kill      Machine.Kill
 //	POST   /v1/vms/{name}/commit    Driver.Commit
 //	POST   /v1/vms/{name}/upgrade   Driver.Upgrade, from a VM named in the body
@@ -76,8 +76,8 @@ const (
 	OpRemove Op = "remove"
 	// OpStart starts a VM that outlives the call (Driver.Start).
 	OpStart Op = "start"
-	// OpState is whether a VM runs (Driver.Attach), which is also how a
-	// client watches its machine stop.
+	// OpState is a VM's power state (Driver.State), which is also how a
+	// client attaches and watches its machine stop.
 	OpState Op = "state"
 	// OpStop stops a running VM: in order (Guest.Shutdown), or forced
 	// (Machine.Kill).
@@ -232,9 +232,10 @@ type upgradeRequest struct {
 	FromPool string `json:"fromPool,omitempty"`
 }
 
-// stateResponse is GET /v1/vms/{name}/state.
+// stateResponse is GET /v1/vms/{name}/state: Driver.State. A VM that is not
+// stopped attaches, a paused one too.
 type stateResponse struct {
-	Running bool `json:"running"`
+	State machine.State `json:"state"`
 }
 
 // errorResponse is every refusal and failure: a message, and a code that

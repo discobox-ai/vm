@@ -142,6 +142,7 @@ func newFakeAPI(t *testing.T, dir string) *fakeAPI {
 		"DELETE /api/sandboxes/{sid}":                        f.deleteSandbox,
 		"POST /api/sandboxes/{sid}/start":                    f.startSandbox,
 		"POST /api/sandboxes/{sid}/stop":                     f.stopSandbox,
+		"POST /api/sandboxes/{sid}/pause":                    f.pauseSandbox,
 		"POST /api/sandboxes/{sid}/resume":                   f.resumeSandbox,
 		"POST /api/sandboxes/{sid}/fork":                     f.forkSandbox,
 		"GET /api/sandboxes/{sid}/network":                   f.getNetwork,
@@ -465,6 +466,24 @@ func (f *fakeAPI) stopSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	f.halt(s)
 	reply(w, http.StatusOK, s.view(), "")
+}
+
+// pauseSandbox pauses a running sandbox, as Archil's pause does (and as it
+// does itself at a session's limit), answering 202. Its guest keeps running:
+// the fake's pause is its status alone.
+func (f *fakeAPI) pauseSandbox(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.sandbox(w, r)
+	switch {
+	case s == nil:
+		return
+	case s.status != "running":
+		fail(w, http.StatusConflict, "sandbox_invalid_state", "sandbox is "+s.status)
+		return
+	}
+	s.status = "paused"
+	reply(w, http.StatusAccepted, s.view(), "")
 }
 
 func (f *fakeAPI) resumeSandbox(w http.ResponseWriter, r *http.Request) {

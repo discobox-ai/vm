@@ -82,6 +82,14 @@ func (*Hypervisor) Base() (machine.OS, bool) { return "", false }
 // host's loopback.
 func (*Hypervisor) SharesLoopback() bool { return false }
 
+// Paused is false: the hypervisor never pauses a machine.
+func (*Hypervisor) Paused(local.InstanceSpec) bool { return false }
+
+// Resume is unsupported: the hypervisor never pauses a machine.
+func (*Hypervisor) Resume(context.Context, local.InstanceSpec) error {
+	return fmt.Errorf("hcs pauses no machine: %w", machine.ErrUnsupported)
+}
+
 // The files the driver keeps. A VM's Dir holds its disk, differencing over
 // its committed parent's (an install's is whole), and, until it is committed,
 // its guest and runtime state and state.json. A committed VM's Dir holds its

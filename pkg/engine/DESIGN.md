@@ -8,7 +8,11 @@ the fake driver tests all of it on every OS.
 
 Every call reaches a running instance through its driver (`Driver.Attach`),
 with the calling process's own credentials, and nothing of it outlives the
-call. Who holds the VM is the driver's business:
+call. `Engine.State` is the driver's `Driver.State`: running, stopped, or
+paused by its provider, which `Start` resumes and `Stop` stops
+([pkg/machine](../machine/DESIGN.md#a-paused-machine-reads-as-paused-and-start-resumes-it)),
+or unknown where the provider could not be asked. Who holds the VM is the
+driver's business:
 
 - **boxd and docker:** the service (boxd's API, the Docker daemon) owns the
   VM, whatever process started it, so `Start` is `Boot`. See

@@ -194,4 +194,14 @@ type Hypervisor interface {
 	// an owner-only local socket instead (Driver.Capabilities). The driver
 	// reports the URLs, whatever the hypervisor's Capabilities say.
 	SharesLoopback() bool
+	// Paused reports that the hypervisor paused the running instance's
+	// machine, as a provider pauses one (fake's, at its test hook): read
+	// from any process, it wakes nothing, and the driver reports the
+	// instance machine.StatePaused. One that never pauses a machine (hcs,
+	// vz, libkrun) reports false.
+	Paused(inst InstanceSpec) bool
+	// Resume resumes a running instance's machine that Paused reports
+	// paused, from any process: the driver's Start of it. One that never
+	// pauses a machine returns machine.ErrUnsupported.
+	Resume(ctx context.Context, inst InstanceSpec) error
 }

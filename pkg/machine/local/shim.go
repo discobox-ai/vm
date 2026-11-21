@@ -729,7 +729,8 @@ func holdStarter(ctx context.Context) (context.Context, context.CancelCauseFunc)
 }
 
 // Start boots the instance under a shim of its own, and returns once the shim
-// has the machine and serves it.
+// has the machine and serves it, or resumes a running one its hypervisor
+// paused.
 func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return nil, err
@@ -742,7 +743,7 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 		return nil, err
 	}
 	if shim, err := d.openShim(inst.ID); err == nil && shim.status(ctx) == nil {
-		return nil, fmt.Errorf("instance %s is already running", inst.Name)
+		return d.resume(ctx, inst, rec)
 	}
 	// The shim's boot is what admits the instance and holds its slot, since
 	// the shim outlives this process. Asking here first refuses a full host
@@ -807,6 +808,22 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// resume resumes a running instance whose hypervisor paused its machine,
+// and returns it attached. One not paused is already running, and refused.
+func (d *Driver) resume(ctx context.Context, inst machine.Instance, rec instanceRecord) (machine.Machine, error) {
+	hs, err := d.spec(rec)
+	if err != nil {
+		return nil, err
+	}
+	if !d.hv.Paused(hs) {
+		return nil, fmt.Errorf("instance %s is already running", inst.Name)
+	}
+	if err := d.hv.Resume(ctx, hs); err != nil {
+		return nil, fmt.Errorf("instance %s: resume: %w", inst.Name, err)
+	}
+	return d.Attach(ctx, inst)
 }
 
 func tail(path string) string {

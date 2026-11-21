@@ -1,6 +1,7 @@
 package fake_test
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -74,7 +75,8 @@ func TestConformance(t *testing.T) {
 				}
 				return driver
 			}
-			machinetest.Run(t, newDriver(nil), machinetest.Config{
+			driver := newDriver(nil)
+			machinetest.Run(t, driver, machinetest.Config{
 				Install: from.install,
 				Timeout: 30 * time.Second,
 				Pool: func(pool string) machine.Driver {
@@ -87,6 +89,9 @@ func TestConformance(t *testing.T) {
 				ScratchDir: "/scratch",
 				GuestAgent: agent,
 				Keyed:      newDriver,
+				Pause: func(ctx context.Context, inst machine.Instance) error {
+					return fake.Pause(ctx, driver, inst)
+				},
 			})
 		})
 	}
