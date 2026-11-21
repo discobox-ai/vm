@@ -3,6 +3,9 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/fake"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // An instance its provider paused reads as paused, however often it is read,
@@ -74,4 +78,44 @@ func TestPausedReadsAsPausedAndStartResumes(t *testing.T) {
 		t.Fatalf("start an instance stopped while paused: %v", err)
 	}
 	want(engine.Running, "stopped while paused, then started")
+}
+
+// A resumed instance whose service file cannot be written is stopped, as a
+// cold boot's is, and the error says it resumed, was stopped, and that a
+// start again retries, with the write's own error.
+func TestResumeThatCannotTellItsServiceStops(t *testing.T) {
+	ctx := context.Background()
+	e, _ := fakeEngine(t)
+	inst, err := e.Create(ctx, engine.CreateOptions{From: "app", Name: "untold"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
+	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fake.Pause(ctx, e.Driver, inst); err != nil {
+		t.Fatal(err)
+	}
+	// The fake guest's disk is the directory rootfs in its instance's; a
+	// file where the service file's directory goes fails the write.
+	hs, err := e.Driver.(*local.Driver).Spec(ctx, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(guest.Resolve(filepath.Join(hs.Dir, "rootfs"), guest.ServiceFile(runtime.GOOS)))
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = e.Start(ctx, inst, engine.StartOptions{Timeout: 30 * time.Second})
+	want := "instance untold resumed, but its service file could not be written, so it was stopped; start it again to retry: "
+	if err == nil || !strings.HasPrefix(err.Error(), want) || len(err.Error()) == len(want) {
+		t.Fatalf("a resume whose service file cannot be written: %v, want %q and the write's error", err, want)
+	}
+	if got := e.State(ctx, inst); got != engine.Stopped {
+		t.Fatalf("a resume whose service file cannot be written left the instance %s, want stopped", got)
+	}
 }
