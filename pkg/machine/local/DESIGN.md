@@ -253,6 +253,13 @@ It serves the instance's forwards too, each guest port accepted
 guest port through the peer's shim's `/dial`, the peer found by name at each
 connection in the forward's pool (`Forward.Pool`), its own by default.
 
+`State` is running while the shim answers its `/status`, and paused where
+the hypervisor paused the machine (`Hypervisor.Paused`, read from any
+process): fake's, at its test hook, marks its instance's directory and keeps
+its guest running; hcs, vz, and libkrun pause none. `Start` of a running
+instance the hypervisor paused resumes it (`Hypervisor.Resume`) and returns
+it attached; one not paused is refused as already running.
+
 `Attach` reaches a running instance through its shim: its guest operations
 are the relay's, `Dial` is `/dial`, `Kill` is `/kill` (a shim from before
 `/kill` is stopped with no grace), and `Done` closes once the shim's process

@@ -112,9 +112,11 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   resumes a paused one (seen 2026-11-16 of an exposed port: a stopped VM ran
   2.8 s after a `GET` of its URL), so a VM stopped by the engine can be
   running at its next listing; one without a token is refused and wakes
-  nothing. Attach reports a paused one running and leaves it paused: the
-  machine's first exec or copy resumes it (a stop stops it as it is), so a listing, which
-  attaches to every VM, wakes none. A guest that powers itself off halts its VM, which
+  nothing. State reads a paused (or pausing) sandbox as paused, and wakes
+  nothing, so a listing wakes none; Start resumes it. Attach of a paused one
+  leaves it paused: the machine's first exec or copy resumes it, as a
+  fallback to Start, and a stop stops it as it is. A session limit of its
+  own (`max_ttl_seconds`, `on_timeout`) is not set. A guest that powers itself off halts its VM, which
   Archil goes on reporting `running`: unsupported, as on boxd.
 - **A 502, 503, or 504 is `machine.ErrUnavailable`,** from the REST API or
   the process API's WebSocket handshake: Archil, or its gateway, not

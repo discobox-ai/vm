@@ -291,15 +291,12 @@ func (s *server) start(w http.ResponseWriter, r *http.Request, inst machine.Inst
 }
 
 func (s *server) state(w http.ResponseWriter, r *http.Request, inst machine.Instance) {
-	_, err := s.driver.Attach(r.Context(), inst)
-	switch {
-	case err == nil:
-		writeJSON(w, http.StatusOK, stateResponse{Running: true})
-	case errors.Is(err, machine.ErrNotRunning):
-		writeJSON(w, http.StatusOK, stateResponse{Running: false})
-	default:
+	state, err := s.driver.State(r.Context(), inst)
+	if err != nil {
 		writeError(w, err)
+		return
 	}
+	writeJSON(w, http.StatusOK, stateResponse{State: state})
 }
 
 func (s *server) kill(w http.ResponseWriter, r *http.Request, inst machine.Instance) {

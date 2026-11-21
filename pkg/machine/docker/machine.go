@@ -30,6 +30,10 @@ type container struct {
 	ctx      context.Context
 	stop     context.CancelFunc
 	killed   atomic.Bool
+	// paused is set for a container Attach found paused (`docker pause`),
+	// which awake unpauses.
+	paused atomic.Bool
+	waking sync.Mutex
 }
 
 func newContainer(a *api, ref containerRef) *container {
@@ -90,14 +94,38 @@ func (m *container) finish(err error) {
 	})
 }
 
-// dialAgent reaches the guest agent's socket.
+// dialAgent reaches the guest agent's socket, unpausing the container first
+// if Attach found it paused, since the daemon refuses an exec of a paused
+// one: every guest operation, Shutdown included, resumes it, as a fallback
+// to Start.
 func (m *container) dialAgent(ctx context.Context) (net.Conn, error) {
 	select {
 	case <-m.done:
 		return nil, errors.New("docker: guest is stopped")
 	default:
 	}
+	if err := m.awake(ctx); err != nil {
+		return nil, err
+	}
 	return dialAgent(ctx, m.api, m.ref.ID)
+}
+
+// awake unpauses the container if Attach found it paused. Kill doesn't: the
+// daemon kills a paused container as it is.
+func (m *container) awake(ctx context.Context) error {
+	if !m.paused.Load() {
+		return nil
+	}
+	m.waking.Lock()
+	defer m.waking.Unlock()
+	if !m.paused.Load() {
+		return nil
+	}
+	if err := m.api.unpause(ctx, m.ref.ID); err != nil && !isNotFound(err) {
+		return fmt.Errorf("docker: unpause %s: %w", m.ref.Name, err)
+	}
+	m.paused.Store(false)
+	return nil
 }
 
 // Kill sends the container SIGKILL and waits for it to stop. Killing the

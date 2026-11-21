@@ -727,9 +727,31 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 	return d.Start(ctx, inst, opts)
 }
 
+// State is the sandbox's as Archil has it, read without waking it: running,
+// paused (or pausing) at its session's limit, which Start resumes, or else
+// stopped, as Attach has it.
+func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.State, error) {
+	sb, err := d.sandboxOf(ctx, inst)
+	switch {
+	case errors.Is(err, errUpgrading), isNotFound(err):
+		return machine.StateStopped, nil
+	case err != nil:
+		return "", err
+	}
+	switch sb.Status {
+	case "running":
+		return machine.StateRunning, nil
+	case "paused", "pausing":
+		return machine.StatePaused, nil
+	default:
+		return machine.StateStopped, nil
+	}
+}
+
 // Attach is the running sandbox's machine. One Archil paused at its session's
-// limit is running as far as the VM goes, and is left paused: the machine's
-// first exec or copy resumes it, so a listing (Engine.State) wakes nothing.
+// limit attaches, and is left paused: the machine's first exec or copy
+// resumes it, a fallback to Start, which is how a caller that reads it
+// paused (State) resumes it. Its stop stops it as it is.
 func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
 	sb, err := d.sandboxOf(ctx, inst)
 	switch {
@@ -744,8 +766,8 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	switch sb.Status {
 	case "running":
 	case "paused", "pausing":
-		// Resumed by the first operation that needs the guest, so a
-		// listing (Engine.State) does not wake every paused sandbox.
+		// Resumed by the first operation that needs the guest, or by
+		// Start.
 		m.paused.Store(true)
 	default:
 		return nil, fmt.Errorf("archil: %s is %s: %w", inst.Name, sb.Status, machine.ErrNotRunning)

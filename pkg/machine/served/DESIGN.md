@@ -35,6 +35,10 @@ embedder authenticates the channel; the handler authenticates no one.
   URLs need one, so the allow-list that grants `OpService` decides who gets
   a credential. A client and server of different builds are refused by
   `Disco-Vm-Version`, so neither misreads a field the other renamed.
+- **A VM's state is `Driver.State`.** `GET /v1/vms/{name}/state`
+  (`OpState`) answers `state`: running, stopped, or paused. The client
+  attaches to a VM that is not stopped, a paused one too, and refuses a
+  state it does not know rather than guess.
 - **What the engine checks, the server's side checks again.** The engine
   runs on the client, which is the caller's. A forward to a host socket is
   refused by the server whatever the list says (`ErrRefused`), and so is

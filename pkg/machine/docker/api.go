@@ -339,7 +339,9 @@ func (a *api) createContainer(ctx context.Context, name string, cfg containerCon
 }
 
 type containerState struct {
+	// Running is true of a paused container too.
 	Running  bool   `json:"Running"`
+	Paused   bool   `json:"Paused"`
 	Status   string `json:"Status"`
 	ExitCode int    `json:"ExitCode"`
 	Error    string `json:"Error"`
@@ -405,6 +407,17 @@ func (a *api) wait(ctx context.Context, id string) (int, error) {
 		return out.StatusCode, fmt.Errorf("docker: wait %s: %s", id, out.Error.Message)
 	}
 	return out.StatusCode, nil
+}
+
+// unpause resumes a container someone paused (`docker pause`). One not
+// paused is not an error.
+func (a *api) unpause(ctx context.Context, id string) error {
+	err := a.call(ctx, http.MethodPost, "/containers/"+id+"/unpause", nil, nil, nil)
+	var ae *apiError
+	if errors.As(err, &ae) && ae.Status == http.StatusConflict {
+		return nil // not paused
+	}
+	return err
 }
 
 func (a *api) kill(ctx context.Context, id string) error {

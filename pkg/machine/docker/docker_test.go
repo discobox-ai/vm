@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,7 @@ func TestConformance(t *testing.T) {
 		Timeout: 2 * time.Minute,
 		// Not /tmp, which the guest's systemd may clean at boot.
 		ScratchDir: "/var/lib",
+		Pause:      d.pause,
 	})
 }
 
@@ -74,7 +76,18 @@ func TestConformanceThroughAnAgent(t *testing.T) {
 		Memory:     2 << 30,
 		Timeout:    2 * time.Minute,
 		ScratchDir: "/var/lib",
+		Pause:      d.pause,
 	})
+}
+
+// pause pauses the instance's container as someone with the daemon would
+// (`docker pause`).
+func (d *Driver) pause(ctx context.Context, inst machine.Instance) error {
+	c, err := d.resolve(ctx, inst)
+	if err != nil {
+		return err
+	}
+	return d.api.call(ctx, http.MethodPost, "/containers/"+c.ID+"/pause", nil, nil, nil)
 }
 
 // mustNew is New, failing the test on an error.

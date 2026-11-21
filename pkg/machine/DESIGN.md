@@ -26,8 +26,8 @@ can tell (Archil keeps a committed sandbox as a stopped one): a driver
 refuses one only where its provider has no machine left to run
 (`ErrCommitted`: docker's image, boxd's snapshot), or where a boot would
 write to a disk another VM's differences over (`ErrInUse`: hcs). And a VM's
-machine: Boot, in this process; Start, outliving it;
-Attach, from any process; and Listen and Service
+machine: Boot, in this process; Start, outliving it, or resuming it;
+State and Attach, from any process; and Listen and Service
 ([the service URL](../engine/DESIGN.md#every-instance-has-one-service-at-an-ingress-url-and-a-pool-url)).
 A machine also dials the agent's port and the service's (`Machine.Dial`)
 where the driver lists `Capabilities.Ports` ([below](#ports-not-guids)).
@@ -67,6 +67,7 @@ a `Capabilities` field, never a faked method:
 | credential (`URLs.Credential`: a URL answers only one the driver mints) | no | no | no | no | no | no | **yes**: a port token per `Service`, a day long, in `X-Archil-Token` |
 | pool URL (`Service.PoolURL`) | the ingress URL | the ingress URL | `http://<machine>.boxd:7302` on networks, else the ingress URL | the container's address on its network | the ingress URL | the ingress URL (a shared loopback) | the ingress URL |
 | URLs (`URLs`: given never, when asked, or always) | ingress when asked (its default), pool always | ingress when asked (its default), pool always | ingress when asked (the default proxy, its default); pool always on networks (direct), on none the ingress one, so none with that off | both always (ingress never for a daemon on another host) | ingress when asked (its default), pool always | both always (with `noLoopback`, as vz) | ingress when asked (its default), pool always |
+| paused (`State`: `paused`, which Start resumes) | never | never | never | a container someone `docker pause`d | never | at its test hook, `fake.Pause` | at a sandbox's 24-hour session limit, or at Archil's pause (`paused`, `pausing`) |
 | volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<pool>--<name>--data` |
 | upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
 
@@ -79,6 +80,26 @@ does not see (boxd's counts the org's). A driver that reads a cap from its
 provider reads it at `Check`, so `Capabilities` does no I/O and reports none
 before (ADR 26-11-15-274). The engine counts nothing. Every driver clones the same way: cold
 ([below](#every-copy-is-cold-and-a-vm-is-made-fast-by-what-is-in-it)).
+
+## A paused machine reads as paused, and Start resumes it
+
+`Driver.State` is a VM's power state as its provider has it now: `running`,
+`stopped`, or `paused`, a machine its provider paused with its memory kept
+(Archil at a sandbox's session limit; discobox ADR 26-11-16-619 §5). It is
+required of every driver, and one whose provider pauses nothing reads only
+running and stopped. Reading it wakes nothing, so a listing of every VM
+(`Engine.State`, `ps`) leaves a paused one paused. A paused machine still
+attaches, so it stops: `Kill` stops it as it is, and so does `Shutdown` on
+archil, while docker's unpauses it first, since its daemon runs no exec in a
+paused container. `Start` resumes it:
+that is the one way a caller undoes a pause. A driver may also resume one at
+its first guest operation, as a fallback (archil, docker, fake). The fake driver
+pauses a running VM at its test hook (`fake.Pause`), so a caller tests its
+resume with no account, and `machinetest` checks a paused VM read, resumed,
+and stopped on every driver given a way to pause one (`Config.Pause`): fake,
+served over fake, docker (`docker pause`), and archil (Archil's own pause,
+which its stand-in answers too). Reporting a provider's change of a
+machine's state as it happens, rather than at a read, is not done yet.
 
 ## Commit is a capability, and a driver without it makes every VM fresh
 

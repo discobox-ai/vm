@@ -95,6 +95,14 @@ func (*Hypervisor) Base() (machine.OS, bool) { return machine.Linux, true }
 // host's loopback.
 func (*Hypervisor) SharesLoopback() bool { return false }
 
+// Paused is false: the hypervisor never pauses a machine.
+func (*Hypervisor) Paused(local.InstanceSpec) bool { return false }
+
+// Resume is unsupported: the hypervisor never pauses a machine.
+func (*Hypervisor) Resume(context.Context, local.InstanceSpec) error {
+	return fmt.Errorf("libkrun pauses no machine: %w", machine.ErrUnsupported)
+}
+
 // Release is nil: a libkrun VM is never installed.
 func (*Hypervisor) Release(local.Layer) *machine.Release { return nil }
 
