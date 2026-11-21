@@ -32,38 +32,25 @@ const (
 	systemdScript = `mount --make-rshared / || exit
 exec unshare --pid --fork --mount-proc --propagation slave --kill-child /lib/systemd/systemd --system --unit=multi-user.target`
 
-	// ensureScript makes the guest one whose boot runs systemd, in
-	// Archil's own namespaces, and fails naming what the base lacks. $1 is
-	// systemdScript, and $2 the mode:
+	// ensureScript makes the guest one whose boot runs systemd, at Create,
+	// in Archil's own namespaces, and fails naming what the base lacks. $1
+	// is systemdScript, and $2 "fenced" for a VM whose egress is fenced.
 	//
-	//   - fresh or copy (Create): systemd is installed where the base has
-	//     none, with apt, under the VM's fence (a VM that can't reach its
-	//     base's mirror needs a base with systemd). A fenced VM's ($3 is
-	//     fenced) fails at the first fetch that fails rather than retrying
-	//     it, since a fence that drops the mirror's traffic held Create for
-	//     three minutes on Archil; an open one keeps apt's retries;
-	//   - start: nothing is installed at a boot, and a guest with no
-	//     systemd, a VM made before its guests ran it, is refused.
+	// systemd is installed where the base has none, with apt, under the
+	// VM's fence: a VM that can't reach its base's mirror needs a base with
+	// systemd. A fenced VM's install fails at the first fetch that fails
+	// rather than retrying it, since a fence that drops the mirror's traffic
+	// held Create for three minutes on Archil; an open one keeps apt's
+	// retries.
 	//
-	// Then systemdService is registered with Archil's supervisor unless it
-	// has it. Where the supervisor's own answer is not to be had, a copy or
-	// a start waits a while for systemd to come up first, since the
-	// supervisor of a guest with the service starts it as the guest boots;
-	// a second registration would run a second systemd.
+	// Then systemdService is registered with Archil's supervisor where
+	// `services get` says it has none (exit 1, as Archil answers, seen
+	// 2026-11-21): a fresh VM's. A copy carries its source's. Any other
+	// answer fails rather than risk a second systemd.
 	ensureScript = `need() {
 	[ -x /lib/systemd/systemd ] || return 1
 	for c in nsenter unshare setpriv runuser mount; do command -v "$c" >/dev/null 2>&1 || return 1; done
 }
-running() {
-	for d in /proc/[0-9]*; do
-		[ "$(cat "$d/comm" 2>/dev/null)" = systemd ] && grep -Eq '^NSpid:[[:space:]]+[0-9]+[[:space:]]+1$' "$d/status" 2>/dev/null && return 0
-	done
-	return 1
-}
-if ! need && [ "$2" = start ]; then
-	echo "the guest has no /lib/systemd/systemd (or util-linux): a VM made before its guests ran systemd gets it from an upgrade" >&2
-	exit 3
-fi
 if ! need; then
 	if ! command -v apt-get >/dev/null 2>&1; then
 		echo "the base has no /lib/systemd/systemd, and no apt-get to install it: an archil VM's base needs systemd and util-linux" >&2
@@ -71,7 +58,7 @@ if ! need; then
 	fi
 	log=$(mktemp -p /var/tmp disco-vm-systemd.XXXXXX) || exit 1
 	apt=-q update=
-	if [ "$3" = fenced ]; then
+	if [ "$2" = fenced ]; then
 		apt="$apt -o Acquire::Retries=0 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
 		update="-o APT::Update::Error-Mode=any"
 	fi
@@ -87,16 +74,12 @@ if [ ! -x ` + archilClient + ` ]; then
 	echo "the guest has no ` + archilClient + `, Archil's supervisor, to run systemd" >&2
 	exit 3
 fi
-` + archilClient + ` services get ` + systemdService + ` >/dev/null 2>&1 && exit 0
-if [ "$2" != fresh ]; then
-	i=0
-	while [ "$i" -lt 10 ]; do
-		running && exit 0
-		sleep 1
-		i=$((i + 1))
-	done
-fi
-exec ` + archilClient + ` services create ` + systemdService + ` -- sh -c "$1"`
+out=$(` + archilClient + ` services get ` + systemdService + ` 2>&1)
+case $? in
+0) exit 0 ;;
+1) exec ` + archilClient + ` services create ` + systemdService + ` -- sh -c "$1" ;;
+*) echo "Archil's supervisor did not answer for ` + systemdService + `: $out" >&2; exit 3 ;;
+esac`
 
 	// enterScript runs a command in systemd's namespaces: $1 is its
 	// directory, $2 the account it runs as ("" is root), and the rest its
@@ -115,7 +98,7 @@ for d in /proc/[0-9]*; do
 	p=${d#/proc/}
 	break
 done
-if [ -z "$p" ]; then echo "systemd is not running in the guest (a VM running since before its guests ran systemd gets it at its next start)" >&2; exit 125; fi
+if [ -z "$p" ]; then echo "systemd is not running in the guest" >&2; exit 125; fi
 exec nsenter --target "$p" --all -- setpriv --pdeathsig TERM -- sh -c 'cd -- "$1" || exit; u=$2; shift 2
 if [ -z "$u" ]; then exec "$@"; fi
 exec runuser -u "$u" -- setpriv --pdeathsig TERM -- env HOME="$(getent passwd "$u" | cut -d: -f6)" "$@"' sh "$@"`
@@ -127,14 +110,14 @@ exec runuser -u "$u" -- setpriv --pdeathsig TERM -- env HOME="$(getent passwd "$
 )
 
 // ensureSystemd makes the sandbox's guest one whose every boot runs systemd
-// (ensureScript, in mode), and fails naming what the guest lacks. fenced is
-// a VM whose egress is fenced, whose install fails fast.
-func (a *api) ensureSystemd(ctx context.Context, id, name, mode string, fenced bool) error {
+// (ensureScript), and fails naming what the guest lacks. fenced is a VM
+// whose egress is fenced, whose install fails fast.
+func (a *api) ensureSystemd(ctx context.Context, id, name string, fenced bool) error {
 	fence := ""
 	if fenced {
 		fence = "fenced"
 	}
-	line := "exec " + quoteAll([]string{"sh", "-c", ensureScript, "sh", systemdScript, mode, fence})
+	line := "exec " + quoteAll([]string{"sh", "-c", ensureScript, "sh", systemdScript, fence})
 	code, _, stderr, err := a.run(ctx, id, line, "/", nil)
 	if err == nil && code != 0 {
 		err = fmt.Errorf("exit %d: %s", code, bytes.TrimSpace(stderr))
@@ -145,15 +128,8 @@ func (a *api) ensureSystemd(ctx context.Context, id, name, mode string, fenced b
 	return nil
 }
 
-// The modes of ensureScript.
-const (
-	ensureFresh = "fresh"
-	ensureCopy  = "copy"
-	ensureStart = "start"
-)
-
 // settleLimit bounds a start's wait for systemd to settle.
-const settleLimit = 2 * time.Minute
+var settleLimit = 2 * time.Minute
 
 // waitSystemd waits until systemd runs in the guest and has settled, asking
 // it every 200 ms, so a command run after Start reaches it and the units

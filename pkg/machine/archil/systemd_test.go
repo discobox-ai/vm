@@ -36,51 +36,20 @@ func TestABaseWithoutSystemdIsRefused(t *testing.T) {
 	}
 }
 
-// TestAVMFromBeforeSystemdGetsItAtStart: a VM whose guest has no systemd
-// service, made before archil's guests ran systemd, has it registered at its
-// next start, and a guest operation reaches it.
-func TestAVMFromBeforeSystemdGetsItAtStart(t *testing.T) {
+// TestAStartRegistersNothing: a start installs and registers nothing, so a
+// VM whose guest has no systemd service fails it, once systemd has not come
+// up, and is not left running.
+func TestAStartRegistersNothing(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake Archil's guests run on the host, and Archil's guests are linux")
 	}
+	limit := settleLimit
+	settleLimit = 2 * time.Second
+	t.Cleanup(func() { settleLimit = limit })
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "old", "debian:sid")
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "old"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
-	f.mu.Lock()
-	service := filepath.Join(f.sandboxes[0].root, fakeServices, systemdService)
-	f.mu.Unlock()
-	if err := os.Remove(service); err != nil {
-		t.Fatal(err)
-	}
-	m, err := d.Start(ctx, inst, machine.BootOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = m.Kill(ctx) }()
-	if _, err := os.Stat(service); err != nil {
-		t.Errorf("Start left the guest with no systemd service: %v", err)
-	}
-	if _, err := m.Info(ctx); err != nil {
-		t.Errorf("a guest operation after Start: %v", err)
-	}
-}
-
-// TestAStartInstallsNothing: a VM whose root has no systemd, made before
-// archil's guests ran it, is refused at its start, which installs nothing,
-// and is not left running.
-func TestAStartInstallsNothing(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the fake Archil's guests run on the host, and Archil's guests are linux")
-	}
-	f := newFakeAPI(t, t.TempDir())
-	ctx := context.Background()
-	d := f.driver(t, "old", "debian:sid")
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "old"})
+	d := f.driver(t, "nostart", "debian:sid")
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,17 +57,15 @@ func TestAStartInstallsNothing(t *testing.T) {
 	f.mu.Lock()
 	s := f.sandboxes[0]
 	f.mu.Unlock()
-	if err := os.RemoveAll(filepath.Join(s.root, "lib/systemd")); err != nil {
+	service := filepath.Join(s.root, fakeServices, systemdService)
+	if err := os.Remove(service); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(s.root, fakeServices)); err != nil {
-		t.Fatal(err)
+	if _, err := d.Start(ctx, inst, machine.BootOptions{}); err == nil || !strings.Contains(err.Error(), "systemd is not running") {
+		t.Fatalf("Start of a VM with no systemd service: %v, want systemd not running", err)
 	}
-	if _, err := d.Start(ctx, inst, machine.BootOptions{}); err == nil || !strings.Contains(err.Error(), "/lib/systemd/systemd") {
-		t.Fatalf("Start of a VM with no systemd: %v, want an error naming /lib/systemd/systemd", err)
-	}
-	if fileExists(filepath.Join(s.root, "lib/systemd/systemd")) {
-		t.Error("a start installed systemd")
+	if fileExists(service) {
+		t.Error("a start registered systemd")
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

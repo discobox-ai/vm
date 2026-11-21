@@ -335,11 +335,7 @@ func (d *Driver) makeSandbox(ctx context.Context, spec machine.InstanceSpec, src
 	if err := m.waitReady(ctx); err != nil {
 		return sb, nil, err
 	}
-	mode := ensureFresh
-	if src != nil {
-		mode = ensureCopy
-	}
-	if err := d.api.ensureSystemd(ctx, sb.ID, spec.Name, mode, spec.Egress != nil); err != nil {
+	if err := d.api.ensureSystemd(ctx, sb.ID, spec.Name, spec.Egress != nil); err != nil {
 		return sb, nil, err
 	}
 	if err := m.waitSystemd(ctx); err != nil {
@@ -663,9 +659,8 @@ func (d *Driver) removeDataDisk(ctx context.Context, name string) error {
 }
 
 // Start starts the sandbox with its data volume mounted, and port 7302
-// unexposed, or resumes one Archil paused, and waits until systemd has
-// settled in it, registering systemd first in a VM made before its guests
-// ran it. Archil runs the
+// unexposed, or resumes one Archil paused, and waits until systemd, which
+// Archil's supervisor starts, has settled in it. Archil runs the
 // sandbox, so Boot is Start. A committed VM is not refused: Archil can't
 // tell it from any stopped one, and the caller never starts one.
 func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
@@ -715,14 +710,10 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 	if err := m.waitReady(ctx); err != nil {
 		return nil, err
 	}
-	// A VM made before its guests ran systemd has it registered at its
-	// next start, where its root has it; a start installs nothing. One
-	// that fails is not left running.
-	err = d.api.ensureSystemd(ctx, sb.ID, inst.Name, ensureStart, false)
-	if err == nil {
-		err = m.waitSystemd(ctx)
-	}
-	if err != nil {
+	// Archil's supervisor starts systemd as the guest boots; a start
+	// installs and registers nothing. One whose systemd does not settle is
+	// not left running.
+	if err := m.waitSystemd(ctx); err != nil {
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		defer cancel()
 		_ = d.stopAndWait(stopCtx, sb.ID)
