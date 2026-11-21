@@ -49,10 +49,18 @@ Today, at `92729b4`:
   protocol-2 routes, and no pause. libkrun's API has no pause.
 - **discobox-ai/vm#196** asks for a distinct paused state, for a machine
   its provider paused, that `Start` alone undoes, and a fake test hook
-  that pauses like a provider does. It is being delivered without an ADR
-  of its own. This ADR settles how the seam reports a paused machine,
-  which both issues need. #196's delivery and this ADR must agree before
-  either lands.
+  that pauses like a provider does. PR #205 delivers it, with no ADR of
+  its own: a required `Driver.State` that reads `machine.StateStopped`,
+  `StateRunning` or `StatePaused` and wakes nothing, `engine.Paused`,
+  `Engine.Start` resuming a paused machine, and `fake.Pause`. As first
+  written, #205 left `Attach` unchanged, so a paused machine still
+  attached, and archil, docker and fake resumed one at its first guest
+  operation.
+- **The owner reconciled the two designs** (2026-11-21, "Reconcile"):
+  `Driver.State` exists and is read-only, `Attach` of a paused machine
+  returns `ErrPaused`, and only `Start` resumes a paused machine. #205 is
+  revised to match, and this ADR records that seam (§3). Neither lands
+  until the two agree.
 
 ## Decision
 
@@ -90,28 +98,55 @@ Pause(ctx context.Context) error
 - A machine held by a shim of another build returns `ErrStale`, as its
   other operations do.
 
-### 3. A paused machine reads as paused, through `ErrPaused`
+### 3. `Driver.State` reads a paused machine, and `Attach` refuses one with `ErrPaused`
 
-`machine` gains `ErrPaused`: the VM's machine is paused, whoever paused
-it. **It does not wrap `ErrNotRunning`.** Every caller that reads
-`ErrNotRunning` as "stopped" (`Engine.Stop` returns nil on it) would
-otherwise lose a paused machine.
+`machine` gains a power state, as #205 spells it:
 
-`Driver.Attach` of a paused VM returns `ErrPaused` and no machine. Reading
-it wakes nothing. Each driver maps its provider's word:
+```go
+type State string
 
-| Driver | Paused when the provider says |
+const (
+	StateStopped State = "stopped"
+	StateRunning State = "running"
+	StatePaused  State = "paused"
+)
+```
+
+`machine.Driver` gains a required read of it:
+
+```go
+// State is the instance's power state, as its provider has it now.
+// Reading it wakes nothing, and a paused machine stays paused. A
+// provider that cannot be asked is an error.
+State(ctx context.Context, inst Instance) (State, error)
+```
+
+It is the one way to read a VM's power state. It builds no machine, and it
+changes nothing: a paused machine read any number of times stays paused,
+whoever paused it. Each driver maps its provider's word:
+
+| Driver | `StatePaused` when the provider says |
 |---|---|
 | boxd | `suspended`, `standby`, `hibernated` |
 | archil | `paused`, `pausing` |
 | docker | `State.Paused` |
-| vz, hcs, fake | the shim says it holds a paused machine |
+| vz, hcs, fake | the shim's hypervisor says its machine is paused (`local`'s `Paused`, from #205) |
 | libkrun | never |
 
-`engine` gains `Paused State = "paused"`. `Engine.State` maps `ErrPaused`
-to it. `disco-vm ps` and `inspect` print it, and `ps` without `-a` lists
-it, as it lists a running VM. `pkg/machine/served` carries `ErrPaused`
-across its wire as it carries `ErrNotRunning`.
+**`Driver.Attach` of a paused VM returns `ErrPaused`, and no machine.**
+`machine` gains `ErrPaused`: the VM's machine is paused, whoever paused it.
+**It does not wrap `ErrNotRunning`.** Every caller that reads
+`ErrNotRunning` as "stopped" (`Engine.Stop` returns nil on it) would
+otherwise lose a paused machine. With no machine handed out, no guest
+operation can resume one.
+
+`engine.State` reads `Driver.State`, and no longer infers the state from
+`Attach`. `engine` gains `Paused State = State(machine.StatePaused)`, beside
+`Stopped` and `Running`. A driver's error reads as `Unknown`, as today.
+`disco-vm ps` and `inspect` print `paused`, and `ps` without `-a` lists a
+paused VM, as it lists a running one. `pkg/machine/served` carries the
+state (`/state`, as #205 has it) and `ErrPaused` across its wire, as it
+carries `ErrNotRunning`.
 
 disco-vm does not record who paused a machine. A caller that needs to
 know records it (discobox 395 §4).
@@ -126,23 +161,30 @@ func (e *Engine) Pause(ctx context.Context, inst Instance) error
 - On a driver that does not report `Capabilities.Pause`, it returns an
   error wrapping `ErrUnsupported` that names the driver, before the driver
   is asked.
-- Otherwise it attaches. A paused VM returns nil. A stopped one is an
-  error saying it is not running. A running one is paused with
-  `Machine.Pause`.
+- Otherwise it reads `Driver.State`. A paused VM returns nil. A stopped
+  one is an error saying it is not running. A running one is attached and
+  paused with `Machine.Pause`. An `Attach` that meets `ErrPaused`, because
+  the VM was paused in between, returns nil too.
 - The command line gains `disco-vm pause VM`, which calls it.
 
 ### 5. `Start` resumes a paused machine, with its clock current
 
 `Driver.Start` of a paused VM resumes it, boots nothing, and returns once
-its guest operations answer, as a start does. `Engine.Start` refuses only
-`Running` (today's check), so it reaches the driver for a paused VM, and
-writes the service file as at every start. Nothing else resumes a paused
-machine: no guest operation, no attach, no listing. There is no resume
-call of its own.
+its guest operations answer, as a start does. `Engine.Start` reads
+`Driver.State` and refuses only `Running`, so it reaches the driver for a
+paused VM. After a resume it writes nothing to the guest, as #205 has it:
+the guest kept its memory and its disk, so the service file its boot was
+given still stands. A write that failed would otherwise kill a machine
+that was alive before the start.
 
-- **Archil's lazy resume goes.** Its `Attach` returns `ErrPaused` (§3), so
-  no machine is handed out to resume at its first exec or copy. This
-  supersedes that part of ADR 26-11-03-676 (§9).
+**Only `Start` resumes a paused machine.** No `State` read, no `Attach`,
+no guest operation, and no listing resumes one. There is no resume call of
+its own.
+
+- **Every resume at a first guest operation goes:** archil's, and docker's
+  and fake's as #205 first wrote them. `Attach` returns `ErrPaused` (§3),
+  so no machine is handed out to resume. For archil, this supersedes that
+  part of ADR 26-11-03-676 (§9).
 - **`Boot` of a paused VM is refused,** with `ErrPaused`. It is already
   held, as a running VM is.
 - **The guest's clock is current when `Start` returns.** A VM keeps its own
@@ -157,11 +199,11 @@ call of its own.
 
 | Operation | On a paused VM |
 |---|---|
-| `Engine.Stop` | resumes it with `Driver.Start`, then shuts it down in order and forces it off after the timeout, as for a running VM. If the resume fails, it returns that error, and the VM stays paused |
+| `Engine.Stop` | reads `Paused` from `Driver.State`, resumes it with `Driver.Start`, then shuts it down in order and forces it off after the timeout, as for a running VM. If the resume fails, it returns that error, and the VM stays paused |
 | `Engine.Remove` | refused without force, as for a running VM. With force, `Stop`, then `Destroy` |
 | `Driver.Destroy` | removes it, stopping it first, as it does a running VM. The guest's unwritten state is lost, as with a running VM's |
 | `Commit`, `Upgrade`, `SaveCache` | refused, since the VM is not stopped: the engine reads `Paused`, and each driver refuses a paused VM as it refuses a running one |
-| `Engine.Guest`, `Dial`, `GUI` | refused, saying the VM is paused and naming `start` |
+| `Engine.Guest`, `Dial`, `GUI` | refused: `Attach` returns `ErrPaused`, and the error names `start` |
 | `Service` | as while running: a URL that outlives a stop stays. Whether a request to it resumes the VM is the provider's (Archil resumes a paused sandbox for a request carrying its port token) |
 | `MaxRunning` | a paused VM counts, since its hypervisor still holds its memory. A shim that holds it keeps its slot |
 | `MaxMachines` | unchanged: it counts every VM |
@@ -177,7 +219,7 @@ VM does.
 | vz | `VirtualMachine.Pause`, through a route of the shim's | `Resume`, through the same shim | yes |
 | hcs | `HcsPauseComputeSystem`, through a route of the shim's | `HcsResumeComputeSystem`, through the same shim | yes |
 | docker | `docker pause`, through the daemon's API | `docker unpause`, the same way | yes |
-| fake | #196's hook, through a route of the shim's | through the same shim | yes, and a test-only option without it, as `NoCommit` is |
+| fake | the hook #205 adds (`fake.Pause`), through the shim | through the same shim (`local`'s `Resume`, from #205) | yes, and a test-only option without it, as `NoCommit` is |
 | archil | Archil's caller pause, if Archil has one (§10) | `POST .../resume` (today's path) | no, until a caller pause is seen on Archil itself |
 | libkrun | `ErrUnsupported`: libkrun has no pause | — | no |
 
@@ -192,8 +234,8 @@ asked for, never made by boxd's idle timers.
 
 - **`machinetest`**, on a driver that reports `Capabilities.Pause`:
   - start a VM and a long-lived process in it, and note the process's PID;
-  - pause it: `Attach` returns `ErrPaused`, and a second `Pause` of the
-    machine returns nil;
+  - pause it: `Driver.State` reads `StatePaused`, `Attach` returns
+    `ErrPaused`, and a second `Pause` of the machine returns nil;
   - leave it paused for at least 30 seconds, then `Start` it: the process
     runs under the same PID, and the guest's wall clock is within five
     seconds of the host's;
@@ -202,12 +244,15 @@ asked for, never made by boxd's idle timers.
   - on a driver with `MaxRunning`, a paused VM holds its slot.
 - **`machinetest`**, on a driver that does not report it: `Machine.Pause`
   returns `ErrUnsupported`, and the machine still runs.
-- **`machinetest`**, on a driver with a way to pause a machine as its
-  provider would (fake's hook, #196): `Attach` returns `ErrPaused`, and
-  `Start` resumes it.
+- **`machinetest`**, on every driver given a way to pause a machine as its
+  provider would (`Config.Pause`, #205's paused-read-and-resumed): State
+  reads `StatePaused`, and reads it again with the machine still paused;
+  `Attach` returns `ErrPaused`; `Start` resumes it, and State reads
+  `StateRunning`.
 - **`pkg/engine`**, on fake: `Engine.Pause` refused without the
   capability; `Commit`, `Upgrade` and `SaveCache` refuse a paused VM;
-  `Stop` and `Remove --force` act on one; `Guest` refuses one.
+  `Stop` and `Remove --force` act on one; `Guest` refuses one and leaves
+  it paused.
 - **`internal/e2e`**: `pause`, `ps` reading `paused`, `start`, and `stop`
   of a paused VM; `pause` refused on a fake without the capability.
 
@@ -230,8 +275,6 @@ None of these is decided here, and none is decided by default.
   (Hyper-V's time synchronization integration service on hcs), or the
   guest's clock source. The conformance case decides whether each driver
   passes. A driver that fails it does not report `Capabilities.Pause`.
-- **How a shim tells its paused machine** to an `Attach` from another
-  process: a field of `/status`, or a route of the protocol's.
 - **Whether Archil offers a caller pause.** If it does: whether a paused
   sandbox still runs down its 24-hour session, and whether Archil stops
   one left paused too long.
@@ -251,13 +294,17 @@ None of these is decided here, and none is decided by default.
   VM paused while reporting it stopped. `Remove`, `Commit`, and the served
   client read the same error as stopped too. A paused VM is held, not
   stopped, and every check has to say which it means.
-- **`Attach` returns a machine for a paused VM, as archil and docker do
-  today,** with a method on it that says it is paused. `State` would then
-  need that method too, and its answer goes stale the moment the machine is
-  paused or resumed. Archil's form, a machine that resumes at its first
-  operation, makes any guest call a resume. That is the second way to undo
-  a pause that #196 rules out, and it wakes a sandbox discobox froze on
-  purpose.
+- **`Attach` hands out a paused machine, which resumes at its first guest
+  operation** (archil today, and archil, docker and fake in #205 as first
+  written). Any exec, copy or dial would undo a pause, so a tool that only
+  looks at a VM would thaw a sandbox discobox froze on purpose. That is a
+  second way to undo a pause beside `Start`, and the owner ruled it out.
+- **The state read from `Attach`'s error alone** (`ErrPaused`, with no
+  `Driver.State`). Reading a power state would then build a machine,
+  which a driver may do with a call of its own, and an error from a
+  provider that could not be asked would sit among the errors that mean
+  a state. `Driver.State` reads one thing, wakes nothing, and says when it
+  could not ask.
 - **`Pause` on `machine.Driver`, taking an `Instance`.** The attached
   machine already reaches the guest through the provider's API or the shim
   that holds it, and `Kill` lives there for the same reason. A driver
@@ -292,6 +339,8 @@ None of these is decided here, and none is decided by default.
 
 - **The seam, every driver, the engine, the shim, `served`, the CLI,
   `machinetest`, `pkg/engine`, and `internal/e2e` change together.**
+  `Driver.State` and `StatePaused` land with #205. `Capabilities.Pause`,
+  `Machine.Pause`, `Engine.Pause` and `disco-vm pause` land with #201.
   libkrun and archil gain a `Pause` that returns `ErrUnsupported`.
 - **boxd's suspended machines stop reading as stopped.** A caller that
   read a machine boxd suspended as stopped now reads it paused, and starts
