@@ -1,6 +1,6 @@
 # 26-11-20-447 — An archil guest runs systemd, which the driver has Archil's supervisor start, and every guest operation enters
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-20
 - **Issue**: #193 (for discobox-ai/discobox's ADR 26-11-16-619 §4)
 - **Supersedes in part**
@@ -11,6 +11,8 @@
   that needs systemd arranges it itself. disco-vm still puts no agent of
   its own in the guest.
 - **Relates to**: 26-11-17-311 (the fence a VM is made under).
+
+Accepted by the owner by merging #200, 2026-11-21.
 
 ## Context
 
