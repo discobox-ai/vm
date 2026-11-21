@@ -232,8 +232,8 @@ type upgradeRequest struct {
 	FromPool string `json:"fromPool,omitempty"`
 }
 
-// stateResponse is GET /v1/vms/{name}/state: Driver.State. A VM that is not
-// stopped attaches, a paused one too.
+// stateResponse is GET /v1/vms/{name}/state: Driver.State. A running VM
+// attaches; a paused one is machine.ErrPaused.
 type stateResponse struct {
 	State machine.State `json:"state"`
 }

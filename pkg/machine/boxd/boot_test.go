@@ -2,6 +2,7 @@ package boxd
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"slices"
 	"strings"
@@ -12,12 +13,13 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// TestBootAsksStartVmFirst boots a machine from each state boxd can leave it
-// in: StartVm is the first call, with nothing read before it, and the wait
-// boots whatever StartVm leaves: a stop still settling is waited out and
-// started, a hibernated machine woken, a suspended one resumed by StartVm
-// itself, as boxd does.
-func TestBootAsksStartVmFirst(t *testing.T) {
+// TestStartAsksStartVmFirst starts a machine from each state boxd can leave
+// it in: StartVm is the first call, with nothing read before it, and the
+// wait boots whatever StartVm leaves: a stop still settling is waited out
+// and started, a hibernated machine woken, a suspended one resumed by
+// StartVm itself, as boxd does. Boot refuses a suspended or hibernated
+// machine with machine.ErrPaused, and leaves it so: Start alone resumes it.
+func TestStartAsksStartVmFirst(t *testing.T) {
 	defer func(every time.Duration) { waitEvery = every }(waitEvery)
 	waitEvery = 20 * time.Millisecond
 	for _, from := range []string{"stopped", "stopping", "hibernated", "suspended", "running"} {
@@ -40,21 +42,32 @@ func TestBootAsksStartVmFirst(t *testing.T) {
 					fake.mu.Unlock()
 				}()
 			}
+			if from == "hibernated" || from == "suspended" {
+				if _, err := d.Boot(ctx, inst, machine.BootOptions{}); !errors.Is(err, machine.ErrPaused) {
+					t.Fatalf("boot from %s: %v, want ErrPaused", from, err)
+				}
+				fake.mu.Lock()
+				state := v.status
+				fake.mu.Unlock()
+				if state != from {
+					t.Fatalf("a boot refused left a machine %s %s", from, state)
+				}
+			}
 			fake.takeCalls()
-			m, err := d.Boot(ctx, inst, machine.BootOptions{})
+			m, err := d.Start(ctx, inst, machine.BootOptions{})
 			if err != nil {
-				t.Fatalf("boot from %s: %v", from, err)
+				t.Fatalf("start from %s: %v", from, err)
 			}
 			t.Cleanup(func() { _ = m.Kill(context.Background()) })
 			calls := fake.takeCalls()
 			if len(calls) == 0 || calls[0] != "StartVm" {
-				t.Fatalf("boot from %s called %v; want StartVm first", from, calls)
+				t.Fatalf("start from %s called %v; want StartVm first", from, calls)
 			}
 			fake.mu.Lock()
 			state := v.status
 			fake.mu.Unlock()
 			if state != "running" {
-				t.Fatalf("boot from %s left the machine %s (calls %v)", from, state, calls)
+				t.Fatalf("start from %s left the machine %s (calls %v)", from, state, calls)
 			}
 		})
 	}
