@@ -1,6 +1,6 @@
 # 26-11-20-547 — A base says when it is an OCI image, and an embedder sets such a base itself
 
-- **Status**: Proposed
+- **Status**: Accepted (by the owner, merging #197, 2026-11-21)
 - **Date**: 2026-11-20
 
 ## Context
