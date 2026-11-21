@@ -371,7 +371,10 @@ func (e *Engine) Start(ctx context.Context, inst Instance, opts StartOptions) er
 // Stop shuts an instance down in order, forcing it off after timeout. A
 // paused one is resumed first (Driver.Start), so that its guest writes out
 // what it holds, as a running one's does; one that does not resume stays
-// paused, and its error is returned.
+// paused, and its error is returned. A resumed one fails closed, as Start's
+// resume does (vm ADR 26-11-21-438 §5): it ends stopped, in order or
+// forced off, or the error says plainly it was resumed and may still be
+// running.
 func (e *Engine) Stop(ctx context.Context, inst Instance, timeout time.Duration) error {
 	m, err := e.Driver.Attach(ctx, inst)
 	if errors.Is(err, machine.ErrPaused) {
@@ -383,6 +386,11 @@ func (e *Engine) Stop(ctx context.Context, inst Instance, timeout time.Duration)
 		if err != nil {
 			return fmt.Errorf("instance %s is paused, and did not resume to stop: %w", inst.Name, err)
 		}
+		err = (&Booted{Machine: m}).Shutdown(ctx, timeout)
+		if err != nil && e.State(ctx, inst) != Stopped {
+			return fmt.Errorf("instance %s was resumed to stop it, but it could not be stopped, so it may still be running; stop it again: %w", inst.Name, err)
+		}
+		return err
 	}
 	if errors.Is(err, machine.ErrNotRunning) {
 		return nil
@@ -393,8 +401,11 @@ func (e *Engine) Stop(ctx context.Context, inst Instance, timeout time.Duration)
 	return (&Booted{Machine: m}).Shutdown(ctx, timeout)
 }
 
-// Remove deletes an instance. A running one is refused unless force, which
-// stops it first.
+// Remove deletes an instance. A running or paused one is refused unless
+// force, which stops it first. One still paused once that stop has failed
+// (it did not resume) is destroyed as it is, which Driver.Destroy does to a
+// paused machine (vm ADR 26-11-21-438 §6): what it had not written is lost,
+// and removing it is what was asked for.
 func (e *Engine) Remove(ctx context.Context, inst Instance, force bool) error {
 	if state := e.State(ctx, inst); state != Stopped {
 		if !force {
@@ -403,7 +414,7 @@ func (e *Engine) Remove(ctx context.Context, inst Instance, force bool) error {
 		// A guest forced off after the timeout is still off, and removing it
 		// is what was asked for.
 		if err := e.Stop(ctx, inst, 30*time.Second); err != nil {
-			if state := e.State(ctx, inst); state == Running || state == Paused {
+			if e.State(ctx, inst) == Running {
 				return err
 			}
 		}

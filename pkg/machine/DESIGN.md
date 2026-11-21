@@ -100,8 +100,12 @@ stopped, and that a start again retries (owner, 2026-11-21); docker's
 `Start` does the same for a container it unpaused whose agent does not
 answer.
 `Engine.Stop` resumes a paused VM and shuts it down in order, so its guest
-writes out what it holds; `Engine.Guest`, `Dial`, and `GUI` refuse one,
-naming `start`; `Destroy` removes one as it is. The fake driver pauses a
+writes out what it holds, and fails closed as the resume does: it ends
+stopped, forced off if need be, or the error says plainly it was resumed
+and may still be running. `Engine.Remove` with force destroys a VM still
+paused once that stop failed (one that did not resume) as it is, and
+refuses one left running. `Engine.Guest`, `Dial`, and `GUI` refuse a
+paused VM, naming `start`; `Destroy` removes one as it is. The fake driver pauses a
 running VM at its test hook (`fake.Pause`), so a caller tests its resume
 with no account, and `machinetest` checks a paused VM read, refused an
 attach and a boot, resumed, and destroyed on every driver given a way to
