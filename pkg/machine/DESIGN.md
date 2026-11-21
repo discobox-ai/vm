@@ -93,6 +93,12 @@ machine, booting nothing, and nothing else does: no guest operation, no
 attach, no listing (discobox-ai/vm ADR 26-11-21-438 §5). `Attach` and `Boot`
 of a paused VM return `ErrPaused`, which does not wrap `ErrNotRunning`,
 since every caller reads that as stopped; served carries it as `paused`.
+A resume fails closed: `Engine.Start` writes the service file after it as at
+every start, and a resumed VM whose file cannot be written is stopped, as a
+cold boot's is, its memory lost, with an error saying it resumed, was
+stopped, and that a start again retries (owner, 2026-11-21); docker's
+`Start` does the same for a container it unpaused whose agent does not
+answer.
 `Engine.Stop` resumes a paused VM and shuts it down in order, so its guest
 writes out what it holds; `Engine.Guest`, `Dial`, and `GUI` refuse one,
 naming `start`; `Destroy` removes one as it is. The fake driver pauses a

@@ -10,7 +10,8 @@ Every call reaches a running instance through its driver (`Driver.Attach`),
 with the calling process's own credentials, and nothing of it outlives the
 call. `Engine.State` is the driver's `Driver.State`: running, stopped, or
 paused by its provider, which `Start` alone resumes (`Stop` resumes it to
-shut it down, and `Guest`, `Dial`, and `GUI` refuse it, naming `start`)
+shut it down, and `Guest`, `Dial`, and `GUI` refuse it, naming `start`; a
+resume whose service file cannot be written is stopped, as a cold boot's is)
 ([pkg/machine](../machine/DESIGN.md#a-paused-machine-reads-as-paused-and-start-resumes-it)),
 or unknown where the provider could not be asked. Who holds the VM is the
 driver's business:

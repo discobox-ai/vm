@@ -618,12 +618,16 @@ func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.B
 	watch, stopWatching := context.WithCancel(ctx)
 	defer stopWatching()
 	if err := m.WaitReady(ctx, d.stopped(watch, ref.ID)); err != nil {
-		// A container unpaused was alive, with its memory, before this
-		// start, and is left running.
-		if !c.State.Paused {
-			_ = m.Kill(context.Background())
+		// Fails closed, an unpaused container too: one whose agent does not
+		// answer is stopped, its memory lost, rather than left running.
+		killErr := m.Kill(context.Background())
+		switch {
+		case !c.State.Paused:
+			return nil, fmt.Errorf("docker: %s: %w", ref.Name, err)
+		case killErr != nil:
+			return nil, fmt.Errorf("docker: %s resumed, but its agent did not answer, and stopping it failed, so it may still be running; stop it: %w", ref.Name, errors.Join(err, killErr))
 		}
-		return nil, fmt.Errorf("docker: %s: %w", ref.Name, err)
+		return nil, fmt.Errorf("docker: %s resumed, but its agent did not answer, so it was stopped; start it again to retry: %w", ref.Name, err)
 	}
 	return m, nil
 }
