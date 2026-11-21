@@ -10,8 +10,9 @@
   Archil's `?name=` filter instead of a listing.
 - **Asking about a VM changes nothing about it.** `Engine.State` reads
   every VM a listing shows (State), so neither State nor Attach resumes a
-  paused sandbox or starts a watcher; only Start and an operation that
-  needs the guest resume it, and only `Done`/`Err`/`Kill` watch. A poller started by Start, or a resume by
+  paused sandbox or starts a watcher; only Start resumes it (an Attach of
+  one is `machine.ErrPaused`, so no guest operation reaches it), and only
+  `Done`/`Err`/`Kill` watch. A poller started by Start, or a resume by
   `ps`, ran for as long as an embedder kept the VM.
 - **Output waits for its reader, and a kill ends the wait.** A process's
   unread output is bounded (`pipeLimit`), so the WebSocket reader blocks

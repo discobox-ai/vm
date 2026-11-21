@@ -837,6 +837,14 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return nil, err
 	}
+	if d.shimAnswers(ctx, inst.ID) {
+		if paused, err := d.paused(inst); err != nil || paused {
+			if err == nil {
+				err = fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
+			}
+			return nil, err
+		}
+	}
 	return d.boot(ctx, inst, opts)
 }
 

@@ -1164,8 +1164,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	})
 
 	// An instance its provider paused reads as paused, however often it is
-	// read, and still attaches; Start resumes it, and its guest answers;
-	// paused again, it stops.
+	// read, attaches to nothing and boots nothing (ErrPaused), and Start
+	// alone resumes it, its guest answering; paused again, Destroy removes
+	// it (discobox-ai/vm ADR 26-11-21-438 §§3, 5, 6).
 	t.Run("paused-read-and-resumed", func(t *testing.T) {
 		if cfg.Pause == nil {
 			t.Skip("the driver cannot be made to pause an instance")
@@ -1184,10 +1185,16 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 		wantState(t, driver, inst, machine.StatePaused, "paused")
 		wantState(t, driver, inst, machine.StatePaused, "paused, read again")
-		if _, err := driver.Attach(ctx, inst); err != nil {
-			t.Fatalf("attach to a paused instance: %v", err)
+		if _, err := driver.Attach(ctx, inst); !errors.Is(err, machine.ErrPaused) || errors.Is(err, machine.ErrNotRunning) {
+			t.Fatalf("attach to a paused instance: %v, want ErrPaused, not ErrNotRunning", err)
 		}
-		wantState(t, driver, inst, machine.StatePaused, "paused and attached")
+		if m, err := driver.Boot(startCtx, inst, machine.BootOptions{}); !errors.Is(err, machine.ErrPaused) {
+			if err == nil {
+				_ = m.Kill(context.Background())
+			}
+			t.Fatalf("boot a paused instance: %v, want ErrPaused", err)
+		}
+		wantState(t, driver, inst, machine.StatePaused, "refused an attach and a boot")
 		resumed, err := driver.Start(startCtx, inst, machine.BootOptions{})
 		if err != nil {
 			t.Fatalf("start a paused instance: %v", err)
@@ -1202,23 +1209,11 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("pause again: %v", err)
 		}
 		wantState(t, driver, inst, machine.StatePaused, "paused again")
-		m, err := driver.Attach(ctx, inst)
-		if err != nil {
-			t.Fatalf("attach to a paused instance: %v", err)
+		if err := driver.Destroy(ctx, inst); err != nil {
+			t.Fatalf("destroy a paused instance: %v", err)
 		}
-		if err := m.Shutdown(ctx, false); err != nil {
-			t.Fatalf("stop a paused instance: %v", err)
-		}
-		deadline := time.Now().Add(cfg.Timeout)
-		for {
-			state, err := driver.State(ctx, inst)
-			if err == nil && state == machine.StateStopped {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("a paused instance stopped is %q, %v; want stopped", state, err)
-			}
-			time.Sleep(time.Second)
+		if _, err := driver.Instance(ctx, inst.Name); !errors.Is(err, machine.ErrNotFound) {
+			t.Fatalf("a paused instance destroyed: %v, want ErrNotFound", err)
 		}
 	})
 

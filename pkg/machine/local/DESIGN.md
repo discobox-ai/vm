@@ -256,9 +256,10 @@ connection in the forward's pool (`Forward.Pool`), its own by default.
 `State` is running while the shim answers its `/status`, and paused where
 the hypervisor paused the machine (`Hypervisor.Paused`, read from any
 process): fake's, at its test hook, marks its instance's directory and keeps
-its guest running; hcs, vz, and libkrun pause none. `Start` of a running
-instance the hypervisor paused resumes it (`Hypervisor.Resume`) and returns
-it attached; one not paused is refused as already running.
+its guest running; hcs, vz, and libkrun pause none. `Attach` and `Boot` of
+a paused instance are `machine.ErrPaused`. `Start` of a running instance
+the hypervisor paused resumes it (`Hypervisor.Resume`) and returns it
+attached; one not paused is refused as already running.
 
 `Attach` reaches a running instance through its shim: its guest operations
 are the relay's, `Dial` is `/dial`, `Kill` is `/kill` (a shim from before

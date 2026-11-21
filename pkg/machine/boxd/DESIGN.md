@@ -95,13 +95,16 @@ machines and snapshots (the root
   internal DNS, where its peers reach every port directly; on none it is the
   ingress URL, if it has one (ADR 26-10-29-129).
 - **A machine's power is boxd's** (ADR 26-10-15-833). Its state is `GetVm`'s
-  status, polled every 200 ms while a boot or stop settles. A boot asks
+  status, polled every 200 ms while a boot or stop settles. A start asks
   `StartVm` before it reads anything, since the expected machine is stopped
   and boxd answers `StartVm` OK for one starting, running or suspended (which
   it resumes); the wait then boots whatever else it finds, resizes once a machine
   it started at another size than its instance asks (a second boot), leaves
   one it found running at its size, and fails, rather than restarting it, on
-  a machine that stops once it has come up. A VM
+  a machine that stops once it has come up. `Boot` reads `GetVm` first, and
+  refuses a machine suspended, in standby, or hibernated (`ErrPaused`):
+  `Start` alone resumes one. A `GetVm` answered NotFound, for a machine just
+  made, reads as stopped, and the boot goes on to `StartVm`. A VM
   is found by name (`GetSnapshot`, then `GetVm` when there is no ready
   snapshot), listing the region only when neither finds it, and a create leaves a taken
   machine name to boxd's refusal. An orderly shutdown runs `sync` in the guest, since boxd does not

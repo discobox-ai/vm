@@ -120,9 +120,6 @@ type guestMachine struct {
 	ctx      context.Context
 	stop     context.CancelFunc
 	killed   atomic.Bool
-	// paused is set for a sandbox Archil paused, which awake resumes.
-	paused atomic.Bool
-	waking sync.Mutex
 }
 
 var _ machine.Machine = (*guestMachine)(nil)
@@ -130,34 +127,6 @@ var _ machine.Machine = (*guestMachine)(nil)
 func newMachine(a *api, id, name string) *guestMachine {
 	ctx, stop := context.WithCancel(context.Background())
 	return &guestMachine{api: a, id: id, name: name, done: make(chan struct{}), ctx: ctx, stop: stop}
-}
-
-// awake resumes the sandbox if Attach found it paused (or pausing), and
-// waits until it runs. Shutdown and Kill don't: Archil stops a paused
-// sandbox as it is.
-func (m *guestMachine) awake(ctx context.Context) error {
-	if !m.paused.Load() {
-		return nil
-	}
-	m.waking.Lock()
-	defer m.waking.Unlock()
-	if !m.paused.Load() {
-		return nil
-	}
-	s, err := m.api.waitFor(ctx, m.id, "paused", "running")
-	if err != nil {
-		return err
-	}
-	if s.Status == "paused" {
-		if err := m.api.resume(ctx, m.id); err != nil {
-			return fmt.Errorf("archil: resume %s: %w", m.name, err)
-		}
-		if _, err := m.api.waitFor(ctx, m.id, "running"); err != nil {
-			return err
-		}
-	}
-	m.paused.Store(false)
-	return nil
 }
 
 // Exec starts req through the process API. The process is not bound to ctx,
@@ -170,9 +139,6 @@ func (m *guestMachine) Exec(ctx context.Context, req machine.ExecRequest) (machi
 	case <-m.done:
 		return nil, fmt.Errorf("archil: %s is stopped", m.name)
 	default:
-	}
-	if err := m.awake(ctx); err != nil {
-		return nil, err
 	}
 	var terminal any
 	if req.TTY {
@@ -225,9 +191,6 @@ func (m *guestMachine) CopyTo(ctx context.Context, dir string, tarStream io.Read
 const copyChunk = 512 << 10
 
 func (m *guestMachine) CopyFrom(ctx context.Context, path string) (io.ReadCloser, error) {
-	if err := m.awake(ctx); err != nil {
-		return nil, err
-	}
 	proc, err := m.api.startProcess(ctx, m.id, command(script(copyOutScript, path)), "/", nil, nil, true)
 	if err != nil {
 		return nil, err

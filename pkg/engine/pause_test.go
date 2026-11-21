@@ -3,19 +3,20 @@ package engine_test
 import (
 	"context"
 	"errors"
-	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/discobox-ai/vm/pkg/engine"
+	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 	"github.com/discobox-ai/vm/pkg/machine/fake"
 )
 
-// An instance its provider paused reads as paused, however often it is read;
-// Start resumes it, and so does its first exec; remove refuses it unless
-// forced, as a running one.
+// An instance its provider paused reads as paused, however often it is read,
+// and Start alone resumes it: its guest and its ports are refused, naming
+// start, and stay paused; remove refuses it unless forced, as a running one;
+// and a stop resumes it to shut it down.
 func TestPausedReadsAsPausedAndStartResumes(t *testing.T) {
 	ctx := context.Background()
 	e, _ := fakeEngine(t)
@@ -55,15 +56,22 @@ func TestPausedReadsAsPausedAndStartResumes(t *testing.T) {
 	if err := fake.Pause(ctx, e.Driver, inst); err != nil {
 		t.Fatal(err)
 	}
-	g, err := e.Guest(ctx, inst)
-	if err != nil {
-		t.Fatalf("the guest of a paused instance: %v", err)
+	if _, err := e.Guest(ctx, inst); !errors.Is(err, machine.ErrPaused) || !strings.Contains(err.Error(), "start it") {
+		t.Fatalf("the guest of a paused instance: %v, want ErrPaused naming start", err)
 	}
-	want(engine.Paused, "paused and attached")
-	// Whether the command runs is the guest's: the exec's asking resumes it.
-	if p, err := g.Exec(ctx, machine.ExecRequest{Argv: []string{"true"}}); err == nil {
-		_, _ = p.Wait(io.Discard, io.Discard)
-		_ = p.Close()
+	if _, err := e.Dial(ctx, inst, guest.AgentPort); !errors.Is(err, machine.ErrPaused) {
+		t.Fatalf("dial a paused instance: %v, want ErrPaused", err)
 	}
-	want(engine.Running, "resumed by an exec")
+	if _, err := e.Driver.Boot(ctx, inst, machine.BootOptions{}); !errors.Is(err, machine.ErrPaused) {
+		t.Fatalf("boot a paused instance: %v, want ErrPaused", err)
+	}
+	want(engine.Paused, "refused its guest, a port, and a boot")
+	if err := e.Stop(ctx, inst, 30*time.Second); err != nil {
+		t.Fatalf("stop a paused instance: %v", err)
+	}
+	want(engine.Stopped, "paused, then stopped")
+	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
+		t.Fatalf("start an instance stopped while paused: %v", err)
+	}
+	want(engine.Running, "stopped while paused, then started")
 }

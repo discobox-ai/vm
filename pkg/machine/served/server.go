@@ -542,7 +542,7 @@ func statusOf(code string) int {
 		return http.StatusPreconditionFailed
 	case "not-found":
 		return http.StatusNotFound
-	case "exists", "in-use", "committed", "not-running", "stale":
+	case "exists", "in-use", "committed", "not-running", "paused", "stale":
 		return http.StatusConflict
 	case "capacity":
 		return http.StatusServiceUnavailable

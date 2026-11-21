@@ -76,8 +76,8 @@ type State string
 const (
 	Stopped State = State(machine.StateStopped)
 	Running State = State(machine.StateRunning)
-	// Paused is an instance its provider paused (machine.StatePaused):
-	// Start resumes it, and Stop stops it.
+	// Paused is an instance paused (machine.StatePaused): Start resumes
+	// it, and nothing else does; Stop resumes it and shuts it down.
 	Paused State = State(machine.StatePaused)
 	// Unknown is an instance whose provider could not be asked.
 	Unknown State = "unknown"
@@ -331,9 +331,10 @@ func (e *Engine) CheckGUI(gui bool) error {
 // Start boots an instance so that it outlives this process, and tells the
 // guest where its service listens, trying again while the guest is not
 // reachable yet (machine.ErrUnreachable): a driver's Start may return once
-// the machine runs, before its guest answers. An instance its provider
-// paused is resumed, which is the one way to undo a pause, and its guest is
-// told nothing: its boot already was.
+// the machine runs, before its guest answers. A paused instance is resumed,
+// which is the one way to undo a pause, and told as at every start; one
+// whose guest cannot be told is left running, never killed, since it was
+// alive, with its memory, before this start.
 func (e *Engine) Start(ctx context.Context, inst Instance, opts StartOptions) error {
 	state := e.State(ctx, inst)
 	if state == Running {
@@ -351,22 +352,31 @@ func (e *Engine) Start(ctx context.Context, inst Instance, opts StartOptions) er
 	if err != nil {
 		return fmt.Errorf("instance %s failed to start: %w", inst.Name, err)
 	}
-	// A machine resumed kept its memory and its disk, and so the service
-	// file its boot was told: nothing is written, and nothing kills a
-	// machine that was alive before this start.
-	if state == Paused {
-		return nil
-	}
 	if err := e.announceService(ctx, inst, m); err != nil {
-		_ = m.Kill(context.Background())
+		if state != Paused {
+			_ = m.Kill(context.Background())
+		}
 		return err
 	}
 	return nil
 }
 
-// Stop shuts an instance down in order, forcing it off after timeout.
+// Stop shuts an instance down in order, forcing it off after timeout. A
+// paused one is resumed first (Driver.Start), so that its guest writes out
+// what it holds, as a running one's does; one that does not resume stays
+// paused, and its error is returned.
 func (e *Engine) Stop(ctx context.Context, inst Instance, timeout time.Duration) error {
 	m, err := e.Driver.Attach(ctx, inst)
+	if errors.Is(err, machine.ErrPaused) {
+		// Bounded as Start's default is, since the shutdown's timeout
+		// starts only once it has resumed.
+		resumeCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		m, err = e.Driver.Start(resumeCtx, inst, machine.BootOptions{})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("instance %s is paused, and did not resume to stop: %w", inst.Name, err)
+		}
+	}
 	if errors.Is(err, machine.ErrNotRunning) {
 		return nil
 	}
@@ -416,7 +426,11 @@ func (e *Engine) GUI(ctx context.Context, inst Instance) error {
 	if !e.Driver.Capabilities().View {
 		return fmt.Errorf("driver %s opens no window on a running instance: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
-	if e.State(ctx, inst) != Running {
+	switch e.State(ctx, inst) {
+	case Running:
+	case Paused:
+		return fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
+	default:
 		return fmt.Errorf("instance %s is not running", inst.Name)
 	}
 	if err := e.Driver.View(ctx, inst, "disco-vm: "+inst.Name); err != nil {

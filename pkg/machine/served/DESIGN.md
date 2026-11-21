@@ -37,7 +37,8 @@ embedder authenticates the channel; the handler authenticates no one.
   `Disco-Vm-Version`, so neither misreads a field the other renamed.
 - **A VM's state is `Driver.State`.** `GET /v1/vms/{name}/state`
   (`OpState`) answers `state`: running, stopped, or paused. The client
-  attaches to a VM that is not stopped, a paused one too, and refuses a
+  attaches to a running VM, refuses a paused one with `machine.ErrPaused`
+  (whose wire code is `paused`), and refuses a
   state it does not know rather than guess.
 - **What the engine checks, the server's side checks again.** The engine
   runs on the client, which is the caller's. A forward to a host socket is

@@ -135,3 +135,9 @@
   turns Go's shared cache off for a tag (repostd `ci.shared-cache`). A
   release target that reads a shared cache publishes whatever layers a pull
   request left in it. (#145.)
+- **A new function goes after the previous function's closing brace, never
+  between another's doc comment and its `func`.** Inserted there, it takes
+  that function's doc comment as its own and leaves the other with none;
+  vet, gofmt, and the linters say nothing. It happened twice in one change
+  (vm#196: `machinetest`'s `wantState` above `remove`, boxd's test `pause`
+  above `envDriver`).

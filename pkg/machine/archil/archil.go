@@ -722,7 +722,16 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 	return m, nil
 }
 
+// Boot is Start, since Archil runs the sandbox, but for one Archil paused (or
+// is pausing), which is machine.ErrPaused: it is held, and Start resumes it.
 func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+	sb, err := d.sandboxOf(ctx, inst)
+	if err != nil {
+		return nil, err
+	}
+	if sb.Status == "paused" || sb.Status == "pausing" {
+		return nil, fmt.Errorf("archil: %s is %s: %w", inst.Name, sb.Status, machine.ErrPaused)
+	}
 	return d.Start(ctx, inst, opts)
 }
 
@@ -747,10 +756,9 @@ func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.Stat
 	}
 }
 
-// Attach is the running sandbox's machine. One Archil paused at its session's
-// limit attaches, and is left paused: the machine's first exec or copy
-// resumes it, a fallback to Start, which is how a caller that reads it
-// paused (State) resumes it. Its stop stops it as it is.
+// Attach is the running sandbox's machine. One Archil paused (or is pausing),
+// at its session's limit, is machine.ErrPaused, and is left paused: Start
+// alone resumes it.
 func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Machine, error) {
 	sb, err := d.sandboxOf(ctx, inst)
 	switch {
@@ -761,17 +769,14 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	case err != nil:
 		return nil, err
 	}
-	m := newMachine(d.api, sb.ID, inst.Name)
 	switch sb.Status {
 	case "running":
 	case "paused", "pausing":
-		// Resumed by the first operation that needs the guest, or by
-		// Start.
-		m.paused.Store(true)
+		return nil, fmt.Errorf("archil: %s is %s: %w", inst.Name, sb.Status, machine.ErrPaused)
 	default:
 		return nil, fmt.Errorf("archil: %s is %s: %w", inst.Name, sb.Status, machine.ErrNotRunning)
 	}
-	return m, nil
+	return newMachine(d.api, sb.ID, inst.Name), nil
 }
 
 // Commit leaves the stopped VM's sandbox as it stands, with no mounts, no
