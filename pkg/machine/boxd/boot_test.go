@@ -11,6 +11,8 @@ import (
 
 	"github.com/discobox-ai/vm/pkg/engine"
 	"github.com/discobox-ai/vm/pkg/machine"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // TestStartAsksStartVmFirst starts a machine from each state boxd can leave
@@ -73,6 +75,85 @@ func TestStartAsksStartVmFirst(t *testing.T) {
 	}
 }
 
+// TestStartWaitsOutARacedResume starts a suspended machine whose resume, by
+// StartVm, shows only after the wait has read it suspended: the wait's own
+// ResumeVm is refused "VM is starting", as boxd refused it (region fra,
+// 2026-11-22), and Start waits until the machine runs, though it reads
+// suspended for several polls. A machine that still reads suspended once its
+// resume has been refused for raceGrace fails Start, rather than waiting out
+// the wait's limit.
+func TestStartWaitsOutARacedResume(t *testing.T) {
+	defer func(every, grace time.Duration) { waitEvery, raceGrace = every, grace }(waitEvery, raceGrace)
+	waitEvery, raceGrace = 20*time.Millisecond, 500*time.Millisecond
+	for _, tc := range []struct {
+		name string
+		lag  int
+		want string
+	}{
+		{name: "raced", lag: 3},
+		{name: "refused past the grace", lag: 1000, want: "VM is starting (must be suspended to resume)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, fake := fakeDriver(t, t.TempDir())
+			ctx := context.Background()
+			inst, err := d.Create(ctx, machine.InstanceSpec{Name: "race"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake.mu.Lock()
+			v := fake.vms[inst.ID]
+			v.status = "suspended"
+			fake.resumeLag, fake.startingReads = tc.lag, 100
+			fake.mu.Unlock()
+			if tc.want == "" {
+				settle := 10 * waitEvery
+				go func() {
+					// The resume settles once ResumeVm has been refused.
+					time.Sleep(settle)
+					fake.mu.Lock()
+					v.starting = 0
+					fake.mu.Unlock()
+				}()
+			}
+			fake.takeCalls()
+			m, err := d.Start(ctx, inst, machine.BootOptions{})
+			calls := fake.takeCalls()
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("start: %v (calls %v); want %q", err, calls, tc.want)
+				}
+				if n := countCalls(calls, "ResumeVm"); n < 2 {
+					t.Fatalf("calls %v; want the refused resume asked again", calls)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("start: %v (calls %v)", err, calls)
+			}
+			t.Cleanup(func() { _ = m.Kill(context.Background()) })
+			if n := countCalls(calls, "ResumeVm"); n != 3 {
+				t.Fatalf("calls %v; want a refused resume for each suspended read", calls)
+			}
+			fake.mu.Lock()
+			state := v.status
+			fake.mu.Unlock()
+			if state != "running" {
+				t.Fatalf("start left the machine %s (calls %v)", state, calls)
+			}
+		})
+	}
+}
+
+func countCalls(calls []string, method string) int {
+	n := 0
+	for _, c := range calls {
+		if c == method {
+			n++
+		}
+	}
+	return n
+}
+
 // TestBootResizes boots a machine an instance asks another size of: the
 // machine StartVm started at its own is flushed, stopped, resized and
 // started again, and runs at the size asked, though its stop shows only
@@ -110,6 +191,33 @@ func TestBootResizes(t *testing.T) {
 	}
 	if !slices.Contains(calls, "StopVm") || !slices.Contains(calls, "ResizeVm") {
 		t.Fatalf("calls %v; want a stop and a resize", calls)
+	}
+}
+
+// TestBootFailsOnARefusedResizeStop boots a machine an instance asks
+// another size of, and boxd refuses the resize's StopVm FailedPrecondition:
+// that is no race with boxd's own boot, and the boot fails at once with
+// boxd's reason rather than waiting for a stop that never comes.
+func TestBootFailsOnARefusedResizeStop(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake boxd's guests run on the host, and boxd guests are linux")
+	}
+	defer func(every time.Duration) { waitEvery = every }(waitEvery)
+	waitEvery = 20 * time.Millisecond
+	d, fake := fakeDriver(t, t.TempDir())
+	ctx := context.Background()
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "grow", CPUs: 2, Memory: 4 << 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst.CPUs, inst.Memory = 4, 8<<30
+	fake.mu.Lock()
+	fake.stopErr = status.Error(codes.FailedPrecondition, "VM is starting")
+	fake.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := d.Boot(ctx, inst, machine.BootOptions{}); err == nil || !strings.Contains(err.Error(), "VM is starting") || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("boot: %v; want the refused stop", err)
 	}
 }
 

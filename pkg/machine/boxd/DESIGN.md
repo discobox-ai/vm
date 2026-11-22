@@ -107,7 +107,13 @@ machines and snapshots (the root
   it resumes); the wait then boots whatever else it finds, resizes once a machine
   it started at another size than its instance asks (a second boot), leaves
   one it found running at its size, and fails, rather than restarting it, on
-  a machine that stops once it has come up. `Boot` reads `GetVm` first, and
+  a machine that stops once it has come up. A boot call the wait makes
+  (`StartVm`, `ResumeVm`, `WakeVm`) that boxd refuses `FailedPrecondition`
+  is a race with boxd's own move, as a suspended machine `StartVm` is
+  already resuming answers `ResumeVm` "VM is starting" while `GetVm` still
+  reads it suspended: the wait reads again, and fails once a state's boot has
+  been refused for `raceGrace` (10 s). A refused `StopVm`, a resize's, fails
+  the wait at once. `Boot` reads `GetVm` first, and
   refuses a machine suspended, in standby, or hibernated (`ErrPaused`):
   `Start` alone resumes one. `Pause` is `SuspendVm`, waited out until boxd
   reports the machine suspended (`Capabilities.Pause`); one boxd holds

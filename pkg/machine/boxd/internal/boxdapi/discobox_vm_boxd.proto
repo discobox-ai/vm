@@ -26,13 +26,18 @@ service BoxdApi {
   // machine stopped, starting or running, which it leaves as it is, and for
   // a suspended one, which it resumes; NOT_FOUND for an id that is no
   // machine (nyc, 2026-11-16). Not seen: a hibernated or stopping machine.
+  // A suspended machine it resumed was read by GetVm as suspended after it
+  // answered, and refused ResumeVm then, and ran a second later (fra,
+  // 2026-11-22, vm#214).
   rpc StartVm(StartVmRequest)               returns (StartVmResponse);
   rpc StopVm(StopVmRequest)                 returns (StopVmResponse);
   rpc RebootVm(RebootVmRequest)             returns (RebootVmResponse);
   // NOT_FOUND for an id/name with no matching machine, including a destroyed
   // one, and, a moment after CreateVm, perhaps for the machine it made (see
   // SetAutoSuspendTimeout). A machine's name finds it as its id does (nyc,
-  // 2026-11-16).
+  // 2026-11-16). Its status can lag a move boxd has begun: a suspended
+  // machine StartVm resumed still read suspended (fra, 2026-11-22, vm#214),
+  // for how long is not known, though it ran a second later.
   rpc GetVm(GetVmRequest)                   returns (GetVmResponse);
   // Every machine in the caller's context, with no paging.
   rpc ListVms(ListVmsRequest)               returns (ListVmsResponse);
@@ -49,6 +54,9 @@ service BoxdApi {
   // The image a machine gets when CreateVm names none. boxd lists no others.
   rpc GetConfig(GetConfigRequest)           returns (GetConfigResponse);
   rpc SuspendVm(SuspendVmRequest)           returns (SuspendVmResponse);
+  // FAILED_PRECONDITION for a machine not suspended: "VM is starting (must
+  // be suspended to resume)" for one StartVm was resuming, "VM is running
+  // (must be suspended to resume)" for one it had resumed (fra, 2026-11-22).
   rpc ResumeVm(ResumeVmRequest)             returns (ResumeVmResponse);
   rpc WakeVm(WakeVmRequest)                 returns (WakeVmResponse);
   // Answered NOT_FOUND for a machine CreateVm had answered for just before,
