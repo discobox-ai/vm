@@ -94,6 +94,12 @@ machines and snapshots (the root
   machine on networks is `http://<machine>.boxd:7302`, its name on boxd's
   internal DNS, where its peers reach every port directly; on none it is the
   ingress URL, if it has one (ADR 26-10-29-129).
+  boxd answers `SetProxyPort` before `ListProxies` shows the lock (fra,
+  2026-11-21), so a lock, pinned or closed, is read back every 500 ms and
+  asked again every 5 s while it does not read back locked (seldom, since
+  boxd does not say whether asking again restarts a pending lock), for up
+  to 30 s, before the create fails naming what the proxy forwards to
+  (vm#210).
 - **A machine's power is boxd's** (ADR 26-10-15-833). Its state is `GetVm`'s
   status, polled every 200 ms while a boot or stop settles. A start asks
   `StartVm` before it reads anything, since the expected machine is stopped

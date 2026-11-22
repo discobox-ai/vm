@@ -19,6 +19,12 @@
   done, left the machine running unseen with its default proxy open. Retry
   a create's steps on NotFound, and confirm a destroy's NotFound against
   `ListVms`. (vm#169.)
+- **A proxy lock boxd answered OK is not yet a lock.** boxd applied
+  `SetProxyPort` after it answered (region fra, 2026-11-21), and a create
+  that read the proxy back once failed. `lockProxy` reads it back until it
+  shows, for a bounded while, asking again only seldom, since boxd does not
+  say whether a lock asked again restarts a pending one; it fails naming
+  what it read. (vm#210.)
 - **On a machine whose ingress URL is off, nothing that loosens access to
   its proxies runs until they read back closed.** Create closes them with
   the guest already running, a restore's servers already listening, so a
