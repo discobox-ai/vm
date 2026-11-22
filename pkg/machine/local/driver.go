@@ -837,8 +837,8 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return nil, err
 	}
-	if d.shimAnswers(ctx, inst.ID) {
-		if paused, err := d.paused(inst); err != nil || paused {
+	if shim, err := d.openShim(inst.ID); err == nil && shim.answers(ctx) {
+		if paused, err := shim.paused(ctx); err != nil || paused {
 			if err == nil {
 				err = fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
 			}
@@ -849,7 +849,7 @@ func (d *Driver) Boot(ctx context.Context, inst machine.Instance, opts machine.B
 }
 
 // boot boots the instance in this process, once admit has admitted it.
-func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
+func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (VM, error) {
 	if opts.GUI && !d.hv.Capabilities().Display {
 		return nil, fmt.Errorf("%s has no display to show: %w", d.hv.Name(), machine.ErrUnsupported)
 	}

@@ -106,6 +106,8 @@ func TestConformanceFakeAPI(t *testing.T) {
 		},
 		SkipGuestDNS: "the fake Archil's guest is a process on this host, on its network",
 		Pause:        d.pause,
+		// The fake's guest is a host process, on the host's clock.
+		PauseHold: 2 * time.Second,
 	})
 }
 
@@ -253,4 +255,53 @@ func TestStateReadsPausedAndWakesNothing(t *testing.T) {
 	f.mu.Lock()
 	f.sandboxes[0].status = "stopped"
 	f.mu.Unlock()
+}
+
+// TestPauseWaitsOutPausingAndReturnsARefusal: a pause of a sandbox Archil is
+// still pausing waits until it is paused, and one Archil refuses while the
+// sandbox runs is that refusal at once, the sandbox still running.
+func TestPauseWaitsOutPausingAndReturnsARefusal(t *testing.T) {
+	f := newFakeAPI(t, t.TempDir())
+	ctx := context.Background()
+	d := f.driver(t, "pauses", "debian:sid")
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "vm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
+	setStatus := func(status string) {
+		f.mu.Lock()
+		f.sandboxes[0].status = status
+		f.mu.Unlock()
+	}
+	m := newMachine(d.api, f.sandboxes[0].id, inst.Name)
+
+	setStatus("running")
+	f.mu.Lock()
+	f.refusePause = true
+	f.mu.Unlock()
+	refusedCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := m.Pause(refusedCtx); err == nil || !isConflict(err) {
+		t.Fatalf("a pause Archil refuses: %v, want its conflict", err)
+	}
+	if got, err := d.State(ctx, inst); err != nil || got != machine.StateRunning {
+		t.Fatalf("a sandbox refused a pause: %q, %v; want running", got, err)
+	}
+	f.mu.Lock()
+	f.refusePause = false
+	f.mu.Unlock()
+
+	setStatus("pausing")
+	go func() {
+		time.Sleep(1500 * time.Millisecond)
+		setStatus("paused")
+	}()
+	if err := m.Pause(ctx); err != nil {
+		t.Fatalf("a pause of a sandbox pausing: %v", err)
+	}
+	if got, err := d.State(ctx, inst); err != nil || got != machine.StatePaused {
+		t.Fatalf("a sandbox paused once it was pausing: %q, %v; want paused", got, err)
+	}
+	setStatus("stopped")
 }

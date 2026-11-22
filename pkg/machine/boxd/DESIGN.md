@@ -109,7 +109,9 @@ machines and snapshots (the root
   one it found running at its size, and fails, rather than restarting it, on
   a machine that stops once it has come up. `Boot` reads `GetVm` first, and
   refuses a machine suspended, in standby, or hibernated (`ErrPaused`):
-  `Start` alone resumes one. A `GetVm` answered NotFound, for a machine just
+  `Start` alone resumes one. `Pause` is `SuspendVm`, waited out until boxd
+  reports the machine suspended (`Capabilities.Pause`); one boxd holds
+  paused already is left so. A `GetVm` answered NotFound, for a machine just
   made, reads as stopped, and the boot goes on to `StartVm`. A VM
   is found by name (`GetSnapshot`, then `GetVm` when there is no ready
   snapshot), listing the region only when neither finds it, and a create leaves a taken

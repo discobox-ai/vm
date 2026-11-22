@@ -38,6 +38,7 @@
 //	POST   /v1/vms/{name}/start     Driver.Start
 //	GET    /v1/vms/{name}/state     Driver.State
 //	POST   /v1/vms/{name}/kill      Machine.Kill
+//	POST   /v1/vms/{name}/pause     Machine.Pause
 //	POST   /v1/vms/{name}/commit    Driver.Commit
 //	POST   /v1/vms/{name}/upgrade   Driver.Upgrade, from a VM named in the body
 //	GET    /v1/vms/{name}/service   Driver.Service
@@ -82,6 +83,10 @@ const (
 	// OpStop stops a running VM: in order (Guest.Shutdown), or forced
 	// (Machine.Kill).
 	OpStop Op = "stop"
+	// OpPause pauses a running VM whole (Machine.Pause), which a start
+	// (OpStart) resumes. The client reports Capabilities.Pause only where it
+	// is allowed.
+	OpPause Op = "pause"
 	// OpService is a VM's service's URLs, with the credential they answer
 	// where the driver mints one (Driver.Service): the allow-list that
 	// grants it decides who gets a credential. Where the service listens
@@ -109,7 +114,7 @@ const (
 // Ops is every operation, in the order the protocol lists them.
 var Ops = []Op{
 	OpCapabilities, OpCreate, OpGet, OpList, OpRemove, OpStart, OpState, OpStop,
-	OpService, OpExec, OpCopy, OpInfo, OpDial, OpCommit, OpUpgrade,
+	OpPause, OpService, OpExec, OpCopy, OpInfo, OpDial, OpCommit, OpUpgrade,
 }
 
 // Field is a field of machine.InstanceSpec a client may set at create

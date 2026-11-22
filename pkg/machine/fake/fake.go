@@ -70,6 +70,11 @@ type Hypervisor struct {
 	// that a driver's refusals of a commit and of a copy, and the paths
 	// that skip them, run on every OS.
 	NoCommit bool
+	// NoPause makes a hypervisor that does not report Capabilities.Pause,
+	// whose machines refuse Pause with machine.ErrUnsupported: a test
+	// option, so that a driver's refusal of a pause runs on every OS. Its
+	// test hook (Pause) still pauses a machine, as a provider would.
+	NoPause bool
 	// MaxRunning is the Capabilities.MaxRunning it reports: none by default,
 	// a test option so that the local driver's admission runs on every OS.
 	MaxRunning map[machine.OS]int
@@ -97,7 +102,7 @@ func New(base string, cfg Config) (*Hypervisor, error) {
 	if base == "" {
 		base = DefaultBase
 	}
-	hv := &Hypervisor{Agent: agent, BaseName: base, NoCommit: cfg.NoCommit, NoLoopback: cfg.NoLoopback}
+	hv := &Hypervisor{Agent: agent, BaseName: base, NoCommit: cfg.NoCommit, NoPause: cfg.NoPause, NoLoopback: cfg.NoLoopback}
 	if cfg.MaxRunning != nil {
 		hv.MaxRunning = map[machine.OS]int{machine.OS(runtime.GOOS): *cfg.MaxRunning}
 	}
@@ -114,6 +119,7 @@ func (d *Hypervisor) Capabilities() machine.Capabilities {
 		Agent:       true,
 		Install:     []machine.OS{machine.OS(runtime.GOOS)},
 		Commit:      true,
+		Pause:       !d.NoPause,
 		Keys:        machine.KeyCapabilities{Mode: machine.KeysIssue, Scope: machine.ScopePool},
 		Volumes:     []machine.Volume{machine.VolumeData, machine.VolumeCache},
 		MaxRunning:  d.MaxRunning,
@@ -252,7 +258,7 @@ func (d *Hypervisor) Prepare(_ context.Context, inst local.InstanceSpec) error {
 	return prepareVolumes(inst)
 }
 
-func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
+func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (local.VM, error) {
 	if err := machine.CheckFile(d.Agent); err != nil {
 		return nil, fmt.Errorf("fake: the agent: %w", err)
 	}
@@ -285,7 +291,7 @@ func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("fake: start guest agent %s: %w", d.Agent, err)
 	}
-	m := &proc{cmd: cmd, done: make(chan struct{}), hostPorts: hostPorts}
+	m := &proc{cmd: cmd, done: make(chan struct{}), hostPorts: hostPorts, dir: inst.Dir, noPause: d.NoPause}
 	go func() {
 		err := cmd.Wait()
 		// A guest that exits 0 powered itself off; anything else crashed.
@@ -421,13 +427,16 @@ type proc struct {
 	cmd       *exec.Cmd
 	addr      string
 	hostPorts string
-	done      chan struct{}
-	err       error
-	once      sync.Once
-	killed    atomic.Bool
+	// dir is the instance's (InstanceSpec.Dir), where a pause is marked.
+	dir     string
+	noPause bool
+	done    chan struct{}
+	err     error
+	once    sync.Once
+	killed  atomic.Bool
 }
 
-var _ machine.Machine = (*proc)(nil)
+var _ local.VM = (*proc)(nil)
 
 // Dial reaches the agent at its own address. A fake guest is a host process,
 // so any other port is the host's loopback.
@@ -494,3 +503,24 @@ func (m *proc) Err() error {
 	<-m.done
 	return m.err
 }
+
+// Pause marks the machine paused, as the test hook Pause does: its guest, a
+// host process, runs on, so its processes and its clock are the host's
+// once it resumes. A hypervisor with NoPause refuses it.
+func (m *proc) Pause(context.Context) error {
+	if m.noPause {
+		return fmt.Errorf("fake: this driver does not pause a VM: %w", machine.ErrUnsupported)
+	}
+	select {
+	case <-m.done:
+		return fmt.Errorf("fake: guest is stopped: %w", machine.ErrNotRunning)
+	default:
+	}
+	return markPaused(m.dir)
+}
+
+// Paused reports the machine paused, by Pause or by the test hook.
+func (m *proc) Paused() bool { return isPaused(m.dir) }
+
+// Resume undoes a pause.
+func (m *proc) Resume(context.Context) error { return unpause(m.dir) }

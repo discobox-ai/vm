@@ -122,6 +122,7 @@ func (d *Driver) Capabilities() machine.Capabilities {
 		MaxMachines: maxMachines,
 		GuestOS:     []machine.OS{machine.Linux},
 		Commit:      true,
+		Pause:       true,
 		Keys:        keyCapabilities,
 		Bare:        machine.BareStrip,
 		Networks:    true,

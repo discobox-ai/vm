@@ -51,7 +51,7 @@ func TestURL(t *testing.T) {
 func testURL(t *testing.T, noLoopback bool, urls machine.URLRequests, prefix string) {
 	t.Helper()
 	ctx := context.Background()
-	open, _ := fakeRootConfig(t, noLoopback)
+	open, _ := fakeRootConfig(t, fake.Config{NoLoopback: noLoopback})
 	e := open(machine.DefaultPool)
 	if _, err := e.Install(ctx, "app", engine.InstallOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
@@ -174,17 +174,18 @@ func fakeEngine(t *testing.T) (*engine.Engine, string) {
 // opens an engine on any pool of it.
 func fakeRoot(t *testing.T) (func(pool string) *engine.Engine, string) {
 	t.Helper()
-	return fakeRootConfig(t, false)
+	return fakeRootConfig(t, fake.Config{})
 }
 
-// fakeRootConfig is fakeRoot, with guests that do not share the host's
-// loopback where noLoopback says (fake.Config.NoLoopback).
-func fakeRootConfig(t *testing.T, noLoopback bool) (func(pool string) *engine.Engine, string) {
+// fakeRootConfig is fakeRoot, with a hypervisor of cfg's NoLoopback and
+// NoPause, which its shims are given too.
+func fakeRootConfig(t *testing.T, cfg fake.Config) (func(pool string) *engine.Engine, string) {
 	t.Helper()
-	config := "{}"
-	if noLoopback {
-		config = `{"noLoopback":true}`
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
+	config := string(data)
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "disco-vm")
 	if runtime.GOOS == "windows" {
@@ -201,7 +202,7 @@ func fakeRootConfig(t *testing.T, noLoopback bool) (func(pool string) *engine.En
 			Pool:         pool,
 			ShimCommand:  []string{binary, "--root", root, "--driver", "fake", "--driver-config", config, "shim"},
 			DriverConfig: json.RawMessage(config),
-		}, &fake.Hypervisor{Agent: binary, NoLoopback: noLoopback})
+		}, &fake.Hypervisor{Agent: binary, NoLoopback: cfg.NoLoopback, NoPause: cfg.NoPause})
 		if err != nil {
 			t.Fatal(err)
 		}

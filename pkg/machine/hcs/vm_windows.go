@@ -8,12 +8,14 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
 
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
+	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
 // vm is a running compute system this process holds. The document sets
@@ -33,12 +35,15 @@ type vm struct {
 	err        error
 	killed     atomic.Bool
 	unregister func()
+	// power serializes Pause and Resume, and paused is what they last
+	// left: HCS paused the system.
+	power  sync.Mutex
+	paused atomic.Bool
 }
 
 var (
-	_ machine.Machine      = (*vm)(nil)
+	_ local.VM             = (*vm)(nil)
 	_ machine.HostListener = (*vm)(nil)
-	_ machine.Machine      = (*vm)(nil)
 )
 
 // startVM creates and starts a compute system from c. Its files must already
@@ -171,6 +176,46 @@ func (m *vm) Dial(ctx context.Context, port uint32) (net.Conn, error) {
 func (m *vm) Kill(context.Context) error {
 	m.shutdown()
 	return nil
+}
+
+// Pause pauses the compute system whole (HcsPauseComputeSystem), and
+// returns once HCS has. A paused one is left so.
+func (m *vm) Pause(context.Context) error {
+	m.power.Lock()
+	defer m.power.Unlock()
+	select {
+	case <-m.done:
+		return fmt.Errorf("hcs: the VM is stopped: %w", machine.ErrNotRunning)
+	default:
+	}
+	if m.paused.Load() {
+		return nil
+	}
+	if err := m.sys.pause(); err != nil {
+		return fmt.Errorf("hcs: pause: %w", err)
+	}
+	m.paused.Store(true)
+	return nil
+}
+
+// Paused reports HCS holds the system paused.
+func (m *vm) Paused() bool { return m.paused.Load() }
+
+// Resume resumes the paused compute system (HcsResumeComputeSystem) and
+// steps its guest's clock to the host's, which it has kept at the time it
+// was paused. One not paused is left running.
+func (m *vm) Resume(ctx context.Context) error {
+	m.power.Lock()
+	defer m.power.Unlock()
+	if m.paused.Load() {
+		if err := m.sys.resume(); err != nil {
+			return fmt.Errorf("hcs: resume: %w", err)
+		}
+		m.paused.Store(false)
+	}
+	return machine.UntilReachable(ctx, func() error {
+		return machine.StepClock(ctx, m, machine.Windows, time.Now())
+	})
 }
 
 func (m *vm) Done() <-chan struct{} { return m.done }

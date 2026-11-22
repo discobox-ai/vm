@@ -169,6 +169,13 @@ host's is killed and refused, on either OS; the bindings keep the connection's U
 `CloseWrite` reaches it by reflection and falls back to a full close if their
 layout changes. `Done` follows the VM's state channel. `Kill` is `Stop`.
 
+**Pause** (`Capabilities.Pause`): the framework's `pause`, in the shim that
+holds the VM (its `/pause`), and `Start` of a paused VM its `resume` (the
+shim's `/resume`). A guest reads its clock from the RTC only at boot, so a
+resumed guest is behind by the time it was paused; the resume steps it
+through the agent (`machine.StepClock`: `date -u -s @<host time>` on Linux,
+`date -u MMDDhhmmCCYY.ss` on macOS) before `Start` returns.
+
 **GUI** (`BootOptions.GUI`, `InstallSpec.GUI`; [a window per boot](../../pkg/machine/DESIGN.md#a-window-is-per-boot-and-lives-with-the-vm)): after the
 VM starts, the driver opens an `NSWindow` whose content is a
 `VZVirtualMachineView` on it, capturing system keys and resizing the guest's

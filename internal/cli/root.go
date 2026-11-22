@@ -121,7 +121,7 @@ variables, and --driver-config keys are shown by --help=DRIVER, such as
 		driversCommand(g),
 		installCommand(g),
 		commitCommand(g), upgradeCommand(g),
-		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), rmCommand(g),
+		createCommand(g), runCommand(g), startCommand(g), stopCommand(g), pauseCommand(g), rmCommand(g),
 		lsCommand(g), inspectCommand(g), urlCommand(g), dialCommand(g), guiCommand(g), execCommand(g), cpCommand(g),
 		infoCommand(g), keyCommand(g), cacheCommand(g),
 		guestCommand(), consoleHostCommand(), displayHostCommand(), pipeCommand(), passwordIsNameCommand(), shimCommand(g), dialHostCommand(), dockerInitCommand(), dockerVolumesCommand(),

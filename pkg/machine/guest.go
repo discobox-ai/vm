@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -124,4 +126,33 @@ func UntilReachable(ctx context.Context, op func() error) error {
 		}
 		wait = min(2*wait, 2*time.Second)
 	}
+}
+
+// StepClock sets the guest's wall clock to now, as its administrator, in
+// the guest OS's own command: a guest a driver resumed from a pause keeps
+// the time it was paused at (Capabilities.Pause), and a driver steps it
+// before its Start returns.
+func StepClock(ctx context.Context, g Guest, guestOS OS, now time.Time) error {
+	now = now.UTC()
+	var argv []string
+	switch guestOS {
+	case Linux:
+		argv = []string{"date", "-u", "-s", "@" + strconv.FormatInt(now.Unix(), 10)}
+	case Darwin:
+		argv = []string{"date", "-u", now.Format("010215042006.05")}
+	case Windows:
+		argv = []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+			"Set-Date -Date ([DateTimeOffset]::FromUnixTimeSeconds(" + strconv.FormatInt(now.Unix(), 10) + ").LocalDateTime) | Out-Null"}
+	default:
+		return fmt.Errorf("step the clock of a %s guest: %w", guestOS, ErrUnsupported)
+	}
+	var out strings.Builder
+	code, err := Run(ctx, g, ExecRequest{Argv: argv}, nil, &out, &out)
+	if err != nil {
+		return fmt.Errorf("step the guest's clock: %w", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("step the guest's clock: %s exited %d: %s", argv[0], code, strings.TrimSpace(out.String()))
+	}
+	return nil
 }

@@ -9,7 +9,9 @@ the fake driver tests all of it on every OS.
 Every call reaches a running instance through its driver (`Driver.Attach`),
 with the calling process's own credentials, and nothing of it outlives the
 call. `Engine.State` is the driver's `Driver.State`: running, stopped, or
-paused by its provider, which `Start` alone resumes (`Stop` resumes it to
+paused, by its provider or by `Engine.Pause` (a driver's machine's `Pause`,
+refused before the driver is asked where it does not report
+`Capabilities.Pause`; [pkg/machine](../machine/DESIGN.md#a-pause-is-a-capability-asked-of-the-machine-and-start-resumes-it)), which `Start` alone resumes (`Stop` resumes it to
 shut it down, and `Guest`, `Dial`, and `GUI` refuse it, naming `start`; a
 resume whose service file cannot be written is stopped, as a cold boot's is,
 and so is one `Stop` resumed, or the error says it may still be running;
@@ -28,7 +30,7 @@ driver's business:
   `disco-vm shim <id>` detached (setsid, or DETACHED_PROCESS); the shim boots
   the VM, holds it for its whole life, and exits when the VM stops. It writes
   the instance's `shim.json` (pid, loopback address, bearer token) once its
-  machine answers, and serves `/status`, `/stop`, `/kill`, the instance's URL
+  machine answers, and serves `/status`, `/stop`, `/kill`, `/paused`, `/pause`, `/resume`, the instance's URL
   and forwards, and `/guest`, which upgrades to the agent protocol and is
   answered from its machine's guest operations (`guest.Relay`). Attach
   reaches the VM there. A crash is contained to one VM.

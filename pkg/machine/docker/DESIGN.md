@@ -49,6 +49,10 @@ capability. See [docs/drivers/docker.md](../../../docs/drivers/docker.md).
   committed VM it came from, and a committed VM the Docker image above.
   Only volumes and caches are kept on the daemon's host, in directories
   (below).
+- **A pause is `docker pause`** (`Capabilities.Pause`): the daemon's cgroup
+  freezer holds every process in the container, a paused container reads
+  as paused, and `Start` unpauses it. A container reads its host's clock,
+  so its time is current once unpaused.
 - **The daemon is a connection the driver is given** (`Daemon`; ADR
   26-11-04-412 §3). `New` reaches the one its configuration's
   `host` names (`HostDaemon`: a Unix socket or plain TCP, its connections

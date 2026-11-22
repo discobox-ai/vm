@@ -28,6 +28,8 @@ var (
 	procHcsCloseComputeSystem          = computecore.NewProc("HcsCloseComputeSystem")
 	procHcsStartComputeSystem          = computecore.NewProc("HcsStartComputeSystem")
 	procHcsTerminateComputeSystem      = computecore.NewProc("HcsTerminateComputeSystem")
+	procHcsPauseComputeSystem          = computecore.NewProc("HcsPauseComputeSystem")
+	procHcsResumeComputeSystem         = computecore.NewProc("HcsResumeComputeSystem")
 	procHcsGetComputeSystemProperties  = computecore.NewProc("HcsGetComputeSystemProperties")
 	procHcsSetComputeSystemCallback    = computecore.NewProc("HcsSetComputeSystemCallback")
 	procHcsGrantVMAccess               = computecore.NewProc("HcsGrantVmAccess")
@@ -222,6 +224,16 @@ func (s *system) start() error {
 
 func (s *system) terminate() error {
 	_, err := s.op("HcsTerminateComputeSystem", procHcsTerminateComputeSystem, "")
+	return err
+}
+
+func (s *system) pause() error {
+	_, err := s.op("HcsPauseComputeSystem", procHcsPauseComputeSystem, "")
+	return err
+}
+
+func (s *system) resume() error {
+	_, err := s.op("HcsResumeComputeSystem", procHcsResumeComputeSystem, "")
 	return err
 }
 

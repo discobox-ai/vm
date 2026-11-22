@@ -120,6 +120,11 @@ func (*installVM) Kill(context.Context) error {
 	return errors.New("hcs: an install's VM is stopped by the install, or by interrupting it")
 }
 
+// Pause is unsupported: the VM is the installing process's.
+func (*installVM) Pause(context.Context) error {
+	return fmt.Errorf("hcs: an install's VM: %w", machine.ErrUnsupported)
+}
+
 func (m *installVM) Done() <-chan struct{} {
 	m.watching.Do(func() {
 		go func() {

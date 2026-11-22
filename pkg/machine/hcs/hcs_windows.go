@@ -62,6 +62,7 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		Agent:       true,
 		Install:     []machine.OS{machine.Windows},
 		Commit:      true,
+		Pause:       true,
 		Keys:        machine.KeyCapabilities{Mode: machine.KeysNone},
 	}
 }
@@ -81,14 +82,6 @@ func (*Hypervisor) Base() (machine.OS, bool) { return "", false }
 // SharesLoopback is false: a guest reaches neither another guest nor the
 // host's loopback.
 func (*Hypervisor) SharesLoopback() bool { return false }
-
-// Paused is false: the hypervisor never pauses a machine.
-func (*Hypervisor) Paused(local.InstanceSpec) bool { return false }
-
-// Resume is unsupported: the hypervisor never pauses a machine.
-func (*Hypervisor) Resume(context.Context, local.InstanceSpec) error {
-	return fmt.Errorf("hcs pauses no machine: %w", machine.ErrUnsupported)
-}
 
 // The files the driver keeps. A VM's Dir holds its disk, differencing over
 // its committed parent's (an install's is whole), and, until it is committed,
@@ -299,7 +292,7 @@ func newNIC(dir string, st instanceState) (*endpoint, error) {
 // Boot starts the instance and waits for its agent. With opts.GUI it opens a
 // window on the guest's desktop once there is one to show (View), which
 // closes when the VM stops. Closing the window leaves the VM running.
-func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
+func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (local.VM, error) {
 	m, err := d.boot(inst, opts)
 	if err != nil {
 		return nil, err

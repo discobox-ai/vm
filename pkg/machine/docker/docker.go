@@ -191,6 +191,7 @@ func (d *Driver) Capabilities() machine.Capabilities {
 		GuestOS: []machine.OS{machine.Linux},
 		Agent:   true,
 		Commit:  true,
+		Pause:   true,
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
 		Volumes: []machine.Volume{machine.VolumeData, machine.VolumeCache},
 		// Ingress is the port the daemon publishes on its host's loopback,

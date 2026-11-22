@@ -141,6 +141,8 @@ a sparse copy of the blocks in use. `Chains` is false.
 
 `Kill` sends SIGKILL to the launcher. `Shutdown` goes through the agent, and
 the guest's power-off is the patched reset. `Done` is the launcher's exit.
+`Pause` is `ErrUnsupported`: libkrun's API has no pause, so the driver does
+not report `Capabilities.Pause`.
 
 ### Half-closes
 

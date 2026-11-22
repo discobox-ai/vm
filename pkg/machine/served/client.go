@@ -435,6 +435,15 @@ func (m *remoteMachine) Kill(ctx context.Context) error {
 	return err
 }
 
+// Pause pauses the VM on the server; one already paused is not an error.
+// A driver the server does not report Capabilities.Pause for refuses it.
+func (m *remoteMachine) Pause(ctx context.Context) error {
+	if !m.d.Capabilities().Pause {
+		return fmt.Errorf("the served driver cannot pause a VM: %w", machine.ErrUnsupported)
+	}
+	return m.d.call(ctx, http.MethodPost, vmPath(m.name, "/pause"), nil, nil)
+}
+
 // Dial opens a stream to the agent's port or the service's, through the
 // server.
 func (m *remoteMachine) Dial(ctx context.Context, port uint32) (net.Conn, error) {

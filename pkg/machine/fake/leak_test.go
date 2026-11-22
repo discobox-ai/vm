@@ -153,7 +153,9 @@ func leakingSuite(t *testing.T, dir, agent string) {
 		return &failingDestroy{Driver: d, mu: &mu, refused: refused}
 	}
 	machinetest.Run(t, failing(newLeakDriver(t, dir, agent, nil)), machinetest.Config{
-		Timeout:    30 * time.Second,
+		Timeout: 30 * time.Second,
+		// A fake guest is a host process, on the host's clock.
+		PauseHold:  2 * time.Second,
 		ScratchDir: "/scratch",
 		GuestAgent: agent,
 		Keyed: func(keys machine.KeySource) machine.Driver {

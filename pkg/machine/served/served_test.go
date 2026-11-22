@@ -107,6 +107,8 @@ func TestConformance(t *testing.T) {
 		GuestAgent: bin,
 		// The server's fake pauses it, as a provider would.
 		Pause: func(ctx context.Context, inst machine.Instance) error { return fake.Pause(ctx, server, inst) },
+		// A fake guest is a host process, on the host's clock.
+		PauseHold: 2 * time.Second,
 	})
 }
 
@@ -147,8 +149,8 @@ func TestAllowListRefuses(t *testing.T) {
 	c := client(t, dial, "v1")
 
 	caps := c.Capabilities()
-	if caps.Commit || caps.Ports || len(caps.Volumes) > 0 || len(caps.Install) > 0 || caps.Keys.Mode != machine.KeysNone {
-		t.Fatalf("capabilities %+v, want commit, ports, volumes, install, and keys narrowed away", caps)
+	if caps.Commit || caps.Pause || caps.Ports || len(caps.Volumes) > 0 || len(caps.Install) > 0 || caps.Keys.Mode != machine.KeysNone {
+		t.Fatalf("capabilities %+v, want commit, pause, ports, volumes, install, and keys narrowed away", caps)
 	}
 
 	inst, err := c.Create(ctx, machine.InstanceSpec{Name: "allowed", CPUs: 1})
@@ -209,6 +211,15 @@ func TestAllowListRefuses(t *testing.T) {
 	}
 	if _, err := m.Dial(ctx, guest.AgentPort); !errors.Is(err, served.ErrRefused) {
 		t.Fatalf("dial: %v, want ErrRefused", err)
+	}
+	if err := m.Pause(ctx); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("pause: %v, want it refused as unsupported", err)
+	}
+	if status := raw(t, dial, http.MethodPost, "/v1/vms/allowed/pause", "v1", nil); status != http.StatusForbidden {
+		t.Fatalf("pause, asked anyway: %d, want refused", status)
+	}
+	if state, err := c.State(ctx, inst); err != nil || state != machine.StateRunning {
+		t.Fatalf("a VM refused a pause: %q, %v; want running", state, err)
 	}
 	if _, err := c.Install(ctx, machine.InstallSpec{}, "x"); !errors.Is(err, machine.ErrUnsupported) {
 		t.Fatalf("install: %v, want it never served", err)
