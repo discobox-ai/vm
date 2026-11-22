@@ -74,6 +74,12 @@ var (
 // to one again.
 var waitEvery = 200 * time.Millisecond
 
+// raceGrace is how long a wait goes on reading a machine whose boot boxd
+// refuses, FailedPrecondition, in one state: boxd moved it on and has yet to
+// say so. A suspended machine StartVm resumed read suspended, and refused
+// ResumeVm "VM is starting", and ran a second later (fra, 2026-11-22).
+var raceGrace = 10 * time.Second
+
 // Driver is the boxd driver.
 type Driver struct {
 	api  *client
@@ -528,6 +534,13 @@ func (d *Driver) boot(ctx context.Context, inst machine.Instance, opts machine.B
 // StartVm started it at its old size, by flushing its writes and stopping it
 // mid-boot, then starting it again. One already running when the wait first
 // sees it is left at its size, as a machine Boot did not start.
+//
+// boxd refuses a call that boots a machine (StartVm, ResumeVm, WakeVm) with
+// FailedPrecondition when the machine has moved on since it was read, as a
+// suspended machine StartVm is already resuming does ("VM is starting (must
+// be suspended to resume)"). The wait reads it again rather than failing,
+// and fails once boxd has refused it so in one state for raceGrace. A
+// refused StopVm, the resize's, is no race: it fails the wait at once.
 func untilRunning(ctx context.Context, api boxdapi.BoxdApiClient, ref vmRef, inst machine.Instance) error {
 	ctx, cancel := context.WithTimeout(ctx, waitLimit)
 	defer cancel()
@@ -538,6 +551,11 @@ func untilRunning(ctx context.Context, api boxdapi.BoxdApiClient, ref vmRef, ins
 	// resized: its one resize has begun. stopped: the wait stopped it
 	// itself, to resize it.
 	first, ranBefore, up, resized, stopped := true, false, false, false, false
+	// refusedIn is the state the machine read as when boxd refused,
+	// FailedPrecondition, the call that boots it from there, and refusedAt
+	// when it first did: the refusals are a race until raceGrace has passed
+	// with the machine still reading so.
+	refusedIn, refusedAt := "", time.Time{}
 	for {
 		info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: ref.ID})
 		if isNotFound(err) {
@@ -548,6 +566,10 @@ func untilRunning(ctx context.Context, api boxdapi.BoxdApiClient, ref vmRef, ins
 			if first {
 				ranBefore, first = last == "running", false
 			}
+			if last != refusedIn {
+				refusedIn, refusedAt = "", time.Time{}
+			}
+			booting := false
 			resize := !resized && ((cpus != 0 && cpus != info.GetVcpu()) || (memory != 0 && memory != info.GetMemoryBytes()))
 			switch last {
 			case "running", "starting":
@@ -583,16 +605,27 @@ func untilRunning(ctx context.Context, api boxdapi.BoxdApiClient, ref vmRef, ins
 						return fmt.Errorf("boxd: resize %s: %w", ref.Name, err)
 					}
 				}
-				up, stopped = false, false
+				up, stopped, booting = false, false, true
 				_, err = api.StartVm(ctx, &boxdapi.StartVmRequest{VmId: ref.ID})
 			case "standby", "suspended":
+				booting = true
 				_, err = api.ResumeVm(ctx, &boxdapi.ResumeVmRequest{VmId: ref.ID})
 			case "hibernated":
+				booting = true
 				_, err = api.WakeVm(ctx, &boxdapi.WakeVmRequest{VmId: ref.ID})
 			default:
 				return fmt.Errorf("boxd: machine %s is %s", ref.Name, last)
 			}
-			if err != nil {
+			switch {
+			case err == nil:
+			case booting && status.Code(err) == codes.FailedPrecondition && (refusedIn != last || time.Since(refusedAt) < raceGrace):
+				// boxd moved the machine on between the read and the call
+				// (its own resume of a machine StartVm resumed): a read to
+				// come says where it went.
+				if refusedIn != last {
+					refusedIn, refusedAt = last, time.Now()
+				}
+			default:
 				return fmt.Errorf("boxd: boot %s, which is %s: %w", ref.Name, last, err)
 			}
 		}

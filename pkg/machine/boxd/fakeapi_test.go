@@ -82,6 +82,12 @@ type fakeAPI struct {
 	// startingReads is how many GetVm reads report a started machine as
 	// starting; zero is one.
 	startingReads int
+	// resumeLag is how many GetVm reads still report a suspended machine
+	// StartVm resumed as suspended, as boxd's did when its resume raced the
+	// driver's read (region fra, 2026-11-22).
+	resumeLag int
+	// stopErr, when set, is StopVm's answer, the machine left as it is.
+	stopErr error
 	// stopLag is how many GetVm reads still report a machine StopVm stopped
 	// as it was, as a stop that settles after StopVm answers would.
 	stopLag int
@@ -235,6 +241,9 @@ type fakeVM struct {
 	// lagging is how many GetVm reads to come report a stopped machine as
 	// running (stopLag).
 	lagging int
+	// suspendedReads is how many GetVm reads to come report a resumed
+	// machine as suspended (resumeLag).
+	suspendedReads int
 	// imageRef is the image CreateVm made it from.
 	imageRef string
 	dir      string
@@ -504,6 +513,9 @@ func (f *fakeAPI) GetVm(_ context.Context, req *boxdapi.GetVmRequest) (*boxdapi.
 	if v.lagging > 0 {
 		v.lagging--
 		info.Status = "running"
+	} else if v.suspendedReads > 0 {
+		v.suspendedReads--
+		info.Status = "suspended"
 	} else if v.starting > 0 {
 		v.starting--
 		info.Status = "starting"
@@ -574,6 +586,7 @@ func (f *fakeAPI) StartVm(_ context.Context, req *boxdapi.StartVmRequest) (*boxd
 	case "starting", "running":
 	case "suspended", "standby":
 		v.status = "running"
+		v.starting, v.suspendedReads = max(f.startingReads, 1), f.resumeLag
 	default:
 		return nil, status.Errorf(codes.FailedPrecondition, "%s is %s", v.name, v.status)
 	}
@@ -591,6 +604,9 @@ func (f *fakeAPI) StopVm(_ context.Context, req *boxdapi.StopVmRequest) (*boxdap
 	v, err := f.vm(req.GetVmId())
 	if err != nil {
 		return nil, err
+	}
+	if f.stopErr != nil {
+		return nil, f.stopErr
 	}
 	f.halt(v)
 	v.lagging = f.stopLag
@@ -616,8 +632,25 @@ func (f *fakeAPI) SuspendVm(_ context.Context, req *boxdapi.SuspendVmRequest) (*
 	return &boxdapi.SuspendVmResponse{}, f.setStatus(req.GetVmId(), "running", "suspended")
 }
 
+// ResumeVm resumes a suspended machine, and refuses any other as boxd does
+// (region fra, 2026-11-22).
 func (f *fakeAPI) ResumeVm(_ context.Context, req *boxdapi.ResumeVmRequest) (*boxdapi.ResumeVmResponse, error) {
-	return &boxdapi.ResumeVmResponse{}, f.setStatus(req.GetVmId(), "suspended", "running")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.called("ResumeVm")
+	v, err := f.vm(req.GetVmId())
+	if err != nil {
+		return nil, err
+	}
+	if v.status != "suspended" {
+		state := v.status
+		if v.starting > 0 {
+			state = "starting"
+		}
+		return nil, status.Errorf(codes.FailedPrecondition, "VM is %s (must be suspended to resume)", state)
+	}
+	v.status = "running"
+	return &boxdapi.ResumeVmResponse{}, nil
 }
 
 func (f *fakeAPI) SetAutoSuspendTimeout(_ context.Context, req *boxdapi.SetAutoSuspendTimeoutRequest) (*boxdapi.SetAutoSuspendTimeoutResponse, error) {

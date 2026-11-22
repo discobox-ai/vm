@@ -42,3 +42,11 @@
   not on the fake alone.** The fake answers whatever the test tells it, and
   systemd's early-boot answers differ by image: the default image never
   showed `--wait`'s hang or its early `offline`. (vm#179, vm#180.)
+- **A refusal `untilRunning` tolerates is one of the calls that boot the
+  machine, and only for a while.** Its loop writes one `err` from every call
+  it makes, so a case added to the error switch at its end catches the
+  resize's `StopVm` too, whose refusal no later read undoes, and the wait
+  then lasts its full limit. Mark the calls a refusal may race (`booting`),
+  and bound the tolerance by time, not a count of refusals: how long boxd's
+  reads lag a move it has begun is not known (the proto's `GetVm`), so a
+  count of polls is a guess at it in units of `waitEvery`. (vm#214.)

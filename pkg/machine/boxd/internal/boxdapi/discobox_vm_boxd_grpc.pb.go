@@ -81,13 +81,18 @@ type BoxdApiClient interface {
 	// machine stopped, starting or running, which it leaves as it is, and for
 	// a suspended one, which it resumes; NOT_FOUND for an id that is no
 	// machine (nyc, 2026-11-16). Not seen: a hibernated or stopping machine.
+	// A suspended machine it resumed was read by GetVm as suspended after it
+	// answered, and refused ResumeVm then, and ran a second later (fra,
+	// 2026-11-22, vm#214).
 	StartVm(ctx context.Context, in *StartVmRequest, opts ...grpc.CallOption) (*StartVmResponse, error)
 	StopVm(ctx context.Context, in *StopVmRequest, opts ...grpc.CallOption) (*StopVmResponse, error)
 	RebootVm(ctx context.Context, in *RebootVmRequest, opts ...grpc.CallOption) (*RebootVmResponse, error)
 	// NOT_FOUND for an id/name with no matching machine, including a destroyed
 	// one, and, a moment after CreateVm, perhaps for the machine it made (see
 	// SetAutoSuspendTimeout). A machine's name finds it as its id does (nyc,
-	// 2026-11-16).
+	// 2026-11-16). Its status can lag a move boxd has begun: a suspended
+	// machine StartVm resumed still read suspended (fra, 2026-11-22, vm#214),
+	// for how long is not known, though it ran a second later.
 	GetVm(ctx context.Context, in *GetVmRequest, opts ...grpc.CallOption) (*GetVmResponse, error)
 	// Every machine in the caller's context, with no paging.
 	ListVms(ctx context.Context, in *ListVmsRequest, opts ...grpc.CallOption) (*ListVmsResponse, error)
@@ -104,6 +109,9 @@ type BoxdApiClient interface {
 	// The image a machine gets when CreateVm names none. boxd lists no others.
 	GetConfig(ctx context.Context, in *GetConfigRequest, opts ...grpc.CallOption) (*GetConfigResponse, error)
 	SuspendVm(ctx context.Context, in *SuspendVmRequest, opts ...grpc.CallOption) (*SuspendVmResponse, error)
+	// FAILED_PRECONDITION for a machine not suspended: "VM is starting (must
+	// be suspended to resume)" for one StartVm was resuming, "VM is running
+	// (must be suspended to resume)" for one it had resumed (fra, 2026-11-22).
 	ResumeVm(ctx context.Context, in *ResumeVmRequest, opts ...grpc.CallOption) (*ResumeVmResponse, error)
 	WakeVm(ctx context.Context, in *WakeVmRequest, opts ...grpc.CallOption) (*WakeVmResponse, error)
 	// Answered NOT_FOUND for a machine CreateVm had answered for just before,
@@ -522,13 +530,18 @@ type BoxdApiServer interface {
 	// machine stopped, starting or running, which it leaves as it is, and for
 	// a suspended one, which it resumes; NOT_FOUND for an id that is no
 	// machine (nyc, 2026-11-16). Not seen: a hibernated or stopping machine.
+	// A suspended machine it resumed was read by GetVm as suspended after it
+	// answered, and refused ResumeVm then, and ran a second later (fra,
+	// 2026-11-22, vm#214).
 	StartVm(context.Context, *StartVmRequest) (*StartVmResponse, error)
 	StopVm(context.Context, *StopVmRequest) (*StopVmResponse, error)
 	RebootVm(context.Context, *RebootVmRequest) (*RebootVmResponse, error)
 	// NOT_FOUND for an id/name with no matching machine, including a destroyed
 	// one, and, a moment after CreateVm, perhaps for the machine it made (see
 	// SetAutoSuspendTimeout). A machine's name finds it as its id does (nyc,
-	// 2026-11-16).
+	// 2026-11-16). Its status can lag a move boxd has begun: a suspended
+	// machine StartVm resumed still read suspended (fra, 2026-11-22, vm#214),
+	// for how long is not known, though it ran a second later.
 	GetVm(context.Context, *GetVmRequest) (*GetVmResponse, error)
 	// Every machine in the caller's context, with no paging.
 	ListVms(context.Context, *ListVmsRequest) (*ListVmsResponse, error)
@@ -545,6 +558,9 @@ type BoxdApiServer interface {
 	// The image a machine gets when CreateVm names none. boxd lists no others.
 	GetConfig(context.Context, *GetConfigRequest) (*GetConfigResponse, error)
 	SuspendVm(context.Context, *SuspendVmRequest) (*SuspendVmResponse, error)
+	// FAILED_PRECONDITION for a machine not suspended: "VM is starting (must
+	// be suspended to resume)" for one StartVm was resuming, "VM is running
+	// (must be suspended to resume)" for one it had resumed (fra, 2026-11-22).
 	ResumeVm(context.Context, *ResumeVmRequest) (*ResumeVmResponse, error)
 	WakeVm(context.Context, *WakeVmRequest) (*WakeVmResponse, error)
 	// Answered NOT_FOUND for a machine CreateVm had answered for just before,
