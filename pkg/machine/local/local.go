@@ -146,7 +146,7 @@ type Hypervisor interface {
 	// Boot starts a prepared instance and returns once its guest operations
 	// answer. The returned machine lives until it powers off or is killed; it
 	// is not bound to ctx, which only bounds starting it.
-	Boot(ctx context.Context, inst InstanceSpec, opts BootOptions) (machine.Machine, error)
+	Boot(ctx context.Context, inst InstanceSpec, opts BootOptions) (VM, error)
 	// Commit freezes a stopped instance in place: it removes the instance's
 	// volumes and whatever only a running VM needs, and leaves inst.Dir a
 	// disk that Prepare copies from (Layer{ID: inst.ID, Dir: inst.Dir}).
@@ -194,14 +194,21 @@ type Hypervisor interface {
 	// an owner-only local socket instead (Driver.Capabilities). The driver
 	// reports the URLs, whatever the hypervisor's Capabilities say.
 	SharesLoopback() bool
-	// Paused reports that the hypervisor paused the running instance's
-	// machine, as a provider pauses one (fake's, at its test hook): read
-	// from any process, it wakes nothing, and the driver reports the
-	// instance machine.StatePaused. One that never pauses a machine (hcs,
-	// vz, libkrun) reports false.
-	Paused(inst InstanceSpec) bool
-	// Resume resumes a running instance's machine that Paused reports
-	// paused, from any process: the driver's Start of it. One that never
-	// pauses a machine returns machine.ErrUnsupported.
-	Resume(ctx context.Context, inst InstanceSpec) error
+}
+
+// VM is a machine a Hypervisor booted, as the process that booted it (the
+// shim) holds it. Its Pause pauses it whole (machine.Machine), and the
+// driver reaches all three through the shim from any process: State and
+// Attach read Paused, and Start of a paused instance calls Resume (ADR
+// 26-11-21-438 §7).
+type VM interface {
+	machine.Machine
+	// Paused reports the machine paused: by its Pause, or as a provider
+	// pauses one (fake's test hook). It wakes nothing.
+	Paused() bool
+	// Resume resumes a paused machine, and returns once it runs and its
+	// guest's wall clock is the host's (machine.Capabilities.Pause). One
+	// not paused is left running. A hypervisor that never pauses a machine
+	// returns machine.ErrUnsupported.
+	Resume(ctx context.Context) error
 }

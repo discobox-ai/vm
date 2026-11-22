@@ -254,6 +254,12 @@ What booting the DVDs took:
 - go-winio `vhd.CreateDiffVhd` and hcsshim's patterns are fine to use; hcsshim's
   `internal/*` packages are not importable, so copy what you need.
 
+**Pause** (`Capabilities.Pause`): `HcsPauseComputeSystem`, in the shim that
+holds the system (its `/pause`), and `Start` of a paused VM
+`HcsResumeComputeSystem` (the shim's `/resume`), after which the guest's
+clock, behind by the time it was paused, is stepped through the agent
+(`machine.StepClock`: PowerShell's `Set-Date`) before `Start` returns.
+
 **Boot(inst, opts):** `HcsCreateComputeSystem` plus `HcsStartComputeSystem`.
 Three document fields silently prevent boot:
 

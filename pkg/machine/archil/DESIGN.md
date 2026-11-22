@@ -108,7 +108,16 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   done: a large copy is silent for a while before it streams. Shutdown
   is Archil's stop; a reboot is refused.
 - **Power is Archil's.** Start resumes a sandbox Archil paused at its 24-hour
-  limit. A request to 7302 carrying a port token starts a stopped sandbox or
+  limit, or that `Pause` paused: Archil's caller pause (`POST .../pause`),
+  which snapshots its memory and processes and is waited out to `paused`
+  (`Capabilities.Pause`), reported since that pause was seen on Archil
+  itself (2026-11-21: `machinetest`'s pause-and-resume, and by hand): a
+  process Archil restores keeps its PID, and the guest's clock is current at
+  resume. Archil's docs count `max_ttl_seconds` against a powered-on session
+  only; whether Archil stops a sandbox left paused, and after how long, is
+  neither documented nor seen. A process a guest
+  operation starts in the background is killed with the operation's process
+  group, unless it leaves the group (`setsid`). A request to 7302 carrying a port token starts a stopped sandbox or
   resumes a paused one (seen 2026-11-16 of an exposed port: a stopped VM ran
   2.8 s after a `GET` of its URL), so a VM stopped by the engine can be
   running at its next listing; one without a token is refused and wakes

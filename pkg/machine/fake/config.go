@@ -16,6 +16,11 @@ const AgentEnv = "DISCO_VM_AGENT"
 // the command line.
 const NoCommitEnv = "DISCO_VM_FAKE_NO_COMMIT"
 
+// NoPauseEnv is where the command line reads Config.NoPause from. It exists
+// to test the refusal of a driver without Capabilities.Pause from the
+// command line.
+const NoPauseEnv = "DISCO_VM_FAKE_NO_PAUSE"
+
 // MaxRunningEnv is where the command line reads Config.MaxRunning from.
 const MaxRunningEnv = "DISCO_VM_FAKE_MAX_RUNNING"
 
@@ -31,6 +36,9 @@ type Config struct {
 	// NoCommit makes a driver without Capabilities.Commit, as
 	// Hypervisor.NoCommit does.
 	NoCommit bool `json:"noCommit,omitempty"`
+	// NoPause makes a driver without Capabilities.Pause, as
+	// Hypervisor.NoPause does.
+	NoPause bool `json:"noPause,omitempty"`
 	// MaxRunning caps running guests of the host's OS
 	// (Capabilities.MaxRunning), as Hypervisor.MaxRunning does. Absent is
 	// no cap.
@@ -51,6 +59,8 @@ func Definition() machine.Definition {
 				Description: "The absolute path of the disco-vm each guest runs as its agent; empty is this binary."},
 			{Key: "noCommit", Label: "No Commit", Type: machine.ConfigBoolean, Env: NoCommitEnv, Default: "false", Advanced: true,
 				Description: "Make a driver that does not commit, so every VM is fresh: a test of the refusals of such a driver."},
+			{Key: "noPause", Label: "No Pause", Type: machine.ConfigBoolean, Env: NoPauseEnv, Default: "false", Advanced: true,
+				Description: "Make a driver that does not pause a VM: a test of the refusals of such a driver."},
 			{Key: "maxRunning", Label: "Max Running", Type: machine.ConfigNumber, Env: MaxRunningEnv, Advanced: true,
 				Description: "Cap how many guests run at once in the root, as vz caps macOS guests; absent is no cap."},
 			{Key: "noLoopback", Label: "No Loopback", Type: machine.ConfigBoolean, Env: NoLoopbackEnv, Default: "false", Advanced: true,

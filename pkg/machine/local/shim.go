@@ -63,8 +63,13 @@ const (
 	// (staleMachine). 1 is every shim from before shim.json named its
 	// protocol, whose /dial varies by build (none before 2026-11-01, any
 	// port with the service's unmapped before 2026-11-03), so none of them
-	// is used beyond the part that lasts.
-	shimProtocol = 2
+	// is used beyond the part that lasts. 3 added /paused, /pause, and
+	// /resume (ADR 26-11-21-438 §7).
+	shimProtocol = 3
+	// shimErrorHeader names the machine sentinel a control route's error
+	// wraps (machine.ErrorCode), so it crosses the shim as ErrUnsupported
+	// or ErrStale does in this process.
+	shimErrorHeader = "Disco-Vm-Error"
 	// shimStarterEnv, set in a shim's environment, says its stdin is its
 	// starter's lifeline (holdStarter): the shim gives its boot up if the
 	// pipe closes before the Start that spawned it says it is started. A
@@ -298,6 +303,23 @@ func (d *Driver) runShim(ctx context.Context, id string, gui bool) error {
 	mux.HandleFunc("POST /kill", func(w http.ResponseWriter, r *http.Request) {
 		if err := m.Kill(r.Context()); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /paused", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, strconv.FormatBool(m.Paused()))
+	})
+	mux.HandleFunc("POST /pause", func(w http.ResponseWriter, r *http.Request) {
+		if err := m.Pause(r.Context()); err != nil {
+			writeShimError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /resume", func(w http.ResponseWriter, r *http.Request) {
+		if err := m.Resume(r.Context()); err != nil {
+			writeShimError(w, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -743,7 +765,7 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 		return nil, err
 	}
 	if shim, err := d.openShim(inst.ID); err == nil && shim.status(ctx) == nil {
-		return d.resume(ctx, inst, rec)
+		return d.resume(ctx, inst, shim)
 	}
 	// The shim's boot is what admits the instance and holds its slot, since
 	// the shim outlives this process. Asking here first refuses a full host
@@ -810,17 +832,18 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 	}
 }
 
-// resume resumes a running instance whose hypervisor paused its machine,
-// and returns it attached. One not paused is already running, and refused.
-func (d *Driver) resume(ctx context.Context, inst machine.Instance, rec instanceRecord) (machine.Machine, error) {
-	hs, err := d.spec(rec)
+// resume resumes a running instance whose machine is paused, through the
+// shim that holds it (VM's Resume), and returns it attached. One not paused
+// is already running, and refused.
+func (d *Driver) resume(ctx context.Context, inst machine.Instance, shim *shimClient) (machine.Machine, error) {
+	paused, err := shim.paused(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
-	if !d.hv.Paused(hs) {
+	if !paused {
 		return nil, fmt.Errorf("instance %s is already running", inst.Name)
 	}
-	if err := d.hv.Resume(ctx, hs); err != nil {
+	if err := shim.resume(ctx); err != nil {
 		return nil, fmt.Errorf("instance %s: resume: %w", inst.Name, err)
 	}
 	return d.Attach(ctx, inst)
@@ -890,6 +913,78 @@ func (c *shimClient) status(ctx context.Context) error {
 		return fmt.Errorf("shim status: %s", resp.Status)
 	}
 	return nil
+}
+
+// answers reports that the shim is up and answers its status, within a
+// moment.
+func (c *shimClient) answers(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return c.status(ctx) == nil
+}
+
+// paused asks the shim whether the machine it holds is paused. A shim of
+// another protocol is not: it cannot pause one.
+func (c *shimClient) paused(ctx context.Context) (bool, error) {
+	if c.stale != nil {
+		return false, nil
+	}
+	resp, err := c.do(ctx, http.MethodGet, "/paused")
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("shim paused: %s", resp.Status)
+	}
+	return strconv.ParseBool(strings.TrimSpace(string(body)))
+}
+
+// pause asks the shim to pause the machine it holds, and returns once it
+// is paused.
+func (c *shimClient) pause(ctx context.Context) error {
+	return c.control(ctx, "/pause")
+}
+
+// resume asks the shim to resume the machine it holds, and returns once it
+// runs.
+func (c *shimClient) resume(ctx context.Context) error {
+	return c.control(ctx, "/resume")
+}
+
+// control posts to one of the shim's control routes, and reads its error
+// with the machine sentinel it wraps (shimErrorHeader).
+func (c *shimClient) control(ctx context.Context, path string) error {
+	if c.stale != nil {
+		return c.stale
+	}
+	resp, err := c.do(ctx, http.MethodPost, path)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		msg = resp.Status
+	}
+	if sentinel := machine.ErrorSentinel(resp.Header.Get(shimErrorHeader)); sentinel != nil {
+		return fmt.Errorf("shim %s: %s: %w", strings.TrimPrefix(path, "/"), strings.TrimSuffix(msg, ": "+sentinel.Error()), sentinel)
+	}
+	return fmt.Errorf("shim %s: %s", strings.TrimPrefix(path, "/"), msg)
+}
+
+// writeShimError answers a control route's error, naming the machine
+// sentinel it wraps.
+func writeShimError(w http.ResponseWriter, err error) {
+	if code := machine.ErrorCode(err); code != "" {
+		w.Header().Set(shimErrorHeader, code)
+	}
+	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
 // kill forces the machine off and waits for the shim to exit, so the caller

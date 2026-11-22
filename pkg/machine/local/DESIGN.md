@@ -219,6 +219,9 @@ Unix socket (macOS holds 104 bytes) is one in a private temporary directory
 instead, which `shim.json` names. The API is:
 
 - `/status`; `/stop`, an orderly shutdown forced off after a timeout; `/kill`;
+- `/paused`, `/pause`, and `/resume`: the machine it holds (`VM`) read,
+  paused, and resumed, an error naming the machine sentinel it wraps
+  (`Disco-Vm-Error`), so `ErrUnsupported` crosses;
 - `/guest`, which upgrades to the agent protocol, answered from its
   machine's guest operations (`guest.Relay`);
 - `/dial?port=N`, which upgrades to a stream spliced into the machine's
@@ -253,13 +256,17 @@ It serves the instance's forwards too, each guest port accepted
 guest port through the peer's shim's `/dial`, the peer found by name at each
 connection in the forward's pool (`Forward.Pool`), its own by default.
 
-`State` is running while the shim answers its `/status`, and paused where
-the hypervisor paused the machine (`Hypervisor.Paused`, read from any
-process): fake's, at its test hook, marks its instance's directory and keeps
-its guest running; hcs, vz, and libkrun pause none. `Attach` and `Boot` of
-a paused instance are `machine.ErrPaused`. `Start` of a running instance
-the hypervisor paused resumes it (`Hypervisor.Resume`) and returns it
-attached; one not paused is refused as already running.
+A hypervisor's `Boot` returns a `VM`: a machine that also reads whether it
+is paused and resumes itself, in the process that holds it, since a
+Virtualization.framework VM and an HCS system are paused only there. `State`
+is running while the shim answers its `/status`, and paused where its
+machine is (`/paused`): hcs's and vz's by their `Pause`, fake's by its
+`Pause` or its test hook, which mark its instance's directory and keep its
+guest running; libkrun's never. A machine's `Pause` is the shim's `/pause`.
+`Attach` and `Boot` of a paused instance are `machine.ErrPaused`. `Start` of
+a running instance whose machine is paused resumes it (`/resume`, which on
+hcs and vz steps the guest's clock) and returns it attached; one not paused
+is refused as already running.
 
 `Attach` reaches a running instance through its shim: its guest operations
 are the relay's, `Dial` is `/dial`, `Kill` is `/kill` (a shim from before
@@ -273,8 +280,8 @@ A shim outlives the engine that started it, an embedder's restart and
 upgrade included, so an engine meets shims of other builds (discobox ADR
 26-11-11-963 §7). Part of a shim lasts, and every build keeps it:
 `shim.json`'s PID, socket (or address), token, and service, and `/status`,
-`/stop`, and `/kill`. The rest, the relay on `/guest` and the streams on
-`/dial`, is versioned: `shim.json` names the shim's `protocol`
+`/stop`, and `/kill`. The rest, the relay on `/guest`, the streams on
+`/dial`, and `/paused`, `/pause`, and `/resume` (protocol 3), is versioned: `shim.json` names the shim's `protocol`
 (`shimProtocol`), the `guestProtocol` its relay speaks (`guest.Protocol`),
 and its `build`. A shim from before they were written is protocol 1,
 whatever its build: its `/dial` varies (none before 2026-11-01, the service
@@ -284,8 +291,9 @@ port unmapped before 2026-11-03), so it is never taken for this build's.
 - **A shim of another** is attached all the same, so the instance reads as
   running and is never started twice, committed, or upgraded under it. It is
   stopped through the part that lasts: `Shutdown` is `/stop`, ordered and
-  then forced off at the caller's deadline, and `Kill` is `/kill`. Every
-  other guest operation and `Dial` return `machine.ErrStale`, naming both
+  then forced off at the caller's deadline, and `Kill` is `/kill`. It reads
+  as running, never paused. Every
+  other guest operation, `Dial`, and `Pause` return `machine.ErrStale`, naming both
   builds' protocols. A peer forward to it connects and reads EOF, and the
   forwarding shim logs why. A stop and a start replace the shim, and the
   instance boots again on its own disk.

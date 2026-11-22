@@ -22,6 +22,6 @@ func (*Hypervisor) Install(context.Context, local.InstallSpec, local.Layer) (*ma
 
 func (*Hypervisor) Prepare(context.Context, local.InstanceSpec) error { return errNoCgo }
 
-func (*Hypervisor) Boot(context.Context, local.InstanceSpec, local.BootOptions) (machine.Machine, error) {
+func (*Hypervisor) Boot(context.Context, local.InstanceSpec, local.BootOptions) (local.VM, error) {
 	return nil, errNoCgo
 }

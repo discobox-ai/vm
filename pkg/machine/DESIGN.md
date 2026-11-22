@@ -67,7 +67,8 @@ a `Capabilities` field, never a faked method:
 | credential (`URLs.Credential`: a URL answers only one the driver mints) | no | no | no | no | no | no | **yes**: a port token per `Service`, a day long, in `X-Archil-Token` |
 | pool URL (`Service.PoolURL`) | the ingress URL | the ingress URL | `http://<machine>.boxd:7302` on networks, else the ingress URL | the container's address on its network | the ingress URL | the ingress URL (a shared loopback) | the ingress URL |
 | URLs (`URLs`: given never, when asked, or always) | ingress when asked (its default), pool always | ingress when asked (its default), pool always | ingress when asked (the default proxy, its default); pool always on networks (direct), on none the ingress one, so none with that off | both always (ingress never for a daemon on another host) | ingress when asked (its default), pool always | both always (with `noLoopback`, as vz) | ingress when asked (its default), pool always |
-| paused (`State`: `paused`, which Start resumes) | never | never | `suspended`, `standby`, or `hibernated`, by someone else's `SuspendVm` (the driver turns boxd's idle timers off) | a container someone `docker pause`d | never | at its test hook, `fake.Pause` | at a sandbox's 24-hour session limit, or at Archil's pause (`paused`, `pausing`) |
+| paused (`State`: `paused`, which Start resumes) | by `Pause` | by `Pause` | `suspended`, `standby`, or `hibernated`, by `Pause` or someone else's `SuspendVm` (the driver turns boxd's idle timers off) | a container `Pause` or someone `docker pause`d | never | by `Pause`, or at its test hook, `fake.Pause` | at a sandbox's 24-hour session limit, or at Archil's pause, `Pause`'s too (`paused`, `pausing`) |
+| pause (`Capabilities.Pause`: `Machine.Pause`, which Start resumes) | yes: `HcsPauseComputeSystem`, through the shim; the clock stepped at resume | yes: the framework's pause, through the shim; the clock stepped at resume | yes: `SuspendVm`, waited out to `suspended` | yes: `docker pause` | no: libkrun has no pause | yes: a mark its guest runs on under (unless `noPause`) | yes: Archil's caller pause, waited out to `paused` |
 | volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<pool>--<name>--data` |
 | upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
 
@@ -112,6 +113,33 @@ attach and a boot, resumed, and destroyed on every driver given a way to
 pause one (`Config.Pause`): fake, served over fake, docker (`docker
 pause`), and archil (Archil's own pause, which its stand-in answers too). Reporting a provider's change of a
 machine's state as it happens, rather than at a read, is not done yet.
+
+## A pause is a capability, asked of the machine, and Start resumes it
+
+`Capabilities.Pause` reports that a driver pauses a running machine whole
+when asked (ADR 26-11-21-438): `Machine.Pause` freezes the guest, keeps its
+memory, and returns once the provider says it is paused, and `Start`
+resumes it, every process in it carrying on under its PID, its wall clock
+within five seconds of the host's when `Start` returns. It is reported,
+never probed, as `Commit` is. `Pause` is required of every machine: one
+whose driver does not report the capability returns `ErrUnsupported` and
+runs on, a paused machine is left so (a pause still under way, Archil's
+`pausing`, is waited out), a failed one leaves the machine running, and a
+paused machine has not stopped (`Done` stays open). A guest that keeps its
+own clock falls behind while paused, and its driver steps it at resume
+through the guest (`machine.StepClock`: vz and hcs); a container shares its
+host's (docker), and boxd and Archil restore one current. `Engine.Pause`
+(`disco-vm pause`) refuses a driver without the capability before asking it,
+leaves a paused VM paused, refuses a stopped one, and attaches and pauses a
+running one. A paused VM holds its `MaxRunning` slot. served carries it as
+`OpPause`, reporting the capability only where the list allows it.
+`machinetest` pauses a running machine on every driver that reports it: it
+reads paused, refuses an attach, pauses again as nothing, and, held paused
+(`Config.PauseHold`, 30 s), resumes by `Start` with a process it started
+under the same PID and the clock current; paused again, it is stopped by a
+resume and a shutdown and boots again, and destroyed whole; and under
+`MaxRunning` it holds its slot. On a driver without it, `Pause` is
+`ErrUnsupported` and the machine runs on (fake with `noPause`).
 
 ## Commit is a capability, and a driver without it makes every VM fresh
 

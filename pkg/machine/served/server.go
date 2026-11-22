@@ -65,6 +65,7 @@ func Handler(driver machine.Driver, opts Options) (http.Handler, error) {
 	mux.HandleFunc("POST /v1/vms/{name}/start", s.vm(OpStart, s.start))
 	mux.HandleFunc("GET /v1/vms/{name}/state", s.vm(OpState, s.state))
 	mux.HandleFunc("POST /v1/vms/{name}/kill", s.vm(OpStop, s.kill))
+	mux.HandleFunc("POST /v1/vms/{name}/pause", s.vm(OpPause, s.pause))
 	mux.HandleFunc("POST /v1/vms/{name}/commit", s.vm(OpCommit, s.commit))
 	mux.HandleFunc("POST /v1/vms/{name}/upgrade", s.vm(OpUpgrade, s.upgrade))
 	mux.HandleFunc("GET /v1/vms/{name}/service", s.vm(OpService, s.service))
@@ -153,6 +154,7 @@ func (s *server) capabilities() machine.Capabilities {
 		Keys:        machine.KeyCapabilities{Mode: machine.KeysNone},
 		Ports:       caps.Ports && s.allowed(OpDial),
 		Commit:      caps.Commit && s.allowed(OpCommit) && s.field(FieldFrom),
+		Pause:       caps.Pause && s.allowed(OpPause),
 		Networks:    caps.Networks && s.field(FieldNetworks),
 		// What the driver gives is what an instance gets, whatever a client
 		// may ask; FieldURLs only lets it ask of an optional one.
@@ -306,6 +308,25 @@ func (s *server) kill(w http.ResponseWriter, r *http.Request, inst machine.Insta
 		return
 	}
 	if err := m.Kill(r.Context()); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// pause pauses the running VM. One already paused is not an error, as
+// Machine.Pause has it.
+func (s *server) pause(w http.ResponseWriter, r *http.Request, inst machine.Instance) {
+	m, err := s.driver.Attach(r.Context(), inst)
+	if errors.Is(err, machine.ErrPaused) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := m.Pause(r.Context()); err != nil {
 		writeError(w, err)
 		return
 	}

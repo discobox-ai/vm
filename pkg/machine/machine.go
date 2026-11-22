@@ -188,6 +188,14 @@ type Capabilities struct {
 	// fresh. A driver that installs (Install) or has no base reports it,
 	// since it makes VMs no other way.
 	Commit bool `json:"commit"`
+	// Pause reports that the driver pauses a running machine whole when
+	// asked (Machine.Pause), and that Start resumes it: its guest runs
+	// nothing, its memory is kept, every process in it carries on after
+	// the resume, and its wall clock is within five seconds of the host's
+	// once Start returns. It is reported, never probed, as Commit is (ADR
+	// 26-11-21-438 §1). A driver without it may still find a machine its
+	// provider paused (StatePaused), which Start resumes too.
+	Pause bool `json:"pause"`
 	// Keys is whether the driver issues keys (IssueKey), and the narrowest
 	// scope one reaches.
 	Keys KeyCapabilities `json:"keys"`
@@ -1089,6 +1097,15 @@ type Machine interface {
 	// Kill powers the guest off immediately. An orderly shutdown goes through
 	// Shutdown instead; Kill is the fallback.
 	Kill(ctx context.Context) error
+	// Pause freezes the running guest whole, and returns once its provider
+	// says it is paused: the driver's State then reads StatePaused, Attach
+	// is ErrPaused, and Start alone resumes it (ADR 26-11-21-438 §2). A
+	// driver that does not report Capabilities.Pause returns ErrUnsupported,
+	// and the machine runs on. A pause that fails leaves the machine
+	// running, or says why it cannot tell. Pausing a paused machine does
+	// nothing, and a pause its provider still has under way is waited out.
+	// A paused machine has not stopped: Done stays open, and Err nil.
+	Pause(ctx context.Context) error
 	// Done is closed once the guest has stopped, or once the driver can no
 	// longer tell: a remote driver whose API stops answering gives the
 	// machine up rather than hold its caller forever. Err is non-nil then,

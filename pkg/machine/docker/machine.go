@@ -116,6 +116,16 @@ func (m *container) Kill(ctx context.Context) error {
 	}
 }
 
+// Pause freezes the container (`docker pause`): the daemon's cgroup freezer
+// holds every process in it, and a container shares the host's clock, so
+// its time is current once Start unpauses it. A paused one is left so.
+func (m *container) Pause(ctx context.Context) error {
+	if err := m.api.pause(ctx, m.ref.ID); err != nil {
+		return fmt.Errorf("docker: pause %s: %w", m.ref.Name, err)
+	}
+	return nil
+}
+
 func (m *container) Done() <-chan struct{} { return m.watched() }
 
 // Dial is unsupported: the daemon may be on another host or in Docker

@@ -420,6 +420,26 @@ func (a *api) unpause(ctx context.Context, id string) error {
 	return err
 }
 
+// pause freezes a running container (`docker pause`). One already paused
+// is not an error; one not running is machine.ErrNotRunning.
+func (a *api) pause(ctx context.Context, id string) error {
+	err := a.call(ctx, http.MethodPost, "/containers/"+id+"/pause", nil, nil, nil)
+	var ae *apiError
+	if !errors.As(err, &ae) || ae.Status != http.StatusConflict {
+		return err
+	}
+	c, ierr := a.inspectContainer(ctx, id)
+	switch {
+	case ierr != nil:
+		return errors.Join(err, ierr)
+	case c.State.Paused:
+		return nil
+	case !c.State.Running:
+		return fmt.Errorf("%w: %w", err, machine.ErrNotRunning)
+	}
+	return err
+}
+
 func (a *api) kill(ctx context.Context, id string) error {
 	err := a.call(ctx, http.MethodPost, "/containers/"+id+"/kill", url.Values{"signal": {"KILL"}}, nil, nil)
 	var ae *apiError

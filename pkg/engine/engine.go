@@ -401,6 +401,39 @@ func (e *Engine) Stop(ctx context.Context, inst Instance, timeout time.Duration)
 	return (&Booted{Machine: m}).Shutdown(ctx, timeout)
 }
 
+// Pause freezes a running instance whole, so that Start resumes it (ADR
+// 26-11-21-438 §4). A driver that does not report Capabilities.Pause is
+// refused before it is asked. A paused instance is left so; a stopped one
+// is refused as not running.
+func (e *Engine) Pause(ctx context.Context, inst Instance) error {
+	if !e.Driver.Capabilities().Pause {
+		return fmt.Errorf("driver %s cannot pause a VM: %w", e.Driver.Name(), machine.ErrUnsupported)
+	}
+	state, err := e.Driver.State(ctx, inst)
+	if err != nil {
+		return fmt.Errorf("instance %s: %w", inst.Name, err)
+	}
+	switch state {
+	case machine.StatePaused:
+		return nil
+	case machine.StateStopped:
+		return fmt.Errorf("instance %s is not running", inst.Name)
+	}
+	m, err := e.Driver.Attach(ctx, inst)
+	switch {
+	case errors.Is(err, machine.ErrPaused):
+		return nil // paused in between
+	case errors.Is(err, machine.ErrNotRunning):
+		return fmt.Errorf("instance %s is not running", inst.Name)
+	case err != nil:
+		return fmt.Errorf("instance %s: %w", inst.Name, err)
+	}
+	if err := m.Pause(ctx); err != nil {
+		return fmt.Errorf("instance %s: pause: %w", inst.Name, err)
+	}
+	return nil
+}
+
 // Remove deletes an instance. A running or paused one is refused unless
 // force, which stops it first. One still paused once that stop has failed
 // (it did not resume) is destroyed as it is, which Driver.Destroy does to a

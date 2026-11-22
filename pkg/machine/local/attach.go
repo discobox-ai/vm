@@ -17,49 +17,26 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
-// State is running while the instance's shim answers, paused where its
-// hypervisor paused the machine (Hypervisor.Paused), and stopped otherwise,
-// as Attach has it. A shim of another build is running too.
+// State is running while the instance's shim answers, paused where the
+// machine it holds is (VM.Paused, asked of the shim), and stopped
+// otherwise, as Attach has it. A shim of another build is running too.
 func (d *Driver) State(ctx context.Context, inst machine.Instance) (machine.State, error) {
 	if err := d.authorizeInstance(ctx, inst); err != nil {
 		return "", err
 	}
-	if !d.shimAnswers(ctx, inst.ID) {
-		return machine.StateStopped, nil
+	// A shim not found, or found and not answering, is no machine.
+	shim, openErr := d.openShim(inst.ID)
+	if openErr != nil || !shim.answers(ctx) {
+		return machine.StateStopped, nil //nolint:nilerr // no shim is the stopped state, not an error
 	}
-	paused, err := d.paused(inst)
+	paused, err := shim.paused(ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
 	if paused {
 		return machine.StatePaused, nil
 	}
 	return machine.StateRunning, nil
-}
-
-// shimAnswers reports that the instance's shim is up and answers its status.
-func (d *Driver) shimAnswers(ctx context.Context, id string) bool {
-	shim, err := d.openShim(id)
-	if err != nil {
-		return false
-	}
-	statusCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	return shim.status(statusCtx) == nil
-}
-
-// paused asks the hypervisor whether it paused the running instance's
-// machine.
-func (d *Driver) paused(inst machine.Instance) (bool, error) {
-	rec, err := d.readPool(inst.ID)
-	if err != nil {
-		return false, err
-	}
-	hs, err := d.spec(rec)
-	if err != nil {
-		return false, err
-	}
-	return d.hv.Paused(hs), nil
 }
 
 // Attach reaches the instance's machine through its shim, as any process can.
@@ -77,9 +54,9 @@ func (d *Driver) Attach(ctx context.Context, inst machine.Instance) (machine.Mac
 	if err := shim.status(statusCtx); err != nil {
 		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrNotRunning)
 	}
-	paused, err := d.paused(inst)
+	paused, err := shim.paused(statusCtx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("instance %s: %w", inst.Name, err)
 	}
 	if paused {
 		return nil, fmt.Errorf("instance %s: %w", inst.Name, machine.ErrPaused)
@@ -203,6 +180,12 @@ type shimMachine struct {
 	*shimProcess
 }
 
+// Pause pauses the machine through the shim, which pauses the one it holds
+// (VM's Pause), and returns once it is paused.
+func (m *shimMachine) Pause(ctx context.Context) error {
+	return m.shim.pause(ctx)
+}
+
 // Dial reaches a guest port through the shim, which dials it on the machine
 // it holds: the agent's or the service's (guest.DialablePort).
 func (m *shimMachine) Dial(ctx context.Context, port uint32) (net.Conn, error) {
@@ -234,6 +217,8 @@ func (m *staleMachine) Info(context.Context) (machine.GuestInfo, error) {
 }
 
 func (m *staleMachine) Dial(context.Context, uint32) (net.Conn, error) { return nil, m.err }
+
+func (m *staleMachine) Pause(context.Context) error { return m.err }
 
 // Shutdown asks the shim to power its machine off in order, forced off once
 // ctx's deadline (or a minute) has passed, and returns once it has exited.

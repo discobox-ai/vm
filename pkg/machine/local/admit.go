@@ -63,14 +63,14 @@ func (d *Driver) admit(rec instanceRecord) (func(), error) {
 // its slot free. Were the
 // process to die first, the operating system would release it.
 type admittedMachine struct {
-	machine.Machine
+	VM
 	done chan struct{}
 }
 
 var _ machine.HostListener = (*admittedMachine)(nil)
 
-func admitted(m machine.Machine, release func()) *admittedMachine {
-	a := &admittedMachine{Machine: m, done: make(chan struct{})}
+func admitted(m VM, release func()) *admittedMachine {
+	a := &admittedMachine{VM: m, done: make(chan struct{})}
 	go func() {
 		<-m.Done()
 		release()
@@ -84,7 +84,7 @@ func (a *admittedMachine) Done() <-chan struct{} { return a.done }
 // Kill returns once the admission is released too, so a caller that killed
 // one guest finds its slot free.
 func (a *admittedMachine) Kill(ctx context.Context) error {
-	if err := a.Machine.Kill(ctx); err != nil {
+	if err := a.VM.Kill(ctx); err != nil {
 		return err
 	}
 	select {
@@ -98,7 +98,7 @@ func (a *admittedMachine) Kill(ctx context.Context) error {
 // Listen is the machine's own, where it takes a guest's connections to the
 // host.
 func (a *admittedMachine) Listen(port uint32) (net.Listener, error) {
-	hl, ok := a.Machine.(machine.HostListener)
+	hl, ok := a.VM.(machine.HostListener)
 	if !ok {
 		return nil, fmt.Errorf("this machine cannot take a guest's connections to the host: %w", machine.ErrUnsupported)
 	}

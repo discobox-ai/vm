@@ -667,7 +667,7 @@ func TestDrivers(t *testing.T) {
 func TestDriverConfig(t *testing.T) {
 	// Empty is unset: the suite may run with the fake driver's variables set
 	// (task test's second run sets DISCO_VM_FAKE_NO_COMMIT).
-	unset := []string{"DISCO_VM_FAKE_NO_COMMIT=", "DISCO_VM_AGENT=", "DISCO_VM_FAKE_MAX_RUNNING=", "BOXD_REGION=", "ARCHIL_REGION="}
+	unset := []string{"DISCO_VM_FAKE_NO_COMMIT=", "DISCO_VM_FAKE_NO_PAUSE=", "DISCO_VM_AGENT=", "DISCO_VM_FAKE_MAX_RUNNING=", "BOXD_REGION=", "ARCHIL_REGION="}
 	e := env{t: t, root: t.TempDir(), extra: unset}
 	fake := func(args ...string) []string { return append([]string{"--driver", "fake"}, args...) }
 
@@ -694,7 +694,7 @@ func TestDriverConfig(t *testing.T) {
 		fake("--driver-config", "@"+config, "info"),
 	} {
 		out := e.ok(args...)
-		mustContain(t, out, `"commit": false`, `config:   {"noCommit":true,"noLoopback":false}`)
+		mustContain(t, out, `"commit": false`, `config:   {"noCommit":true,"noLoopback":false,"noPause":false}`)
 		if strings.Contains(out, "warning") {
 			t.Fatalf("disco-vm %s warned of nothing set:\n%s", strings.Join(args, " "), out)
 		}
@@ -703,7 +703,7 @@ func TestDriverConfig(t *testing.T) {
 	withEnv.extra = append(slices.Clone(unset), "DISCO_VM_FAKE_NO_COMMIT=1")
 	mustContain(t, withEnv.ok(fake("info")...), `"commit": false`)
 	mustContain(t, withEnv.ok(fake("--fake-no-commit=false", "info")...), `"commit": true`)
-	mustContain(t, e.ok(fake("info")...), `"commit": true`, `config:   {"noCommit":false,"noLoopback":false}`)
+	mustContain(t, e.ok(fake("info")...), `"commit": true`, `config:   {"noCommit":false,"noLoopback":false,"noPause":false}`)
 	// A whole configuration reads no variable, and names one it ignores
 	// that says otherwise, never with its value.
 	mustContain(t, withEnv.ok(fake("--driver-config", "{}", "info")...), `"commit": true`,
@@ -730,7 +730,7 @@ func TestDriverConfig(t *testing.T) {
 		args []string
 		want string
 	}{
-		{fake("--driver-config", `{"noComit":true}`, "ls"), `unknown field "noComit" (the driver takes agent, noCommit, maxRunning, noLoopback)`},
+		{fake("--driver-config", `{"noComit":true}`, "ls"), `unknown field "noComit" (the driver takes agent, noCommit, noPause, maxRunning, noLoopback)`},
 		{fake("--driver-config", `{"noCommit":"yes"}`, "ls"), "noCommit: not a bool"},
 		{fake("--fake-agent", "disco-vm", "ls"), "agent: not an absolute path"},
 		{fake("--driver-config", `not json`, "ls"), "not JSON"},
@@ -1457,6 +1457,79 @@ func TestNoCommit(t *testing.T) {
 	}
 	e.ok("start", "vm")
 	e.ok("rm", "-f", "vm")
+}
+
+// TestPause pauses a running VM whole (Capabilities.Pause): ls and inspect
+// read it paused, its guest is refused naming start, a second pause does
+// nothing, start resumes it, and stop shuts a paused one down. A driver
+// that does not report it refuses pause: the fake driver with
+// $DISCO_VM_FAKE_NO_PAUSE, or the target where it does not pause.
+func TestPause(t *testing.T) {
+	e := newEnv(t)
+	t.Cleanup(func() { e.run("rm", "-f", "frozen") })
+	if !e.caps.Pause {
+		if tg.driver == "fake" {
+			t.Fatal("the fake driver does not report pause")
+		}
+		e.ok(append([]string{"run", "frozen"}, e.base()...)...)
+		if out, code := e.run("pause", "frozen"); code == 0 || !strings.Contains(out, "not supported by this driver") {
+			t.Fatalf("pause on a driver that does not pause (exit %d):\n%s", code, out)
+		}
+		return
+	}
+	mustContain(t, e.ok("info"), `"pause": true`)
+	if out, code := e.run("pause", "nothing"); code == 0 {
+		t.Fatalf("pause of no VM (exit %d):\n%s", code, out)
+	}
+	e.ok(append([]string{"create", "frozen"}, e.base()...)...)
+	if out, code := e.run("pause", "frozen"); code == 0 || !strings.Contains(out, "not running") {
+		t.Fatalf("pause of a stopped VM (exit %d):\n%s", code, out)
+	}
+	e.ok("start", "frozen")
+	e.ok("pause", "frozen")
+	mustContain(t, e.ok("ls"), "frozen", "paused")
+	mustContain(t, e.ok("inspect", "frozen"), `"state": "paused"`)
+	if out, code := e.run(append([]string{"exec", "frozen"}, catArgv("missing.txt")...)...); code == 0 || !strings.Contains(out, "start it") {
+		t.Fatalf("exec in a paused VM (exit %d):\n%s", code, out)
+	}
+	e.ok("pause", "frozen")
+	e.ok("start", "frozen")
+	mustContain(t, e.ok("ls"), "frozen", "running")
+	e.ok("cp", writeNote(t), "frozen:"+tg.file("drop"))
+	mustContain(t, e.ok(append([]string{"exec", "frozen"}, catArgv("drop/note.txt")...)...), "from host")
+	e.ok("pause", "frozen")
+	e.ok("stop", "frozen")
+	mustContain(t, e.ok("ls", "-a"), "frozen", "stopped")
+	e.ok("start", "frozen")
+	mustContain(t, e.ok(append([]string{"exec", "frozen"}, catArgv("drop/note.txt")...)...), "from host")
+	e.ok("rm", "-f", "frozen")
+}
+
+// TestNoPause runs the fake driver with $DISCO_VM_FAKE_NO_PAUSE: info says
+// it does not pause, pause is refused, and the VM runs on.
+func TestNoPause(t *testing.T) {
+	if tg.driver != "fake" {
+		t.Skip("the fake driver's option")
+	}
+	e := newEnv(t, "DISCO_VM_FAKE_NO_PAUSE=1")
+	mustContain(t, e.ok("info"), `"pause": false`)
+	t.Cleanup(func() { e.run("rm", "-f", "plain") })
+	e.ok(append([]string{"run", "plain"}, e.base()...)...)
+	if out, code := e.run("pause", "plain"); code == 0 || !strings.Contains(out, "not supported by this driver") {
+		t.Fatalf("pause on a driver that does not pause (exit %d):\n%s", code, out)
+	}
+	mustContain(t, e.ok("ls"), "plain", "running")
+	e.ok("rm", "-f", "plain")
+}
+
+// writeNote writes a note for the guest, and returns its path.
+func writeNote(t *testing.T) string {
+	t.Helper()
+	note := filepath.Join(t.TempDir(), "note.txt")
+	if err := os.WriteFile(note, []byte("from host"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return note
 }
 
 // TestPoolScope exercises the breaking CLI scope rename, including flag

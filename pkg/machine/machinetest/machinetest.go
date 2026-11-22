@@ -50,6 +50,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,11 @@ type Config struct {
 	// a stand-in's paused sandbox). Nil skips the subtest of a paused
 	// instance, for a driver that cannot be made to pause one.
 	Pause func(ctx context.Context, inst machine.Instance) error
+	// PauseHold is how long the suite holds an instance paused by
+	// Machine.Pause before it resumes it, and checks that the guest's clock
+	// caught up: 30 seconds unless set. A driver whose guests read the
+	// host's own clock (fake) may hold it less.
+	PauseHold time.Duration
 	// SkipMaxMachines, when set, says why the suite must not fill the
 	// provider's Capabilities.MaxMachines: a cap others share, such as an
 	// account's, would refuse their creates while the suite holds it.
@@ -123,6 +129,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	t.Helper()
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 10 * time.Minute
+	}
+	if cfg.PauseHold == 0 {
+		cfg.PauseHold = 30 * time.Second
 	}
 	ctx := context.Background()
 	// Check first: a driver may learn a cap from its provider there
@@ -1217,6 +1226,134 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		}
 	})
 
+	// A driver that reports Capabilities.Pause pauses a running machine
+	// whole when asked: it reads paused, attaches to nothing, and a second
+	// pause does nothing. Held paused, then resumed by Start, its processes
+	// run on under the same PIDs and its clock is the host's. A paused
+	// machine holds its slot under MaxRunning, is stopped by resuming it and
+	// shutting it down, and is removed by Destroy (discobox-ai/vm ADR
+	// 26-11-21-438 §8).
+	t.Run("pause-and-resume", func(t *testing.T) {
+		if !caps.Pause {
+			t.Skip("the driver does not pause a machine")
+		}
+		inst := create(t, start)
+		// Each start has a timeout of its own, since the hold outlasts one.
+		startOf := func() (machine.Machine, error) {
+			startCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+			defer cancel()
+			return driver.Start(startCtx, inst, machine.BootOptions{})
+		}
+		m, err := startOf()
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		t.Cleanup(func() { _ = m.Kill(context.Background()) })
+		reachable(t, m)
+		pid := startSleeper(t, m, guestOS)
+		if err := m.Pause(ctx); err != nil {
+			t.Fatalf("pause: %v", err)
+		}
+		wantState(t, driver, inst, machine.StatePaused, "paused")
+		if _, err := driver.Attach(ctx, inst); !errors.Is(err, machine.ErrPaused) {
+			t.Fatalf("attach to a paused instance: %v, want ErrPaused", err)
+		}
+		if err := m.Pause(ctx); err != nil {
+			t.Fatalf("pause a paused instance: %v, want nil", err)
+		}
+		select {
+		case <-m.Done():
+			t.Fatalf("a paused machine reads as stopped: %v", m.Err())
+		case <-time.After(cfg.PauseHold):
+		}
+		wantState(t, driver, inst, machine.StatePaused, "held paused")
+		resumed, err := startOf()
+		if err != nil {
+			t.Fatalf("start a paused instance: %v", err)
+		}
+		wantState(t, driver, inst, machine.StateRunning, "resumed")
+		reachable(t, resumed)
+		if !sleeperRuns(t, resumed, guestOS, pid) {
+			t.Fatalf("process %s did not survive a pause and a resume", pid)
+		}
+		checkClock(t, resumed, guestOS)
+		stopSleeper(t, resumed, guestOS, pid)
+
+		// Stopped while paused, as the engine stops one: resumed, then shut
+		// down in order. It boots again.
+		if err := resumed.Pause(ctx); err != nil {
+			t.Fatalf("pause again: %v", err)
+		}
+		wantState(t, driver, inst, machine.StatePaused, "paused again")
+		toStop, err := startOf()
+		if err != nil {
+			t.Fatalf("resume to stop: %v", err)
+		}
+		reachable(t, toStop)
+		shutdown(t, toStop)
+		wantState(t, driver, inst, machine.StateStopped, "paused, then stopped")
+		again, err := startOf()
+		if err != nil {
+			t.Fatalf("start an instance stopped while paused: %v", err)
+		}
+		t.Cleanup(func() { _ = again.Kill(context.Background()) })
+		reachable(t, again)
+
+		// Paused, it is destroyed whole.
+		if err := again.Pause(ctx); err != nil {
+			t.Fatalf("pause to destroy: %v", err)
+		}
+		if err := driver.Destroy(ctx, inst); err != nil {
+			t.Fatalf("destroy a paused instance: %v", err)
+		}
+		if _, err := driver.Instance(ctx, inst.Name); !errors.Is(err, machine.ErrNotFound) {
+			t.Fatalf("a paused instance destroyed: %v, want ErrNotFound", err)
+		}
+	})
+
+	// A paused machine keeps its memory on its host, so it holds its slot
+	// under MaxRunning.
+	t.Run("a-paused-machine-holds-its-slot", func(t *testing.T) {
+		limit := caps.MaxRunning[guestOS]
+		switch {
+		case !caps.Pause:
+			t.Skip("the driver does not pause a machine")
+		case limit == 0:
+			t.Skipf("no cap on %s guests", guestOS)
+		}
+		var running []machine.Machine
+		for range limit {
+			running = append(running, boot(t, create(t, start)))
+		}
+		if err := running[0].Pause(ctx); err != nil {
+			t.Fatalf("pause: %v", err)
+		}
+		extra := create(t, start)
+		if m, err := driver.Start(ctx, extra, machine.BootOptions{}); !errors.Is(err, machine.ErrCapacity) {
+			if err == nil {
+				_ = m.Kill(context.Background())
+			}
+			t.Fatalf("start past a cap of %d %s guests, one paused: %v, want ErrCapacity", limit, guestOS, err)
+		}
+	})
+
+	// A driver that does not report Capabilities.Pause refuses a pause, and
+	// its machine runs on.
+	t.Run("pause-refused", func(t *testing.T) {
+		if caps.Pause {
+			t.Skip("the driver pauses a machine")
+		}
+		inst := create(t, start)
+		m := boot(t, inst)
+		if err := m.Pause(ctx); !errors.Is(err, machine.ErrUnsupported) {
+			t.Fatalf("pause on a driver without Capabilities.Pause: %v, want ErrUnsupported", err)
+		}
+		reachable(t, m)
+		if _, err := m.Info(ctx); err != nil {
+			t.Fatalf("a machine refused a pause: %v, want it running", err)
+		}
+	})
+
 	// A strict URL request is met or refused: a URL the driver never gives
 	// asked on, or always gives asked off, is refused, and an ingress URL
 	// it gives when asked, asked off, is not there.
@@ -1741,6 +1878,93 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 			t.Fatalf("a VM of the second committed VM reads %q from its own", got)
 		}
 	})
+}
+
+// startSleeper starts a process in the guest that outlives the exec that
+// started it, and returns its PID. It leaves the exec's process group where
+// the guest has setsid, since a driver may end the group with the exec
+// (archil), and returns only once the process runs sleep, past setsid's
+// setsid(2), where the guest has /proc to tell.
+func startSleeper(t *testing.T, g machine.Guest, guestOS machine.OS) string {
+	t.Helper()
+	argv := []string{"/bin/sh", "-c", `run=nohup; command -v setsid >/dev/null 2>&1 && run=setsid
+$run sleep 3600 </dev/null >/dev/null 2>&1 &
+pid=$!
+i=0
+while [ -d /proc/$pid ] && [ "$(cat /proc/$pid/comm 2>/dev/null)" != sleep ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+echo $pid`}
+	if guestOS == machine.Windows {
+		argv = []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+			"(Start-Process -PassThru -WindowStyle Hidden -FilePath ping.exe -ArgumentList '-n','3600','127.0.0.1').Id"}
+	}
+	out := guestOutput(t, g, argv)
+	if _, err := strconv.Atoi(out); err != nil {
+		t.Fatalf("start a process: %q is not a PID", out)
+	}
+	return out
+}
+
+// sleeperRuns reports whether the guest's process pid runs.
+func sleeperRuns(t *testing.T, g machine.Guest, guestOS machine.OS, pid string) bool {
+	t.Helper()
+	argv := []string{"/bin/sh", "-c", `kill -0 "$1"`, "sh", pid}
+	if guestOS == machine.Windows {
+		argv = []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+			"if (Get-Process -Id " + pid + " -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	code, err := machine.Run(ctx, g, machine.ExecRequest{Argv: argv}, nil, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("look for process %s: %v", pid, err)
+	}
+	return code == 0
+}
+
+// stopSleeper ends the guest's process pid.
+func stopSleeper(t *testing.T, g machine.Guest, guestOS machine.OS, pid string) {
+	t.Helper()
+	argv := []string{"/bin/sh", "-c", `kill "$1"`, "sh", pid}
+	if guestOS == machine.Windows {
+		argv = []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Stop-Process -Id " + pid}
+	}
+	guestOutput(t, g, argv)
+}
+
+// checkClock fails t unless the guest's wall clock is within five seconds
+// of this host's (Capabilities.Pause).
+func checkClock(t *testing.T, g machine.Guest, guestOS machine.OS) {
+	t.Helper()
+	argv := []string{"date", "-u", "+%s"}
+	if guestOS == machine.Windows {
+		argv = []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()"}
+	}
+	before := time.Now()
+	out := guestOutput(t, g, argv)
+	after := time.Now()
+	secs, err := strconv.ParseInt(out, 10, 64)
+	if err != nil {
+		t.Fatalf("the guest's clock: %q is not a time", out)
+	}
+	guest := time.Unix(secs, 0)
+	// The guest read its clock between before and after, to the second.
+	if guest.Before(before.Add(-6*time.Second)) || guest.After(after.Add(6*time.Second)) {
+		t.Fatalf("the guest's clock reads %s, and this host's %s: more than five seconds apart", guest.UTC(), before.UTC())
+	}
+}
+
+// guestOutput runs argv in the guest, wants it to exit 0, and returns its
+// output, trimmed.
+func guestOutput(t *testing.T, g machine.Guest, argv []string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	code, err := machine.Run(ctx, g, machine.ExecRequest{Argv: argv}, nil, &stdout, &stderr)
+	if err != nil || code != 0 {
+		t.Fatalf("%s in the guest: exit %d, %v, stdout %q, stderr %q", argv[0], code, err, stdout.String(), stderr.String())
+	}
+	return strings.TrimSpace(stdout.String())
 }
 
 // wantState fails t unless the driver reads inst's state as want.

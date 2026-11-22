@@ -416,6 +416,55 @@ func (m *guestMachine) Kill(ctx context.Context) error {
 	}
 }
 
+// Pause pauses the sandbox through Archil (its caller pause), which
+// snapshots its memory and processes, and returns once Archil says it is
+// paused. One paused is left so, and one still pausing is waited out; one
+// still starting is paused once it runs. One stopped is
+// machine.ErrNotRunning.
+func (m *guestMachine) Pause(ctx context.Context) error {
+	s, err := m.api.sandbox(ctx, m.id)
+	if err != nil {
+		return fmt.Errorf("archil: %s: %w", m.name, err)
+	}
+	switch s.Status {
+	case "paused":
+		return nil
+	case "pausing":
+		_, err := m.api.waitFor(ctx, m.id, "paused")
+		return err
+	case "pending":
+		// Archil pauses a sandbox only once it runs.
+		if _, err := m.api.waitFor(ctx, m.id, "running"); err != nil {
+			return err
+		}
+	case "running":
+	default:
+		return fmt.Errorf("archil: %s is %s: %w", m.name, s.Status, machine.ErrNotRunning)
+	}
+	if err := m.api.pause(ctx, m.id); err != nil {
+		if !isConflict(err) {
+			return fmt.Errorf("archil: pause %s: %w", m.name, err)
+		}
+		// A conflict is a sandbox that changed under the call, or one
+		// Archil will not pause as it is: one still running is refused.
+		s, serr := m.api.sandbox(ctx, m.id)
+		switch {
+		case serr != nil:
+			return fmt.Errorf("archil: pause %s: %w", m.name, errors.Join(err, serr))
+		case s.Status == "running":
+			return fmt.Errorf("archil: pause %s: %w", m.name, err)
+		}
+	}
+	s, err = m.api.waitFor(ctx, m.id, "paused", "stopped", "exited")
+	if err != nil {
+		return err
+	}
+	if s.Status != "paused" {
+		return fmt.Errorf("archil: %s is %s, not paused: %w", m.name, s.Status, machine.ErrNotRunning)
+	}
+	return nil
+}
+
 func (m *guestMachine) Done() <-chan struct{} { return m.watched() }
 
 func (m *guestMachine) Err() error {

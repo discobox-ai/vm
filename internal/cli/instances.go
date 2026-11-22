@@ -225,6 +225,19 @@ func stopCommand(g *globals) *cobra.Command {
 	return cmd
 }
 
+func pauseCommand(g *globals) *cobra.Command {
+	return &cobra.Command{
+		Use:   "pause INSTANCE...",
+		Short: "Pause running instances whole, keeping their memory; start resumes them",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return eachInstance(cmd.Context(), g, args, func(e *engine.Engine, inst engine.Instance) error {
+				return e.Pause(cmd.Context(), inst)
+			})
+		},
+	}
+}
+
 func rmCommand(g *globals) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{

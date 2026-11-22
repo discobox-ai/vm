@@ -12,10 +12,10 @@ import (
 	"github.com/discobox-ai/vm/pkg/machine/local"
 )
 
-// pausedName marks a running fake machine paused, as a provider pauses one
-// (Archil at a session's limit). Its guest process keeps running: the
-// pause is what the driver reports (State, Attach's ErrPaused), and what
-// Start alone undoes.
+// pausedName marks a running fake machine paused, by its Pause or as a
+// provider pauses one (Archil at a session's limit). Its guest process keeps
+// running: the pause is what the driver reports (State, Attach's
+// ErrPaused), and what Start alone undoes.
 const pausedName = "paused"
 
 // Pause pauses a running fake VM as a provider would: the driver then
@@ -44,20 +44,18 @@ func Pause(ctx context.Context, d machine.Driver, inst machine.Instance) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(pausedFile(hs.Dir), nil, 0o644) //nolint:gosec // G306: an empty marker
+	return markPaused(hs.Dir)
 }
 
 func pausedFile(dir string) string { return filepath.Join(dir, pausedName) }
 
-// Paused reports a running instance Pause paused.
-func (*Hypervisor) Paused(inst local.InstanceSpec) bool {
-	_, err := os.Stat(pausedFile(inst.Dir))
-	return err == nil
+func markPaused(dir string) error {
+	return os.WriteFile(pausedFile(dir), nil, 0o644) //nolint:gosec // G306: an empty marker
 }
 
-// Resume undoes Pause.
-func (*Hypervisor) Resume(_ context.Context, inst local.InstanceSpec) error {
-	return unpause(inst.Dir)
+func isPaused(dir string) bool {
+	_, err := os.Stat(pausedFile(dir))
+	return err == nil
 }
 
 func unpause(dir string) error {

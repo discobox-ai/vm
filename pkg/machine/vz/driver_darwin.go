@@ -74,6 +74,7 @@ func (*Hypervisor) Capabilities() machine.Capabilities {
 		Agent:             true,
 		Install:           []machine.OS{machine.Darwin},
 		Commit:            true,
+		Pause:             true,
 		Keys:              machine.KeyCapabilities{Mode: machine.KeysNone},
 		Egress:            []machine.EgressFence{machine.EgressNone},
 	}
@@ -90,14 +91,6 @@ func (*Hypervisor) Base() (machine.OS, bool) { return machine.Linux, true }
 // SharesLoopback is false: a guest reaches neither another guest nor the
 // host's loopback.
 func (*Hypervisor) SharesLoopback() bool { return false }
-
-// Paused is false: the hypervisor never pauses a machine.
-func (*Hypervisor) Paused(local.InstanceSpec) bool { return false }
-
-// Resume is unsupported: the hypervisor never pauses a machine.
-func (*Hypervisor) Resume(context.Context, local.InstanceSpec) error {
-	return fmt.Errorf("vz pauses no machine: %w", machine.ErrUnsupported)
-}
 
 // Commit freezes the stopped VM's bundle in place: its layer files (its disk,
 // with a Linux guest's kernel and initrd) stay, and everything else goes,

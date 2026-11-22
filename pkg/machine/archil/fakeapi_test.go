@@ -59,6 +59,9 @@ type fakeAPI struct {
 	seq       int
 	// pageSize is how many sandboxes or disks a listing answers at once.
 	pageSize int
+	// refusePause answers a pause 409 and leaves the sandbox running, as
+	// Archil does one it will not pause as it is.
+	refusePause bool
 	// terminals logs each TTY process's terminal, as {rows, cols} at its
 	// start and at each resize.
 	terminals [][2]uint16
@@ -541,7 +544,7 @@ func (f *fakeAPI) pauseSandbox(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case s == nil:
 		return
-	case s.status != "running":
+	case s.status != "running", f.refusePause:
 		fail(w, http.StatusConflict, "sandbox_invalid_state", "sandbox is "+s.status)
 		return
 	}

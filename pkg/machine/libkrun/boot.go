@@ -142,7 +142,7 @@ func fenced(inst local.InstanceSpec) bool { return inst.Egress != nil && len(ins
 // own loader. A launcher that exits before the agent answers is refused with
 // its standard error and the tail of the guest's console; an agent that
 // speaks another protocol is killed and refused.
-func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
+func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (local.VM, error) {
 	if opts.GUI {
 		return nil, fmt.Errorf("libkrun: a guest has no display to show: %w", machine.ErrUnsupported)
 	}
@@ -541,6 +541,18 @@ func (vm *vmMachine) Listen(port uint32) (net.Listener, error) {
 	}
 	return hostListener{l}, nil
 }
+
+// errNoPause is every pause and resume: libkrun's API has no pause.
+var errNoPause = fmt.Errorf("libkrun cannot pause a VM: %w", machine.ErrUnsupported)
+
+// Pause is unsupported: libkrun's API has no pause, and the machine runs on.
+func (*vmMachine) Pause(context.Context) error { return errNoPause }
+
+// Paused is false: libkrun never pauses a machine.
+func (*vmMachine) Paused() bool { return false }
+
+// Resume is unsupported: libkrun never pauses a machine.
+func (*vmMachine) Resume(context.Context) error { return errNoPause }
 
 // Kill powers the guest off at once: SIGKILL to its launcher.
 func (vm *vmMachine) Kill(context.Context) error {

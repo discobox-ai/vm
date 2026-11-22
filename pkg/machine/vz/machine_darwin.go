@@ -79,7 +79,7 @@ const pendingName = "resume.pending"
 // protocol is killed and refused, which a macOS guest installed before its
 // agent came on a drive, and so still runs the one it was installed with,
 // is once the protocol moves (ADR 26-11-13-318 §5).
-func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (machine.Machine, error) {
+func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts local.BootOptions) (local.VM, error) {
 	m, err := bundle(inst.Dir).readMeta()
 	if err != nil {
 		return nil, err
@@ -93,6 +93,7 @@ func (h *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 	if err != nil {
 		return nil, err
 	}
+	vm.guestOS = m.guestOS()
 	if err := vm.WaitReady(ctx, vm.done); err != nil {
 		_ = vm.Kill(context.Background())
 		return nil, err
@@ -255,17 +256,21 @@ func newVM(b bundle, cpus uint, memory uint64, shares []machine.Share, nic bool,
 type vmMachine struct {
 	// Client is the guest agent over vsock: the machine's guest operations.
 	*guest.Client
-	vm     *vz.VirtualMachine
-	socket *vz.VirtioSocketDevice
-	done   chan struct{}
-	err    error
-	kill   sync.Once
+	vm      *vz.VirtualMachine
+	socket  *vz.VirtioSocketDevice
+	guestOS machine.OS
+	done    chan struct{}
+	err     error
+	kill    sync.Once
+	// power serializes Pause and Resume.
+	power sync.Mutex
 }
 
 // watch follows a started VM's state until it stops. The framework queues
 // state changes from the VM's creation on, so none is missed; a started VM's
-// queue holds only starting and running states, and the first stopped or
-// error state is the end.
+// queue holds starting and running states, and pausing, paused, and resuming
+// ones around a pause, which it passes over; the first stopped or error
+// state is the end.
 func watch(vm *vz.VirtualMachine) *vmMachine {
 	m := &vmMachine{vm: vm, done: make(chan struct{})}
 	if devices := vm.SocketDevices(); len(devices) > 0 {
@@ -389,6 +394,57 @@ func (m *vmMachine) Kill(context.Context) error {
 	}
 	<-m.done
 	return nil
+}
+
+// Pause pauses the VM whole (VZVirtualMachine pause), and returns once the
+// framework says it is paused. A paused one is left so.
+func (m *vmMachine) Pause(context.Context) error {
+	m.power.Lock()
+	defer m.power.Unlock()
+	select {
+	case <-m.done:
+		return fmt.Errorf("vz: the guest is stopped: %w", machine.ErrNotRunning)
+	default:
+	}
+	if m.vm.State() == vz.VirtualMachineStatePaused {
+		return nil
+	}
+	if !m.vm.CanPause() {
+		return fmt.Errorf("vz: the virtual machine cannot be paused in state %s", m.vm.State())
+	}
+	if err := m.vm.Pause(); err != nil {
+		return fmt.Errorf("vz: pause: %w", err)
+	}
+	return nil
+}
+
+// Paused reports the framework holds the VM paused, or pausing.
+func (m *vmMachine) Paused() bool {
+	switch m.vm.State() {
+	case vz.VirtualMachineStatePaused, vz.VirtualMachineStatePausing:
+		return true
+	}
+	return false
+}
+
+// Resume resumes the paused VM and steps its guest's clock to the host's,
+// since a guest reads its clock from its RTC only at boot and has kept the
+// time it was paused at (disco-vm-sync-clock catches it up only at its next
+// timer). One not paused is left running.
+func (m *vmMachine) Resume(ctx context.Context) error {
+	m.power.Lock()
+	defer m.power.Unlock()
+	if m.vm.State() != vz.VirtualMachineStateRunning {
+		if !m.vm.CanResume() {
+			return fmt.Errorf("vz: the virtual machine cannot be resumed in state %s", m.vm.State())
+		}
+		if err := m.vm.Resume(); err != nil {
+			return fmt.Errorf("vz: resume: %w", err)
+		}
+	}
+	return machine.UntilReachable(ctx, func() error {
+		return machine.StepClock(ctx, m, m.guestOS, time.Now())
+	})
 }
 
 func (m *vmMachine) Done() <-chan struct{} { return m.done }

@@ -163,3 +163,51 @@ func TestPausedIsRefusedWhatNeedsItStopped(t *testing.T) {
 		t.Fatalf("a paused instance removed with force: %v, want ErrNotFound", err)
 	}
 }
+
+// Engine.Pause pauses a running instance through its machine, so that Start
+// resumes it: a paused one is left so, and a stopped one is refused as not
+// running. A driver without Capabilities.Pause is refused before it is
+// asked.
+func TestPauseThenStartResumes(t *testing.T) {
+	ctx := context.Background()
+	e, _ := fakeEngine(t)
+	inst, err := e.Create(ctx, engine.CreateOptions{From: "app", Name: "frozen"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Remove(context.Background(), inst, true) })
+	if err := e.Pause(ctx, inst); err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Fatalf("pause a stopped instance: %v, want it refused as not running", err)
+	}
+	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Pause(ctx, inst); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	if got := e.State(ctx, inst); got != engine.Paused {
+		t.Fatalf("a paused instance is %s, want paused", got)
+	}
+	if err := e.Pause(ctx, inst); err != nil {
+		t.Fatalf("pause a paused instance: %v, want nil", err)
+	}
+	if err := e.Start(ctx, inst, engine.StartOptions{Timeout: 30 * time.Second}); err != nil {
+		t.Fatalf("start a paused instance: %v", err)
+	}
+	if got := e.State(ctx, inst); got != engine.Running {
+		t.Fatalf("a resumed instance is %s, want running", got)
+	}
+	g, err := e.Guest(ctx, inst)
+	if err != nil {
+		t.Fatalf("the guest of a resumed instance: %v", err)
+	}
+	if _, err := g.Info(ctx); err != nil {
+		t.Fatalf("the guest of a resumed instance: %v", err)
+	}
+
+	open, _ := fakeRootConfig(t, fake.Config{NoPause: true})
+	plain := open(machine.DefaultPool)
+	if err := plain.Pause(ctx, inst); !errors.Is(err, machine.ErrUnsupported) || !strings.Contains(err.Error(), "fake") {
+		t.Fatalf("pause on a driver without the capability: %v, want ErrUnsupported naming the driver", err)
+	}
+}

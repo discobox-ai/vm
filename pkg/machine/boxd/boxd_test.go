@@ -163,6 +163,8 @@ func TestConformanceFakeAPI(t *testing.T) {
 				Timeout:    30 * time.Second,
 				ScratchDir: "/scratch",
 				Pause:      d.pause,
+				// The stand-in's guest is a host process, on the host's clock.
+				PauseHold: 2 * time.Second,
 				// The stand-in's proxies are at names under boxd.test.
 				UnreachedIngress: true,
 				Keyed: func(keys machine.KeySource) machine.Driver {

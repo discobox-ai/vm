@@ -252,7 +252,7 @@ func TestOlderShim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if build, _ := state["build"].(string); state["protocol"] != float64(2) || state["guestProtocol"] != float64(1) || build == "" {
+	if build, _ := state["build"].(string); state["protocol"] != float64(3) || state["guestProtocol"] != float64(1) || build == "" {
 		t.Fatalf("shim.json = %v, want its protocols and build", state)
 	}
 	rewrite := func(change func(map[string]any)) {

@@ -154,6 +154,68 @@ func (m *vm) giveUp(why error) error {
 	return err
 }
 
+// pauseEvery is how often Pause reads the machine's state while boxd
+// suspends it.
+var pauseEvery = time.Second
+
+// pauseLimit bounds Pause's wait for boxd to report the machine suspended,
+// since its callers may pass a context with no deadline (disco-vm pause), as
+// killLimit bounds Kill.
+var pauseLimit = 5 * time.Minute
+
+// Pause suspends the machine (SuspendVm), its memory kept, and returns once
+// boxd says it is suspended. One boxd already holds paused is left so; one
+// not running is machine.ErrNotRunning. A suspend boxd refuses leaves the
+// machine as boxd has it, running; one boxd takes and does not finish within
+// pauseLimit is an error, the machine as boxd has it.
+func (m *vm) Pause(ctx context.Context) error {
+	status, err := m.status(ctx)
+	if err != nil {
+		return err
+	}
+	switch {
+	case heldPaused(status):
+		return nil
+	case status != "running" && status != "starting":
+		return fmt.Errorf("boxd: machine %s is %s: %w", m.ref.Name, status, machine.ErrNotRunning)
+	}
+	ctx, cancel := context.WithTimeout(ctx, pauseLimit)
+	defer cancel()
+	if _, err := m.api.SuspendVm(ctx, &boxdapi.SuspendVmRequest{VmId: m.ref.ID}); err != nil {
+		return fmt.Errorf("boxd: suspend %s: %w", m.ref.Name, err)
+	}
+	for {
+		status, err := m.status(ctx)
+		switch {
+		case err != nil:
+			return err
+		case heldPaused(status):
+			return nil
+		case status == "stopped" || status == "failed" || status == "destroying":
+			return fmt.Errorf("boxd: machine %s is %s, not suspended: %w", m.ref.Name, status, machine.ErrNotRunning)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("boxd: machine %s is %q, waiting for it to suspend: %w", m.ref.Name, status, ctx.Err())
+		case <-time.After(pauseEvery):
+		}
+	}
+}
+
+// status is the machine's status, as boxd has it now.
+func (m *vm) status(ctx context.Context) (string, error) {
+	call, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	info, err := m.api.GetVm(call, &boxdapi.GetVmRequest{VmId: m.ref.ID})
+	switch {
+	case isNotFound(err):
+		return "", fmt.Errorf("boxd: machine %s is gone: %w", m.ref.Name, machine.ErrNotRunning)
+	case err != nil:
+		return "", fmt.Errorf("boxd: machine %s: %w", m.ref.Name, err)
+	}
+	return info.GetStatus(), nil
+}
+
 func (m *vm) Done() <-chan struct{} { return m.watched() }
 
 // Dial is unsupported: boxd has no socket from the host into a guest, only

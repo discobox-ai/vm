@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,7 +86,7 @@ func (d *Driver) pause(ctx context.Context, inst machine.Instance) error {
 	if err != nil {
 		return err
 	}
-	return d.api.call(ctx, http.MethodPost, "/containers/"+c.ID+"/pause", nil, nil, nil)
+	return d.api.pause(ctx, c.ID)
 }
 
 // mustNew is New, failing the test on an error.

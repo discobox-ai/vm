@@ -44,15 +44,17 @@ func TestConformance(t *testing.T) {
 		noCommit   bool
 		maxRunning int
 		noLoopback bool
+		noPause    bool
 	}{
-		{"install", machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"}, false, 2, false},
-		{"fresh", machine.InstallSpec{}, false, 0, false},
-		{"no-commit", machine.InstallSpec{}, true, 0, false},
-		{"no-loopback", machine.InstallSpec{}, false, 0, true},
+		{"install", machine.InstallSpec{GuestOS: machine.OS(runtime.GOOS), Media: "none"}, false, 2, false, false},
+		{"fresh", machine.InstallSpec{}, false, 0, false, false},
+		{"no-commit", machine.InstallSpec{}, true, 0, false, false},
+		{"no-loopback", machine.InstallSpec{}, false, 0, true, false},
+		{"no-pause", machine.InstallSpec{}, false, 0, false, true},
 	} {
 		t.Run(from.name, func(t *testing.T) {
 			dir := t.TempDir()
-			hv := &fake.Hypervisor{Agent: agent, BaseName: "stock", NoCommit: from.noCommit, NoLoopback: from.noLoopback}
+			hv := &fake.Hypervisor{Agent: agent, BaseName: "stock", NoCommit: from.noCommit, NoLoopback: from.noLoopback, NoPause: from.noPause}
 			// The shim is given the configuration its starter has (ADR
 			// 26-11-11-215 §6).
 			config := "{}"
@@ -62,6 +64,8 @@ func TestConformance(t *testing.T) {
 				hv.MaxRunning = map[machine.OS]int{machine.OS(runtime.GOOS): from.maxRunning}
 			case from.noLoopback:
 				config = `{"noLoopback":true}`
+			case from.noPause:
+				config = `{"noPause":true}`
 			}
 			newDriver := func(keys machine.KeySource) machine.Driver {
 				driver, err := local.New(machine.Config{
@@ -92,6 +96,8 @@ func TestConformance(t *testing.T) {
 				Pause: func(ctx context.Context, inst machine.Instance) error {
 					return fake.Pause(ctx, driver, inst)
 				},
+				// A fake guest is a host process, on the host's clock.
+				PauseHold: 2 * time.Second,
 			})
 		})
 	}

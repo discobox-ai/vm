@@ -281,6 +281,12 @@ func (a *api) resume(ctx context.Context, id string) error {
 	return a.call(ctx, http.MethodPost, "/api/sandboxes/"+url.PathEscape(id)+"/resume", nil, nil, nil)
 }
 
+// pause snapshots a running sandbox's memory and stops it, which Archil
+// reports pausing, then paused.
+func (a *api) pause(ctx context.Context, id string) error {
+	return a.call(ctx, http.MethodPost, "/api/sandboxes/"+url.PathEscape(id)+"/pause", nil, nil, nil)
+}
+
 // fork forks a sandbox under a name, with labels in place of its source's,
 // which Archil copies to a fork given none: always sent, even empty.
 func (a *api) fork(ctx context.Context, id, name string, labels map[string]string) (sandbox, error) {

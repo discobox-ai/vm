@@ -81,6 +81,10 @@ func (*Driver) Capabilities() machine.Capabilities {
 		Volumes: []machine.Volume{machine.VolumeData},
 		// A committed VM is its stopped sandbox, and a copy a fork of it.
 		Commit: true,
+		// A pause is Archil's caller pause (POST .../pause), which keeps
+		// the sandbox's memory and processes, and Start's resume restores
+		// them (ADR 26-11-21-438 §7).
+		Pause: true,
 		// A sandbox holds nothing of the account: the driver puts nothing
 		// in it, and Archil gives it no credential. A data disk's mount
 		// token is the guest's own disk's (ADR 26-11-17-311 §1).
