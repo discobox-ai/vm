@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -108,6 +109,7 @@ func TestServiceFakeAPI(t *testing.T) {
 		t.Errorf("the service of a machine gone: %+v, %v; want ErrNotFound", service, err)
 	}
 
+	quickLock(t, 100*time.Millisecond)
 	// Bot protection the API will not turn off, a proxy the API cannot find
 	// or lock, a port it does not keep, or a named proxy boxd will not
 	// remove or keeps once removed fails the create, which leaves no
@@ -121,6 +123,7 @@ func TestServiceFakeAPI(t *testing.T) {
 		{"unprotectable-closed", machine.URLOff, func(on bool) { fake.botProtectionErr = errOn(on, status.Error(codes.Unavailable, "try again")) }},
 		{"noproxy", machine.URLDefault, func(on bool) { fake.proxyErr = errOn(on, status.Error(codes.NotFound, "no such proxy")) }},
 		{"unlockable", machine.URLOff, func(on bool) { fake.proxyErr = errOn(on, status.Error(codes.InvalidArgument, "invalid port")) }},
+		{"unpinned", machine.URLDefault, func(on bool) { fake.portIgnored.Store(on) }},
 		{"open", machine.URLOff, func(on bool) { fake.portIgnored.Store(on) }},
 		{"undeletable", machine.URLOff, func(on bool) {
 			fake.namedProxy = map[bool]string{true: "extra"}[on]

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
@@ -103,20 +104,15 @@ func closeProxies(ctx context.Context, api boxdapi.BoxdApiClient, vm string) err
 	if err != nil {
 		return fmt.Errorf("boxd: proxies of %s: %w", vm, err)
 	}
-	var def *boxdapi.ProxyInfo
 	for _, p := range list.GetProxies() {
 		if p.GetIsDefault() {
-			def = p
 			continue
 		}
 		if _, err := api.DeleteProxy(ctx, &boxdapi.DeleteProxyRequest{Name: p.GetName(), Vm: vm}); err != nil {
 			return fmt.Errorf("boxd: remove %s's proxy %q (%s): %w", vm, p.GetName(), p.GetDomain(), err)
 		}
 	}
-	if def == nil {
-		return fmt.Errorf("boxd: %s has no default proxy", vm)
-	}
-	if err := setProxyPort(ctx, api, vm, def, closedPort); err != nil {
+	if _, err := lockProxy(ctx, api, vm, closedPort); err != nil {
 		return err
 	}
 	if list, err = api.ListProxies(ctx, &boxdapi.ListProxiesRequest{Vm: vm}); err != nil {
@@ -137,8 +133,24 @@ func closeProxies(ctx context.Context, api boxdapi.BoxdApiClient, vm string) err
 	return nil
 }
 
+// lockLimit bounds the wait for the machine's default proxy to read back
+// locked, lockEvery is how often it is read back meanwhile, and lockAgain how
+// often it is locked again while it does not read back locked. boxd answers
+// SetProxyPort before the lock shows in ListProxies: a read-back right after
+// has found the proxy still auto at 8000 (region fra, 2026-11-21), as
+// SetAutoSuspendTimeout is applied a moment after CreateVm answers. boxd does
+// not say whether a lock asked again while one is pending restarts it, so it
+// is asked again seldom, in case boxd lost the first, not on every read.
+var (
+	lockLimit = 30 * time.Second
+	lockEvery = 500 * time.Millisecond
+	lockAgain = 5 * time.Second
+)
+
 // lockProxy locks the machine's default proxy to port, and reads it back
-// locked there.
+// locked there: every lockEvery, locking it again every lockAgain, for up to
+// lockLimit. A proxy that does not read back locked by then fails, naming
+// what it forwards to.
 func lockProxy(ctx context.Context, api boxdapi.BoxdApiClient, vm string, port uint32) (*boxdapi.ProxyInfo, error) {
 	def, err := defaultProxy(ctx, api, vm)
 	if err != nil {
@@ -147,16 +159,35 @@ func lockProxy(ctx context.Context, api boxdapi.BoxdApiClient, vm string, port u
 	if def == nil {
 		return nil, fmt.Errorf("boxd: %s has no default proxy", vm)
 	}
-	if err := setProxyPort(ctx, api, vm, def, port); err != nil {
-		return nil, err
+	start := time.Now()
+	deadline := start.Add(lockLimit)
+	var asked time.Time
+	for {
+		if asked.IsZero() || time.Since(asked) >= lockAgain {
+			if err := setProxyPort(ctx, api, vm, def, port); err != nil {
+				return nil, err
+			}
+			asked = time.Now()
+		}
+		if def, err = defaultProxy(ctx, api, vm); err != nil {
+			return nil, err
+		}
+		if def == nil {
+			return nil, fmt.Errorf("boxd: %s has no default proxy once it was locked", vm)
+		}
+		if def.GetPortMode() == "locked" && def.GetEffectivePort() == port {
+			return def, nil
+		}
+		unlocked := fmt.Errorf("boxd: %s's proxy forwards %q to port %d (%s), not locked to %d", vm, def.GetDomain(), def.GetEffectivePort(), def.GetPortMode(), port)
+		if !time.Now().Add(lockEvery).Before(deadline) {
+			return nil, fmt.Errorf("%w after %v", unlocked, time.Since(start).Round(time.Millisecond))
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("%w: %w", unlocked, ctx.Err())
+		case <-time.After(lockEvery):
+		}
 	}
-	if def, err = defaultProxy(ctx, api, vm); err != nil {
-		return nil, err
-	}
-	if def == nil || def.GetPortMode() != "locked" || def.GetEffectivePort() != port {
-		return nil, fmt.Errorf("boxd: %s's proxy forwards %q to port %d (%s), not locked to %d", vm, def.GetDomain(), def.GetEffectivePort(), def.GetPortMode(), port)
-	}
-	return def, nil
 }
 
 // setProxyPort locks the machine's default proxy def to port. Its name is

@@ -3,6 +3,7 @@ package boxd
 import (
 	"context"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -38,6 +39,7 @@ func TestClosedProxyBotProtectionOff(t *testing.T) {
 		t.Errorf("closed: default proxy locked %v to port %d, bot protection %v; want locked to %d, off", locked, port, bots, closedPort)
 	}
 
+	quickLock(t, 100*time.Millisecond)
 	fake.portIgnored.Store(true)
 	fake.mu.Lock()
 	open := fake.newVM("open", 0, 0)

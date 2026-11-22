@@ -64,6 +64,16 @@ type fakeAPI struct {
 	proxyKept atomic.Bool
 	// portIgnored makes SetProxyPort answer and leave the port as it was.
 	portIgnored atomic.Bool
+	// portDropped is how many SetProxyPort calls to come answer and keep
+	// nothing, as a lock boxd lost would.
+	portDropped atomic.Int32
+	// proxyLag is how many ListProxies reads after a SetProxyPort still
+	// list the default proxy as it was, as boxd's did once (region fra,
+	// 2026-11-21): a lock applied a moment after SetProxyPort answers.
+	proxyLag int
+	// proxyLagRestarts makes a lock asked again while one is pending start
+	// its lag again, as boxd may: it does not say.
+	proxyLagRestarts bool
 	// namedProxy, when set, is a named proxy every new machine has, as one
 	// made in the guest by boxd's in-VM CLI would be.
 	namedProxy string
@@ -236,8 +246,14 @@ type fakeVM struct {
 	// proxyPort is the port the default proxy is locked to, when
 	// proxyLocked, which port 0 can be; botProtection is on for a new
 	// machine, as on boxd.
-	proxyPort     uint32
-	proxyLocked   bool
+	proxyPort   uint32
+	proxyLocked bool
+	// pendingPort is a lock SetProxyPort answered and the fake has not yet
+	// applied, while pending: it applies once pendingReads ListProxies
+	// reads have listed the proxy as it was (proxyLag).
+	pendingPort   uint32
+	pending       bool
+	pendingReads  int
 	botProtection bool
 	// named are the machine's proxies other than its default one.
 	named []string
@@ -646,6 +662,13 @@ func (f *fakeAPI) ListProxies(_ context.Context, req *boxdapi.ListProxiesRequest
 	}
 	// boxd lists a machine's default proxy with an empty name, and always
 	// lists one.
+	if v.pending {
+		if v.pendingReads > 0 {
+			v.pendingReads--
+		} else {
+			v.proxyPort, v.proxyLocked, v.pending = v.pendingPort, true, false
+		}
+	}
 	p := &boxdapi.ProxyInfo{VmName: v.name, VmId: v.id, Domain: v.name + ".boxd.test", IsDefault: true, PortMode: "auto", EffectivePort: 8000}
 	if v.proxyLocked {
 		p.PortMode, p.EffectivePort = "locked", v.proxyPort
@@ -677,7 +700,18 @@ func (f *fakeAPI) SetProxyPort(_ context.Context, req *boxdapi.SetProxyPortReque
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid port: %s", req.GetPort())
 	}
-	if !f.portIgnored.Load() {
+	switch {
+	case f.portIgnored.Load():
+	case f.portDropped.Load() > 0:
+		f.portDropped.Add(-1)
+	case f.proxyLag > 0:
+		// A lock again while one is pending is the same lock, unless
+		// proxyLagRestarts.
+		if !v.pending || f.proxyLagRestarts {
+			v.pendingReads = f.proxyLag
+		}
+		v.pendingPort, v.pending = uint32(port), true
+	default:
 		v.proxyPort, v.proxyLocked = uint32(port), true
 	}
 	return &boxdapi.SetProxyPortResponse{}, nil
