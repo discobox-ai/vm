@@ -141,10 +141,9 @@
   vet, gofmt, and the linters say nothing. It happened twice in one change
   (vm#196: `machinetest`'s `wantState` above `remove`, boxd's test `pause`
   above `envDriver`).
-- **Only `.github/workflows/macos.yml` runs on a `pull_request` `labeled`
-  event, and a label it doesn't act on must not post a check of a real job's
-  name.** A label event starts every workflow that listens for any label:
-  while ci.yml did, each `status/*` or `priority/*` label the manager set
-  cancelled the CI in progress and ran all of it again (#190). GitHub shows a commit's newest check of each name
-  and counts a skipped one as passed, so a skipped job under the same name
-  would also show a failed darwin job as passed.
+- **CI answers no label.** `.github/workflows/ci.yml` runs on no `labeled`
+  or `unlabeled` event, and no job is gated on a pull request's labels. A
+  label event can't be filtered by name, so every `status/*` or `priority/*`
+  label the manager set ran all of CI again and cancelled the run in
+  progress, and a job skipped for a label posts a skipped check that GitHub
+  counts as passed over that job's real result (#190).

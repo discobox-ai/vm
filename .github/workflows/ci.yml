@@ -132,6 +132,29 @@ jobs:
         with:
           target: test:libkrun
 
+  # disco-vm ships on macOS, and vz is cgo: darwin is linted and tested only
+  # here.
+  macos:
+    runs-on: depot-macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        with:
+          target: check:go
+      - uses: ./.github/actions/task
+        with:
+          target: test
+      # The darwin release binary, signed and checked for its entitlement as
+      # a tag's release builds it (release.yml).
+      - uses: ./.github/actions/task
+        env:
+          RELEASE_TAG: v0.0.0-alpha.0
+        with:
+          target: release:build
+
   # Nix does not run on Windows: this job gets Go from setup-go and nothing
   # else (repostd ci.no-setup). It builds cold: setup-go's cache is
   # actions/cache, and Depot Cache fails on Windows (repostd
