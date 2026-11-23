@@ -170,4 +170,15 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
     reads back closed only where it denies both, and one that allows either
     is refused.
   - **Every machine is bare** (`BareAlways`): nothing of the account is in
-    the guest. A data disk's mount token is the guest's own disk's.
+    the guest. Nor is a data disk's mount token, as far as the guest's
+    processes can see: Archil's client mounts the disk from outside the
+    namespaces systemd and every guest operation run in, seeded with a
+    handshake Archil's host side bakes into it, and root there finds no token
+    in a file or the environment, none in `archil status`, and no token verb
+    that prints one; a mount from the guest of its own disk, or of another
+    VM's, is refused (vm#216). Those namespaces are the driver's PID and mount
+    namespaces, not a user namespace, so this is not proof that root could
+    not reach the client itself; whether a token it holds replays from
+    outside Archil stays open, as ADR 26-11-17-311 §1 left it. Observed with
+    Archil client version 1006 on `debian:sid`, 2026-11; another base, or an
+    image from an older client, may differ.
