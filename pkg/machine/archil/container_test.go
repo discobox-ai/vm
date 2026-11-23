@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,18 +28,45 @@ const ContainerImageEnv = "DISCO_VM_ARCHIL_CONTAINER_IMAGE"
 // at a boot, and then waits.
 const fakeInit = `#!/bin/sh
 for f in /var/lib/fake-archil/services/*; do
+	case ${f##*/} in *.*) continue ;; esac
 	[ -f "$f" ] && /opt/archil/archil-client services start "${f##*/}"
 done
 trap 'exit 0' TERM
 while :; do sleep 1 & wait $!; done
 `
 
-// fakeArchilClient stands in for Archil's archil-client services: a service
-// is its argv in a file of the root disk, which a fork carries, run again
-// whenever it exits, and started at every boot by fakeInit.
+// fakeArchilGrace is how long the fake's stop waits for a service it sent
+// TERM before it kills it, as Archil's waits about 30 s (vm#217).
+const fakeArchilGrace = 30
+
+// fakeArchilClient stands in for Archil's archil-client: services, where a
+// service is its argv in a file of the root disk, which a fork carries, run
+// again whenever it exits, and started at every boot by fakeInit; sync,
+// which flushes a mount; and halt, the fake's own, which plays Archil's
+// stop: no service is run again, each is sent TERM, and the stop waits for
+// them to exit for up to $2 seconds, failing if one outlives that. A service's restart loop's PID is in
+// <name>.loop, and the PID of its process in <name>.pid.
 const fakeArchilClient = `#!/bin/sh
 d=/var/lib/fake-archil/services
-[ "$1" = services ] || { echo "fake archil-client: $*" >&2; exit 2; }
+case $1 in
+sync) exec sync -f "$2" ;;
+halt)
+	for l in "$d"/*.loop; do [ -f "$l" ] && kill -KILL "$(cat "$l")" 2>/dev/null; done
+	pids=$(cat "$d"/*.pid 2>/dev/null)
+	[ -n "$pids" ] || exit 0
+	kill -TERM $pids 2>/dev/null
+	i=0
+	while [ $i -lt $(($2 * 10)) ]; do
+		up=
+		for p in $pids; do kill -0 "$p" 2>/dev/null && up=1; done
+		[ -n "$up" ] || exit 0
+		sleep 0.1; i=$((i + 1))
+	done
+	echo "a service outlived the stop's grace of $2 s" >&2
+	exit 4 ;;
+services) ;;
+*) echo "fake archil-client: $*" >&2; exit 2 ;;
+esac
 case $2 in
 get) [ -f "$d/$3" ] ;;
 create)
@@ -48,7 +76,7 @@ create)
 	mkdir -p "$d" && printf '%s\0' "$@" > "$d/$n" || exit
 	exec "$0" services start "$n" ;;
 start)
-	setsid sh -c 'while :; do xargs -0 sh -c '\''exec "$@"'\'' sh < "$1"; sleep 1; done' sh "$d/$3" </dev/null >/dev/null 2>&1 &
+	setsid sh -c 'echo $$ > "$1.loop"; while :; do xargs -0 sh -c '\''echo $$ > "$0.pid"; exec "$@"'\'' "$1" < "$1"; sleep 1; done' sh "$d/$3" </dev/null >/dev/null 2>&1 &
 	;;
 *) echo "fake archil-client: services $2" >&2; exit 2 ;;
 esac
@@ -137,7 +165,14 @@ func (c *fakeContainers) boot(f *fakeAPI, s *fakeSandbox) error {
 	return nil
 }
 
+// halt stops s's container as Archil stops a sandbox: each service is sent
+// TERM and given fakeArchilGrace to exit, and then the container stops. A
+// service that outlives the grace fails the test: Archil's stop would have
+// waited it out.
 func (c *fakeContainers) halt(s *fakeSandbox) {
+	if err := c.docker(context.Background(), "exec", containerOf(s), "/opt/archil/archil-client", "halt", strconv.Itoa(fakeArchilGrace)); err != nil {
+		c.t.Errorf("halt %s: %v", s.name, err)
+	}
 	if err := c.docker(context.Background(), "stop", "--time", "5", containerOf(s)); err != nil {
 		c.t.Errorf("stop %s: %v", s.name, err)
 	}

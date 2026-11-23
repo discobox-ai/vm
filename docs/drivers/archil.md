@@ -57,13 +57,13 @@ nothing.
 | `Commit` | reported (`Capabilities.Commit`, ADR 26-11-03-868). A stopped sandbox with mounts is started with none and stopped; then its port tokens are revoked and the data disk is deleted. Nothing in the guest is changed, and nothing records the commit. |
 | `Destroy` | stop, revoke the sandbox's port tokens, delete it, then its data disk. Archil refuses a sandbox with forks (`sandbox_has_forks`): `machine.ErrInUse`. A sandbox already gone still has its data disk removed. |
 | `Upgrade` | checks everything that could refuse it, then deletes the stopped sandbox and makes it again under its name, fresh from the base or a fork of `from`, at the old size, fence, and ingress, labeled as a Create's, its port tokens revoked before the delete; the data disk is mounted at each start as before. Stopped in between, the VM is its data disk alone, listed with no size and the fence `none`: Start refuses it, `rm` removes it, and `upgrade` again finishes it, at the fence `none` and with ingress off, the strictest, since nothing else of it is left. A VM with no data disk is gone if the upgrade fails or stops after the delete, and the error says so (the one exception to ADR 26-11-03-782 §3). A `failed` sandbox is upgraded as a stopped one. |
-| systemd | every VM's, with no option (ADR 26-11-20-447): while Create's sandbox runs, under its fence, systemd, systemd-sysv, dbus, and util-linux are installed with apt where the base lacks `/lib/systemd/systemd` (or `nsenter`, `unshare`, `setpriv`, `runuser`, `mount`), and `disco-vm-systemd` is registered with Archil's supervisor (`/opt/archil/archil-client services create`), which runs `unshare --pid --fork --mount-proc --propagation slave --kill-child /lib/systemd/systemd` at every boot, the root made shared first. A base with no `apt-get`, or a VM that can't reach its mirror (`--egress none`), fails Create naming `/lib/systemd/systemd`; Create returns once systemd has settled. A fork carries both: Create registers only where `services get` says there is none (exit 1), and fails on any other answer. A fresh `Upgrade` of a base without systemd, fenced from its mirror, fails only after the old sandbox is gone, leaving a VM with a data disk mid-upgrade. |
+| systemd | every VM's, with no option (ADR 26-11-20-447): while Create's sandbox runs, under its fence, systemd, systemd-sysv, dbus, and util-linux are installed with apt where the base lacks `/lib/systemd/systemd` (or `nsenter`, `unshare`, `setpriv`, `runuser`, `mount`), and `disco-vm-systemd` is registered with Archil's supervisor (`/opt/archil/archil-client services create`), which runs `unshare --pid --fork --mount-proc --propagation slave --kill-child /lib/systemd/systemd` at every boot, the root made shared first, and kills `unshare`, so systemd, at TERM, Archil's stop's signal (a VM registered before keeps the old script: only the driver's stops of it, which kill systemd first, are prompt). A base with no `apt-get`, or a VM that can't reach its mirror (`--egress none`), fails Create naming `/lib/systemd/systemd`; Create returns once systemd has settled. A fork carries both: Create registers only where `services get` says there is none (exit 1), and fails on any other answer. A fresh `Upgrade` of a base without systemd, fenced from its mirror, fails only after the old sandbox is gone, leaving a VM with a data disk mid-upgrade. |
 | `Boot`, `Start` | unexpose 7302 (a VM made before ports were left unexposed has it exposed) and start the sandbox with its data disk mounted, or resume a paused one, then wait until a process runs and until `systemctl is-system-running` is `running`, `degraded`, or `maintenance` (a start installs and registers nothing; one whose systemd does not settle is stopped). Archil runs it, so `Start` is `Boot`. A committed VM is not refused: Archil can't tell it. `Boot` of a paused (or pausing) sandbox is `ErrPaused`. |
 | `State` | `running` is running; `paused` or `pausing` is paused, read without resuming it; anything else is stopped. |
 | `Pause` | Archil's caller pause (`POST .../pause`), waited out to `paused`; one paused is left so, one `pausing` waited out, one `pending` paused once it runs, and one stopped is `ErrNotRunning`. Archil keeps the sandbox's memory and processes, and `Start` resumes it (`Capabilities.Pause`). |
 | `Attach` | running is a machine; paused or pausing is `ErrPaused`, left paused; anything else is `ErrNotRunning`. |
 | `Machine.Done` | polled every 2s once asked: stopped or exited is a power-off, failed or deleted an error. |
-| `Machine.Kill`, `Shutdown` | Archil's stop. A reboot is refused. |
+| `Machine.Kill`, `Shutdown` | no shutdown in the guest: `Shutdown` kills systemd and flushes (`sync`, and `archil sync` of the data volume where it is mounted), then asks Archil's stop; a flush that fails is an error and asks no stop. `Kill` kills systemd where the guest answers, flushing no data volume, and the driver's own stops kill it and flush the data volume where mounted; both then stop it either way. A reboot is refused. |
 | guest operations | a process each, entering systemd's namespaces (`nsenter --all` of the process whose PID in its namespace is 1, in the killed process's group, which Archil SIGKILLs whole, and under `setpriv --pdeathsig TERM`, again under `runuser -u` for another account), failing while systemd does not run: exec with the request's directory, variables, and terminal, `runuser -u` for another account; `cp` as tar, GNU's or BusyBox's, a copy out tarring to `/var/tmp` (so it needs that much free space in the guest, and streams nothing until tar is done) and writing `R` once that worked, then the tar in 512 KiB chunks the host asks for, read with `dd`, since Archil drops output that outruns its connection (an exec that loses output fails); `info` as `uname -m; hostname`. |
 | `Listen` | `tcp:0.0.0.0:7302`. |
 | `Service` | mints a port token for 7302 (`POST .../port-tokens`, a day's `ttl`) and gives `https://<the hostname Archil returns with it>` as the pool URL, and as the ingress URL unless asked off (`Capabilities.URLs`: ingress optional, pool always, `Credential`), with the token as `Credential` in `X-Archil-Token`. The hostname is the same across stop and start. A request without the token is refused with `401` before the guest, and leaves a stopped VM stopped; Archil speaks only HTTP/1.1 there. Each call mints a new token, which the driver does not keep. |
@@ -109,11 +109,24 @@ saying `container-other`; `services get` answers the service as JSON, exit
 1 for none; a file copied to `/run`, the data disk, and a tmpfs mounted
 after systemd started are read by a `systemd-run` unit; `exec -u nobody`
 and `exec -t` run there; systemd runs again after `stop` and `start` (3.5
-s; the stop took 31 s), and in `run --from` a committed VM with `--egress
+s; the stop took 31 s, then, before vm#217), and in `run --from` a committed VM with `--egress
 none`, which installs nothing; `--egress none` of `debian:sid` (in 44 s, its apt failing fast as a fenced
 VM's does; 2:52 with apt's retries) and a base of `alpine:3.20` fail `run`
 naming `/lib/systemd/systemd`; an interrupted
 `exec` leaves nothing running, no trap having run.
+
+Seen on Archil (2026-11-23, aws-us-east-1, `debian:sid`, vm#217): the
+supervisor's stop of a service is `stopping`, then `stopped` 30.0 s later
+for one still running (`archil-client services events`), its grace; `POST
+.../stop` documents no option to skip it. The guest has `archil` on its
+`PATH` (`/usr/local/bin/archil`), and `archil-client sync` too. With
+`systemdScript` ending at TERM and `haltScript` before the stop: `stop`
+3.9 s (34.3 s before), 4.3 s for a VM whose service still has the old
+script, a stop sent straight to the API 2.6 s, `run --data 1GiB` 17.0 s
+(51.4 s before), `start` 6 to 7.7 s, `commit` 8.2 s, `run --from` 14.8 s;
+a 64 MiB file and a marker written just before `stop` read back after
+`start`. The supervisor logs a killed systemd `failed: signal` and
+`restarting`, and Archil's stop came before the restart.
 
 Seen on Archil (2026-11-18, aws-us-east-1): a fork carries none of its
 source's tokens and has a hostname of its own, where the source's token is

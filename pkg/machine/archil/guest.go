@@ -22,7 +22,7 @@ import (
 // namespaces (systemd.go, ADR 26-11-20-447). A process runs as root, in the
 // request's directory, with its variables, its argv one quoted command line;
 // another account is runuser's. Copies are tar over a process, and a
-// shutdown is Archil's stop.
+// shutdown is a flush and Archil's stop.
 
 // The scripts the copies and Info run, with sh, as root. Each takes its path
 // as $1.
@@ -296,13 +296,28 @@ func (m *guestMachine) Info(ctx context.Context) (machine.GuestInfo, error) {
 	return machine.GuestInfo{OS: string(machine.Linux), Arch: arch, Hostname: lines[1]}, nil
 }
 
-// Shutdown is Archil's stop, which shuts the guest down and checkpoints its
-// disk; it returns once Archil has accepted it, and Done closes when Archil
-// says the sandbox stopped. A reboot is refused: Archil has none, and a stop
-// and a start would leave the start in a goroutine of this process.
+// Shutdown kills systemd and flushes the guest's writes, the data volume's
+// with Archil's client (haltScript), then asks Archil's stop, which
+// checkpoints the disk; it returns once Archil has accepted it, and Done
+// closes when Archil says the sandbox stopped. Nothing in the guest is shut
+// down: a discobox has no shutdown to run, and Archil's stop of a guest
+// still running systemd waited out its grace, about 30 s (vm#217). A flush
+// that fails is an error, and no stop is asked: the caller's fallback is
+// Kill. A paused sandbox runs nothing to flush and is stopped as it is. A
+// reboot is refused: Archil has none, and a stop and a start would leave
+// the start in a goroutine of this process.
 func (m *guestMachine) Shutdown(ctx context.Context, reboot bool) error {
 	if reboot {
 		return fmt.Errorf("archil: a reboot: %w", machine.ErrUnsupported)
+	}
+	s, err := m.api.sandbox(ctx, m.id)
+	if err != nil && !isNotFound(err) {
+		return fmt.Errorf("archil: %s: %w", m.name, err)
+	}
+	if err == nil && s.Status == "running" {
+		if err := m.api.halt(ctx, m.id, m.name, machine.VolumePath(machine.Linux, machine.VolumeData)); err != nil {
+			return err
+		}
 	}
 	return m.stopSandbox(ctx)
 }
@@ -401,10 +416,14 @@ func (m *guestMachine) finish(err error) {
 	})
 }
 
-// Kill stops the sandbox through Archil and waits for it to stop.
+// Kill kills systemd where the guest answers, without a flush, then stops
+// the sandbox through Archil and waits for it to stop.
 func (m *guestMachine) Kill(ctx context.Context) error {
 	m.watched()
 	m.killed.Store(true)
+	if s, err := m.api.sandbox(ctx, m.id); err == nil && s.Status == "running" {
+		m.api.haltQuietly(ctx, m.id, m.name, "")
+	}
 	if err := m.stopSandbox(ctx); err != nil {
 		return err
 	}

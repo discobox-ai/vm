@@ -96,7 +96,8 @@
 - **Every line a guest operation sends enters systemd's namespaces.** A
   process the driver starts runs in Archil's, where `systemctl` reaches no
   systemd and `/run` is not systemd's; only `ensureScript`, which makes
-  systemd run, and the readiness `true` may run there. A new guest script
+  systemd run, `haltScript`, which kills it, and the readiness `true` may
+  run there. A new guest script
   goes through `command`, and the fake refuses a line that does not.
 - **Nothing installs at a boot.** systemd is installed at Create, under the
   fence, and the boot service only runs it: a VM fenced from its mirror
@@ -118,3 +119,16 @@
   on that path. `setpriv --pdeathsig TERM`, set again under `runuser`
   (whose fork and change of account clear it), covers `nsenter` dying
   alone.
+- **No stop waits on the guest.** Archil's stop gives each service of its
+  supervisor a grace of about 30 s after TERM, so a service that ignores
+  TERM holds every stop that long (vm#217). The systemd service ends at
+  TERM, and every stop the driver asks of a running sandbox runs
+  `haltScript` first; a new path that stops one goes through `stopAndWait`
+  or the machine's `Shutdown` or `Kill`. The container fake's stop plays
+  that grace and fails the test where a service outlives it.
+- **A flush before a stop comes after the kill.** Archil's client loses
+  writes it has not sent when the machine stops, so `haltScript` kills
+  systemd before it runs `sync` and `archil sync`: a flush taken while the
+  guest's units still run leaves their next writes unflushed. Don't stop the
+  service with `services stop` to keep the supervisor from running it again:
+  that disables it, and the next boot would start no systemd.

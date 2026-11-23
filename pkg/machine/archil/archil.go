@@ -131,7 +131,11 @@ func (a *api) waitFor(ctx context.Context, id string, states ...string) (sandbox
 	}
 }
 
-// stopAndWait stops a sandbox that runs and waits until it has.
+// stopAndWait stops a sandbox that runs and waits until it has. A running
+// one has systemd killed and its writes flushed first (haltScript), the
+// data volume's where it is mounted, so Archil's stop waits for nothing in
+// the guest; a guest that does not answer, or whose flush fails, is
+// stopped all the same.
 func (d *Driver) stopAndWait(ctx context.Context, id string) error {
 	s, err := d.api.sandbox(ctx, id)
 	if err != nil {
@@ -147,6 +151,9 @@ func (d *Driver) stopAndWait(ctx context.Context, id string) error {
 		}
 		fallthrough
 	case "paused", "running", "pending":
+		if s.Status == "running" {
+			d.api.haltQuietly(ctx, id, s.Name, machine.VolumePath(machine.Linux, machine.VolumeData))
+		}
 		if err := d.api.stop(ctx, id); err != nil && !isConflict(err) {
 			return fmt.Errorf("archil: stop %s: %w", s.Name, err)
 		}

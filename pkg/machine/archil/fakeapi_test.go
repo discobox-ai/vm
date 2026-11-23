@@ -479,6 +479,8 @@ func (f *fakeAPI) halt(s *fakeSandbox) {
 	}
 	if f.containers != nil {
 		f.containers.halt(s)
+	} else {
+		_ = logStop(s.root, "stop")
 	}
 	for _, m := range s.mounts {
 		_ = os.Remove(guest.Resolve(s.root, m.Path))
@@ -1200,6 +1202,41 @@ func fakeSystemd(root string, stderr io.Writer) int {
 	return 0
 }
 
+// fakeStops is the file in a sandbox's root where the fake logs what comes
+// before a stop, a line each: "halt" and the data volume flushed (where it
+// is mounted) for each haltScript, then "stop" for each of Archil's stops.
+const fakeStops = ".archil-stops"
+
+// fakeSyncFails, in a sandbox's root, fails each flush of a mounted data
+// volume, as archil sync fails on a mount that has failed.
+const fakeSyncFails = ".archil-sync-fails"
+
+// fakeHalt plays haltScript in a sandbox's root, logging it in fakeStops.
+func fakeHalt(root string, args []string, stderr io.Writer) int {
+	line := "halt"
+	if len(args) > 0 && args[0] != "" && fileExists(guest.Resolve(root, args[0])) {
+		if fileExists(filepath.Join(root, fakeSyncFails)) {
+			_, _ = io.WriteString(stderr, "archil sync "+args[0]+": the mount has failed")
+			return 3
+		}
+		line += " " + args[0]
+	}
+	if err := logStop(root, line); err != nil {
+		_, _ = io.WriteString(stderr, err.Error())
+		return 1
+	}
+	return 0
+}
+
+func logStop(root, line string) error {
+	f, err := os.OpenFile(filepath.Join(root, fakeStops), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // G302: the fake's own log
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(f, line)
+	return errors.Join(err, f.Close())
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -1220,10 +1257,13 @@ func runCommand(ctx context.Context, req startRequest, root, hostname string, st
 		return 0, errors.New("no argv")
 	}
 	if !entered {
-		if !isScript(argv, ensureScript) {
-			return 0, fmt.Errorf("a line that enters no namespace: %q", req.Command)
+		switch {
+		case isScript(argv, ensureScript):
+			return fakeSystemd(root, stderr), nil
+		case isScript(argv, haltScript):
+			return fakeHalt(root, argv[4:], stderr), nil
 		}
-		return fakeSystemd(root, stderr), nil
+		return 0, fmt.Errorf("a line that enters no namespace: %q", req.Command)
 	}
 	if !fileExists(filepath.Join(root, fakeServices, systemdService)) {
 		_, _ = io.WriteString(stderr, "systemd is not running in the guest")
