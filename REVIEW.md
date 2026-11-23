@@ -141,3 +141,9 @@
   vet, gofmt, and the linters say nothing. It happened twice in one change
   (vm#196: `machinetest`'s `wantState` above `remove`, boxd's test `pause`
   above `envDriver`).
+- **CI answers no label.** `.github/workflows/ci.yml` runs on no `labeled`
+  or `unlabeled` event, and no job is gated on a pull request's labels. A
+  label event can't be filtered by name, so every `status/*` or `priority/*`
+  label the manager set ran all of CI again and cancelled the run in
+  progress, and a job skipped for a label posts a skipped check that GitHub
+  counts as passed over that job's real result (#190).
