@@ -1,0 +1,55 @@
+# The darwin job, apart from ci.yml because it alone answers a label: a pull
+# request runs it only once it has the `macos` label, and adding that label
+# starts it. ci.yml does not run on `labeled`, so any other label added runs
+# only this workflow, whose job is then skipped under another name and in a
+# concurrency group of its own: it cancels no run of the job, and its skipped
+# check never stands over the `macos` check of the same commit. Pushes to main
+# always run it.
+name: macOS
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Another label's run gets a group of its own, so it never cancels a run of
+# the job in progress.
+concurrency:
+  group: macos-${{ github.ref }}-${{ github.event.action == 'labeled' && github.event.label.name != 'macos' && github.run_id || 'run' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # disco-vm ships on macOS, and vz is cgo: darwin is linted and tested only
+  # here.
+  macos:
+    # GitHub shows a commit's newest check of each name and counts a skipped
+    # one as passed, so another label's skipped run is named apart: as
+    # `macos` it would show a failed or running darwin job as passed.
+    name: ${{ github.event.action == 'labeled' && github.event.label.name != 'macos' && 'macos (skipped for another label)' || 'macos' }}
+    # Pull requests run this only with the `macos` label, and a label event
+    # only when the label added is `macos`; pushes to main always.
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'macos') && (github.event.action != 'labeled' || github.event.label.name == 'macos')) }}
+    runs-on: depot-macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/task
+        with:
+          target: check:go
+      - uses: ./.github/actions/task
+        with:
+          target: test
+      # The darwin release binary, signed and checked for its entitlement as
+      # a tag's release builds it (release.yml).
+      - uses: ./.github/actions/task
+        env:
+          RELEASE_TAG: v0.0.0-alpha.0
+        with:
+          target: release:build
