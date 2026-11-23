@@ -28,9 +28,48 @@ const (
 	// systemdScript runs systemd as PID 1 of new PID and mount namespaces.
 	// The guest's root is made shared first and systemd's mounts its slaves,
 	// so a mount made outside after systemd starts (a data disk) reaches its
-	// units. --kill-child ends systemd with the service.
-	systemdScript = `mount --make-rshared / || exit
-exec unshare --pid --fork --mount-proc --propagation slave --kill-child /lib/systemd/systemd --system --unit=multi-user.target`
+	// units. --kill-child ends systemd with unshare.
+	//
+	// Archil's stop signals each service with TERM and kills it only after a
+	// grace period, about 30 s (vm#217). unshare ignores TERM while it waits
+	// for its child, and systemd as PID 1 does not exit at it, so the
+	// service ends at TERM by killing unshare, and systemd and everything
+	// under it with it: a stop shuts nothing down in the guest. A stop the
+	// driver asks for has run haltScript first, which flushes; one Archil
+	// makes alone flushes nothing of the data disk but what Archil does.
+	systemdScript = `trap 'exit 143' TERM INT HUP
+mount --make-rshared / || exit
+unshare --pid --fork --mount-proc --propagation slave --kill-child /lib/systemd/systemd --system --unit=multi-user.target </dev/null &
+u=$!
+trap 'kill -KILL "$u"; exit 143' TERM INT HUP
+wait "$u"`
+
+	// haltScript readies a running guest for Archil's stop, in Archil's own
+	// namespaces: it kills systemd, the PID 1 of its namespace, so every
+	// process under it ends at once, with no shutdown, and nothing in the
+	// guest writes after the flush that follows; Archil's stop then finds
+	// nothing to wait for (vm#217). It then flushes the guest's writes: $1
+	// is the data volume's mount point, flushed with Archil's client
+	// (`archil sync`, which returns once every write on the mount is
+	// durable) where /proc/self/mounts lists it, or "" to flush nothing but
+	// the root. A flush that fails exits 3. A VM registered before
+	// systemdScript ended at TERM needs the kill, as its service keeps its
+	// old argv. Archil's supervisor runs the killed service again, but was
+	// seen not to before the stop that follows (2026-11-23).
+	haltScript = `for d in /proc/[0-9]*; do
+	[ "$(cat "$d/comm" 2>/dev/null)" = systemd ] || continue
+	grep -Eq '^NSpid:[[:space:]]+[0-9]+[[:space:]]+1$' "$d/status" 2>/dev/null || continue
+	kill -KILL "${d#/proc/}" 2>/dev/null
+done
+sync
+if [ -n "$1" ] && cut -d ' ' -f 2 /proc/self/mounts | grep -qxF -- "$1"; then
+	a=$(command -v archil) || a=` + archilClient + `
+	if ! out=$("$a" sync "$1" 2>&1); then
+		echo "archil sync $1: $out" >&2
+		exit 3
+	fi
+fi
+exit 0`
 
 	// ensureScript makes the guest one whose boot runs systemd, at Create,
 	// in Archil's own namespaces, and fails naming what the base lacks. $1
@@ -126,6 +165,35 @@ func (a *api) ensureSystemd(ctx context.Context, id, name string, fenced bool) e
 		return fmt.Errorf("archil: systemd in %s: %w", name, err)
 	}
 	return nil
+}
+
+// halt runs haltScript in the sandbox's guest: systemd killed, then its
+// writes flushed, the data volume's too where data is its mount point, so
+// Archil's stop that follows waits for nothing in the guest.
+func (a *api) halt(ctx context.Context, id, name, data string) error {
+	line := "exec " + quoteAll([]string{"sh", "-c", haltScript, "sh", data})
+	code, _, stderr, err := a.run(ctx, id, line, "/", nil)
+	if err == nil && code != 0 {
+		err = fmt.Errorf("exit %d: %s", code, bytes.TrimSpace(stderr))
+	}
+	if err != nil {
+		return fmt.Errorf("archil: flush %s: %w", name, err)
+	}
+	return nil
+}
+
+// haltLimit bounds the halt that comes before a stop which goes on whether
+// or not it worked.
+const haltLimit = 30 * time.Second
+
+// haltQuietly halts a running sandbox's guest before a stop that goes on
+// regardless, flushing the volume at data ("" for none) where it is
+// mounted: a guest that does not answer, or whose flush fails, is stopped
+// as it is.
+func (a *api) haltQuietly(ctx context.Context, id, name, data string) {
+	ctx, cancel := context.WithTimeout(ctx, haltLimit)
+	defer cancel()
+	_ = a.halt(ctx, id, name, data)
 }
 
 // settleLimit bounds a start's wait for systemd to settle.

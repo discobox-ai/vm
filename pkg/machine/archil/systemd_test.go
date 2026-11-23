@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -224,4 +225,198 @@ func TestSystemdInAContainer(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "/lib/systemd/systemd") {
 		t.Errorf("Create fenced to nothing of a base without systemd: %v, want an error naming /lib/systemd/systemd", err)
 	}
+}
+
+// TestSystemdServiceEndsAtItsStopSignal: Archil's stop signals each service
+// of its supervisor and waits out a grace period before it kills them, so
+// the service that runs systemd ends at that signal, SIGTERM, promptly
+// rather than holding every stop for the grace period (vm#217). A stop the
+// driver asks for (Shutdown, Kill, Commit's) and one it does not (sent
+// straight to the API, as Archil's console or a session's limit stops a
+// sandbox) each end every service within the fake's grace, or the fake's
+// halt fails the test, and the data volume keeps what was written to it
+// across them.
+func TestSystemdServiceEndsAtItsStopSignal(t *testing.T) {
+	image := os.Getenv(ContainerImageEnv)
+	if image == "" {
+		t.Skipf("set %s (an image with apt-get and no systemd, such as debian:sid) to run archil's guests as Docker containers", ContainerImageEnv)
+	}
+	f := newFakeAPI(t, t.TempDir())
+	f.containers = newFakeContainers(t, f, image)
+	t.Cleanup(func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, s := range f.sandboxes {
+			f.containers.remove(s)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	d := f.driver(t, "sig", image)
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev", Data: &machine.DataVolume{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := d.Start(ctx, inst, machine.BootOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	ctr := containerOf(f.sandboxes[0])
+	id := f.sandboxes[0].id
+	f.mu.Unlock()
+
+	// The service's process, as the fake's supervisor records it, is sent
+	// SIGTERM, as Archil's supervisor sends it, and the systemd it ran must
+	// be gone within a few seconds.
+	const signal = `for d in /proc/[0-9]*; do
+	[ "$(cat "$d/comm" 2>/dev/null)" = systemd ] || continue
+	grep -Eq '^NSpid:[[:space:]]+[0-9]+[[:space:]]+1$' "$d/status" 2>/dev/null || continue
+	p=${d#/proc/}; break
+done
+svc=$(cat /var/lib/fake-archil/services/disco-vm-systemd.pid)
+kill -TERM "$svc" || exit
+for i in $(seq 50); do kill -0 "$p" 2>/dev/null || { echo "systemd ended after $i tenths of a second"; exit 0; }; sleep 0.1; done
+echo "systemd ($p) still runs 5s after its service ($svc, $(cat /proc/$svc/comm)) was sent SIGTERM"; exit 1`
+	start := time.Now()
+	out, err := exec.CommandContext(ctx, "docker", "exec", ctr, "sh", "-c", signal).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s (%v, after %s)", bytes.TrimSpace(out), err, time.Since(start).Round(100*time.Millisecond))
+	}
+	t.Log(string(bytes.TrimSpace(out)))
+	// The supervisor runs the service again.
+	if err := m.Kill(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	write := func(t *testing.T, m machine.Machine, text string) {
+		t.Helper()
+		if code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"sh", "-c", "echo " + text + " > /.discobox/data/f"}}, nil, io.Discard, io.Discard); err != nil || code != 0 {
+			t.Fatalf("write to the data volume: exit %d, %v", code, err)
+		}
+	}
+	read := func(t *testing.T, m machine.Machine) string {
+		t.Helper()
+		var out bytes.Buffer
+		if code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"cat", "/.discobox/data/f"}}, nil, &out, io.Discard); err != nil || code != 0 {
+			t.Fatalf("read the data volume: exit %d, %v", code, err)
+		}
+		return strings.TrimSpace(out.String())
+	}
+	timed := func(t *testing.T, what string, stop func() error) {
+		t.Helper()
+		start := time.Now()
+		if err := stop(); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		if _, err := d.api.waitFor(ctx, id, "stopped"); err != nil {
+			t.Fatal(err)
+		}
+		// The fake's halt fails the test where a service outlived its
+		// grace; the time is a box's under load, logged.
+		t.Logf("%s took %s", what, time.Since(start).Round(100*time.Millisecond))
+	}
+
+	// The driver's Shutdown: flushed, systemd killed, then Archil's stop.
+	if m, err = d.Start(ctx, inst, machine.BootOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	write(t, m, "one")
+	timed(t, "Shutdown", func() error { return m.Shutdown(ctx, false) })
+
+	// Archil's stop alone, which the driver did not ask for.
+	if m, err = d.Start(ctx, inst, machine.BootOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, m); got != "one" {
+		t.Errorf("the data volume holds %q after a Shutdown, want one", got)
+	}
+	write(t, m, "two")
+	timed(t, "Archil's own stop", func() error { return d.api.stop(ctx, id) })
+
+	if m, err = d.Start(ctx, inst, machine.BootOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, m); got != "two" {
+		t.Errorf("the data volume holds %q after Archil's stop, want two", got)
+	}
+	timed(t, "Kill", func() error { return m.Kill(ctx) })
+	// Commit starts the sandbox with no mounts and stops it again, a stop
+	// of the driver's own.
+	timed(t, "Commit", func() error { _, err := d.Commit(ctx, inst); return err })
+}
+
+// TestAStopKillsSystemdThenFlushes: every stop of a running VM first runs
+// haltScript, which kills systemd and flushes, so that Archil's stop waits
+// for no shutdown in the guest. Shutdown flushes the data volume and asks no
+// stop when that fails; Kill flushes none; the driver's own stops flush it
+// where it is mounted, as a start whose systemd does not settle has it.
+func TestAStopKillsSystemdThenFlushes(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake Archil's guests run on the host, and Archil's guests are linux")
+	}
+	ctx := context.Background()
+	f := newFakeAPI(t, t.TempDir())
+	d := f.driver(t, "halt", "debian:sid")
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev", Data: &machine.DataVolume{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	root := f.sandboxes[0].root
+	f.mu.Unlock()
+	stops := func(t *testing.T, want ...string) {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(root, fakeStops))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Fields(strings.ReplaceAll(string(b), " ", "_")); !slices.Equal(got, want) {
+			t.Errorf("before each stop, the guest saw %q, want %q", got, want)
+		}
+	}
+	// Create stops the sandbox it booted, with no data volume mounted.
+	stops(t, "halt", "stop")
+
+	m, err := d.Start(ctx, inst, machine.BootOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := machine.VolumePath(machine.Linux, machine.VolumeData)
+	if err := os.WriteFile(filepath.Join(root, fakeSyncFails), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Shutdown(ctx, false); err == nil || !strings.Contains(err.Error(), "archil sync") {
+		t.Errorf("Shutdown whose flush fails: %v, want archil sync's error", err)
+	}
+	stops(t, "halt", "stop")
+	if err := os.Remove(filepath.Join(root, fakeSyncFails)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Shutdown(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	<-m.Done()
+	stops(t, "halt", "stop", "halt_"+data, "stop")
+
+	if m, err = d.Start(ctx, inst, machine.BootOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Kill(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stops(t, "halt", "stop", "halt_"+data, "stop", "halt", "stop")
+
+	// A start whose systemd does not settle stops the sandbox it started,
+	// its data volume mounted.
+	limit := settleLimit
+	settleLimit = 2 * time.Second
+	t.Cleanup(func() { settleLimit = limit })
+	if err := os.Remove(filepath.Join(root, fakeServices, systemdService)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Start(ctx, inst, machine.BootOptions{}); err == nil {
+		t.Fatal("Start of a VM whose systemd does not run succeeded")
+	}
+	stops(t, "halt", "stop", "halt_"+data, "stop", "halt", "stop", "halt_"+data, "stop")
 }

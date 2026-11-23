@@ -105,8 +105,28 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   output that outruns its connection (an exec that loses some fails). The
   tar is written whole to the guest's `/var/tmp` first, so a copy out needs
   that much free space on the root disk, and sends nothing until tar is
-  done: a large copy is silent for a while before it streams. Shutdown
-  is Archil's stop; a reboot is refused.
+  done: a large copy is silent for a while before it streams. A reboot
+  is refused.
+- **A stop is a kill, a flush, and Archil's stop, and no shutdown**
+  (vm#217): a discobox has no shutdown to run. Archil's stop sends each
+  service of its supervisor TERM and kills it only after a grace (about
+  30 s); `unshare` ignores TERM while it waits, and systemd as PID 1 does
+  not exit at it, so every stop of a guest running systemd waited out the
+  grace. So `systemdScript` ends at TERM by killing `unshare`, and systemd
+  and all under it with it, which makes a stop Archil makes alone (its
+  console's) prompt too, for a VM registered since. Before every stop it
+  asks of a running sandbox, the driver runs `haltScript` in Archil's
+  namespaces: SIGKILL to systemd, so nothing in the guest writes after the
+  flush, then `sync`, and `archil sync` of the data volume where it is
+  mounted (Archil's client sends writes about once a second and loses those
+  unsent when the machine stops). A flush that fails fails `Shutdown` and
+  asks no stop, and the engine's fallback is `Kill`, which flushes no data
+  volume; the driver's own stops (Create's, Commit's, Destroy's, a start's
+  that did not settle) flush it where it is mounted and stop the sandbox
+  whether or not the guest answered, within `haltLimit`. A VM registered
+  before this keeps its service's old argv, since only Create registers:
+  the kill makes the driver's stops of it prompt, and a stop Archil makes
+  alone still waits out the grace.
 - **Power is Archil's.** Start resumes a sandbox Archil paused at its 24-hour
   limit, or that `Pause` paused: Archil's caller pause (`POST .../pause`),
   which snapshots its memory and processes and is waited out to `paused`
