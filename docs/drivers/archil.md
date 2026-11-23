@@ -69,7 +69,7 @@ nothing.
 | `Service` | mints a port token for 7302 (`POST .../port-tokens`, a day's `ttl`) and gives `https://<the hostname Archil returns with it>` as the pool URL, and as the ingress URL unless asked off (`Capabilities.URLs`: ingress optional, pool always, `Credential`), with the token as `Credential` in `X-Archil-Token`. The hostname is the same across stop and start. A request without the token is refused with `401` before the guest, and leaves a stopped VM stopped; Archil speaks only HTTP/1.1 there. Each call mints a new token, which the driver does not keep. |
 | volumes | `data`: the disk `dvm-<pool>--<name>--data` at `/.discobox/data`, made at Create (a data disk of the name with no sandbox is a VM mid-upgrade, so Create of that name is `ErrExists`) and deleted at Commit and Destroy. No `cache` (ADR 26-11-02-180). |
 | egress | `network.egress` `{default: deny, allow: [...]}`, with `deny: ["8.8.8.8", "1.1.1.1"]` where it closes DNS (`Egress.CloseDNS`, and `none`, an empty `allow`), set at create (fresh) or right after the fork (`From`), and read back. The policy also carries the ingress mark, a `deny` of `192.0.2.86`, on a VM whose ingress URL is asked off. |
-| bare | always (`Capabilities.Bare`): the guest holds nothing of the account; a data disk's mount token reaches only that disk. |
+| bare | always (`Capabilities.Bare`): the guest holds nothing of the account, and no data disk's mount token is visible in the namespaces it runs in: Archil's client mounts the disk from outside them (seen on client version 1006, 2026-11; another base or older image may differ). |
 | keys | none: an Archil token never expires and reaches the whole account (`ErrCannotIssue`). |
 
 ## Try it

@@ -86,8 +86,10 @@ func (*Driver) Capabilities() machine.Capabilities {
 		// them (ADR 26-11-21-438 §7).
 		Pause: true,
 		// A sandbox holds nothing of the account: the driver puts nothing
-		// in it, and Archil gives it no credential. A data disk's mount
-		// token is the guest's own disk's (ADR 26-11-17-311 §1).
+		// in it, and Archil gives it no credential. No data disk's mount
+		// token is visible in the namespaces the guest runs in: Archil's
+		// client holds it outside them (seen on client version 1006,
+		// 2026-11; see DESIGN.md).
 		Bare: machine.BareAlways,
 		// Archil reaches a sandbox only at its port's hostname, with a
 		// port token Service mints: its ingress URL, unless asked off, and
