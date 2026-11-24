@@ -598,3 +598,53 @@ func TestCheckReadsCapabilitiesAgain(t *testing.T) {
 		t.Fatalf("MaxMachines[linux] after Check = %d, want the served driver's, 7", got)
 	}
 }
+
+// A create asked to start runs the VM on the server when OpStart allows a
+// start, and is refused, making nothing, where it does not; a window is
+// refused on the client, as Start refuses one.
+func TestCreateStartedNeedsStart(t *testing.T) {
+	ctx := t.Context()
+	bin := agent(t)
+	driver := fakeDriver(t, bin, t.TempDir(), "p")
+	starts := client(t, serve(t, driver, served.Options{
+		Version: "v1",
+		Allow:   []served.Op{served.OpCapabilities, served.OpCreate, served.OpGet, served.OpStart, served.OpState, served.OpStop, served.OpRemove, served.OpInfo},
+	}), "v1")
+	createsOnly := client(t, serve(t, driver, served.Options{
+		Version: "v1",
+		Allow:   []served.Op{served.OpCapabilities, served.OpCreate, served.OpGet, served.OpState},
+	}), "v1")
+
+	if _, err := createsOnly.Create(ctx, machine.InstanceSpec{Name: "unstarted", Start: &machine.BootOptions{}}); !errors.Is(err, served.ErrRefused) {
+		t.Fatalf("a create started where starts are refused: %v, want ErrRefused", err)
+	}
+	if _, err := starts.Create(ctx, machine.InstanceSpec{Name: "windowed", Start: &machine.BootOptions{GUI: true}}); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("a create started with a window: %v, want ErrUnsupported", err)
+	}
+	for _, name := range []string{"unstarted", "windowed"} {
+		if _, err := driver.Instance(ctx, name); !errors.Is(err, machine.ErrNotFound) {
+			t.Fatalf("a refused create made %s: %v", name, err)
+		}
+	}
+
+	inst, err := starts.Create(ctx, machine.InstanceSpec{Name: "started", Start: &machine.BootOptions{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if m, err := driver.Attach(context.Background(), inst); err == nil {
+			_ = m.Kill(context.Background())
+		}
+		_ = driver.Destroy(context.Background(), inst)
+	})
+	if state, err := starts.State(ctx, inst); err != nil || state != machine.StateRunning {
+		t.Fatalf("a VM created started through the server: %s, %v, want running", state, err)
+	}
+	m, err := starts.Attach(ctx, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Info(ctx); err != nil {
+		t.Fatalf("info of a VM created started: %v", err)
+	}
+}

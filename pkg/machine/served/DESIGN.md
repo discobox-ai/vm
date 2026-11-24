@@ -30,7 +30,10 @@ embedder authenticates the channel; the handler authenticates no one.
   never otherwise; `Networks` is the driver's where `FieldNetworks` is.
 - **Where the service listens, and its URLs, are two calls** (ADR
   26-11-17-311 §6). `GET /v1/vms/{name}/listen` (`Driver.Listen`) is
-  `OpStart`'s, since a start writes it to the guest, and mints nothing.
+  `OpStart`'s, since a start writes it to the guest, and mints nothing. A
+  create asked to start (`InstanceSpec.Start`, `createRequest.Start`) is
+  `OpCreate`'s and needs `OpStart` too, not a field; a window is never
+  served.
   `OpService` (`Driver.Service`) carries the driver's `Credential` where its
   URLs need one, so the allow-list that grants `OpService` decides who gets
   a credential. A client and server of different builds are refused by

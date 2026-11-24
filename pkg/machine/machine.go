@@ -700,6 +700,14 @@ type InstanceSpec struct {
 	// VM.
 	Data  *DataVolume
 	Cache *CacheVolume
+	// Start asks Create to return the VM running, as Start with these
+	// options would, so a provider that runs what it makes is never
+	// stopped only to be started (ADR 26-11-23-458); nil returns it
+	// stopped. It is the create's, never the VM's: nothing records it. Its
+	// options are refused as Start refuses them, before anything is made,
+	// and a create whose start fails removes what it made and returns the
+	// start's error.
+	Start *BootOptions
 }
 
 // Egress is an instance's fence: what it may reach beyond its networks,
@@ -922,9 +930,12 @@ type Driver interface {
 	// ErrUnsupported.
 	Install(ctx context.Context, spec InstallSpec, name string) (Instance, error)
 
-	// Create makes a stopped VM: a copy-on-write copy of the committed VM
+	// Create makes a VM: a copy-on-write copy of the committed VM
 	// spec.From, or a fresh one from the driver's base, that boots from
-	// power-off with a machine identity of its own. A name the pool
+	// power-off with a machine identity of its own. It is stopped when
+	// Create returns, or, with spec.Start, running as Start leaves it,
+	// attached by Attach (ADR 26-11-23-458); a create whose start fails
+	// leaves nothing. A name the pool
 	// already has, committed or not, is ErrExists; a From the provider no
 	// longer has is ErrNotFound, and a running one is refused; a From on a
 	// driver that does not report Capabilities.Commit, a From or a Forward

@@ -216,6 +216,10 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.Start && !s.allowed(OpStart) {
+		writeError(w, fmt.Errorf("create: %w", refused(OpStart)))
+		return
+	}
 	if err := machine.ValidateName(req.Name); err != nil {
 		writeError(w, err)
 		return
@@ -238,6 +242,9 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 	spec := machine.InstanceSpec{
 		Name: req.Name, CPUs: req.CPUs, Memory: req.Memory, Forwards: req.Forwards,
 		Bare: req.Bare, Networks: req.Networks, Egress: req.Egress, Data: req.Data,
+	}
+	if req.Start {
+		spec.Start = &machine.BootOptions{}
 	}
 	if req.URLs != nil {
 		spec.URLs = *req.URLs

@@ -206,6 +206,10 @@ type createRequest struct {
 	Egress   *machine.Egress      `json:"egress,omitempty"`
 	Data     *machine.DataVolume  `json:"data,omitempty"`
 	URLs     *machine.URLRequests `json:"urls,omitempty"`
+	// Start asks for the VM running when the create returns
+	// (InstanceSpec.Start), which OpStart allows, as a start does: it is
+	// not a field.
+	Start bool `json:"start,omitempty"`
 }
 
 // set lists the fields the request sets.

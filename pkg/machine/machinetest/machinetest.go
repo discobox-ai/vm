@@ -1172,6 +1172,78 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		wantState(t, driver, inst, machine.StateStopped, "shut down")
 	})
 
+	// A create asked to start returns its VM running (ADR 26-11-23-458 §6):
+	// attached, its guest running a command once reachable, stopped in
+	// order, and then stopped; fresh, where the driver has a base, and a
+	// copy of the committed VM, carrying its write, where it commits.
+	t.Run("created-started", func(t *testing.T) {
+		specs := map[string]machine.InstanceSpec{"fresh": {}}
+		if caps.Commit {
+			specs["copied"] = of(committed)
+		}
+		for which, spec := range specs {
+			t.Run(which, func(t *testing.T) {
+				spec.Name = newName()
+				spec.CPUs, spec.Memory = cfg.CPUs, cfg.Memory
+				spec.Start = &machine.BootOptions{}
+				createCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+				defer cancel()
+				inst, err := driver.Create(createCtx, spec)
+				if which == "fresh" && errors.Is(err, machine.ErrUnsupported) {
+					t.Skipf("the driver has no base: %v", err)
+				}
+				if err != nil {
+					t.Fatalf("create %s started: %v", spec.Name, err)
+				}
+				t.Cleanup(func() {
+					if m, err := driver.Attach(context.Background(), inst); err == nil {
+						_ = m.Kill(context.Background())
+					}
+					remove(t, driver, inst)
+				})
+				wantState(t, driver, inst, machine.StateRunning, "created started")
+				m, err := driver.Attach(ctx, inst)
+				if err != nil {
+					t.Fatalf("attach to a VM created started: %v", err)
+				}
+				reachable(t, m)
+				argv := []string{"/bin/sh", "-c", "echo started"}
+				if inst.GuestOS == machine.Windows {
+					argv = []string{"cmd", "/c", "echo started"}
+				}
+				if out := guestOutput(t, m, argv); out != "started" {
+					t.Fatalf("a command in a VM created started printed %q", out)
+				}
+				if which == "copied" {
+					checkExec(t, m, inst.GuestOS, marker)
+				}
+				shutdown(t, m)
+				wantState(t, driver, inst, machine.StateStopped, "created started, then shut down")
+			})
+		}
+	})
+
+	// A create asked to start whose options its start refuses, a window on
+	// a driver with no display, is refused, and makes nothing.
+	t.Run("created-started-refused", func(t *testing.T) {
+		if caps.Display {
+			t.Skip("the driver shows a display")
+		}
+		spec := start
+		spec.Name = newName()
+		spec.CPUs, spec.Memory = cfg.CPUs, cfg.Memory
+		spec.Start = &machine.BootOptions{GUI: true}
+		if inst, err := driver.Create(ctx, spec); !errors.Is(err, machine.ErrUnsupported) {
+			if err == nil {
+				remove(t, driver, inst)
+			}
+			t.Fatalf("a create started with a window on a driver with no display: %v, want ErrUnsupported", err)
+		}
+		if _, err := driver.Instance(ctx, spec.Name); !errors.Is(err, machine.ErrNotFound) {
+			t.Fatalf("a refused create left %s: %v, want ErrNotFound", spec.Name, err)
+		}
+	})
+
 	// An instance its provider paused reads as paused, however often it is
 	// read, attaches to nothing and boots nothing (ErrPaused), and Start
 	// alone resumes it, its guest answering; paused again, Destroy removes

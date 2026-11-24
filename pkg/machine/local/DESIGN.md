@@ -174,6 +174,13 @@ owner, and neither a shim nor a fake guest is handed the variables a key is
 read from (`machine.WithoutKeys`). hcs, vz, and libkrun issue none (`machine.ErrNoKey`): whoever can read the
 directory owns it, and a key source is not asked.
 
+## A create is a disk, and a create asked to start then starts it
+
+A create here is a disk operation and a boot separate work, so `Create`
+with `InstanceSpec.Start` makes the VM as any create does and then `Start`s
+it, once for every hypervisor; a start that fails removes the VM (ADR
+26-11-23-458 §2).
+
 ## A shim per running VM
 
 A Virtualization.framework VM dies with the process that created it, and an

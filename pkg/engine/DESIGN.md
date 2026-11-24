@@ -138,8 +138,13 @@ and every VM `Create` makes carries them.
 disco-vm has one kind of thing, a VM, named in its pool, unique across
 every VM, committed or not ([ADR
 26-11-03-606](../../docs/adr/26-11-03-606-disco-vm-has-only-vms-and-a-vm-is-made-fresh-or-from-a-committed-vm.md)).
-There are no images, image IDs, tags, or bases a caller names. A VM is made
-three ways:
+There are no images, image IDs, tags, or bases a caller names. A create
+leaves its VM stopped, or, with `CreateOptions.Start` (`run`), running, its
+guest told where its service listens, as `Start` leaves one: the driver
+starts it (`InstanceSpec.Start`), so one whose provider runs what it makes
+is not stopped only to be started again, and a VM whose start or service
+file fails is removed, so `run` leaves a running VM or none (ADR
+26-11-23-458). A VM is made three ways:
 
 - **Fresh** (`Engine.Create` with no `From`; `create NAME`, `run NAME`),
   from the driver's base: its configuration (`machine.Config.Base`,
