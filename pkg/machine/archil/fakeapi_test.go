@@ -80,6 +80,12 @@ type fakeAPI struct {
 	creates []map[string]any
 	// listings are the query of every sandbox listing.
 	listings []url.Values
+	// lostDeletes is how many sandbox deletes to come take effect and then
+	// answer 500, as one whose answer a dropped connection lost.
+	lostDeletes int
+	// beforeCreate, when set, is called with each sandbox create's body
+	// before the fake makes it, without mu: a test's other create racing it.
+	beforeCreate func(createSandbox)
 	// containers, when set, runs each sandbox as a Docker container, and
 	// its processes in it, rather than on this host (container_test.go).
 	containers *fakeContainers
@@ -116,6 +122,9 @@ type fakeSandbox struct {
 	labels map[string]string
 	// root is the directory standing in for its root disk.
 	root string
+	// boots and stops count its starts, its create's and a fork's
+	// included, and its stops.
+	boots, stops int
 }
 
 type fakeDisk struct {
@@ -378,6 +387,9 @@ func (f *fakeAPI) createSandbox(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "", err.Error())
 		return
 	}
+	if f.beforeCreate != nil {
+		f.beforeCreate(body)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.creates = append(f.creates, fields)
@@ -441,6 +453,7 @@ func (f *fakeAPI) disk(id string) *fakeDisk {
 // boot runs a sandbox with its mounts: each disk a link at its path in the
 // root. The caller holds mu.
 func (f *fakeAPI) boot(s *fakeSandbox) error {
+	s.boots++
 	if f.containers != nil {
 		if err := f.containers.boot(f, s); err != nil {
 			s.status = "failed"
@@ -471,6 +484,7 @@ func (f *fakeAPI) boot(s *fakeSandbox) error {
 // halt stops a sandbox: its processes are ended, and its disks unmounted.
 // The caller holds mu.
 func (f *fakeAPI) halt(s *fakeSandbox) {
+	s.stops++
 	for id, p := range f.procs {
 		if p.sandbox == s.id {
 			p.cancel()
@@ -662,6 +676,11 @@ func (f *fakeAPI) deleteSandbox(w http.ResponseWriter, r *http.Request) {
 		f.containers.remove(s)
 	}
 	_ = os.RemoveAll(s.root)
+	if f.lostDeletes > 0 {
+		f.lostDeletes--
+		fail(w, http.StatusInternalServerError, "", "the answer was lost")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -955,7 +974,9 @@ func (f *fakeAPI) createDisk(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusCreated, map[string]any{"diskId": d.id}, "")
 }
 
-// deleteDisk removes a disk, refused while a running sandbox mounts it.
+// deleteDisk removes a disk, even one a running sandbox mounts, as Archil
+// does (seen 2026-11-24); a sandbox whose disk is gone then starts only with
+// its mounts named again.
 func (f *fakeAPI) deleteDisk(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -964,15 +985,9 @@ func (f *fakeAPI) deleteDisk(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "", "no disk")
 		return
 	}
-	for _, s := range f.sandboxes {
-		if s.status == "running" && slices.ContainsFunc(s.mounts, func(m mount) bool { return m.DiskID == d.id }) {
-			fail(w, http.StatusConflict, "disk_in_use", "a running sandbox mounts the disk")
-			return
-		}
-	}
 	f.disks = slices.DeleteFunc(f.disks, func(o *fakeDisk) bool { return o == d })
 	_ = os.RemoveAll(d.dir)
-	w.WriteHeader(http.StatusNoContent)
+	reply(w, http.StatusOK, nil, "")
 }
 
 // processAPI is a connection of the process API: a process's start, or a

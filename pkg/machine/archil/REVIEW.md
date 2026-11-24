@@ -36,10 +36,11 @@
 - **A fork is always sent its labels.** Archil copies a source's labels to
   a fork given none, so a fork would carry its source's VM name and pool.
   The fake copies them as Archil does, so a fork sent none shows.
-- **A label never decides what the driver lists.** A sandbox made before
-  the driver labeled them has none and can't be given any (Archil has no
-  update), so a VM is found by its name, and a label is read only for
-  `From`.
+- **A label is what a VM is; a name never is.** Every listing, lookup, and
+  Destroy finds a VM's sandboxes by its labels and picks the VM with `vms`
+  (ADR 26-11-24-905 §3), so a new path that reads a sandbox's name to find a
+  VM, or picks one of several by anything else, reports an upgrade's
+  leftover or a lost race as the VM.
 - **Every name sent to Archil is checked against its OpenAPI limit.** A
   sandbox's is 63 characters, a disk's 100; a name past one fails with
   Archil's raw 400 after the checks passed it.
@@ -52,16 +53,24 @@
   asked for (stdio), so copy out reads a regular file with `dd`. Run a
   changed script under BusyBox's `sh`, `tar`, `head`, and `dd`, beside
   util-linux (`busybox sh` on a Debian base with `busybox` installed).
-- **A data disk with no sandbox is a VM, never a leftover.** An upgrade
-  deletes the sandbox before it makes it again, and one stopped between
-  leaves only the disk: listing, Create (`ErrExists`), Start, and Destroy
-  treat it as that VM, and nothing removes it as stale. Create once deleted
-  such a disk, which would now delete the data of a VM mid-upgrade.
+- **A data disk with no sandbox is a leftover, never a VM.** An upgrade
+  makes its new sandbox before it deletes the old, so no VM is ever its disk
+  alone; a create that finds the disk of its name there (Archil's 200, not
+  201) deletes it and makes it again (`makeDataDisk`), so a new VM never
+  mounts a removed one's data. Make a data disk only once no sandbox but the
+  create's own is the VM, with one exception: a fresh VM asked to start
+  mounts a disk at its sandbox's create, so it makes the disk before it
+  holds the name, and it may use only a disk Archil made for it (201). A
+  200 there may be another create's disk, mounted and written, and is never
+  deleted from that path: the create falls back to sandbox first. A review
+  of this flagged the first version, which deleted it.
 - **The fake API (`fakeapi_test.go`) answers as Archil was seen to.** A
   name taken is `sandbox_name_conflict`, a fork boots at once with its
-  source's mounts and policy, a sandbox with forks is `sandbox_has_forks`, a
-  policy is set only on a running sandbox, and a disk's create answers the
-  disk of its name. A behavior added to the driver is added to the fake
+  source's mounts and policy and takes no mounts of its own, a sandbox with
+  forks is `sandbox_has_forks`, a policy is set only on a running sandbox, a
+  disk's create answers the disk of its name with 200 (201 when it made it),
+  and a disk is deleted even while a running sandbox mounts it (seen
+  2026-11-24). A behavior added to the driver is added to the fake
   from what Archil does, checked on Archil, not from what the driver
   expects.
 - **The fake reads the driver's command lines with sh, not a Go parser.**
@@ -85,14 +94,6 @@
   neither (2026-11-18), so a revoke the driver drops shows as a token left
   honored. It is the one place the fake departs from what Archil was seen
   to do, and its comment says so.
-- **A migration covers every state an old VM can be in.** A VM made
-  before ports were left unexposed has 7302 public, and a request there
-  wakes it with no call of the driver's, so unexposing it at a cold start
-  alone left running, paused, woken, and committed ones public while
-  `Service` handed out a credential for them. Every Start, Commit, and
-  Service unexposes it, and so does every copy made from a VM, a Create or
-  an Upgrade from it, for both the source and the copy: a committed VM is
-  never started, so its copies are what fence it.
 - **Every line a guest operation sends enters systemd's namespaces.** A
   process the driver starts runs in Archil's, where `systemctl` reaches no
   systemd and `/run` is not systemd's; only `ensureScript`, which makes
@@ -106,12 +107,10 @@
   `fakeArchilClient` and `fakeInit` (`container_test.go`) play what vm#86
   saw of `archil-client services`; a change to how the driver uses it is
   checked on Archil, not against the stand-in alone.
-- **An upgrade can fail only after its sandbox is deleted on what the new
-  root holds.** Archil can't rename a sandbox, so the new root boots under
-  the name only once the old one is gone, and a fresh base without systemd
-  fenced from its mirror fails there. Anything that can be known without
-  booting it is checked before the delete; nothing new is to be added after
-  it.
+- **An upgrade deletes the old sandbox last.** Its new root is made, booted,
+  and settled under a name of its own first, so everything that can fail,
+  what the new root holds included, fails with the VM as it was; nothing is
+  to be added after the delete.
 - **A command entered into systemd's namespaces stays in its nsenter's
   process group.** Archil's kill SIGKILLs the group (seen 2026-11-21: no
   trap ran, and nothing was left), and that is what ends a killed command

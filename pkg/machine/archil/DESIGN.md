@@ -1,12 +1,12 @@
 # pkg/machine/archil
 
-A VM is the sandbox named for it, and nothing else is kept (ADR
-26-11-03-676, ADR 26-11-03-606). See
+A VM is the live sandbox its labels name, and nothing else is kept (ADR
+26-11-24-905, ADR 26-11-03-606). See
 [docs/drivers/archil.md](../../../docs/drivers/archil.md).
 
 Archil's sandboxes are Firecracker microVMs behind a REST API, beside disks
 the provider mounts in them. A sandbox's name and labels never change, and
-the name is all a VM needs. The driver has no agent in the guest and
+its labels are all a VM needs. The driver has no agent in the guest and
 nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
 
 - **A driver is one region's**, its configuration's `region`, which is
@@ -15,46 +15,51 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   default that changed would lose sight of VMs still billed in the old one.
   `aws-us-east-1` is where a pool made before it was required keeps its
   VMs, and the refusal says so.
-- **A VM is the sandbox `dvm-<pool>--<name>`** (`names.go`). Archil
-  refuses a sandbox name it has, so a Create takes the name before it makes
-  anything else, and the refusal is `machine.ErrExists`. A listing reads the
-  sandboxes under the pool's prefix, and Archil holds each one's fence and
-  data disk. A sandbox whose name is no VM's, such as an earlier driver's
-  `dvm-<pool>-<key>`, is not listed. Archil filters every sandbox listing
-  to the pool's prefix, or a VM's name (`filter`); the pool's disks are
-  still read from the whole account's, or one by its name.
-- **Every sandbox the driver makes is labeled** (`names.go`):
-  `ai.discobox.vm.pool`, `ai.discobox.vm.instance`, and
-  `ai.discobox.vm.from` for a copy, at a fresh Create, a fork, and an
-  upgrade's new sandbox, so a pool's sandboxes are found in Archil with
-  `label=ai.discobox.vm.pool=<pool>`, and a listing reports a copy's
-  `From`, which Archil does not keep. Archil sets labels only when it makes
-  a sandbox, and a fork given none copies its source's, so a fork is always
-  given its own. Labels are not the VM: a sandbox made before them has none,
-  can't be given any, and is listed by its name with no `From`. The guest
-  sees none of them (seen 2026-11-21: not in its environment, its kernel
-  command line, or its disk). The ingress mark stays in the network policy,
-  which every VM carries, labeled or not.
-- **The data volume is the disk `dvm-<pool>--<name>--data`**, made once
-  the name is taken and mounted at each start. Archil answers a disk of a
-  name it has rather than making one, so a data disk with no sandbox is a
-  VM: listed, and Create of its name is `ErrExists`. A sandbox's name is at
-  most 63 characters, so a pool and a name are at most 57 together.
-- **Upgrade** (ADR 26-11-03-782) deletes the stopped VM's sandbox and makes
-  it again under its name, fresh or a fork, at its size and fence, after
-  checking all that could refuse it. One stopped in between is its data disk
-  alone, listed with no size and the fence `none`: Start refuses it, Destroy
-  removes the disk, and Upgrade again finishes it with the Instance's size
-  and fence. A VM with no data disk is gone if its upgrade fails or stops
-  after the delete: the one exception to ADR 26-11-03-782 §3. A sandbox not found by an Instance's ID is found by its name,
-  so an Instance from before an upgrade still names the VM.
+- **A VM is the live sandbox labeled with its pool and its name**
+  (`ai.discobox.vm.pool`, `ai.discobox.vm.instance`; `names.go`), found by
+  Archil's label filters, which AND: a pool's with one, a VM's with both. A
+  sandbox's name is never read for what it is, and one with neither label is
+  no VM. Each sandbox also carries `ai.discobox.vm.from` for a copy, which
+  is how a listing reports `From`, since Archil keeps nothing of it. Archil
+  sets labels only when it makes a sandbox, and a fork given none copies its
+  source's, so a fork is always given its own. The guest sees none of them
+  (seen 2026-11-21: not in its environment, its kernel command line, or its
+  disk). The ingress mark stays in the network policy.
+- **One sandbox is each VM** (`vms`, ADR 26-11-24-905 §3): an upgrade's new
+  sandbox is labeled `ai.discobox.vm.replaces` with the old one's ID, and is
+  not the VM while that one lives; of the rest, the oldest is, then the
+  lowest ID. A create names its sandbox `dvm-<pool>--<name>`, so Archil
+  refuses most races (`sandbox_name_conflict`, `machine.ErrExists`), and one
+  that finds an older sandbox of the VM once its own is made removes its own
+  and is `ErrExists`. A sandbox's name is at most 63 characters, so a pool
+  and a name are at most 57 together.
+- **The data volume is the disk `dvm-<pool>--<name>--data`**, mounted at
+  each start; disks take no labels. A create makes it only once no sandbox
+  but its own is the VM, so a disk Archil answers 200 for, not 201, is left
+  from a VM removed midway, and is deleted and made again: no VM sees
+  another's data. A fresh VM asked to start has it made first and mounted
+  by its sandbox's create, where Archil made it for this create (201); one
+  already there may be a racing create's, so it is left, and the VM is made
+  as a copy is: a copy asked to start with a data volume is stopped and
+  started once with it mounted, since Archil's fork takes no mounts (ADR
+  26-11-23-458 §2, ADR 26-11-24-905 §6). Destroy deletes it after the
+  sandboxes, so a destroy refused for forks keeps it.
+- **Upgrade** (ADR 26-11-03-782, ADR 26-11-24-905 §4) makes the new
+  sandbox first, fresh or a fork, at the VM's size, fence, and ingress,
+  named `dvm-<pool>--<name, cut to fit>--<hex>` and labeled as replacing the
+  old, with systemd settled, and stopped; only then revokes the old one's
+  tokens and deletes it. A failure before that removes the new one and
+  leaves the VM as it was. One stopped in between leaves a new sandbox
+  nothing lists, which the next Upgrade or Destroy removes, after any a
+  create of the name left. An Instance from before an upgrade still names
+  the VM, which is found by its labels.
 - **A fresh VM** is a sandbox of `Config.Base`, an OCI image, or of
   Archil's default image. **A VM created from another** is a fork of its
   sandbox, which must be stopped and have no mounts, since a fork boots with
   its source's. A fork keeps its source's size: another is refused. Either
   way Create sets the spec's fence and ingress mark and reads them back,
-  exposes no port, and stops the sandbox; a fork has 7302 unexposed and
-  every token it carried revoked first.
+  exposes no port, and stops the sandbox, or, asked to, leaves it running;
+  a fork has every token it carried revoked first.
 - **Commit** leaves the stopped sandbox as it stands, with no mounts, no
   data disk, and no port token: a sandbox with mounts is started once with none and stopped,
   since only a start changes mounts. Nothing records the commit, and Archil
@@ -86,11 +91,10 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   `nsenter` alone die, `setpriv --pdeathsig TERM` (set again under
   `runuser`, whose fork and change of account clear it) sends the command
   TERM. With systemd not running, it fails saying so (exit 125).
-- **An upgrade sees its new root only once it boots,** after the old
-  sandbox is gone: a fresh one of a base without systemd, fenced from its
-  mirror, fails there, as a base that does not pull does, and leaves a VM
-  with a data disk mid-upgrade, which an upgrade from a committed VM with
-  systemd, or of a base with it, finishes.
+- **An upgrade sees its new root once it boots,** before the old sandbox
+  is deleted: a fresh one of a base without systemd, fenced from its
+  mirror, fails there, as a base that does not pull does, and leaves the VM
+  as it was.
 - **The guest's operations are Archil's process API** (`process.go`,
   `guest.go`), ported from Archil's MIT TypeScript SDK, since the protocol is
   not in its OpenAPI document: a WebSocket per process, stdin as binary
@@ -162,9 +166,7 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
     which Archil gives only with a minted token. `Service` mints one each
     call, for `tokenLife` (a day), and returns it as `Credential` with
     `X-Archil-Token`; the driver never keeps it, and Archil never returns it
-    again. Every Start, Commit, Service, and Create from a committed VM
-    (source and fork) unexposes 7302 first, so a VM made before this is
-    fenced at the first of them it meets. The hostname is both URLs, the same across stop and start; the
+    again. The hostname is both URLs, the same across stop and start; the
     ingress URL is withheld where it was asked off.
   - **A token never outlives its machine:** Destroy, Commit, and Upgrade
     revoke the sandbox's tokens before they delete or freeze it, and a fork's
@@ -177,10 +179,8 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
     tokens, which their holders renew with `Service`. Stop revokes nothing: a holder's
     request starts the VM, as Archil does.
   - **Ingress off is a mark in the network policy:** the denied address
-    `ingressOff` (TEST-NET-1), which a VM made before labels carries too. It is read
-    back with the fence, kept across an upgrade (one finished after an
-    interruption, which left nothing of the sandbox, ends with ingress off,
-    the strictest), set or cleared on a fork
+    `ingressOff` (TEST-NET-1). It is read back with the fence, kept across
+    an upgrade, set or cleared on a fork
     as the spec asks, and changes no traffic; an address, not a name,
     since any domain rule has Archil terminate the guest's TLS on 443.
   - **A fence closes DNS when asked** (`Egress.CloseDNS`) by denying

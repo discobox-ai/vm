@@ -27,20 +27,12 @@ func testDriver(pool string) *Driver {
 	return &Driver{api: &api{}, pool: pool}
 }
 
-// A VM's sandbox and data volume are named for it, and a sandbox of another
-// pool, of an earlier driver, or not a VM's, is none.
+// A VM's data volume is named for it, and a disk of another pool, or not a
+// VM's, is none; an upgrade's sandbox fits Archil's limit and is never a
+// name a create gives a VM's sandbox.
 func TestNames(t *testing.T) {
 	d := testDriver("p1")
 	for _, name := range []string{"dev", "a-b-c"} {
-		if got := d.nameOf(d.sandboxName(name)); got != name {
-			t.Errorf("nameOf(%s) = %q", d.sandboxName(name), got)
-		}
-		if got := testDriver("p").nameOf(d.sandboxName(name)); got != "" {
-			t.Errorf("pool p reads p1's %s as %q", d.sandboxName(name), got)
-		}
-		if got := d.nameOf(d.dataDiskName(name)); got != "" {
-			t.Errorf("the data volume %s read as VM %q", d.dataDiskName(name), got)
-		}
 		if got := d.nameOfDisk(d.dataDiskName(name)); got != name {
 			t.Errorf("nameOfDisk(%s) = %q", d.dataDiskName(name), got)
 		}
@@ -53,10 +45,53 @@ func TestNames(t *testing.T) {
 			t.Errorf("disk %s read as VM %q's data volume", dk, got)
 		}
 	}
-	for _, sb := range []string{"dvm-p1-0a1b2c3d", "dvm-p1--i--dev--0a1b2c3d", "dvm-p1--", "other"} {
-		if got := d.nameOf(sb); got != "" {
-			t.Errorf("%s read as VM %q", sb, got)
+	long := strings.Repeat("x", maxSandboxName-len(d.sandboxName("")))
+	for _, name := range []string{"dev", long} {
+		up := d.upgradeName(name)
+		rest, ok := strings.CutPrefix(up, d.prefix())
+		if len(up) > maxSandboxName || !ok || !strings.Contains(rest, "--") || machine.ValidateName(rest) == nil {
+			t.Errorf("upgradeName(%s) = %q: want at most %d characters, under the pool's prefix, and no VM's sandbox name", name, up, maxSandboxName)
 		}
+		if up == d.upgradeName(name) {
+			t.Errorf("upgradeName(%s) gave %q twice", name, up)
+		}
+	}
+}
+
+// One sandbox is each VM (ADR 26-11-24-905 §3): an upgrade's new sandbox is
+// not while the one it replaces lives, and is once it is gone; of two that
+// both carry a VM's labels, the oldest is, then the lowest ID; a sandbox of
+// another pool, being deleted, or with no VM name is none.
+func TestVMs(t *testing.T) {
+	d := testDriver("p")
+	at := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+	sb := func(id, name string, created time.Time, extra ...string) sandbox {
+		labels := map[string]string{labelPool: "p", labelInstance: name}
+		for i := 0; i+1 < len(extra); i += 2 {
+			labels[extra[i]] = extra[i+1]
+		}
+		return sandbox{ID: id, Status: "stopped", Created: created, Labels: labels}
+	}
+	deleting := sb("gone", "c", at)
+	deleting.Status = "deleting"
+	all := []sandbox{
+		sb("a-old", "a", at),
+		sb("a-new", "a", at.Add(time.Hour), labelReplaces, "a-old"),
+		sb("b-new", "b", at.Add(time.Hour), labelReplaces, "b-gone"),
+		sb("c-2", "c", at.Add(time.Minute)),
+		sb("c-1", "c", at.Add(time.Minute)),
+		sb("c-late", "c", at.Add(2*time.Minute)),
+		deleting,
+		sb("other", "d", at, labelPool, "q"),
+		sb("unnamed", "Not-A-Name", at),
+	}
+	got := map[string]string{}
+	for name, s := range d.vms(all) {
+		got[name] = s.ID
+	}
+	want := map[string]string{"a": "a-old", "b": "b-new", "c": "c-1"}
+	if !maps.Equal(got, want) {
+		t.Errorf("vms = %v, want %v", got, want)
 	}
 }
 
@@ -544,11 +579,21 @@ func TestLabels(t *testing.T) {
 	want := map[string]map[string]string{
 		"dvm-p--a": {labelPool: "p", labelInstance: "a"},
 		"dvm-p--b": {labelPool: "p", labelInstance: "b", labelFrom: "a"},
-		"dvm-p--c": {labelPool: "p", labelInstance: "c", labelFrom: "a"},
 		"dvm-q--a": {labelPool: "q", labelInstance: "a"},
 	}
 	f.mu.Lock()
 	for _, s := range f.sandboxes {
+		if s.status == "deleted" {
+			continue
+		}
+		if s.id == c.ID {
+			// The upgrade's new sandbox, under a name of its own, names
+			// the one it replaced.
+			if !strings.HasPrefix(s.name, "dvm-p--c--") || s.labels[labelReplaces] == "" || s.labels[labelInstance] != "c" || s.labels[labelFrom] != "a" {
+				t.Errorf("the upgraded sandbox %s is labeled %v", s.name, s.labels)
+			}
+			continue
+		}
 		if !maps.Equal(s.labels, want[s.name]) {
 			t.Errorf("sandbox %s is labeled %v, want %v", s.name, s.labels, want[s.name])
 		}
@@ -604,24 +649,24 @@ func TestLabels(t *testing.T) {
 	}
 }
 
-// TestUnlabeledVMsAreListed: a sandbox made before the driver labeled
-// them is still its VM, listed by its name, with no From.
-func TestUnlabeledVMsAreListed(t *testing.T) {
+// TestUnlabeledSandboxesAreNoVMs: a sandbox is a VM by its labels alone
+// (ADR 26-11-24-905 §1): one named as a VM's sandbox, with no labels, is
+// not listed, and its name does not make a create of the VM's name ErrExists
+// before Archil refuses it.
+func TestUnlabeledSandboxesAreNoVMs(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
 	d := f.driver(t, "p", "debian:sid")
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "old"})
-	if err != nil {
+	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "old"}); err != nil {
 		t.Fatal(err)
 	}
 	f.mu.Lock()
 	f.sandboxes[0].labels = nil
 	f.mu.Unlock()
-	got, err := d.Instance(ctx, "old")
-	if err != nil || got.ID != inst.ID || got.From != "" {
-		t.Fatalf("an unlabeled VM: %+v, %v", got, err)
+	if got, err := d.Instance(ctx, "old"); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("an unlabeled sandbox: %+v, %v; want no VM", got, err)
 	}
-	if err := d.Destroy(ctx, inst); err != nil {
-		t.Fatal(err)
+	if all, err := d.Instances(ctx); err != nil || len(all) != 0 {
+		t.Fatalf("instances with an unlabeled sandbox: %+v, %v; want none", all, err)
 	}
 }

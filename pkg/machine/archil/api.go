@@ -90,27 +90,33 @@ func (a *api) call(ctx context.Context, method, path string, query url.Values, i
 
 // page is call for a listing Archil pages, and returns the envelope's
 // nextCursor: "" on its last page.
-func (a *api) page(ctx context.Context, method, path string, query url.Values, in, out any) (next string, err error) {
+func (a *api) page(ctx context.Context, method, path string, query url.Values, in, out any) (string, error) {
+	next, _, err := a.do(ctx, method, path, query, in, out)
+	return next, err
+}
+
+// do is page, and also returns the status Archil answered with.
+func (a *api) do(ctx context.Context, method, path string, query url.Values, in, out any) (next string, code int, err error) {
 	started := time.Now()
 	defer func() { machine.DebugCall(started, err, "archil %s %s", method, path) }()
 	if a.base == "" {
-		return "", fmt.Errorf("archil: region %q runs no sandboxes (one of aws-us-east-1, aws-us-west-2, aws-eu-west-1)", a.region)
+		return "", 0, fmt.Errorf("archil: region %q runs no sandboxes (one of aws-us-east-1, aws-us-west-2, aws-eu-west-1)", a.region)
 	}
 	if a.keys == nil {
-		return "", errNoKey
+		return "", 0, errNoKey
 	}
 	key, err := a.keys(ctx)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if key.Secret == "" {
-		return "", errNoKey
+		return "", 0, errNoKey
 	}
 	var body io.Reader
 	if in != nil {
 		raw, err := json.Marshal(in)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		body = bytes.NewReader(raw)
 	}
@@ -120,7 +126,7 @@ func (a *api) page(ctx context.Context, method, path string, query url.Values, i
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	req.Header.Set("Authorization", "Bearer key-"+strings.TrimPrefix(key.Secret, "key-"))
 	req.Header.Set("Accept", "application/json")
@@ -129,12 +135,12 @@ func (a *api) page(ctx context.Context, method, path string, query url.Values, i
 	}
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("archil: %s %s: %w", method, path, err)
+		return "", 0, fmt.Errorf("archil: %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	var env struct {
 		Success bool            `json:"success"`
@@ -155,16 +161,16 @@ func (a *api) page(ctx context.Context, method, path string, query url.Values, i
 		ae := &apiError{Status: resp.StatusCode, Code: env.Code, Message: msg}
 		switch {
 		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden && env.Code == "":
-			return "", fmt.Errorf("%w: %w", machine.ErrUnauthorized, ae)
+			return "", resp.StatusCode, fmt.Errorf("%w: %w", machine.ErrUnauthorized, ae)
 		case unavailable(resp.StatusCode):
-			return "", fmt.Errorf("%w: %w", machine.ErrUnavailable, ae)
+			return "", resp.StatusCode, fmt.Errorf("%w: %w", machine.ErrUnavailable, ae)
 		}
-		return "", ae
+		return "", resp.StatusCode, ae
 	}
 	if out == nil || len(env.Data) == 0 || string(env.Data) == "null" {
-		return env.Next, nil
+		return env.Next, resp.StatusCode, nil
 	}
-	return env.Next, json.Unmarshal(env.Data, out)
+	return env.Next, resp.StatusCode, json.Unmarshal(env.Data, out)
 }
 
 // sandbox is a sandbox as Archil reports it, with the fields the driver
@@ -315,16 +321,6 @@ func (a *api) setNetwork(ctx context.Context, id string, p egressPolicy) error {
 	return a.call(ctx, http.MethodPut, "/api/sandboxes/"+url.PathEscape(id)+"/network", nil, p, nil)
 }
 
-// unexposePort makes a port public no more. One not exposed is not an
-// error.
-func (a *api) unexposePort(ctx context.Context, id string, port uint32) error {
-	err := a.call(ctx, http.MethodDelete, fmt.Sprintf("/api/sandboxes/%s/ports/%d", url.PathEscape(id), port), nil, nil, nil)
-	if isNotFound(err) {
-		return nil
-	}
-	return err
-}
-
 // portToken is a sandbox's port token as Archil lists it: never its secret.
 type portToken struct {
 	ID      string    `json:"id"`
@@ -425,14 +421,15 @@ func (a *api) disks(ctx context.Context, name string) ([]disk, error) {
 	}
 }
 
-// createDisk makes a disk of a name, or answers the one of that name: Archil
-// does not refuse a name it has.
-func (a *api) createDisk(ctx context.Context, name string) (string, error) {
+// createDisk makes a disk of a name, or answers the one of that name, which
+// Archil does rather than refuse it: made is whether it made it (201, not
+// 200; seen 2026-11-24).
+func (a *api) createDisk(ctx context.Context, name string) (id string, made bool, err error) {
 	var out struct {
 		DiskID string `json:"diskId"`
 	}
-	err := a.call(ctx, http.MethodPost, "/api/disks", nil, map[string]string{"name": name}, &out)
-	return out.DiskID, err
+	_, code, err := a.do(ctx, http.MethodPost, "/api/disks", nil, map[string]string{"name": name}, &out)
+	return out.DiskID, code == http.StatusCreated, err
 }
 
 func (a *api) deleteDisk(ctx context.Context, id string) error {
