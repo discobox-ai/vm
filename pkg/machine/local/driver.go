@@ -390,8 +390,29 @@ func (d *Driver) claim(name, id string) error {
 }
 
 // Create copies the committed VM spec.From, or makes a fresh VM from the
-// hypervisor's base.
+// hypervisor's base, and, with spec.Start, starts it as Start does once its
+// disk is made: a create here is a disk operation, and the boot separate
+// work, so the two are the same as a create and a start (ADR 26-11-23-458).
+// A start that fails removes the VM.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
+	if spec.Start != nil && spec.Start.GUI && !d.hv.Capabilities().Display {
+		return machine.Instance{}, fmt.Errorf("%s has no display to show: %w", d.hv.Name(), machine.ErrUnsupported)
+	}
+	inst, err := d.create(ctx, spec)
+	if err != nil || spec.Start == nil {
+		return inst, err
+	}
+	if _, err := d.Start(ctx, inst, *spec.Start); err != nil {
+		if destroyErr := d.Destroy(context.WithoutCancel(ctx), inst); destroyErr != nil {
+			return machine.Instance{}, fmt.Errorf("instance %s did not start, and removing it failed, so it may still be there: %w", inst.Name, errors.Join(err, destroyErr))
+		}
+		return machine.Instance{}, fmt.Errorf("instance %s did not start, so it was removed: %w", inst.Name, err)
+	}
+	return inst, nil
+}
+
+// create makes the VM, stopped.
+func (d *Driver) create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	issued, err := d.caller(ctx)
 	if err != nil {
 		return machine.Instance{}, err

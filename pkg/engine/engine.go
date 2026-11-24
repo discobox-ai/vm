@@ -116,14 +116,27 @@ type CreateOptions struct {
 	// Capabilities.Volumes. Cache.Generation is the driver's to report.
 	Data  *machine.DataVolume
 	Cache *machine.CacheVolume
+	// Start asks for the VM running when Create returns, as Start with
+	// these options leaves it, its guest told where its service listens;
+	// nil leaves it stopped. Its Timeout bounds the whole create.
+	Start *StartOptions
 }
 
 // Create makes a VM: a copy of the committed VM opts.From, of the pool, or
 // else of the embedder's From, or else a fresh one from the driver's base. It
-// carries the embedder's Forwards.
+// carries the embedder's Forwards. With opts.Start the driver makes it
+// running (machine.InstanceSpec.Start, ADR 26-11-23-458), and its guest is
+// told where its service listens, as Start tells it; a VM whose guest
+// cannot be told is removed, so a create asked to start leaves a running VM
+// or none.
 func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, error) {
 	if err := e.checkForwards(e.Forwards); err != nil {
 		return Instance{}, err
+	}
+	if opts.Start != nil {
+		if err := e.CheckGUI(opts.Start.GUI); err != nil {
+			return Instance{}, err
+		}
 	}
 	if opts.Bare && !e.Driver.Capabilities().Bare.Strips() {
 		return Instance{}, fmt.Errorf("driver %s cannot make an instance that holds nothing of its provider's account: %w", e.Driver.Name(), machine.ErrUnsupported)
@@ -183,7 +196,33 @@ func (e *Engine) Create(ctx context.Context, opts CreateOptions) (Instance, erro
 			return Instance{}, fmt.Errorf("port %d forwards to instance %s itself", f.Port, f.Instance)
 		}
 	}
-	return e.Driver.Create(ctx, spec)
+	if opts.Start == nil {
+		return e.Driver.Create(ctx, spec)
+	}
+	timeout := opts.Start.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	spec.Start = &machine.BootOptions{GUI: opts.Start.GUI, Title: "disco-vm: " + spec.Name}
+	inst, err := e.Driver.Create(ctx, spec)
+	if err != nil {
+		return Instance{}, err
+	}
+	m, err := e.Driver.Attach(ctx, inst)
+	if err != nil {
+		err = fmt.Errorf("instance %s was created started, but it could not be attached: %w", inst.Name, err)
+	} else {
+		err = e.announceService(ctx, inst, m)
+	}
+	if err != nil {
+		if destroyErr := e.Driver.Destroy(context.WithoutCancel(ctx), inst); destroyErr != nil {
+			return Instance{}, fmt.Errorf("instance %s was created started, but its guest could not be told where its service listens, and removing it failed, so it may still be there; remove it: %w", inst.Name, errors.Join(err, destroyErr))
+		}
+		return Instance{}, fmt.Errorf("instance %s was created started, but its guest could not be told where its service listens, so it was removed: %w", inst.Name, err)
+	}
+	return inst, nil
 }
 
 // embedderFrom is the embedder's From, refused where the driver cannot copy

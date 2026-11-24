@@ -105,8 +105,9 @@ func (f *createFlags) fence() (*machine.Egress, error) {
 	return &machine.Egress{Allow: allow, CloseDNS: f.closeDNS}, nil
 }
 
-// create makes the VM name, or one of a random name when name is empty.
-func (f *createFlags) create(ctx context.Context, e *engine.Engine, name string) (engine.Instance, error) {
+// create makes the VM name, or one of a random name when name is empty,
+// started with start where it is not nil.
+func (f *createFlags) create(ctx context.Context, e *engine.Engine, name string, start *engine.StartOptions) (engine.Instance, error) {
 	if f.from == "" && f.fromSet() {
 		return engine.Instance{}, errors.New("--from takes a committed VM's name; leave it out for a fresh VM")
 	}
@@ -128,7 +129,7 @@ func (f *createFlags) create(ctx context.Context, e *engine.Engine, name string)
 	}
 	return e.Create(ctx, engine.CreateOptions{
 		Name: name, From: f.from, CPUs: f.cpus, Memory: memory, Bare: f.bare, Networks: f.networks, URLs: urls, Egress: egress,
-		Data: data, Cache: cache,
+		Data: data, Cache: cache, Start: start,
 	})
 }
 
@@ -146,7 +147,7 @@ which is the driver's configuration ($DISCO_VM_BASE), never the create's.`,
 			if err != nil {
 				return err
 			}
-			inst, err := flags.create(cmd.Context(), e, firstArg(args))
+			inst, err := flags.create(cmd.Context(), e, firstArg(args), nil)
 			if err != nil {
 				return err
 			}
@@ -167,18 +168,18 @@ func runCommand(g *globals) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run [NAME] [--from VM] [flags]",
 		Short: "Create a VM, fresh or from a committed one, and start it",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Create the VM NAME (a random name when it is not given) running: a copy of
+the committed VM --from, or a fresh VM of the driver's base. A VM that does
+not start is removed, so run leaves a running VM or none.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()
 			if err != nil {
 				return err
 			}
 			ctx := cmd.Context()
-			inst, err := flags.create(ctx, e, firstArg(args))
+			inst, err := flags.create(ctx, e, firstArg(args), &engine.StartOptions{Timeout: timeout, GUI: gui})
 			if err != nil {
-				return err
-			}
-			if err := e.Start(ctx, inst, engine.StartOptions{Timeout: timeout, GUI: gui}); err != nil {
 				return err
 			}
 			fmt.Println(inst.Name)
@@ -187,7 +188,7 @@ func runCommand(g *globals) *cobra.Command {
 	}
 	flags.register(cmd)
 	cmd.Flags().BoolVar(&gui, "gui", false, "show the guest's display in a native window")
-	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "how long to wait for the guest agent")
+	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "how long to create the VM and wait for its guest agent")
 	return cmd
 }
 

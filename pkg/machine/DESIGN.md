@@ -14,7 +14,10 @@ column below.
 
 `machine.Driver` is one pool's (`machine.Config.Pool`) VMs, committed
 or not (ADR 26-11-03-606): Create, fresh from the driver's base
-(`Config.Base`) or a copy of a committed VM (`InstanceSpec.From`); Install,
+(`Config.Base`) or a copy of a committed VM (`InstanceSpec.From`), stopped,
+or running where `InstanceSpec.Start` asks, as Start leaves it, so a
+provider that runs what it makes is never stopped only to be started, and a
+create whose start fails leaves nothing (ADR 26-11-23-458); Install,
 a committed VM from media, with the release the media resolved to
 (`Instance.Release`, which every VM created from it or upgraded to it
 carries, so an embedder keys a base on what `latest` was: discobox ADR

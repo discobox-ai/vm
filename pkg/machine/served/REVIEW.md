@@ -10,7 +10,11 @@
   checked in `createRequest.set`, and the body is decoded with unknown
   fields refused. A field added to `machine.InstanceSpec` is not served
   until it is added to both, and to `capabilities` where a capability
-  reports it.
+  reports it. The one exception is a create asked to start
+  (`createRequest.Start`): it is not a `Field` but the start it asks for, so
+  it is refused unless `OpStart` is allowed, as a start is; an operation a
+  create carries out is gated on that operation's `Op`, never listed as a
+  field an embedder could allow without it.
 - **The version is checked before routing.** `versioned` wraps the whole
   mux, so a client of another version learns nothing else, an unknown path
   included.

@@ -95,10 +95,15 @@ func (d *Driver) Install(context.Context, machine.InstallSpec, string) (machine.
 }
 
 // Create makes a VM on the server, which finds its From by name in its
-// pool. A cache volume is refused: caches are not served.
+// pool, and starts it there where spec.Start asks, as Start does. A cache
+// volume is refused: caches are not served; and a window, as Start refuses
+// one.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	if spec.Cache != nil {
 		return machine.Instance{}, fmt.Errorf("served: caches are never served: %w", machine.ErrUnsupported)
+	}
+	if spec.Start != nil && spec.Start.GUI {
+		return machine.Instance{}, fmt.Errorf("served: a window is never served: %w", machine.ErrUnsupported)
 	}
 	reach := d.Capabilities().URLs
 	if err := spec.URLs.Check(reach); err != nil {
@@ -108,7 +113,8 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		Name: spec.Name, CPUs: spec.CPUs, Memory: spec.Memory, Forwards: spec.Forwards,
 		Networks: spec.Networks, Egress: spec.Egress, Data: spec.Data,
 		// A driver whose every machine is bare needs no request of it.
-		Bare: spec.Bare && d.Capabilities().Bare != machine.BareAlways,
+		Bare:  spec.Bare && d.Capabilities().Bare != machine.BareAlways,
+		Start: spec.Start != nil,
 	}
 	if asked := asked(spec.URLs, reach); len(asked) > 0 {
 		switch {
