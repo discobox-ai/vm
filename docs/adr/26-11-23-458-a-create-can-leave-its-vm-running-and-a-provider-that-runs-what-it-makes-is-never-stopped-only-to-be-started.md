@@ -1,7 +1,9 @@
 # 26-11-23-458 — A create can leave its VM running, and a provider that runs what it makes is never stopped only to be started
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-11-23
+
+Accepted by the owner by merging #220, 2026-11-24.
 
 ## Context
 
