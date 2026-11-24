@@ -35,8 +35,11 @@ machines and snapshots (the root
   (`machine.Config.Base`), or boxd's default image (`GetConfig`) when it has
   none; **a VM from a committed one** restores its snapshot by name
   (`CreateVmFromSnapshot`). Either is made at the VM's size and stopped, so
-  its first boot is a cold boot of its disk, and a fresh one's first `run`
-  is two boots. boxd does not say which snapshot a machine was restored
+  its first boot is a cold boot of its disk; a fresh one asked to start
+  (`InstanceSpec.Start`, ADR 26-11-23-458) is left running, since the boot
+  `CreateVm` made of its image is a cold one, so its `run` is one boot, and a
+  restored one asked to start is stopped and then started, since a restore
+  resumes its snapshot's memory. boxd does not say which snapshot a machine was restored
   from, so `Instance.From` is empty, and a restored machine outlives its
   snapshot's removal.
 - **A NotFound for a machine just made is not a machine gone.** boxd has

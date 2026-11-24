@@ -212,10 +212,18 @@ func (d *Driver) baseImage(ctx context.Context, api boxdapi.BoxdApiClient) (stri
 // or made fresh from the driver's image, at the size it asks for, fenced as
 // it asks the moment boxd answers, with its default proxy pinned to the
 // service port, or closed if its ingress URL is asked off; then
-// powered off in order, so its first boot is a cold boot.
+// powered off in order, so its first boot is a cold boot. With spec.Start a
+// fresh machine is left running, since the machine CreateVm booted from its
+// image is a cold boot already, and a restored one, which resumes its
+// snapshot's memory, is powered off as ever and then started, so it boots
+// cold too (ADR 26-11-23-458 §2, ADR 26-10-15-851); one that does not
+// start is removed.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	if err := machine.ValidateName(spec.Name); err != nil {
 		return machine.Instance{}, err
+	}
+	if spec.Start != nil && spec.Start.GUI {
+		return machine.Instance{}, fmt.Errorf("boxd: a window on the guest's display: %w", machine.ErrUnsupported)
 	}
 	name := d.machineName(spec.Name)
 	if len(name) > maxMachineName {
@@ -354,9 +362,10 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 			return err
 		})
 	}
-	if err == nil {
+	if err == nil && (restore || spec.Start == nil) {
 		// A snapshot is of a running guest, and a new machine runs. Stop
-		// it, so the first boot is a cold boot of its disk.
+		// it, so the first boot is a cold boot of its disk. A fresh one
+		// asked to start booted cold from its image, and is left running.
 		err = fresh.step(ctx, func() error { return powerOff(ctx, api, vm) })
 	}
 	if err != nil {
@@ -367,9 +376,24 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 	}
 	info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: vm})
 	if err != nil {
+		if spec.Start != nil {
+			// A machine left running is not left behind unlisted.
+			if undo := d.destroyVM(vm, true); undo != nil {
+				err = errors.Join(err, fmt.Errorf("boxd: undo the create of %s: %w", name, undo))
+			}
+		}
 		return machine.Instance{}, fmt.Errorf("boxd: machine %s: %w", name, err)
 	}
-	return d.instance(info), nil
+	inst := d.instance(info)
+	if restore && spec.Start != nil {
+		if _, err := d.Start(ctx, inst, *spec.Start); err != nil {
+			if undo := d.destroyVM(vm, true); undo != nil {
+				return machine.Instance{}, fmt.Errorf("boxd: VM %s did not start, and removing it failed, so it may still be there: %w", spec.Name, errors.Join(err, undo))
+			}
+			return machine.Instance{}, fmt.Errorf("boxd: VM %s did not start, so it was removed: %w", spec.Name, err)
+		}
+	}
+	return inst, nil
 }
 
 // newlyMade is a machine boxd has just made, which boxd may answer NotFound

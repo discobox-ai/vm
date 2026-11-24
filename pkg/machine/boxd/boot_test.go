@@ -344,3 +344,60 @@ func TestBootLeavesARunningMachinesSize(t *testing.T) {
 		t.Fatalf("a running machine was stopped to resize it: %v", calls)
 	}
 }
+
+// A fresh create asked to start leaves the machine CreateVm booted running,
+// with no stop; one restored from a committed VM is stopped, so it boots
+// cold, and then started; a window is refused before anything is made (ADR
+// 26-11-23-458 §2).
+func TestCreateStarted(t *testing.T) {
+	defer func(every time.Duration) { waitEvery = every }(waitEvery)
+	waitEvery = 20 * time.Millisecond
+	d, fake := fakeDriver(t, t.TempDir())
+	ctx := context.Background()
+	status := func(id string) string {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.vms[id].status
+	}
+
+	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "window", Start: &machine.BootOptions{GUI: true}}); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("a create started with a window: %v, want ErrUnsupported", err)
+	}
+	if _, err := d.Instance(ctx, "window"); !errors.Is(err, machine.ErrNotFound) {
+		t.Fatalf("a refused create made %v", err)
+	}
+
+	fake.takeCalls()
+	fresh, err := d.Create(ctx, machine.InstanceSpec{Name: "fresh", Start: &machine.BootOptions{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls := fake.takeCalls(); slices.Contains(calls, "StopVm") || slices.Contains(calls, "StartVm") {
+		t.Fatalf("a fresh create started called %v; want no stop and no start", calls)
+	}
+	if got := status(fresh.ID); got != "running" {
+		t.Fatalf("a fresh create started left its machine %s", got)
+	}
+
+	source, err := d.Create(ctx, machine.InstanceSpec{Name: "source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := d.Commit(ctx, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.takeCalls()
+	copied, err := d.Create(ctx, machine.InstanceSpec{Name: "copied", From: &committed, Start: &machine.BootOptions{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := fake.takeCalls()
+	stop, start := slices.Index(calls, "StopVm"), slices.Index(calls, "StartVm")
+	if stop < 0 || start < stop {
+		t.Fatalf("a copy created started called %v; want StopVm, so it boots cold, then StartVm", calls)
+	}
+	if got := status(copied.ID); got != "running" {
+		t.Fatalf("a copy created started left its machine %s", got)
+	}
+}
