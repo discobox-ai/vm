@@ -400,10 +400,30 @@ func (d *Driver) commitVM(ctx context.Context, container string, inst machine.In
 }
 
 // Create makes a container of the committed VM spec.From's image, or of an
-// image readied from the base for a fresh VM. A name a committed VM or a
-// container holds is ErrExists, checked again once the container is made,
-// since a commit of another VM of the name may have taken it in between.
+// image readied from the base for a fresh VM, and, with spec.Start, starts
+// it as Start does (ADR 26-11-23-458): a container that does not start is
+// removed. A name a committed VM or a container holds is ErrExists, checked
+// again once the container is made, since a commit of another VM of the
+// name may have taken it in between.
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
+	if spec.Start != nil && spec.Start.GUI {
+		return machine.Instance{}, fmt.Errorf("docker: a window on the guest's display: %w", machine.ErrUnsupported)
+	}
+	inst, err := d.create(ctx, spec)
+	if err != nil || spec.Start == nil {
+		return inst, err
+	}
+	if _, err := d.Start(ctx, inst, *spec.Start); err != nil {
+		if destroyErr := d.Destroy(context.WithoutCancel(ctx), inst); destroyErr != nil {
+			return machine.Instance{}, fmt.Errorf("docker: VM %s did not start, and removing it failed, so it may still be there: %w", inst.Name, errors.Join(err, destroyErr))
+		}
+		return machine.Instance{}, fmt.Errorf("docker: VM %s did not start, so it was removed: %w", inst.Name, err)
+	}
+	return inst, nil
+}
+
+// create makes the container, stopped.
+func (d *Driver) create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	if err := machine.ValidateName(spec.Name); err != nil {
 		return machine.Instance{}, err
 	}
