@@ -76,8 +76,9 @@ type target struct {
 	// exposed port), so url answers while it is stopped, the same as while
 	// it runs.
 	lastingURL bool
-	// noFrom says a VM made from another does not say which (Archil keeps
-	// no record of a fork's source), so ls and inspect show no FROM.
+	// noFrom says a VM made from a committed one does not say which (boxd
+	// does not say which snapshot a machine was restored from), so ls and
+	// inspect show no FROM.
 	noFrom bool
 }
 
@@ -147,6 +148,7 @@ func targetFromEnv() target {
 			dir:        "/srv",
 			root:       os.Getenv("DISCO_VM_E2E_ROOT"),
 			lastingURL: true,
+			noFrom:     true,
 		}
 	case "archil":
 		if os.Getenv("ARCHIL_API_KEY") == "" || os.Getenv("ARCHIL_REGION") == "" {
@@ -163,7 +165,6 @@ func targetFromEnv() target {
 			dir:        "/srv",
 			root:       os.Getenv("DISCO_VM_E2E_ROOT"),
 			lastingURL: true,
-			noFrom:     true,
 		}
 	case "hcs":
 		iso := os.Getenv("DISCO_VM_E2E_ISO")
