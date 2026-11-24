@@ -171,18 +171,6 @@ func (d *Driver) setNetwork(ctx context.Context, id string, fence *machine.Egres
 	return got, nil
 }
 
-// unexposeService makes 7302 public no more, where a VM made before ports
-// were left unexposed has it exposed: every Start, Commit, Service, and
-// Create or Upgrade from a committed VM (the source and the fork) unexpose it, so such a
-// VM is fenced whichever of them it meets first, a VM an anonymous request
-// woke and a committed one included.
-func (d *Driver) unexposeService(ctx context.Context, id string) error {
-	if err := d.api.unexposePort(ctx, id, guest.ServicePort); err != nil {
-		return fmt.Errorf("unexpose port %d: %w", guest.ServicePort, err)
-	}
-	return nil
-}
-
 // revokeTokens revokes every port token of a sandbox. A revoke that fails
 // fails the call; a token it leaves still expires.
 func (d *Driver) revokeTokens(ctx context.Context, id string) error {
@@ -216,10 +204,6 @@ func (*Driver) Listen(context.Context, machine.Instance) (string, error) {
 func (d *Driver) Service(ctx context.Context, inst machine.Instance) (machine.Service, error) {
 	sb, err := d.sandboxOf(ctx, inst)
 	if err != nil {
-		return machine.Service{}, fmt.Errorf("archil: %s's service: %w", inst.Name, err)
-	}
-	// A URL handed out with a credential is one that needs it.
-	if err := d.unexposeService(ctx, sb.ID); err != nil {
 		return machine.Service{}, fmt.Errorf("archil: %s's service: %w", inst.Name, err)
 	}
 	p, err := d.api.network(ctx, sb.ID)

@@ -3,10 +3,8 @@ package archil
 import (
 	"context"
 	"errors"
-	"net/http"
 	"testing"
 
-	"github.com/discobox-ai/vm/pkg/guest"
 	"github.com/discobox-ai/vm/pkg/machine"
 )
 
@@ -67,82 +65,6 @@ func TestCloseDNSAllowsNoResolver(t *testing.T) {
 	defer f.mu.Unlock()
 	if len(f.sandboxes) > 0 {
 		t.Fatalf("a refused create left %d sandboxes", len(f.sandboxes))
-	}
-}
-
-// A VM made before ports were left unexposed has 7302 exposed, open to
-// anyone: a start unexposes it, running already or not, and so do Service,
-// Commit, and a create or upgrade from it, so one an anonymous request woke, which no
-// start reaches, and a committed one, which none does, are fenced too.
-func TestOldVMsAreUnexposed(t *testing.T) {
-	f := newFakeAPI(t, t.TempDir())
-	ctx := context.Background()
-	d := f.driver(t, "old", "")
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "old"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
-	expose := func() {
-		t.Helper()
-		if err := d.api.call(ctx, http.MethodPut, "/api/sandboxes/"+inst.ID+"/ports/7302", nil, nil, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	exposed := func(when string) {
-		t.Helper()
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		if f.sandboxes[0].ports[int(guest.ServicePort)] {
-			t.Fatalf("an old VM's port 7302 is still exposed once %s", when)
-		}
-	}
-	expose()
-	m, err := d.Start(ctx, inst, machine.BootOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	exposed("started")
-	expose()
-	if _, err := d.Start(ctx, inst, machine.BootOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	exposed("started while it ran")
-	expose()
-	if _, err := d.Service(ctx, inst); err != nil {
-		t.Fatal(err)
-	}
-	exposed("its service was asked for")
-	if err := m.Kill(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.api.waitFor(ctx, inst.ID, "stopped", "exited"); err != nil {
-		t.Fatal(err)
-	}
-	expose()
-	if inst, err = d.Commit(ctx, inst); err != nil {
-		t.Fatal(err)
-	}
-	exposed("committed")
-	// A VM committed before, exposed and never started again.
-	expose()
-	copied, err := d.Create(ctx, machine.InstanceSpec{Name: "copy", From: &inst})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Destroy(context.Background(), copied) })
-	exposed("a VM was created from it")
-	expose()
-	if copied, err = d.Upgrade(ctx, copied, &inst); err != nil {
-		t.Fatal(err)
-	}
-	exposed("a VM was upgraded from it")
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, sb := range f.sandboxes {
-		if sb.ports[int(guest.ServicePort)] {
-			t.Fatalf("sandbox %s has port 7302 exposed", sb.name)
-		}
 	}
 }
 
