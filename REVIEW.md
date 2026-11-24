@@ -141,3 +141,9 @@
   vet, gofmt, and the linters say nothing. It happened twice in one change
   (vm#196: `machinetest`'s `wantState` above `remove`, boxd's test `pause`
   above `envDriver`).
+- **An `internal/e2e` layout's expectation is checked against every
+  driver's layout, not only the one being fixed.** A driver-gated e2e run
+  (boxd, archil, hcs, vz) is not in CI, so a flag dropped or added for one
+  driver breaks another's run silently: removing `noFrom` for archil, which
+  now records a copy's source, would have left boxd, which does not, expecting
+  a FROM (vm#223).
