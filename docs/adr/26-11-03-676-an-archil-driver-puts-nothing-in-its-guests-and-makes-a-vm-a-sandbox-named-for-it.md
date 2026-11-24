@@ -1,6 +1,6 @@
 # 26-11-03-676 — An archil driver puts nothing in its guests, and makes a VM a sandbox named for it
 
-- **Status**: Accepted (its Create exposing port 7302, and its service
+- **Status**: Accepted (its VM as the sandbox named for it, superseded by [26-11-24-905](26-11-24-905-an-archil-vm-is-the-sandbox-its-labels-name-and-an-upgrade-makes-its-new-sandbox-before-it-removes-the-old.md); its Create exposing port 7302, and its service
   row, superseded by [26-11-17-311](26-11-17-311-a-driver-can-fence-a-machine-at-its-providers-edge-and-its-urls-answer-only-a-credential-it-mints-for-its-caller.md);
   §1's nothing installed or started in a guest, the rejected "systemd
   booted by disco-vm", and §4's operations in Archil's own namespaces,
