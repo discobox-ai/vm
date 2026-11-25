@@ -132,3 +132,8 @@ go test ./...          # includes the full CLI lifecycle on the fake driver
 | `internal/e2e` | the CLI end to end |
 
 The design and its reasoning are in [DESIGN.md](DESIGN.md).
+
+## Security
+
+To report a vulnerability, follow [SECURITY.md](SECURITY.md): use "Report a
+vulnerability" on this repository's Security tab, not a public issue.
