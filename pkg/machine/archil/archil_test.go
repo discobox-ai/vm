@@ -150,6 +150,49 @@ func TestFences(t *testing.T) {
 	}
 }
 
+// The hosts Archil adds to a fenced sandbox's policy for its mounts are not
+// the fence's: a fence reads without them, a policy set for it keeps them
+// where Archil put them, so a fence already held is not set again, a fence
+// that names one is refused, and any other host is still a difference.
+func TestMountHostsAreArchils(t *testing.T) {
+	for _, c := range []struct {
+		raw  string
+		want *machine.Egress
+		// held: the policy is the fence's as the driver sets it, so is
+		// not set again; rules as objects would be, as strings.
+		held bool
+	}{
+		// As Archil held them, seen 2026-11-26.
+		{`{"egress":{"default":"deny","allow":["example.com","mount.*.archil.com","data.*.archil.com"],"deny":["8.8.8.8","1.1.1.1"]}}`,
+			&machine.Egress{Allow: []string{"example.com"}, CloseDNS: true}, true},
+		{`{"egress":{"default":"deny","allow":["mount.*.archil.com","data.*.archil.com"],"deny":["8.8.8.8","1.1.1.1"]}}`,
+			&machine.Egress{}, true},
+		{`{"egress":{"default":"deny","allow":[{"target":"example.com"},{"target":"mount.*.archil.com"}]}}`,
+			&machine.Egress{Allow: []string{"example.com"}}, false},
+	} {
+		var had egressPolicy
+		if err := json.Unmarshal([]byte(c.raw), &had); err != nil {
+			t.Fatal(err)
+		}
+		if got := fenceOf(had); !sameFence(got, c.want) {
+			t.Errorf("%s reads as %+v, want %+v", c.raw, got, c.want)
+		}
+		if want := wantPolicy(had, c.want, false); c.held && !samePolicy(had, want) {
+			t.Errorf("%s, holding %+v, would be set to %+v", c.raw, c.want, want.Egress)
+		}
+	}
+	var other egressPolicy
+	_ = json.Unmarshal([]byte(`{"egress":{"default":"deny","allow":["example.com","mount.*.archil.com","evil.example"],"deny":["8.8.8.8","1.1.1.1"]}}`), &other)
+	if fence := (&machine.Egress{Allow: []string{"example.com"}, CloseDNS: true}); sameFence(fenceOf(other), fence) {
+		t.Errorf("a policy that allows another host reads as %+v", fence)
+	}
+	for _, h := range mountHosts {
+		if err := checkAllow(&machine.Egress{Allow: []string{"example.com", h}}); err == nil {
+			t.Errorf("a fence that names %s was taken", h)
+		}
+	}
+}
+
 // The ingress mark goes on a policy alongside a fence, or on none, keeping
 // the provider's default, and comes off with nothing else.
 func TestIngressMark(t *testing.T) {

@@ -419,6 +419,7 @@ func (f *fakeAPI) createSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.mounts, s.serviceIngress, s.labels = body.Mounts, body.ServiceIngress, body.Labels
+	s.network = mountedPolicy(s.network, len(s.mounts) > 0)
 	if err := os.WriteFile(filepath.Join(s.root, imageMarker), []byte(s.image), 0o644); err != nil {
 		fail(w, http.StatusInternalServerError, "", err.Error())
 		return
@@ -533,6 +534,7 @@ func (f *fakeAPI) startSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Mounts != nil {
 		s.mounts = *body.Mounts
+		s.network = mountedPolicy(s.network, len(s.mounts) > 0)
 	}
 	if err := f.boot(s); err != nil {
 		fail(w, http.StatusInternalServerError, "", err.Error())
@@ -716,8 +718,44 @@ func (f *fakeAPI) putNetwork(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "sandbox_invalid_state", "sandbox is "+s.status)
 		return
 	}
-	s.network = raw
+	s.network = mountedPolicy(raw, len(s.mounts) > 0)
 	reply(w, http.StatusOK, s.network, "")
+}
+
+// mountedPolicy is a sandbox's policy as Archil holds it (seen 2026-11-26):
+// one that denies by default allows mountHosts after its own list while the
+// sandbox has mounts, set at its create or start and kept whatever policy is
+// set later, and a start with none drops them. A policy that allows by
+// default, or none, is left as it is.
+func mountedPolicy(raw json.RawMessage, mounted bool) json.RawMessage {
+	var p struct {
+		Egress map[string]json.RawMessage `json:"egress"`
+	}
+	var dflt string
+	if json.Unmarshal(raw, &p) != nil || p.Egress == nil || json.Unmarshal(p.Egress["default"], &dflt) != nil || dflt != "deny" {
+		return raw
+	}
+	var allow []any
+	_ = json.Unmarshal(p.Egress["allow"], &allow)
+	allow = slices.DeleteFunc(allow, isMountHost)
+	if mounted {
+		for _, h := range mountHosts {
+			allow = append(allow, h)
+		}
+	}
+	delete(p.Egress, "allow")
+	if len(allow) > 0 {
+		list, err := json.Marshal(allow)
+		if err != nil {
+			return raw
+		}
+		p.Egress["allow"] = list
+	}
+	out, err := json.Marshal(p)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // port is r's port, or 0 after answering 400.

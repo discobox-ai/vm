@@ -29,6 +29,14 @@ var resolvers = []string{"8.8.8.8", "1.1.1.1"}
 // TLS on 443.
 const ingressOff = "192.0.2.86"
 
+// mountHosts are the hosts Archil adds to a fenced sandbox's allow-list for
+// the disks it mounts (seen 2026-11-26: a sandbox made with a mount under a
+// deny-by-default policy held them after the asked list, and a policy set
+// without them read back with them). They are Archil's, never the fence's:
+// a fence is read without them, a policy set keeps them where Archil put
+// them, and a fence that names one is refused.
+var mountHosts = []string{"mount.*.archil.com", "data.*.archil.com"}
+
 // tokenHeader carries a port token.
 const tokenHeader = "X-Archil-Token" //nolint:gosec // G101: a header's name, not a credential
 
@@ -36,15 +44,19 @@ const tokenHeader = "X-Archil-Token" //nolint:gosec // G101: a header's name, no
 // well before it ends, by asking Service again.
 const tokenLife = 24 * time.Hour
 
-// checkAllow refuses a fence that closes DNS and allows a resolver it
-// denies: the resolver's port 53 would stay closed, and the allow mean
-// nothing.
+// checkAllow refuses a fence that names a host Archil adds for its mounts,
+// which a fence is read without, and one that closes DNS and allows a
+// resolver it denies: the resolver's port 53 would stay closed, and the
+// allow mean nothing.
 func checkAllow(e *machine.Egress) error {
-	if e == nil || !e.CloseDNS {
+	if e == nil {
 		return nil
 	}
 	for _, a := range e.Allow {
-		if slices.Contains(resolvers, a) {
+		if slices.Contains(mountHosts, a) {
+			return fmt.Errorf("archil: %s is Archil's own, allowed for a VM's data volume, and a fence cannot name it", a)
+		}
+		if e.CloseDNS && slices.Contains(resolvers, a) {
 			return fmt.Errorf("archil: a fence that closes DNS denies %s, and cannot allow it", a)
 		}
 	}
@@ -68,21 +80,37 @@ func policy(e *machine.Egress) *egressPolicy {
 	return p
 }
 
-// fenceOf is the fence a policy holds: nil when egress is not denied by
-// default. It closes DNS where it denies every resolver, or allows nothing.
+// target is an allow rule's host or network: the rule itself, or its
+// target.
+func target(a any) (string, bool) {
+	switch v := a.(type) {
+	case string:
+		return v, true
+	case map[string]any:
+		t, ok := v["target"].(string)
+		return t, ok
+	}
+	return "", false
+}
+
+// isMountHost reports whether an allow rule is one Archil adds for its
+// mounts.
+func isMountHost(a any) bool {
+	t, ok := target(a)
+	return ok && slices.Contains(mountHosts, t)
+}
+
+// fenceOf is the fence a policy holds, without the hosts Archil adds for its
+// mounts: nil when egress is not denied by default. It closes DNS where it
+// denies every resolver, or allows nothing.
 func fenceOf(p egressPolicy) *machine.Egress {
 	if p.Egress == nil || p.Egress.Default != "deny" {
 		return nil
 	}
 	e := &machine.Egress{}
 	for _, a := range p.Egress.Allow {
-		switch v := a.(type) {
-		case string:
-			e.Allow = append(e.Allow, v)
-		case map[string]any:
-			if t, ok := v["target"].(string); ok {
-				e.Allow = append(e.Allow, t)
-			}
+		if t, ok := target(a); ok && !isMountHost(a) {
+			e.Allow = append(e.Allow, t)
 		}
 	}
 	if len(e.Allow) > 0 {
@@ -110,14 +138,22 @@ func ingressOf(p egressPolicy) bool {
 }
 
 // wantPolicy is the policy a sandbox whose policy is had should hold for a
-// fence and ingress: the fence's own, or, with none, had with any fence a
-// fork carried removed and the provider's default kept; marked ingressOff
-// when ingress is off.
+// fence and ingress: the fence's own, with the hosts Archil added to had for
+// its mounts kept after it, or, with none, had with any fence a fork carried
+// removed and the provider's default kept; marked ingressOff when ingress is
+// off.
 func wantPolicy(had egressPolicy, fence *machine.Egress, off bool) egressPolicy {
 	var p egressPolicy
 	switch {
 	case fence != nil:
 		p = *policy(fence)
+		if had.Egress != nil {
+			for _, a := range had.Egress.Allow {
+				if isMountHost(a) {
+					p.Egress.Allow = append(p.Egress.Allow, a)
+				}
+			}
+		}
 	case fenceOf(had) == nil && had.Egress != nil:
 		rules := *had.Egress
 		rules.Deny = slices.DeleteFunc(slices.Clone(rules.Deny), func(d string) bool { return d == ingressOff })
@@ -146,8 +182,9 @@ func samePolicy(a, b egressPolicy) bool {
 }
 
 // setNetwork gives a sandbox the policy of a fence and ingress, where it
-// holds another (a fork holds its source's; a fresh sandbox, the fence alone),
-// and reads it back holding both. It returns the policy read back.
+// holds another (a fork holds its source's; a fresh sandbox, the fence alone,
+// and the hosts Archil adds for its mounts), and reads it back holding both:
+// the fence as asked, but for those hosts, and nothing else. It returns the policy read back.
 func (d *Driver) setNetwork(ctx context.Context, id string, fence *machine.Egress, off bool) (egressPolicy, error) {
 	had, err := d.api.network(ctx, id)
 	if err != nil {

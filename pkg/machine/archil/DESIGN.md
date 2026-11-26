@@ -189,6 +189,14 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
     an upgrade, set or cleared on a fork
     as the spec asks, and changes no traffic; an address, not a name,
     since any domain rule has Archil terminate the guest's TLS on 443.
+  - **The hosts Archil adds for a mount are its own:** a fenced
+    sandbox with a mount, made with it or started with it, allows
+    `mount.*.archil.com` and `data.*.archil.com` after its list, keeps
+    them through any policy set while mounted and through a stop, and drops
+    them at a start with no mounts (seen 2026-11-26). A fence is read
+    without them, a policy set keeps them, so a fresh VM created started
+    with its data volume reads back as fenced as asked, and a fence that
+    names one is refused at Create. Any other host is still a difference.
   - **A fence closes DNS when asked** (`Egress.CloseDNS`) by denying
     8.8.8.8 and 1.1.1.1, the resolvers `resolv.conf` names, which an
     allow-list leaves open on 53. A list closes it only when asked, so an
