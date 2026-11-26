@@ -38,11 +38,22 @@ func TestConformance(t *testing.T) {
 	machinetest.Run(t, d, machinetest.Config{
 		CPUs:        2,
 		Memory:      2 << 30,
+		Size:        d.(*Driver).size,
 		Timeout:     5 * time.Minute,
 		ScratchDir:  "/var/lib",
 		Credentials: d.(*Driver).honoredTokens,
 		Pause:       d.(*Driver).pause,
 	})
+}
+
+// size reads the size Archil holds a VM's sandbox to, as someone with
+// Archil's API would (GET /api/sandboxes/{id}).
+func (d *Driver) size(ctx context.Context, inst machine.Instance) (int, uint64, error) {
+	s, err := d.api.sandbox(ctx, inst.ID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return s.VCPUs, s.MemoryMiB << 20, nil
 }
 
 // pause pauses a VM's sandbox as Archil does at its session's limit, by
@@ -97,6 +108,7 @@ func TestConformanceFakeAPI(t *testing.T) {
 		// Not Archil's default size, so a size not kept shows.
 		CPUs:       3,
 		Memory:     3 << 30,
+		Size:       d.size,
 		Timeout:    30 * time.Second,
 		ScratchDir: "/var/lib",
 		URLClient:  f.gatewayClient(),

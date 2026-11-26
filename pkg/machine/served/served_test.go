@@ -105,6 +105,12 @@ func TestConformance(t *testing.T) {
 		Timeout:    30 * time.Second,
 		ScratchDir: "/scratch",
 		GuestAgent: bin,
+		// The size crosses the stream, and the server's fake boots at it.
+		CPUs:   3,
+		Memory: 3 << 30,
+		Size: func(ctx context.Context, inst machine.Instance) (int, uint64, error) {
+			return fake.Size(ctx, server, inst)
+		},
 		// The server's fake pauses it, as a provider would.
 		Pause: func(ctx context.Context, inst machine.Instance) error { return fake.Pause(ctx, server, inst) },
 		// A fake guest is a host process, on the host's clock.

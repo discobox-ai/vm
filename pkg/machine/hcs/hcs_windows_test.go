@@ -68,6 +68,7 @@ func TestConformance(t *testing.T) {
 		From:       base,
 		CPUs:       4,
 		Memory:     4 << 30,
+		SkipSize:   "nothing outside Host Compute Service reads back the size an hcs VM was configured with yet",
 		Timeout:    10 * time.Minute,
 		ScratchDir: `C:\disco-vm-conformance`,
 		Pool: func(pool string) machine.Driver {

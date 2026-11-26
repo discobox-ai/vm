@@ -37,6 +37,8 @@ type Config struct {
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "macOS VMs installed from an IPSW, and Linux VMs from a guest image, on Virtualization.framework.",
+		// Every boot is sized as its VM was created (the configuration's CPU count and memory size).
+		Sizes: true,
 		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Default: DefaultLinuxBase, Privileged: true,
 			Description: "The Linux guest image a fresh VM is made from: a registry reference, or an absolute directory on this Mac whose kernel and root are booted."},
 		ConfigFields: []machine.ConfigField{

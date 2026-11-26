@@ -60,6 +60,7 @@ a `Capabilities` field, never a faked method:
 | install (`Install`: the OSes made from media) | windows: a retail ISO | darwin: an IPSW, or `latest` | **none** | **none** | **none** | the host's | **none** |
 | base (`Config.Base`: what a fresh VM starts from) | **none** | Linux: a guest image, `DefaultLinuxBase` by default | an image, boxd's default by default | an image; **none** unless configured | Linux: a guest image's libkrun kernel and root, `DefaultBase` by default | a name, `scratch` by default | an OCI image; Archil's default by default |
 | commit (`Commit`: `Driver.Commit` and `InstanceSpec.From`) | yes | yes | yes | yes | yes | yes, unless made with `NoCommit` (a test option) | yes |
+| sizes (`Definition.Sizes`: applies `InstanceSpec.CPUs` and `Memory`) | yes: the compute system's processors and memory, at every boot | yes: the configuration's CPU count and memory, at every boot | yes: `VmConfig` at create, and a boot resizes a machine of another size | yes: `docker update` (`NanoCpus`, `Memory`, no swap) before every start | yes: libkrun's vCPUs and memory, at every boot | yes: recorded at every boot (`fake.Size`) | yes: `vcpu_count` and `mem_size_mib` at create, and from a committed VM |
 | a committed VM (`Commit`) | its record and disk, left in place | its record and bundle, left in place | a snapshot `dvm-<pool>--<name>`; the machine deleted | an image `disco-vm-vm:<pool>--<name>`; the container removed | its record and bundle, left in place | its record and tree, left in place | the stopped sandbox `dvm-<pool>--<name>`, its mounts and data disk dropped; nothing marks it committed |
 | disks chain below the seam (`local.Hypervisor.Chains`) | yes: a copy is a differencing VHDX over the committed VM's | no | no | no | no: a reflink, else a sparse copy | no | yes: a copy forks the committed VM's sandbox, which Archil keeps while it has forks (`ErrInUse`) |
 | keys (`Capabilities.Keys`) | none (`ErrNoKey`) | none (`ErrNoKey`) | **issue**, scope `org`, from a `boxd login` session only; `ErrCannotIssue` from an API key | none (`ErrNoKey`) | none (`ErrNoKey`) | issue, scope `pool` | none (`ErrCannotIssue`: an Archil token never expires) |
@@ -84,6 +85,16 @@ does not see (boxd's counts the org's). A driver that reads a cap from its
 provider reads it at `Check`, so `Capabilities` does no I/O and reports none
 before (ADR 26-11-15-274). The engine counts nothing. Every driver clones the same way: cold
 ([below](#every-copy-is-cold-and-a-vm-is-made-fast-by-what-is-in-it)).
+
+Whether a driver sizes a machine is no capability but a fact of its
+registration (`Definition.Sizes`), so an embedder reads it with no driver
+and refuses a size for one that would ignore it. It is one bool: every
+driver applies CPUs and memory together (`TestSizes` holds the list). The
+suite reads the declaration itself and holds a declaring driver to it in
+its `sized` case: the provider's size of a running instance, read back
+through `machinetest.Config.Size`, is the size it was created with. A
+declaring driver's run that passes no `Size` fails, unless `SkipSize` says
+why (vz and hcs: nothing outside the framework reads it back yet).
 
 ## A paused machine reads as paused, and Start resumes it
 

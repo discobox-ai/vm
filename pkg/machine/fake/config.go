@@ -52,6 +52,8 @@ type Config struct {
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Guests as disco-vm agent processes on this host, each confined to a directory: for tests and CI, on every OS.",
+		// Every boot records the size it was given (Size reads it back).
+		Sizes: true,
 		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Default: DefaultBase,
 			Description: "A name a fresh VM's empty root is marked with."},
 		ConfigFields: []machine.ConfigField{

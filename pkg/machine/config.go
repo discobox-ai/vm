@@ -117,6 +117,13 @@ type Definition struct {
 	// it runs on, which field turns that on, and the endpoints a process on
 	// the machine reaches for the credential. Nil is a driver that cannot.
 	InMachine *InMachineAuth `json:"inMachine,omitempty"`
+	// Sizes declares that the driver applies InstanceSpec.CPUs and Memory
+	// to the machine it makes: its provider holds the machine to that size
+	// once it runs (the conformance suite's Config.Size reads it back). A
+	// driver that does not ignores a size, so an embedder refuses one for
+	// it. A bool, not a list of resources: every driver applies both or
+	// neither.
+	Sizes bool `json:"sizes,omitempty"`
 }
 
 // TakesBase reports whether the driver makes a fresh VM from a base

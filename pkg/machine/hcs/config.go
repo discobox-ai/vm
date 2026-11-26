@@ -28,6 +28,8 @@ type Config struct {
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Windows VMs on Host Compute Service, installed from a retail ISO.",
+		// Every boot is sized as its VM was created (the compute system's processor count and memory).
+		Sizes: true,
 		ConfigFields: []machine.ConfigField{
 			{Key: "view", Label: "View", Type: machine.ConfigString, Env: ViewEnv, Advanced: true, Placeholder: ViewDisplay,
 				Description: "\"display\" shows a running instance's window as the agent's display stream even where the guest serves Remote Desktop; empty is its Remote Desktop where it serves one."},
