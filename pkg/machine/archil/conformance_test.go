@@ -116,8 +116,8 @@ func TestConformanceFakeAPI(t *testing.T) {
 		Credentials: func(_ context.Context, inst machine.Instance) ([]string, error) {
 			return f.honoredTokens(inst.ID), nil
 		},
-		SkipGuestDNS: "the fake Archil's guest is a process on this host, on its network",
-		Pause:        d.pause,
+		HostGuest: "the fake Archil's guest is a process on this host, on its network and its mounts",
+		Pause:     d.pause,
 		// The fake's guest is a host process, on the host's clock.
 		PauseHold: 2 * time.Second,
 	})
