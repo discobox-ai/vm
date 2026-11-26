@@ -103,11 +103,13 @@ type Config struct {
 	// after a commit, of a machine still there, is the one that tells; a
 	// stand-in that keeps a deleted machine's credentials tells both.
 	Credentials func(ctx context.Context, inst machine.Instance) ([]string, error)
-	// SkipGuestDNS, when set, says why the suite must not look for a
-	// resolver from inside a guest whose fence closes DNS
-	// (Egress.CloseDNS): a stand-in whose guest is this host's process. The
-	// fence is still checked as the driver reports it.
-	SkipGuestDNS string
+	// HostGuest, when set, says why the guest is no machine of its own: a
+	// stand-in whose guest is this host's process, on its network and its
+	// mounts. The suite then looks from inside it for nothing only a machine
+	// of its own shows: no resolver answering a guest whose fence closes DNS
+	// (Egress.CloseDNS), and a data volume that is a mount. The fence and
+	// the volume are still checked as the driver reports them.
+	HostGuest string
 	// GuestAgent is where the disco-vm agent is in the guest, which the
 	// suite runs as `dial-host` to reach a peer through a forward. Empty
 	// skips that subtest.
@@ -694,8 +696,8 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		if guestOS != machine.Linux && inst.GuestOS != machine.Linux {
 			t.Skip("the suite looks for a resolver from a linux guest")
 		}
-		if cfg.SkipGuestDNS != "" {
-			t.Skip(cfg.SkipGuestDNS)
+		if cfg.HostGuest != "" {
+			t.Skip(cfg.HostGuest)
 		}
 		m := boot(t, inst)
 		var out bytes.Buffer
@@ -1263,6 +1265,76 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 				wantState(t, driver, inst, machine.StateStopped, "created started, then shut down")
 			})
 		}
+	})
+
+	// A fresh VM created started, fenced and with a data volume, returns
+	// running with the volume mounted (asked of a linux guest), and reports the fence as asked once
+	// created, once stopped, and booted again, when the write to the volume
+	// is still there: a provider that mounts the volume at the create or a
+	// boot may add to the fence for it, and that is not the fence's.
+	t.Run("created-started-fenced-with-data", func(t *testing.T) {
+		spec := machine.InstanceSpec{
+			CPUs: cfg.CPUs, Memory: cfg.Memory, Start: &machine.BootOptions{},
+			Data: &machine.DataVolume{}, Egress: &machine.Egress{Allow: []string{"example.com"}},
+		}
+		switch {
+		case !caps.Fences(spec.Egress):
+			t.Skip("the driver holds no list")
+		case !caps.Attaches(machine.VolumeData):
+			t.Skip("the driver attaches no data volume")
+		}
+		spec.Name = newName()
+		createCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
+		inst, err := driver.Create(createCtx, spec)
+		if errors.Is(err, machine.ErrUnsupported) {
+			t.Skipf("the driver has no base: %v", err)
+		}
+		if err != nil {
+			t.Fatalf("create %s started, fenced, with a data volume: %v", spec.Name, err)
+		}
+		t.Cleanup(func() {
+			if m, err := driver.Attach(context.Background(), inst); err == nil {
+				_ = m.Kill(context.Background())
+			}
+			remove(t, driver, inst)
+		})
+		fenced := func(when string) {
+			t.Helper()
+			got, err := driver.Instance(ctx, inst.Name)
+			if err != nil || got.Egress == nil || !slices.Equal(got.Egress.Allow, spec.Egress.Allow) {
+				t.Fatalf("an instance fenced to %q %s reports %+v: %v", spec.Egress.Allow, when, got.Egress, err)
+			}
+			if got.Data == nil {
+				t.Fatalf("an instance created with a data volume %s reports none", when)
+			}
+		}
+		wantState(t, driver, inst, machine.StateRunning, "created started")
+		fenced("once created started")
+		m, err := driver.Attach(ctx, inst)
+		if err != nil {
+			t.Fatalf("attach to a VM created started: %v", err)
+		}
+		reachable(t, m)
+		dir := machine.VolumePath(inst.GuestOS, machine.VolumeData)
+		if inst.GuestOS == machine.Linux && cfg.HostGuest == "" {
+			// A write kept across a boot could be the root's: the volume
+			// is a mount of its own.
+			if out := guestOutput(t, m, []string{"/bin/sh", "-c", "cut -d ' ' -f 2 /proc/mounts | grep -qxF " + dir + " && echo mounted"}); out != "mounted" {
+				t.Fatalf("the data volume of a VM created started is not mounted at %s: %q", dir, out)
+			}
+		}
+		if err := m.CopyTo(ctx, dir, tarOf(t, "data.txt", "kept")); err != nil {
+			t.Fatalf("write to the data volume of a VM created started: %v", err)
+		}
+		shutdown(t, m)
+		fenced("once it stops")
+		m = boot(t, inst)
+		fenced("booted again")
+		if got := readMarker(t, m, dir+"/data.txt"); got != "kept" {
+			t.Fatalf("the data volume of a VM created started reads %q after a stop and a boot", got)
+		}
+		shutdown(t, m)
 	})
 
 	// A create asked to start whose options its start refuses, a window on
