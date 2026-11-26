@@ -47,7 +47,7 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
 - **Upgrade** (ADR 26-11-03-782, ADR 26-11-24-905 §4) makes the new
   sandbox first, fresh or a fork, at the VM's size, fence, and ingress,
   named `dvm-<pool>--<name, cut to fit>--<hex>` and labeled as replacing the
-  old, with systemd settled, and stopped; only then revokes the old one's
+  old, with systemd launched, and stopped; only then revokes the old one's
   tokens and deletes it. A failure before that removes the new one and
   leaves the VM as it was. One stopped in between leaves a new sandbox
   nothing lists, which the next Upgrade or Destroy removes, after any a
@@ -79,8 +79,8 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   systemd's process runs, so a guest operation can enter its namespaces, and
   not once its boot is done: as on any machine, systemd may still be booting
   when the guest is reached, and a caller that needs a unit waits for that
-  unit. Create then stops the sandbox with systemd's first boot perhaps
-  not done, as any stop may find it: systemd commits the machine ID only
+  unit. A Create not asked to start then stops the sandbox with
+  systemd's first boot perhaps not done, as any stop may find it: systemd commits the machine ID only
   once a first boot completes, so the next boot, of the VM or of a copy, is
   a first boot again and does what was left. Only Create registers, where
   `services get` says there is none (exit 1; any other answer fails, rather
@@ -132,7 +132,7 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   unsent when the machine stops). A flush that fails fails `Shutdown` and
   asks no stop, and the engine's fallback is `Kill`, which flushes no data
   volume; the driver's own stops (Create's, Commit's, Destroy's, a start's
-  that did not settle) flush it where it is mounted and stop the sandbox
+  whose systemd was not launched) flush it where it is mounted and stop the sandbox
   whether or not the guest answered, within `haltLimit`. A VM registered
   before this keeps its service's old argv, since only Create registers:
   the kill makes the driver's stops of it prompt, and a stop Archil makes

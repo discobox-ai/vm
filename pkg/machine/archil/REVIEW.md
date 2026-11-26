@@ -114,7 +114,7 @@
   saw of `archil-client services`; a change to how the driver uses it is
   checked on Archil, not against the stand-in alone.
 - **An upgrade deletes the old sandbox last.** Its new root is made, booted,
-  and settled under a name of its own first, so everything that can fail,
+  and its systemd launched under a name of its own first, so everything that can fail,
   what the new root holds included, fails with the VM as it was; nothing is
   to be added after the delete.
 - **A command entered into systemd's namespaces stays in its nsenter's
