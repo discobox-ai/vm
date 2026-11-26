@@ -39,6 +39,8 @@ type Config struct {
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Linux VMs as Docker containers that boot systemd in a user namespace of their own, on a local or remote daemon.",
+		// Every start sizes the container first (docker update: NanoCpus, Memory).
+		Sizes: true,
 		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Format: machine.OCIImage, Placeholder: "debian:sid",
 			Description: "The image a fresh VM is readied from; with none, a fresh VM is refused."},
 		ConfigFields: []machine.ConfigField{

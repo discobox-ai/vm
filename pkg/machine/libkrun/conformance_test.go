@@ -32,8 +32,11 @@ const BaseEnv = "DISCO_VM_LIBKRUN_BASE"
 func TestConformance(t *testing.T) {
 	driver := realDriver(t)
 	machinetest.Run(t, driver, machinetest.Config{
-		CPUs:       2,
-		Memory:     2 << 30,
+		CPUs:   2,
+		Memory: 2 << 30,
+		Size: func(ctx context.Context, inst machine.Instance) (int, uint64, error) {
+			return launchedSize(ctx, driver, inst)
+		},
 		Timeout:    5 * time.Minute,
 		ScratchDir: "/var/tmp",
 		GuestAgent: "/run/disco-vm/disco-vm",
@@ -241,4 +244,50 @@ func hasDefaultRoute(t *testing.T) bool {
 		}
 	}
 	return false
+}
+
+// launchedSize reads the size a running instance's launcher handed libkrun
+// (its launch.conf, krun_set_vm_config's vCPUs and MiB), as the guest was
+// booted at.
+func launchedSize(ctx context.Context, d *local.Driver, inst machine.Instance) (int, uint64, error) {
+	hs, err := d.Spec(ctx, inst)
+	if err != nil {
+		return 0, 0, err
+	}
+	conf, err := os.ReadFile(bundle(hs.Dir).path(launchName))
+	if err != nil {
+		return 0, 0, err
+	}
+	return confSize(conf)
+}
+
+// confSize is the vCPUs and memory, in bytes, a launch.conf gives libkrun.
+func confSize(conf []byte) (int, uint64, error) {
+	var cpus int
+	var mib uint64
+	for line := range strings.Lines(string(conf)) {
+		var err error
+		switch key, value, _ := strings.Cut(strings.TrimSpace(line), " "); key {
+		case "cpus":
+			_, err = fmt.Sscan(value, &cpus)
+		case "memory":
+			_, err = fmt.Sscan(value, &mib)
+		}
+		if err != nil {
+			return 0, 0, fmt.Errorf("launch.conf: %q: %w", line, err)
+		}
+	}
+	return cpus, mib << 20, nil
+}
+
+// TestConfSizeReadsWhatRenderWrites: the conformance suite's size of a
+// libkrun instance is read from what the launcher is given.
+func TestConfSizeReadsWhatRenderWrites(t *testing.T) {
+	conf, err := launch{cpus: 3, memory: 3 << 30, kernel: "k", initrd: "i", cmdline: "c", console: "o", disk: "d"}.render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cpus, memory, err := confSize(conf); err != nil || cpus != 3 || memory != 3<<30 {
+		t.Fatalf("read %d CPUs and %d bytes (%v) from:\n%s", cpus, memory, err, conf)
+	}
 }

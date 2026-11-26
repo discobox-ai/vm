@@ -41,7 +41,11 @@ func TestConformance(t *testing.T) {
 		t.Skipf("set %s and %s to run the conformance suite against boxd", APIKeyEnv, RegionEnv)
 	}
 	machinetest.Run(t, envDriver(t, machine.KeyFromEnv("boxd")), machinetest.Config{
-		From:    os.Getenv(FromEnv),
+		From: os.Getenv(FromEnv),
+		// Read back by GetVm once the machine runs.
+		CPUs:    2,
+		Memory:  4 << 30,
+		Size:    envDriver(t, machine.KeyFromEnv("boxd")).size,
 		Timeout: 5 * time.Minute,
 		// Not /tmp: Ubuntu clears it at boot, and the suite reads its marker
 		// back after one.
@@ -60,6 +64,20 @@ func TestConformance(t *testing.T) {
 // requires anything.
 func live() bool {
 	return (os.Getenv(APIKeyEnv) != "" || os.Getenv(TokenEnv) != "") && os.Getenv(RegionEnv) != ""
+}
+
+// size reads the size boxd holds the VM's machine to, as someone with
+// boxd's API would (GetVm).
+func (d *Driver) size(ctx context.Context, inst machine.Instance) (int, uint64, error) {
+	api, err := d.api.API(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	info, err := api.GetVm(ctx, &boxdapi.GetVmRequest{VmId: inst.ID})
+	if err != nil {
+		return 0, 0, err
+	}
+	return int(info.GetVcpu()), info.GetMemoryBytes(), nil
 }
 
 // pause suspends the VM's machine as someone with boxd's API would
@@ -160,6 +178,7 @@ func TestConformanceFakeAPI(t *testing.T) {
 				// own.
 				CPUs:       4,
 				Memory:     16 << 30,
+				Size:       d.size,
 				Timeout:    30 * time.Second,
 				ScratchDir: "/scratch",
 				Pause:      d.pause,

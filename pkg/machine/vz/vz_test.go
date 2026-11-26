@@ -69,6 +69,7 @@ func TestConformance(t *testing.T) {
 		From:       base,
 		CPUs:       4,
 		Memory:     8 << 30,
+		SkipSize:   "nothing outside the framework reads back the size a vz VM was configured with yet",
 		Timeout:    10 * time.Minute,
 		ScratchDir: "/Users/Shared",
 		GuestAgent: agentRunDir + "/disco-vm",
@@ -89,6 +90,7 @@ func TestConformanceLinux(t *testing.T) {
 	machinetest.Run(t, driver, machinetest.Config{
 		CPUs:       2,
 		Memory:     2 << 30,
+		SkipSize:   "nothing outside the framework reads back the size a vz VM was configured with yet",
 		Timeout:    5 * time.Minute,
 		ScratchDir: "/var/tmp",
 		GuestAgent: "/run/disco-vm/disco-vm",

@@ -83,6 +83,11 @@ func TestConformance(t *testing.T) {
 			machinetest.Run(t, driver, machinetest.Config{
 				Install: from.install,
 				Timeout: 30 * time.Second,
+				CPUs:    3,
+				Memory:  3 << 30,
+				Size: func(ctx context.Context, inst machine.Instance) (int, uint64, error) {
+					return fake.Size(ctx, driver, inst)
+				},
 				Pool: func(pool string) machine.Driver {
 					d, err := newDriver(nil).(*local.Driver).InPool(pool)
 					if err != nil {

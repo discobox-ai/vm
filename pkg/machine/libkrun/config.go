@@ -33,6 +33,8 @@ type Config struct {
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Linux VMs as libkrun microVMs on KVM, from a Linux guest image.",
+		// Every boot is sized as its VM was created (launch's cpus, memory).
+		Sizes: true,
 		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv, Default: linuximage.DefaultBase, Privileged: true,
 			Description: "The Linux guest image a fresh VM is made from: a registry reference, or an absolute directory on this host whose kernel and root are booted."},
 		ConfigFields: []machine.ConfigField{

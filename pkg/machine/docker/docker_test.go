@@ -38,6 +38,7 @@ func TestConformance(t *testing.T) {
 	machinetest.Run(t, d, machinetest.Config{
 		CPUs:    2,
 		Memory:  2 << 30,
+		Size:    d.size,
 		Timeout: 2 * time.Minute,
 		// Not /tmp, which the guest's systemd may clean at boot.
 		ScratchDir: "/var/lib",
@@ -73,10 +74,25 @@ func TestConformanceThroughAnAgent(t *testing.T) {
 	machinetest.Run(t, d, machinetest.Config{
 		CPUs:       2,
 		Memory:     2 << 30,
+		Size:       d.size,
 		Timeout:    2 * time.Minute,
 		ScratchDir: "/var/lib",
 		Pause:      d.pause,
 	})
+}
+
+// size reads the limits the daemon holds the instance's container to, as
+// someone with the daemon would (`docker inspect`).
+func (d *Driver) size(ctx context.Context, inst machine.Instance) (int, uint64, error) {
+	c, err := d.resolve(ctx, inst)
+	if err != nil {
+		return 0, 0, err
+	}
+	c, err = d.api.inspectContainer(ctx, c.ID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return int(c.HostConfig.NanoCPUs / 1e9), uint64(c.HostConfig.Memory), nil //nolint:gosec // G115: a container's memory limit is not negative
 }
 
 // pause pauses the instance's container as someone with the daemon would

@@ -152,6 +152,8 @@ const (
 	// servicePortName holds the loopback port of the instance's service.
 	servicePortName = "service.port"
 	markerName      = ".disco-vm-install"
+	// sizeName holds the size the guest last booted at (Size).
+	sizeName = "size"
 )
 
 func rootfs(dir string) string { return filepath.Join(dir, rootfsName) }
@@ -266,6 +268,11 @@ func (d *Hypervisor) Boot(ctx context.Context, inst local.InstanceSpec, opts loc
 	_ = os.Remove(addrFile)
 	// A machine stopped while paused boots running.
 	if err := unpause(inst.Dir); err != nil {
+		return nil, err
+	}
+	// The size it boots at, as a hypervisor would apply it: a host
+	// process has no size of its own to hold.
+	if err := recordSize(inst.Dir, opts.CPUs, opts.Memory); err != nil {
 		return nil, err
 	}
 	//nolint:gosec,noctx // G204: the agent is the driver's own disco-vm binary; noctx: the guest outlives Boot's ctx and stops through Stop or Kill

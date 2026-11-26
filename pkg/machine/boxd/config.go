@@ -56,6 +56,8 @@ type Config struct {
 func Definition() machine.Definition {
 	return machine.Definition{
 		Description: "Linux VMs as boxd microVMs, in the cloud, from any host.",
+		// Create sizes the machine (VmConfig), and a boot resizes it to its VM's size.
+		Sizes: true,
 		Base: &machine.ConfigField{Label: "Base", Type: machine.ConfigString, Env: machine.BaseEnv,
 			Description: "The boxd image a fresh VM is made from; empty is boxd's default image."},
 		ConfigFields: []machine.ConfigField{

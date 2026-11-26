@@ -157,3 +157,10 @@
   `TestGuestOperationSentinelsCrossTheStream` too when a guest operation
   returns it. `ErrUnreachable` was added without one (vm#179), which would
   have made a served boxd start fail where it should try again.
+- **A driver's declaration is held by the suite from the declaration
+  itself, never by a test hook a driver can leave out.** `machinetest`
+  reads `Definition.Sizes` through `DefinitionOf(driver.Name())` and fails a
+  declaring driver's run that reads nothing back (`Config.Size`) and says
+  no reason (`Config.SkipSize`). A case that only skips when its hook is
+  missing lets a driver declare what no test checks; the first review of
+  `Sizes` found three drivers so.

@@ -156,6 +156,7 @@ func leakingSuite(t *testing.T, dir, agent string) {
 		Timeout: 30 * time.Second,
 		// A fake guest is a host process, on the host's clock.
 		PauseHold:  2 * time.Second,
+		SkipSize:   "TestConformance holds the fake to its size; this run is of what the suite leaves behind",
 		ScratchDir: "/scratch",
 		GuestAgent: agent,
 		Keyed: func(keys machine.KeySource) machine.Driver {

@@ -8,8 +8,10 @@
 // is found and listed by its name, which no second VM can take, committed or
 // not; a booted machine's guest operations answer, and exec carries stdin,
 // stdout, stderr, the environment, the working directory, and the exit code;
-// an orderly shutdown stops the machine; a driver that caps running guests
-// of an OS boots that many and refuses one more until one stops; a driver
+// an orderly shutdown stops the machine; a running instance is held to the
+// size it was created with, where the driver sizes one; a driver that caps
+// running guests of an OS boots that many and refuses one more until one
+// stops; a driver
 // that caps the VMs its provider has refuses a create past the cap until one
 // is destroyed; on a driver that reports
 // Capabilities.Commit, a committed VM carries its writes to VMs created from
@@ -71,6 +73,16 @@ type Config struct {
 	// CPUs and Memory size every instance the suite makes.
 	CPUs   int
 	Memory uint64
+	// Size reads the size the provider holds a running instance to, as
+	// someone with the provider would (the fake's record of its boot, a
+	// container's limits, a stand-in's machine, the launcher's
+	// configuration): the suite holds a driver whose definition declares
+	// Definition.Sizes to applying CPUs and Memory, and fails one that
+	// passes neither Size nor SkipSize.
+	Size func(ctx context.Context, inst machine.Instance) (cpus int, memory uint64, err error)
+	// SkipSize, when set, says why no Size reads a declaring driver's
+	// size back, and the suite skips that subtest saying so.
+	SkipSize string
 	// Timeout bounds each boot until the guest answers, and each shutdown.
 	Timeout time.Duration
 	// ScratchDir is a guest directory the suite may write into.
@@ -140,6 +152,11 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		t.Fatalf("check: %v", err)
 	}
 	caps := driver.Capabilities()
+	// What the driver declares of itself, with no driver: its registration.
+	def, err := machine.DefinitionOf(driver.Name())
+	if err != nil {
+		t.Fatalf("the %s driver's definition: %v", driver.Name(), err)
+	}
 
 	t.Run("capabilities", func(t *testing.T) {
 		if len(caps.GuestOS) == 0 {
@@ -578,6 +595,31 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 		case <-time.After(time.Minute):
 			t.Fatal("Done was not closed after Kill")
 		}
+	})
+
+	// A driver that sizes a machine (Definition.Sizes) holds a running
+	// instance to the size it was created with.
+	t.Run("sized", func(t *testing.T) {
+		switch {
+		case !def.Sizes:
+			t.Skip("the driver does not declare that it sizes a machine")
+		case cfg.SkipSize != "":
+			t.Skip(cfg.SkipSize)
+		case cfg.Size == nil:
+			t.Fatal("the driver declares that it sizes a machine, and no Config.Size reads the size back, nor Config.SkipSize says why")
+		case cfg.CPUs == 0 || cfg.Memory == 0:
+			t.Fatal("Config.Size is given, and Config.CPUs and Memory size nothing")
+		}
+		inst := create(t, start)
+		m := boot(t, inst)
+		cpus, memory, err := cfg.Size(ctx, inst)
+		if err != nil {
+			t.Fatalf("read the size of %s: %v", inst.Name, err)
+		}
+		if cpus != cfg.CPUs || memory != cfg.Memory {
+			t.Fatalf("%s runs with %d CPUs and %d bytes of memory, created with %d and %d", inst.Name, cpus, memory, cfg.CPUs, cfg.Memory)
+		}
+		shutdown(t, m)
 	})
 
 	// An instance fenced at create, to nothing from the start and to a list
