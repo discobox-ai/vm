@@ -69,8 +69,10 @@
   source's mounts and policy and takes no mounts of its own, a sandbox with
   forks is `sandbox_has_forks`, a policy is set only on a running sandbox, a
   disk's create answers the disk of its name with 200 (201 when it made it),
-  and a disk is deleted even while a running sandbox mounts it (seen
-  2026-11-24). A behavior added to the driver is added to the fake
+  a disk is deleted even while a running sandbox mounts it (seen
+  2026-11-24), and a policy that denies by default allows
+  `mount.*.archil.com` and `data.*.archil.com` while the sandbox has
+  mounts, whatever policy is set (`mountedPolicy`; seen 2026-11-26). A behavior added to the driver is added to the fake
   from what Archil does, checked on Archil, not from what the driver
   expects.
 - **The fake reads the driver's command lines with sh, not a Go parser.**
