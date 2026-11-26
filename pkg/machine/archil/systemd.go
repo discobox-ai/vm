@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -142,10 +143,6 @@ exec nsenter --target "$p" --all -- setpriv --pdeathsig TERM -- sh -c 'cd -- "$1
 if [ -z "$u" ]; then exec "$@"; fi
 exec runuser -u "$u" -- setpriv --pdeathsig TERM -- env HOME="$(getent passwd "$u" | cut -d: -f6)" "$@"' sh "$@"`
 	enterNotRunning = 125
-
-	// settleScript asks systemd how far its boot is: running, degraded and
-	// maintenance are settled.
-	settleScript = `exec systemctl is-system-running`
 )
 
 // ensureSystemd makes the sandbox's guest one whose every boot runs systemd
@@ -196,34 +193,38 @@ func (a *api) haltQuietly(ctx context.Context, id, name, data string) {
 	_ = a.halt(ctx, id, name, data)
 }
 
-// settleLimit bounds a start's wait for systemd to settle.
-var settleLimit = 2 * time.Minute
+// launchLimit bounds a create's or start's wait for Archil's supervisor to
+// launch systemd.
+var launchLimit = time.Minute
 
-// waitSystemd waits until systemd runs in the guest and has settled, asking
-// it every 200 ms, so a command run after Start reaches it and the units
-// its boot starts.
-func (m *guestMachine) waitSystemd(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, settleLimit)
+// waitLaunched waits until systemd's process runs in the guest, asking every
+// 200 ms, so a guest operation after Create or Start can enter its
+// namespaces. It does not wait for systemd's boot to finish, nor fail on one
+// still going: as on any machine, systemd may still be booting when the
+// guest is reached, and a caller that needs a unit up waits for that unit.
+// Any failure to enter is asked again until launchLimit.
+func (m *guestMachine) waitLaunched(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, launchLimit)
 	defer cancel()
 	last := ""
 	for {
-		var out, stderr bytes.Buffer
-		code, err := machine.Run(ctx, m, script(settleScript), nil, &out, &stderr)
-		state := strings.TrimSpace(out.String())
+		var stderr bytes.Buffer
+		code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"true"}}, nil, io.Discard, &stderr)
 		switch {
 		case err != nil && ctx.Err() == nil:
 			last = err.Error()
 		case err != nil:
-		case state == "running" || state == "degraded" || state == "maintenance":
+		case code == 0:
 			return nil
-		case code == enterNotRunning:
-			last = strings.TrimSpace(stderr.String())
 		default:
-			last = strings.TrimSpace(state + " " + stderr.String())
+			// enterNotRunning, or nsenter losing a systemd that exited
+			// between being found and entered, which the supervisor runs
+			// again: asked again until the limit.
+			last = strings.TrimSpace(fmt.Sprintf("exit %d: %s", code, stderr.String()))
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("archil: systemd in %s did not settle: %w (last: %s)", m.name, ctx.Err(), last)
+			return fmt.Errorf("archil: systemd was not launched in %s: %w (last: %s)", m.name, ctx.Err(), last)
 		case <-time.After(200 * time.Millisecond):
 		}
 	}

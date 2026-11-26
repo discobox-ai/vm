@@ -14,7 +14,7 @@ import (
 )
 
 // TestCreateStartedStartsOnce: a create asked to start leaves its sandbox
-// running, systemd settled: a fresh one, its data disk made first and
+// running, systemd launched: a fresh one, its data disk made first and
 // mounted by its create, is started once and never stopped; a fork with no
 // data volume is started once too; a fork with one is stopped and started
 // once with it mounted, since a fork takes no mounts; and a create not
