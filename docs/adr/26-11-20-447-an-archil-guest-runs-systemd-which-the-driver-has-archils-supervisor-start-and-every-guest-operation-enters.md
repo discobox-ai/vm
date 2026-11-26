@@ -2,6 +2,9 @@
 
 - **Status**: Accepted
 - **Date**: 2026-11-20
+- **Amended**: 2026-11-23, by the owner on #219, before a release shipped
+  it: Create and Start wait for systemd to be launched, not to settle (§2,
+  Consequences).
 - **Issue**: #193 (for discobox-ai/discobox's ADR 26-11-16-619 §4)
 - **Supersedes in part**
   [26-11-03-676](26-11-03-676-an-archil-driver-puts-nothing-in-its-guests-and-makes-a-vm-a-sandbox-named-for-it.md):
@@ -68,10 +71,12 @@ A fork, and so a VM made from a committed one and an upgrade from one,
 carries the root and the service, and the script finds both. Only Create
 registers: Start installs and registers nothing, since the supervisor
 starts systemd at every boot, and no archil VM made before this exists to
-migrate (the owner, 2026-11-21: the driver has not shipped). Create and
-Start each return once `systemctl is-system-running` is `running`,
-`degraded`, or `maintenance`; a Start whose systemd does not settle leaves
-the VM stopped.
+migrate (the owner, 2026-11-21: the driver has not shipped). (Amended:) Create
+and Start each return once systemd's process runs, so a guest operation can
+enter its namespaces, not once its boot has finished: as on any machine,
+systemd may still be booting when the guest is reached, and a caller that
+needs a unit waits for that unit. A Start whose systemd is not launched
+leaves the VM stopped.
 
 ### 3. Every guest operation enters systemd's namespaces
 
@@ -125,8 +130,8 @@ While systemd does not run, an operation fails saying so.
   of a base with it, finishes; one without is gone.
 - **Create of a bare base takes a package install,** about 40 s on Archil
   for `debian:sid`, and needs its mirror (one fenced from it fails in
-  about as long); a base with systemd (vm#194) skips it. Start waits for
-  systemd to settle.
+  about as long); a base with systemd (vm#194) skips it. Start waits only
+  for systemd to be launched (amended).
 - **A base without systemd fails a fenced Create.** The live conformance
   suite's fresh VM fenced to nothing needs `DISCO_VM_ARCHIL_IMAGE` to name a
   base with systemd. Alpine, which has no systemd, is refused.

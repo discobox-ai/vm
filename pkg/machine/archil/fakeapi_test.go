@@ -89,6 +89,9 @@ type fakeAPI struct {
 	// containers, when set, runs each sandbox as a Docker container, and
 	// its processes in it, rather than on this host (container_test.go).
 	containers *fakeContainers
+	// launchDelay is how long after a sandbox boots its supervisor launches
+	// systemd: an entered command before then finds none.
+	launchDelay time.Duration
 }
 
 // fakeToken is a port token.
@@ -125,6 +128,8 @@ type fakeSandbox struct {
 	// boots and stops count its starts, its create's and a fork's
 	// included, and its stops.
 	boots, stops int
+	// launched is when systemd runs in it, launchDelay after its boot.
+	launched time.Time
 }
 
 type fakeDisk struct {
@@ -454,6 +459,7 @@ func (f *fakeAPI) disk(id string) *fakeDisk {
 // root. The caller holds mu.
 func (f *fakeAPI) boot(s *fakeSandbox) error {
 	s.boots++
+	s.launched = time.Now().Add(f.launchDelay)
 	if f.containers != nil {
 		if err := f.containers.boot(f, s); err != nil {
 			s.status = "failed"
@@ -1071,7 +1077,7 @@ func (f *fakeAPI) processAPI(w http.ResponseWriter, r *http.Request) {
 	procCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	f.procs[id] = &fakeProc{sandbox: s.id, cancel: cancel}
-	root, name, sb, containers := s.root, s.name, s, f.containers
+	root, name, sb, containers, launched := s.root, s.name, s, f.containers, s.launched
 	f.mu.Unlock()
 
 	event(map[string]any{"type": "started", "process_id": id})
@@ -1099,7 +1105,7 @@ func (f *fakeAPI) processAPI(w http.ResponseWriter, r *http.Request) {
 	if containers != nil {
 		code, err = containers.run(procCtx, sb, req.startRequest, stdin, out.stream(1), out.stream(2))
 	} else {
-		code, err = runCommand(procCtx, req.startRequest, root, name, stdin, out)
+		code, err = runCommand(procCtx, req.startRequest, root, name, launched, stdin, out)
 	}
 	// Gone before its exit is sent, so nothing asked of it after the client
 	// reads its exit finds it.
@@ -1258,8 +1264,10 @@ func fileExists(path string) bool {
 }
 
 // runCommand runs a started process in a sandbox's root and returns its exit
-// code. An entered command fails while the guest has no systemd service.
-func runCommand(ctx context.Context, req startRequest, root, hostname string, stdin io.Reader, out *frameWriter) (int, error) {
+// code. An entered command fails while the guest has no systemd service, or
+// before launched, when its supervisor launches systemd. The fake's systemd
+// never finishes booting: systemctl is-system-running says starting.
+func runCommand(ctx context.Context, req startRequest, root, hostname string, launched time.Time, stdin io.Reader, out *frameWriter) (int, error) {
 	stdout, stderr := out.stream(1), out.stream(2)
 	if req.Command == "true" {
 		return 0, nil
@@ -1280,7 +1288,7 @@ func runCommand(ctx context.Context, req startRequest, root, hostname string, st
 		}
 		return 0, fmt.Errorf("a line that enters no namespace: %q", req.Command)
 	}
-	if !fileExists(filepath.Join(root, fakeServices, systemdService)) {
+	if !fileExists(filepath.Join(root, fakeServices, systemdService)) || time.Now().Before(launched) {
 		_, _ = io.WriteString(stderr, "systemd is not running in the guest")
 		return enterNotRunning, nil
 	}
@@ -1290,9 +1298,9 @@ func runCommand(ctx context.Context, req startRequest, root, hostname string, st
 		arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
 		_, _ = io.WriteString(stdout, arch+"\n"+hostname+"\n")
 		return 0, nil
-	case isScript(argv, settleScript):
-		_, _ = io.WriteString(stdout, "running\n")
-		return 0, nil
+	case len(argv) == 2 && argv[0] == "systemctl" && argv[1] == "is-system-running":
+		_, _ = io.WriteString(stdout, "starting\n")
+		return 1, nil
 	case isScript(argv, copyInScript):
 		if err := guest.Unpack(stdin, arg()); err != nil {
 			_, _ = io.WriteString(stderr, err.Error())

@@ -76,10 +76,16 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   was started, and again when it exits. A base with no `apt-get`, or one
   fenced from its mirror, fails Create naming `/lib/systemd/systemd`. A fork
   carries the root and the service. Create and Start each return once
-  `systemctl is-system-running` has settled. Only Create registers, where
+  systemd's process runs, so a guest operation can enter its namespaces, and
+  not once its boot is done: as on any machine, systemd may still be booting
+  when the guest is reached, and a caller that needs a unit waits for that
+  unit. Create then stops the sandbox with systemd's first boot perhaps
+  not done, as any stop may find it: systemd commits the machine ID only
+  once a first boot completes, so the next boot, of the VM or of a copy, is
+  a first boot again and does what was left. Only Create registers, where
   `services get` says there is none (exit 1; any other answer fails, rather
   than risk a second systemd): Start installs and registers nothing, and
-  leaves a VM whose systemd does not settle stopped. No VM from before
+  leaves a VM whose systemd is not launched within a minute stopped. No VM from before
   this exists to migrate. The guest's root is made shared and
   systemd's mounts its slaves, so a disk Archil mounts after systemd starts
   reaches its units.

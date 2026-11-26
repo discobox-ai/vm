@@ -100,6 +100,12 @@
   systemd run, `haltScript`, which kills it, and the readiness `true` may
   run there. A new guest script
   goes through `command`, and the fake refuses a line that does not.
+- **Create and Start don't wait for systemd's boot, so nothing after them
+  may assume it is done.** They return once systemd's process can be
+  entered. Whatever needs a unit, or `systemctl`, waits for it by asking
+  `systemctl is-system-running` again, not with `--wait`, which sent early
+  in a boot returns at once with `offline` or a bus error, or hangs (seen
+  on boxd, 2026-11-16).
 - **Nothing installs at a boot.** systemd is installed at Create, under the
   fence, and the boot service only runs it: a VM fenced from its mirror
   needs a base with systemd, and a boot must not depend on the network.

@@ -38,15 +38,15 @@ func TestABaseWithoutSystemdIsRefused(t *testing.T) {
 }
 
 // TestAStartRegistersNothing: a start installs and registers nothing, so a
-// VM whose guest has no systemd service fails it, once systemd has not come
-// up, and is not left running.
+// VM whose guest has no systemd service fails it, once systemd has not been
+// launched, and is not left running.
 func TestAStartRegistersNothing(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake Archil's guests run on the host, and Archil's guests are linux")
 	}
-	limit := settleLimit
-	settleLimit = 2 * time.Second
-	t.Cleanup(func() { settleLimit = limit })
+	limit := launchLimit
+	launchLimit = 2 * time.Second
+	t.Cleanup(func() { launchLimit = limit })
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
 	d := f.driver(t, "nostart", "debian:sid")
@@ -72,6 +72,41 @@ func TestAStartRegistersNothing(t *testing.T) {
 	defer f.mu.Unlock()
 	if s.status != "stopped" {
 		t.Errorf("a refused start left the sandbox %s", s.status)
+	}
+}
+
+// TestCreateAndStartWaitOnlyForSystemdToLaunch: Create and Start return once
+// Archil's supervisor has launched systemd, which the fake does a while after
+// each boot, and not once its boot has finished, which the fake's never does.
+// A guest command right after either runs in systemd's namespaces.
+func TestCreateAndStartWaitOnlyForSystemdToLaunch(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the fake Archil's guests run on the host, and Archil's guests are linux")
+	}
+	f := newFakeAPI(t, t.TempDir())
+	f.launchDelay = time.Second
+	ctx := context.Background()
+	d := f.driver(t, "booting", "debian:sid")
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev"})
+	if err != nil {
+		t.Fatalf("Create of a VM whose systemd is still booting: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Destroy(context.Background(), inst) })
+	start := time.Now()
+	m, err := d.Start(ctx, inst, machine.BootOptions{})
+	if err != nil {
+		t.Fatalf("Start of a VM whose systemd is still booting: %v", err)
+	}
+	if took := time.Since(start); took < f.launchDelay {
+		t.Errorf("Start returned in %s, before systemd was launched", took)
+	}
+	var out, stderr bytes.Buffer
+	if code, err := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"echo", "hi"}}, nil, &out, &stderr); err != nil || code != 0 || out.String() != "hi\n" {
+		t.Fatalf("a command right after Start: exit %d, %v: %q %s", code, err, out.String(), stderr.String())
+	}
+	out.Reset()
+	if code, _ := machine.Run(ctx, m, machine.ExecRequest{Argv: []string{"systemctl", "is-system-running"}}, nil, &out, io.Discard); code == 0 || strings.TrimSpace(out.String()) != "starting" {
+		t.Errorf("the fake's systemd after Start: exit %d, %q, want it still starting", code, out.String())
 	}
 }
 
@@ -131,13 +166,15 @@ func TestSystemdInAContainer(t *testing.T) {
 		}
 	}
 	// pid1 checks that systemd is PID 1 where guest operations run, and
-	// that systemctl reaches it.
+	// that systemctl reaches it. Start returns before systemd's boot is
+	// done, so it waits for that itself, asking again rather than with
+	// --wait, which early in a boot returns offline or a bus error.
 	pid1 := func(t *testing.T, m machine.Machine) {
 		t.Helper()
 		if got := run(t, m, "cat", "/proc/1/comm"); got != "systemd" {
 			t.Errorf("PID 1 where guest operations run is %q, not systemd", got)
 		}
-		if got := run(t, m, "sh", "-c", "systemctl is-system-running || true"); got != "running" && got != "degraded" {
+		if got := run(t, m, "sh", "-c", `for i in $(seq 600); do s=$(systemctl is-system-running 2>/dev/null); case $s in running|degraded) break;; esac; sleep 0.2; done; echo "$s"`); got != "running" && got != "degraded" {
 			t.Errorf("systemctl is-system-running: %q", got)
 		}
 	}
@@ -350,7 +387,7 @@ echo "systemd ($p) still runs 5s after its service ($svc, $(cat /proc/$svc/comm)
 // haltScript, which kills systemd and flushes, so that Archil's stop waits
 // for no shutdown in the guest. Shutdown flushes the data volume and asks no
 // stop when that fails; Kill flushes none; the driver's own stops flush it
-// where it is mounted, as a start whose systemd does not settle has it.
+// where it is mounted, as a start whose systemd is not launched has it.
 func TestAStopKillsSystemdThenFlushes(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake Archil's guests run on the host, and Archil's guests are linux")
@@ -407,11 +444,11 @@ func TestAStopKillsSystemdThenFlushes(t *testing.T) {
 	}
 	stops(t, "halt", "stop", "halt_"+data, "stop", "halt", "stop")
 
-	// A start whose systemd does not settle stops the sandbox it started,
+	// A start whose systemd is not launched stops the sandbox it started,
 	// its data volume mounted.
-	limit := settleLimit
-	settleLimit = 2 * time.Second
-	t.Cleanup(func() { settleLimit = limit })
+	limit := launchLimit
+	launchLimit = 2 * time.Second
+	t.Cleanup(func() { launchLimit = limit })
 	if err := os.Remove(filepath.Join(root, fakeServices, systemdService)); err != nil {
 		t.Fatal(err)
 	}

@@ -169,7 +169,7 @@ func stopped(s sandbox) bool { return s.Status == "stopped" || s.Status == "exit
 // Create makes the VM's sandbox, of the base or forked from spec.From,
 // labeled as the VM, with its fence in place and no port exposed, and its
 // data volume, and stops it, or, with spec.Start, leaves it running,
-// systemd settled, as Start does (ADR 26-11-23-458 §2). Archil runs a
+// systemd launched, as Start does (ADR 26-11-23-458 §2). Archil runs a
 // sandbox as soon as it is made, so a fresh one asked to start is started
 // once: its data disk is made first and mounted by its create. A fork takes
 // no mounts, so one asked to start with a data volume is stopped and
@@ -354,7 +354,8 @@ func (d *Driver) source(ctx context.Context, from machine.Instance, cpus int, me
 // sets the spec's size, fence, and ingress (setNetwork), which it reads
 // back, and service ingress off; exposes no port, and revokes any token a
 // fork carried; has systemd run at its every boot (ensureSystemd), under its
-// fence; and leaves it stopped, or running where running asks. It returns
+// fence, and waits until it is launched, not until it settles; and leaves
+// it stopped, or running where running asks. It returns
 // the sandbox and the fence Archil holds.
 func (d *Driver) makeSandbox(ctx context.Context, spec machine.InstanceSpec, name string, labels map[string]string, src *sandbox, mounts []mount, running bool, made *made) (sandbox, *machine.Egress, error) {
 	var sb sandbox
@@ -408,7 +409,7 @@ func (d *Driver) makeSandbox(ctx context.Context, spec machine.InstanceSpec, nam
 	if err := d.api.ensureSystemd(ctx, sb.ID, spec.Name, spec.Egress != nil); err != nil {
 		return sb, nil, err
 	}
-	if err := m.waitSystemd(ctx); err != nil {
+	if err := m.waitLaunched(ctx); err != nil {
 		return sb, nil, err
 	}
 	if !running {
@@ -425,7 +426,7 @@ func (d *Driver) makeSandbox(ctx context.Context, spec machine.InstanceSpec, nam
 // Upgrade gives the stopped VM a new root (ADR 26-11-03-782, ADR
 // 26-11-24-905 §4): a new sandbox, fresh from the base or a fork of from,
 // labeled for the VM and as replacing its sandbox, at its size, fence, and
-// ingress, with systemd settled and stopped; then the old sandbox's port
+// ingress, with systemd launched and stopped; then the old sandbox's port
 // tokens are revoked and it is deleted. Until then the old sandbox is the
 // VM, so a failure removes the new one and leaves the VM as it was, and an
 // upgrade stopped in between leaves a new sandbox nothing lists, which the
@@ -696,7 +697,8 @@ func (d *Driver) removeDataDisk(ctx context.Context, name string) error {
 
 // Start starts the sandbox with its data volume mounted, or resumes one
 // Archil paused, and waits until systemd, which
-// Archil's supervisor starts, has settled in it. Archil runs the
+// Archil's supervisor starts, runs in it (waitLaunched), not for its boot
+// to finish. Archil runs the
 // sandbox, so Boot is Start. A committed VM is not refused: Archil can't
 // tell it from any stopped one, and the caller never starts one.
 func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.BootOptions) (machine.Machine, error) {
@@ -742,9 +744,9 @@ func (d *Driver) Start(ctx context.Context, inst machine.Instance, opts machine.
 		return nil, err
 	}
 	// Archil's supervisor starts systemd as the guest boots; a start
-	// installs and registers nothing. One whose systemd does not settle is
+	// installs and registers nothing. One whose systemd is not launched is
 	// not left running.
-	if err := m.waitSystemd(ctx); err != nil {
+	if err := m.waitLaunched(ctx); err != nil {
 		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 		defer cancel()
 		_ = d.stopAndWait(stopCtx, sb.ID)
