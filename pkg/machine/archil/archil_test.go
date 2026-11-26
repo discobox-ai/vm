@@ -158,13 +158,18 @@ func TestMountHostsAreArchils(t *testing.T) {
 	for _, c := range []struct {
 		raw  string
 		want *machine.Egress
-		// held: the policy is the fence's as the driver sets it, so is
-		// not set again; rules as objects would be, as strings.
+		// held: the policy is the fence's and its ingress mark's as the
+		// driver sets them, so is not set again; rules as objects would
+		// be, as strings.
 		held bool
 	}{
 		// As Archil held them, seen 2026-11-26.
 		{`{"egress":{"default":"deny","allow":["example.com","mount.*.archil.com","data.*.archil.com"],"deny":["8.8.8.8","1.1.1.1"]}}`,
 			&machine.Egress{Allow: []string{"example.com"}, CloseDNS: true}, true},
+		// A running VM whose disk was mounted at its start, its ingress
+		// URL off, as Archil held it (vm#237).
+		{`{"egress":{"default":"deny","allow":["pool.example","mount.*.archil.com","data.*.archil.com"],"deny":["8.8.8.8","1.1.1.1","192.0.2.86"]}}`,
+			&machine.Egress{Allow: []string{"pool.example"}, CloseDNS: true}, true},
 		{`{"egress":{"default":"deny","allow":["mount.*.archil.com","data.*.archil.com"],"deny":["8.8.8.8","1.1.1.1"]}}`,
 			&machine.Egress{}, true},
 		{`{"egress":{"default":"deny","allow":[{"target":"example.com"},{"target":"mount.*.archil.com"}]}}`,
@@ -177,7 +182,7 @@ func TestMountHostsAreArchils(t *testing.T) {
 		if got := fenceOf(had); !sameFence(got, c.want) {
 			t.Errorf("%s reads as %+v, want %+v", c.raw, got, c.want)
 		}
-		if want := wantPolicy(had, c.want, false); c.held && !samePolicy(had, want) {
+		if want := wantPolicy(had, c.want, !ingressOf(had)); c.held && !samePolicy(had, want) {
 			t.Errorf("%s, holding %+v, would be set to %+v", c.raw, c.want, want.Egress)
 		}
 	}
