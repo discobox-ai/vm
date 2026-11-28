@@ -1894,8 +1894,9 @@ func Run(t *testing.T, driver machine.Driver, cfg Config) {
 	// for a committed VM the provider does not have, and from one of another
 	// guest OS, changing nothing. A driver that does not commit upgrades
 	// only to a fresh root, and refuses every from with ErrUnsupported (ADR
-	// 26-11-03-868). A driver that attaches no data volume refuses every
-	// upgrade.
+	// 26-11-03-868). A driver that attaches no data volume refuses to
+	// upgrade a VM with none, which every VM it makes is (a VM made with one
+	// before, which it upgrades, is its own test's: ADR 26-11-28-860 §3).
 	t.Run("an-upgrade", func(t *testing.T) {
 		// to is the committed VM the suite upgrades to, where the driver
 		// commits; else every upgrade is to a fresh root.

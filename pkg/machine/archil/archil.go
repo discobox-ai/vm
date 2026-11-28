@@ -47,6 +47,8 @@ type Driver struct {
 	pool string
 	// base is the OCI image a fresh VM runs; empty is Archil's default.
 	base string
+	// dataDisks gives each new VM a data disk (Config.DataDisk).
+	dataDisks bool
 }
 
 var _ machine.Driver = (*Driver)(nil)
@@ -68,17 +70,24 @@ func New(cfg machine.Config) (*Driver, error) {
 	if pool == "" {
 		pool = machine.DefaultPool
 	}
-	return &Driver{api: newAPI(conf, cfg.Keys, cfg.HTTPTransport()), pool: pool, base: cfg.Base}, nil
+	return &Driver{api: newAPI(conf, cfg.Keys, cfg.HTTPTransport()), pool: pool, base: cfg.Base, dataDisks: conf.DataDisk}, nil
 }
 
 func (*Driver) Name() string { return "archil" }
 
-func (*Driver) Capabilities() machine.Capabilities {
+func (d *Driver) Capabilities() machine.Capabilities {
+	// A new VM has a data disk only where the driver is configured for
+	// one; else its data is on its root (ADR 26-11-28-860 §1). A VM that
+	// has one keeps it either way.
+	var volumes []machine.Volume
+	if d.dataDisks {
+		volumes = []machine.Volume{machine.VolumeData}
+	}
 	return machine.Capabilities{
 		GuestOS: []machine.OS{machine.Linux},
 		Keys:    machine.KeyCapabilities{Mode: machine.KeysNone},
 		Egress:  []machine.EgressFence{machine.EgressNone, machine.EgressAllow, machine.EgressCloseDNS},
-		Volumes: []machine.Volume{machine.VolumeData},
+		Volumes: volumes,
 		// A committed VM is its stopped sandbox, and a copy a fork of it.
 		Commit: true,
 		// A pause is Archil's caller pause (POST .../pause), which keeps
@@ -168,12 +177,14 @@ func stopped(s sandbox) bool { return s.Status == "stopped" || s.Status == "exit
 
 // Create makes the VM's sandbox, of the base or forked from spec.From,
 // labeled as the VM, with its fence in place and no port exposed, and its
-// data volume, and stops it, or, with spec.Start, leaves it running,
-// systemd launched, as Start does (ADR 26-11-23-458 §2). Archil runs a
-// sandbox as soon as it is made, so a fresh one asked to start is started
-// once: its data disk is made first and mounted by its create. A fork takes
-// no mounts, so one asked to start with a data volume is stopped and
-// started once with it mounted (ADR 26-11-24-905 §6).
+// data volume, where the driver is configured for one (ADR 26-11-28-860
+// §1), and stops it, or, with spec.Start, leaves it running, systemd
+// launched, as Start does (ADR 26-11-23-458 §2). Archil runs a sandbox as
+// soon as it is made, so a fresh one asked to start is started once: its
+// data disk is made first and mounted by its create. A fork takes no
+// mounts, so one asked to start with a data volume is stopped and started
+// once with it mounted (ADR 26-11-24-905 §6); one with none is the fork
+// alone, and boots once (ADR 26-11-28-860 §4).
 func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine.Instance, error) {
 	if err := machine.ValidateName(spec.Name); err != nil {
 		return machine.Instance{}, err
@@ -195,6 +206,8 @@ func (d *Driver) Create(ctx context.Context, spec machine.InstanceSpec) (machine
 		return machine.Instance{}, fmt.Errorf("archil: a fence of %+v: %w", *spec.Egress, machine.ErrUnsupported)
 	case spec.Cache != nil:
 		return machine.Instance{}, fmt.Errorf("archil: a cache volume: %w", machine.ErrUnsupported)
+	case spec.Data != nil && !d.Capabilities().Attaches(machine.VolumeData):
+		return machine.Instance{}, fmt.Errorf("archil: a data volume, where the driver keeps a new VM's data on its root: %w", machine.ErrUnsupported)
 	}
 	if err := spec.URLs.Check(d.Capabilities().URLs); err != nil {
 		return machine.Instance{}, fmt.Errorf("archil: %w", err)
@@ -282,12 +295,21 @@ func (d *Driver) create(ctx context.Context, spec machine.InstanceSpec, made *ma
 		// name. So it goes with this create's sandbox, by its ID.
 		return machine.Instance{}, err
 	}
-	if spec.Data != nil && !diskFirst {
+	switch {
+	case spec.Data != nil && !diskFirst:
 		id, err := d.makeDataDisk(ctx, spec.Name)
 		if err != nil {
 			return machine.Instance{}, err
 		}
 		made.disk = id
+	case spec.Data == nil:
+		// A VM has a data disk if one of its name is there, so a disk left
+		// from a removed VM of the name would be this one's, mounted at
+		// its next start, now that the sandbox holds the name and no other
+		// create can be making one for it (ADR 26-11-28-860 §2).
+		if err := d.removeDataDisk(ctx, spec.Name); err != nil {
+			return machine.Instance{}, err
+		}
 	}
 	inst := d.instance(spec.Name, sb, spec.Data != nil)
 	inst.Egress = fence
@@ -431,7 +453,9 @@ func (d *Driver) makeSandbox(ctx context.Context, spec machine.InstanceSpec, nam
 // VM, so a failure removes the new one and leaves the VM as it was, and an
 // upgrade stopped in between leaves a new sandbox nothing lists, which the
 // next Upgrade or Destroy removes. The data disk is mounted at each start
-// as before.
+// as before. A VM with no data disk is refused, ErrUnsupported, however the
+// driver is configured: its data is on the root an upgrade deletes (ADR
+// 26-11-28-860 §3).
 func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machine.Instance) (machine.Instance, error) {
 	all, err := d.api.sandboxes(ctx, d.filter(inst.Name))
 	if err != nil {
@@ -445,6 +469,13 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 		// failed is a guest that powered itself off, stopped: the engine
 		// reports it stopped, and Archil deletes it.
 		return machine.Instance{}, fmt.Errorf("archil: an upgrade needs a stopped VM; %s is %s", inst.Name, old.Status)
+	}
+	data, err := d.dataDisk(ctx, inst.Name)
+	if err != nil {
+		return machine.Instance{}, err
+	}
+	if data == "" {
+		return machine.Instance{}, fmt.Errorf("archil: %s keeps its data on its root, which a new root would delete; rebuild it in place instead: %w", inst.Name, machine.ErrUnsupported)
 	}
 	got, err := d.api.network(ctx, old.ID)
 	if err != nil {
@@ -478,10 +509,6 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 			}
 		}
 	}
-	data, err := d.dataDisk(ctx, inst.Name)
-	if err != nil {
-		return machine.Instance{}, err
-	}
 	labels := d.labels(spec)
 	labels[labelReplaces] = old.ID
 	root := &made{d: d}
@@ -513,7 +540,7 @@ func (d *Driver) Upgrade(ctx context.Context, inst machine.Instance, from *machi
 			return machine.Instance{}, fmt.Errorf("archil: upgrade %s: its old root may or may not be deleted, and the new one is kept; upgrade it again: %w", inst.Name, errors.Join(err, readErr))
 		}
 	}
-	upgraded := d.instance(inst.Name, sb, data != "")
+	upgraded := d.instance(inst.Name, sb, true)
 	upgraded.Egress = fence
 	if from != nil {
 		upgraded.From = from.Name

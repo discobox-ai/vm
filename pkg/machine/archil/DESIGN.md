@@ -33,6 +33,13 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   that finds an older sandbox of the VM once its own is made removes its own
   and is `ErrExists`. A sandbox's name is at most 63 characters, so a pool
   and a name are at most 57 together.
+- **A new VM keeps its data on its root** unless the driver is configured
+  `dataDisk` (ADR 26-11-28-860 §1): off, the default, `Capabilities` lists
+  no volume and Create refuses `Data`, so a copy is the fork alone and
+  boots once (§4). The setting decides only what a new VM is made with:
+  whether a VM has a data disk is the VM's, read from Archil, and a VM that
+  has one is started with it, upgraded with it, and destroyed with it
+  either way (§2).
 - **The data volume is the disk `dvm-<pool>--<name>--data`**, mounted at
   each start; disks take no labels. A create makes it only once no sandbox
   but its own is the VM, so a disk Archil answers 200 for, not 201, is left
@@ -44,8 +51,9 @@ nothing on the host, and the guest runs systemd (ADR 26-11-20-447):
   started once with it mounted, since Archil's fork takes no mounts (ADR
   26-11-23-458 §2, ADR 26-11-24-905 §6). Destroy deletes it after the
   sandboxes, so a destroy refused for forks keeps it.
-- **Upgrade** (ADR 26-11-03-782, ADR 26-11-24-905 §4) makes the new
-  sandbox first, fresh or a fork, at the VM's size, fence, and ingress,
+- **Upgrade** (ADR 26-11-03-782, ADR 26-11-24-905 §4) refuses a VM with
+  no data disk, `ErrUnsupported`, whatever the setting: a new root would
+  delete its data (ADR 26-11-28-860 §3). It makes the new sandbox first, fresh or a fork, at the VM's size, fence, and ingress,
   named `dvm-<pool>--<name, cut to fit>--<hex>` and labeled as replacing the
   old, with systemd launched, and stopped; only then revokes the old one's
   tokens and deletes it. A failure before that removes the new one and

@@ -73,8 +73,8 @@ a `Capabilities` field, never a faked method:
 | URLs (`URLs`: given never, when asked, or always) | ingress when asked (its default), pool always | ingress when asked (its default), pool always | ingress when asked (the default proxy, its default); pool always on networks (direct), on none the ingress one, so none with that off | both always (ingress never for a daemon on another host) | ingress when asked (its default), pool always | both always (with `noLoopback`, as vz) | ingress when asked (its default), pool always |
 | paused (`State`: `paused`, which Start resumes) | by `Pause` | by `Pause` | `suspended`, `standby`, or `hibernated`, by `Pause` or someone else's `SuspendVm` (the driver turns boxd's idle timers off) | a container `Pause` or someone `docker pause`d | never | by `Pause`, or at its test hook, `fake.Pause` | at a sandbox's 24-hour session limit, or at Archil's pause, `Pause`'s too (`paused`, `pausing`) |
 | pause (`Capabilities.Pause`: `Machine.Pause`, which Start resumes) | yes: `HcsPauseComputeSystem`, through the shim; the clock stepped at resume | yes: the framework's pause, through the shim; the clock stepped at resume | yes: `SuspendVm`, waited out to `suspended` | yes: `docker pause` | no: libkrun has no pause | yes: a mark its guest runs on under (unless `noPause`) | yes: Archil's caller pause, waited out to `paused` |
-| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | `data`: a disk, `dvm-<pool>--<name>--data` |
-| upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | the sandbox deleted and made again under its name, mounting the same data disk; one stopped between is listed by its disk, and one with no data disk is lost |
+| volumes (`Volumes`: `Data`, `Cache`) | none yet | none yet | none: no disk but the root | `data` and `cache`: host directories under `/var/lib/discobox` | none yet | `data` and `cache`: directories in the guest's root | none by default, a new VM's data on its root; with `dataDisk`, `data`: a disk, `dvm-<pool>--<name>--data`, which a VM that has one keeps either way |
+| upgrade (`Upgrade`; listed as `VolumeData`) | refused | refused | refused | a new container under the name, bind-mounting the same directories | refused | a new root beside the old, its volumes moved into it | a new sandbox made, then the old one deleted, mounting the same data disk; a VM with no data disk is refused, its root all it has |
 
 A driver enforces `MaxRunning` across every pool it keeps, and refuses a
 boot past it with `ErrCapacity`; `local` does for hcs, vz, libkrun, and fake
@@ -374,10 +374,14 @@ its key), and what its spec set; its `ID`, `From`, and `Created` may change,
 and an `Instance` from before still names it. It refuses a running VM, a
 `from` of another guest OS, gone (`ErrNotFound`) or running, a fresh root
 with no base, a `from` where `Capabilities.Commit` is false (ADR
-26-11-03-868: such a driver upgrades only to a fresh root), and any upgrade
-where `Capabilities.Volumes` lacks `VolumeData` (`ErrUnsupported`): a data
-volume and its upgrade are one capability. On a driver that lists
-`VolumeData`, a VM with no data volume upgrades too.
+26-11-03-868: such a driver upgrades only to a fresh root), and a VM with
+no data volume where `Capabilities.Volumes` lacks `VolumeData`
+(`ErrUnsupported`): a data volume and its upgrade are one capability. A VM
+that has a data volume upgrades whatever its driver lists now, since a
+driver may stop giving new VMs one and keep the ones that have it (archil's
+`dataDisk`, ADR 26-11-28-860 §3). On a driver that lists `VolumeData`, a VM
+with no data volume upgrades too, but on archil, whose root is all such a
+VM has.
 
 An upgrade interrupted at any step leaves the VM listed under its name with
 its volumes, refused by Boot, Start, and Commit until `Upgrade` again with

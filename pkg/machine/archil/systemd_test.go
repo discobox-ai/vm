@@ -25,7 +25,7 @@ func TestABaseWithoutSystemdIsRefused(t *testing.T) {
 		t.Skip("the fake Archil's guests run on the host, and Archil's guests are linux")
 	}
 	f := newFakeAPI(t, t.TempDir())
-	d := f.driver(t, "nosystemd", "alpine:3")
+	d := f.driver(t, "nosystemd", "alpine:3", true)
 	_, err := d.Create(context.Background(), machine.InstanceSpec{Name: "dev", Data: &machine.DataVolume{}})
 	if err == nil || !strings.Contains(err.Error(), "/lib/systemd/systemd") {
 		t.Fatalf("Create of a base without systemd: %v, want an error naming /lib/systemd/systemd", err)
@@ -49,7 +49,7 @@ func TestAStartRegistersNothing(t *testing.T) {
 	t.Cleanup(func() { launchLimit = limit })
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "nostart", "debian:sid")
+	d := f.driver(t, "nostart", "debian:sid", false)
 	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev"})
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestCreateAndStartWaitOnlyForSystemdToLaunch(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
 	f.launchDelay = time.Second
 	ctx := context.Background()
-	d := f.driver(t, "booting", "debian:sid")
+	d := f.driver(t, "booting", "debian:sid", false)
 	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev"})
 	if err != nil {
 		t.Fatalf("Create of a VM whose systemd is still booting: %v", err)
@@ -137,7 +137,7 @@ func TestSystemdInAContainer(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	d := f.driver(t, "ctr", image)
+	d := f.driver(t, "ctr", image, true)
 
 	run := func(t *testing.T, m machine.Machine, argv ...string) string {
 		t.Helper()
@@ -289,7 +289,7 @@ func TestSystemdServiceEndsAtItsStopSignal(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	d := f.driver(t, "sig", image)
+	d := f.driver(t, "sig", image, true)
 	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev", Data: &machine.DataVolume{}})
 	if err != nil {
 		t.Fatal(err)
@@ -394,7 +394,7 @@ func TestAStopKillsSystemdThenFlushes(t *testing.T) {
 	}
 	ctx := context.Background()
 	f := newFakeAPI(t, t.TempDir())
-	d := f.driver(t, "halt", "debian:sid")
+	d := f.driver(t, "halt", "debian:sid", true)
 	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev", Data: &machine.DataVolume{}})
 	if err != nil {
 		t.Fatal(err)

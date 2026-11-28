@@ -102,8 +102,10 @@ func upgradeCommand(g *globals) *cobra.Command {
 fresh one from the driver's base. It keeps its name, its settings, its data
 volume, and its cache clone; what it wrote to its old root is removed for
 good, so commit it first to keep a way back. An upgrade that was interrupted
-is finished by running it again with the same --from. Only a driver that
-attaches a data volume upgrades a VM: ` + "`disco-vm info`" + ` lists its volumes.`,
+is finished by running it again with the same --from. A VM with no data
+volume is upgraded only where its driver attaches one (` + "`disco-vm info`" + ` lists
+its volumes), and never on archil, whose root is all such a VM has; a VM
+with one is upgraded whatever its driver lists now.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			e, err := g.engine()

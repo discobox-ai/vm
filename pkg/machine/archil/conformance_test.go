@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -19,31 +20,47 @@ import (
 // driver's base (machine.Config.Base), such as debian:sid.
 const ImageEnv = "DISCO_VM_ARCHIL_IMAGE"
 
-// TestConformance runs the conformance suite against Archil itself. It needs
-// ARCHIL_API_KEY, ARCHIL_REGION, and ImageEnv, so it runs only where all are
-// set; it makes sandboxes and disks in a pool of its own and removes them.
+// TestConformance runs the conformance suite against Archil itself, once
+// with new VMs' data on their roots (dataDisk off, the default) and once
+// with a data disk each (ADR 26-11-28-860 §5). It needs ARCHIL_API_KEY,
+// ARCHIL_REGION, and ImageEnv, so it runs only where all are set; it makes
+// sandboxes and disks in a pool of its own and removes them.
 func TestConformance(t *testing.T) {
 	image := os.Getenv(ImageEnv)
 	if image == "" || os.Getenv(APIKeyEnv) == "" || os.Getenv(RegionEnv) == "" {
 		t.Skipf("set %s, %s (such as aws-us-east-1), and %s (an image, such as debian:sid) to run the conformance suite against Archil", APIKeyEnv, RegionEnv, ImageEnv)
 	}
-	config, err := machine.ConfigFromValues("archil", machine.ConfigFromEnv("archil"))
-	if err != nil {
-		t.Fatal(err)
+	for _, dataDisk := range []bool{false, true} {
+		t.Run(dataDisks(dataDisk), func(t *testing.T) {
+			values := machine.ConfigFromEnv("archil")
+			values["dataDisk"] = strconv.FormatBool(dataDisk)
+			config, err := machine.ConfigFromValues("archil", values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, err := machine.New("archil", machine.Config{Pool: "conformance", Base: image, Keys: machine.KeyFromEnv("archil"), DriverConfig: config})
+			if err != nil {
+				t.Fatal(err)
+			}
+			machinetest.Run(t, d, machinetest.Config{
+				CPUs:        2,
+				Memory:      2 << 30,
+				Size:        d.(*Driver).size,
+				Timeout:     5 * time.Minute,
+				ScratchDir:  "/var/lib",
+				Credentials: d.(*Driver).honoredTokens,
+				Pause:       d.(*Driver).pause,
+			})
+		})
 	}
-	d, err := machine.New("archil", machine.Config{Pool: "conformance", Base: image, Keys: machine.KeyFromEnv("archil"), DriverConfig: config})
-	if err != nil {
-		t.Fatal(err)
+}
+
+// dataDisks names a conformance run by where its new VMs keep their data.
+func dataDisks(on bool) string {
+	if on {
+		return "data-disk"
 	}
-	machinetest.Run(t, d, machinetest.Config{
-		CPUs:        2,
-		Memory:      2 << 30,
-		Size:        d.(*Driver).size,
-		Timeout:     5 * time.Minute,
-		ScratchDir:  "/var/lib",
-		Credentials: d.(*Driver).honoredTokens,
-		Pause:       d.(*Driver).pause,
-	})
+	return "root"
 }
 
 // size reads the size Archil holds a VM's sandbox to, as someone with
@@ -80,12 +97,23 @@ func (d *Driver) honoredTokens(ctx context.Context, inst machine.Instance) ([]st
 }
 
 // TestConformanceFakeAPI runs the conformance suite against the fake Archil
-// (fakeAPI), whose every listing pages two at a time, and finds nothing left
+// (fakeAPI), whose every listing pages two at a time, both with new VMs'
+// data on their roots and with a data disk each, and finds nothing left
 // behind in it.
 func TestConformanceFakeAPI(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the fake Archil's guests run on the host, and Archil's guests are linux")
 	}
+	for _, dataDisk := range []bool{false, true} {
+		t.Run(dataDisks(dataDisk), func(t *testing.T) {
+			conformanceFakeAPI(t, dataDisk)
+		})
+	}
+}
+
+// conformanceFakeAPI is one run of TestConformanceFakeAPI.
+func conformanceFakeAPI(t *testing.T, dataDisk bool) {
+	t.Helper()
 	f := newFakeAPI(t, t.TempDir())
 	// Registered first, so it runs once the suite's own cleanups have.
 	t.Cleanup(func() {
@@ -103,7 +131,7 @@ func TestConformanceFakeAPI(t *testing.T) {
 			}
 		}
 	})
-	d := f.driver(t, machine.DefaultPool, "debian:sid")
+	d := f.driver(t, machine.DefaultPool, "debian:sid", dataDisk)
 	machinetest.Run(t, d, machinetest.Config{
 		// Not Archil's default size, so a size not kept shows.
 		CPUs:       3,
@@ -130,7 +158,7 @@ func TestFreshVMsUseTheConfiguredImage(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
 	for _, c := range []struct{ base, want string }{{"", fakeDefaultImage}, {"debian:sid", "debian:sid"}} {
-		d := f.driver(t, "images", c.base)
+		d := f.driver(t, "images", c.base, false)
 		inst, err := d.Create(ctx, machine.InstanceSpec{Name: "fresh"})
 		if err != nil {
 			t.Fatal(err)
@@ -163,7 +191,7 @@ func TestTerminal(t *testing.T) {
 	}
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "tty", "")
+	d := f.driver(t, "tty", "", false)
 	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "tty"})
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +269,7 @@ func TestCommandLinesAreWhatShRuns(t *testing.T) {
 func TestStateReadsPausedAndWakesNothing(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "states", "debian:sid")
+	d := f.driver(t, "states", "debian:sid", false)
 	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "vm"})
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +303,7 @@ func TestStateReadsPausedAndWakesNothing(t *testing.T) {
 func TestPauseWaitsOutPausingAndReturnsARefusal(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "pauses", "debian:sid")
+	d := f.driver(t, "pauses", "debian:sid", false)
 	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "vm"})
 	if err != nil {
 		t.Fatal(err)

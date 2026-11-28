@@ -289,7 +289,9 @@ key has moved to its own first save: force it, or save from a new instance.
 root, a copy of a committed VM or fresh from the base, and keeps its name,
 settings, data volume, and cache clone (ADR 26-11-03-782;
 [pkg/machine](../machine/DESIGN.md#a-data-volume-is-its-vms-and-upgrade-gives-it-a-new-root)).
-It refuses, before the driver, a driver that does not list `VolumeData`, a
+It refuses, before the driver, a VM with no data volume on a driver that
+does not list `VolumeData` (one with a data volume is upgraded whatever its
+driver lists now, ADR 26-11-28-860 §3), a
 `--from` on a driver that does not report `Commit`, a VM
 not found stopped, and a `--from` that is the VM itself, another guest OS,
 or running. A `--from` it does not find goes to the driver by name, which

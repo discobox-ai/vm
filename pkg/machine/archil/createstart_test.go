@@ -25,7 +25,7 @@ func TestCreateStartedStartsOnce(t *testing.T) {
 	}
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "p", "debian:sid")
+	d := f.driver(t, "p", "debian:sid", true)
 	sandboxOf := func(name string) fakeSandbox {
 		t.Helper()
 		f.mu.Lock()
@@ -99,7 +99,7 @@ func TestCreateStartedMakesNothingWhenRefused(t *testing.T) {
 	}
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "p", "debian:sid")
+	d := f.driver(t, "p", "debian:sid", true)
 	counts := func() (int, int) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -132,7 +132,7 @@ func TestCreateStartedMakesNothingWhenRefused(t *testing.T) {
 		t.Fatalf("the VM of the name: %+v, %v; want it with no data volume", inst, err)
 	}
 
-	nosystemd := f.driver(t, "p", "alpine:3")
+	nosystemd := f.driver(t, "p", "alpine:3", true)
 	if _, err := nosystemd.Create(ctx, machine.InstanceSpec{Name: "nosystemd", Start: start, Data: &machine.DataVolume{}}); err == nil || !strings.Contains(err.Error(), "/lib/systemd/systemd") {
 		t.Fatalf("a create started of a base without systemd: %v, want it refused", err)
 	}

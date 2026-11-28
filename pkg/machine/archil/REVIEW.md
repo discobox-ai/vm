@@ -64,6 +64,17 @@
   200 there may be another create's disk, mounted and written, and is never
   deleted from that path: the create falls back to sandbox first. A review
   of this flagged the first version, which deleted it.
+- **A create with no data volume clears its name's disk too.** A VM has a
+  data disk if one of its name is there, so a create that asks for none,
+  which is every create with `dataDisk` off, deletes a disk of its name once
+  its sandbox holds the name: else a disk an `rm` failed to delete is the
+  new VM's, mounted at its next start and accepted by `Upgrade`. A review
+  of ADR 26-11-28-860's first version flagged it.
+- **The gated tests build the driver too.** A change to how the fake's
+  driver is made (`fakeAPI.driver`), or to what `Create` accepts, is run
+  through `go tool task test:archil:container` as well: CI skips
+  `TestSystemdInAContainer` and `TestSystemdServiceEndsAtItsStopSignal`, and
+  ADR 26-11-28-860's first version broke both with a green `ci`.
 - **The fake API (`fakeapi_test.go`) answers as Archil was seen to.** A
   name taken is `sandbox_name_conflict`, a fork boots at once with its
   source's mounts and policy and takes no mounts of its own, a sandbox with
