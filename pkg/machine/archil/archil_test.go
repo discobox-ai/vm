@@ -604,7 +604,7 @@ func TestUnavailable(t *testing.T) {
 func TestLabels(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	p, q := f.driver(t, "p", "debian:sid"), f.driver(t, "q", "debian:sid")
+	p, q := f.driver(t, "p", "debian:sid", true), f.driver(t, "q", "debian:sid", true)
 	a, err := p.Create(ctx, machine.InstanceSpec{Name: "a"})
 	if err != nil {
 		t.Fatal(err)
@@ -648,7 +648,7 @@ func TestLabels(t *testing.T) {
 	}
 	f.mu.Unlock()
 
-	listed, err := f.driver(t, "p", "").Instances(ctx)
+	listed, err := f.driver(t, "p", "", false).Instances(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -704,7 +704,7 @@ func TestLabels(t *testing.T) {
 func TestUnlabeledSandboxesAreNoVMs(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "p", "debian:sid")
+	d := f.driver(t, "p", "debian:sid", false)
 	if _, err := d.Create(ctx, machine.InstanceSpec{Name: "old"}); err != nil {
 		t.Fatal(err)
 	}

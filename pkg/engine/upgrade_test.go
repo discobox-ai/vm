@@ -27,8 +27,9 @@ func (o otherOS) Instance(ctx context.Context, name string) (machine.Instance, e
 	return inst, err
 }
 
-// An upgrade needs a driver that attaches a data volume, a VM of the
-// pool, and a committed VM other than itself, of its guest OS; one from a committed VM
+// An upgrade needs a VM with a data volume or a driver that attaches one
+// (a VM made with one is upgraded on a driver that no longer attaches
+// any, ADR 26-11-28-860 §3), a VM of the pool, and a committed VM other than itself, of its guest OS; one from a committed VM
 // keeps the VM's name and settings and records where its root is from; a
 // fresh one needs a base; and a driver that does not commit upgrades only
 // to a fresh root. (internal/e2e refuses a running one.)
@@ -50,8 +51,11 @@ func TestUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bare.Upgrade(ctx, "dev", engine.UpgradeOptions{From: "base"}); !errors.Is(err, machine.ErrUnsupported) {
-		t.Fatalf("an upgrade on a driver with no data volume: %v, want ErrUnsupported", err)
+	if _, err := e.Create(ctx, engine.CreateOptions{From: "base", Name: "rooted"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bare.Upgrade(ctx, "rooted", engine.UpgradeOptions{From: "base"}); !errors.Is(err, machine.ErrUnsupported) {
+		t.Fatalf("an upgrade of a VM with no data volume on a driver that attaches none: %v, want ErrUnsupported", err)
 	}
 	if _, err := e.Upgrade(ctx, "nothing", engine.UpgradeOptions{From: "base"}); !errors.Is(err, engine.ErrNotFound) {
 		t.Fatalf("an upgrade of no VM: %v, want ErrNotFound", err)
@@ -105,5 +109,8 @@ func TestUpgrade(t *testing.T) {
 	}
 	if got, err := e.Get(ctx, "dev"); err != nil || got.From != "two" {
 		t.Fatalf("the upgraded VM is found as %+v, %v", got, err)
+	}
+	if got, err := bare.Upgrade(ctx, "dev", engine.UpgradeOptions{From: "base"}); err != nil || got.From != "base" || got.Data == nil {
+		t.Fatalf("an upgrade of a VM with a data volume on a driver that attaches none: %+v, %v", got, err)
 	}
 }

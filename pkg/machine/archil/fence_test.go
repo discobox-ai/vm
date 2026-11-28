@@ -22,7 +22,7 @@ func TestCreateFencesAtTheEdge(t *testing.T) {
 		t.Skip("the fake Archil reads the driver's lines with sh")
 	}
 	f := newFakeAPI(t, t.TempDir())
-	d := f.driver(t, "p", "")
+	d := f.driver(t, "p", "", false)
 	spec := machine.InstanceSpec{Name: "dev", Egress: &machine.Egress{Allow: []string{"example.com"}, CloseDNS: true}}
 	inst, err := d.Create(context.Background(), spec)
 	if err != nil {

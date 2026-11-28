@@ -798,12 +798,11 @@ type UpgradeOptions struct {
 // settings, its data volume, and its cache clone (ADR 26-11-03-782): its old
 // root is removed for good. A caller that wants to go back commits the VM
 // first and upgrades to that. An upgrade that was interrupted is finished by
-// upgrading again with the same From. The driver must list
-// machine.VolumeData, and report Capabilities.Commit for a From.
+// upgrading again with the same From. The VM must have a data volume, or
+// the driver list machine.VolumeData (ADR 26-11-28-860 §3: a VM made with
+// one keeps it when its driver no longer gives new VMs one), and the driver
+// report Capabilities.Commit for a From.
 func (e *Engine) Upgrade(ctx context.Context, name string, opts UpgradeOptions) (Instance, error) {
-	if !e.Driver.Capabilities().Attaches(machine.VolumeData) {
-		return Instance{}, fmt.Errorf("driver %s attaches no data volume, which an upgrade keeps; rebuild the VM in place instead: %w", e.Driver.Name(), machine.ErrUnsupported)
-	}
 	if opts.From != "" && !e.Driver.Capabilities().Commit {
 		return Instance{}, fmt.Errorf("driver %s cannot give a VM the root of a committed one; upgrade it to a fresh root instead: %w", e.Driver.Name(), machine.ErrUnsupported)
 	}
@@ -817,6 +816,9 @@ func (e *Engine) Upgrade(ctx context.Context, name string, opts UpgradeOptions) 
 	inst, err := e.Get(ctx, name)
 	if err != nil {
 		return Instance{}, err
+	}
+	if inst.Data == nil && !e.Driver.Capabilities().Attaches(machine.VolumeData) {
+		return Instance{}, fmt.Errorf("driver %s attaches no data volume, and instance %s has none, which an upgrade keeps; rebuild the VM in place instead: %w", e.Driver.Name(), inst.Name, machine.ErrUnsupported)
 	}
 	if state := e.State(ctx, inst); state != Stopped {
 		return Instance{}, fmt.Errorf("instance %s is %s; stop it to upgrade it", inst.Name, state)

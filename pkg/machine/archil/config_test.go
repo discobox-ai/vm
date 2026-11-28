@@ -2,6 +2,7 @@ package archil
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,7 +16,7 @@ func TestDecodeAppliesTheDefinitionsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]string{"region": cfg.Region, "baseUrl": cfg.BaseURL}
+	got := map[string]string{"region": cfg.Region, "baseUrl": cfg.BaseURL, "dataDisk": strconv.FormatBool(cfg.DataDisk)}
 	for _, f := range Definition().ConfigFields {
 		if f.Required {
 			continue

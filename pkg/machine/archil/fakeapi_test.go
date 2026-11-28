@@ -223,12 +223,12 @@ func (f *fakeAPI) gatewayClient() *http.Client {
 }
 
 // driver is an archil driver of pool whose fresh VMs run base, calling the
-// fake.
-func (f *fakeAPI) driver(t *testing.T, pool, base string) *Driver {
+// fake, and configured to give new VMs a data disk where dataDisk is set.
+func (f *fakeAPI) driver(t *testing.T, pool, base string, dataDisk bool) *Driver {
 	t.Helper()
 	d, err := New(machine.Config{
 		Pool: pool, Base: base, Keys: machine.StaticKey(machine.Key{Driver: "archil", Secret: "key-fake"}),
-		DriverConfig: json.RawMessage(`{"region":"aws-us-east-1","baseUrl":"` + f.srv.URL + `"}`),
+		DriverConfig: json.RawMessage(fmt.Sprintf(`{"region":"aws-us-east-1","baseUrl":%q,"dataDisk":%t}`, f.srv.URL, dataDisk)),
 	})
 	if err != nil {
 		t.Fatal(err)

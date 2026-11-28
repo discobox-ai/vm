@@ -13,9 +13,9 @@ import (
 func TestIngressOff(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "ingress", "")
+	d := f.driver(t, "ingress", "", true)
 	off := machine.URLRequests{Ingress: machine.URLRequest{Mode: machine.URLOff, Strict: true}}
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "off", URLs: off, Egress: &machine.Egress{Allow: []string{"example.com"}, CloseDNS: true}})
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "off", URLs: off, Data: &machine.DataVolume{}, Egress: &machine.Egress{Allow: []string{"example.com"}, CloseDNS: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestIngressOff(t *testing.T) {
 // one that closes DNS is refused nowhere it is held.
 func TestCloseDNSAllowsNoResolver(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
-	d := f.driver(t, "dns", "")
+	d := f.driver(t, "dns", "", false)
 	_, err := d.Create(context.Background(), machine.InstanceSpec{Name: "leaky", Egress: &machine.Egress{Allow: []string{"8.8.8.8"}, CloseDNS: true}})
 	if err == nil {
 		t.Fatal("a fence closing DNS and allowing 8.8.8.8 was made")
@@ -73,7 +73,7 @@ func TestCloseDNSAllowsNoResolver(t *testing.T) {
 func TestForkRevokesItsSourcesTokens(t *testing.T) {
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "fork", "")
+	d := f.driver(t, "fork", "", false)
 	src, err := d.Create(ctx, machine.InstanceSpec{Name: "src"})
 	if err != nil {
 		t.Fatal(err)

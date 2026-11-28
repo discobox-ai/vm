@@ -119,7 +119,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o <its own dir>/disco-vm ./cmd/d
   required). A VM is the sandbox `dvm-<pool>--<name>`, its data volume the
   disk `dvm-<pool>--<name>--data`. With no `DISCO_VM_BASE`, a fresh VM runs
   Archil's default image (`node:24-bookworm`).
-- The flow: `run dev --data 1GiB` (about 7 s), `exec dev sh -c '...'` (no
+- A new VM keeps its data on its root, and `--data` is refused, unless
+  `ARCHIL_DATA_DISK=true` (the driver's `dataDisk`). A VM that has a data
+  disk keeps it, and is started, upgraded, and removed with it, either way:
+  make one with the setting on to drive that path with it off.
+- The flow: `run dev` (about 8 s; `ARCHIL_DATA_DISK=true run dev --data
+  1GiB` for a data disk), `exec dev sh -c '...'` (no
   `--` after the name: it reaches the guest as the command), `stop`,
   `commit`, `run dev2 --from dev`. `rm dev` is refused with `ErrInUse`
   while `dev2`, its fork, exists.

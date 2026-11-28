@@ -17,6 +17,8 @@ const (
 	RegionEnv = "ARCHIL_REGION"
 	// BaseURLEnv is where the command line reads Config.BaseURL from.
 	BaseURLEnv = "ARCHIL_BASE_URL"
+	// DataDiskEnv is where the command line reads Config.DataDisk from.
+	DataDiskEnv = "ARCHIL_DATA_DISK"
 	// legacyRegion is where the driver called before its region was
 	// required, so where a pool made then keeps its VMs.
 	legacyRegion = "aws-us-east-1"
@@ -33,6 +35,12 @@ type Config struct {
 	// BaseURL is a control plane in place of the region's, for a test. It
 	// wins over Region's, and is sent the key.
 	BaseURL string `json:"baseUrl,omitempty"`
+	// DataDisk gives a new VM a data disk (Capabilities lists VolumeData).
+	// Off, a new VM keeps its data on its root, which a fork branches, so a
+	// copy boots once. It decides only what a new VM is made with: a VM that
+	// has a data disk keeps it, and is started, upgraded, and destroyed with
+	// it, either way (ADR 26-11-28-860 §§1-2).
+	DataDisk bool `json:"dataDisk,omitempty"`
 }
 
 // regions are the regions that run sandboxes.
@@ -51,6 +59,8 @@ func Definition() machine.Definition {
 				Description: "The Archil region the driver calls, which keeps its sandboxes and disks: one of " + strings.Join(regions(), ", ") + ". " + legacyRegion + " is where a pool made before it was required keeps its VMs."},
 			{Key: "baseUrl", Label: "Base URL", Type: machine.ConfigString, Env: BaseURLEnv, Advanced: true, Privileged: true,
 				Description: "A control plane's URL in place of the region's, for a test; it is sent the key, so it is https, or http to a loopback address."},
+			{Key: "dataDisk", Label: "Data Disk", Type: machine.ConfigBoolean, Env: DataDiskEnv, Default: "false",
+				Description: "Give each new VM a data disk of its own, which a new root can be given beside. Off, a new VM keeps its data on its root, so a copy of a committed VM boots once, and it can't be given a new root. A VM that has a data disk keeps it either way."},
 		},
 		Secrets: []machine.SecretField{{
 			Key: "apiKey", Label: "API Key", Type: machine.ConfigSecret, Env: []string{APIKeyEnv}, Placeholder: "key-...",

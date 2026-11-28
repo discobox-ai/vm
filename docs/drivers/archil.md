@@ -25,7 +25,10 @@ microVM sandboxes, amd64 only, from public OCI images, beside disks backed by
 object storage that the provider mounts in them. Its control plane is a REST
 API per region (the configuration's `region`: `--archil-region`,
 `$ARCHIL_REGION`, required; ADR 26-11-11-215), authenticated
-with an API key (`ARCHIL_API_KEY`); there is no Go SDK. Processes run over a
+with an API key (`ARCHIL_API_KEY`); there is no Go SDK. A new VM keeps its
+data on its root unless the configuration's `dataDisk` (`--archil-data-disk`,
+`$ARCHIL_DATA_DISK`, false by default; ADR 26-11-28-860) gives it a data
+disk. Processes run over a
 WebSocket protocol only its TypeScript SDK implements.
 
 A sandbox's root disk persists across stop and start. A sandbox carries
@@ -59,7 +62,7 @@ nothing.
 | `Create`, `From` | a fork of the source's sandbox, which must be stopped and have no mounts (commit it first), given its own labels (a fork given none keeps its source's; it takes no mounts, seen 2026-11-24); the spec's fence and ingress mark set (an unfenced spec clears the source's fence); every token the fork carried revoked; then a stop, and the data disk. A size other than the source's is refused. With `Start`, it is left running, or, with a data volume, stopped and started once with it mounted. |
 | `Commit` | reported (`Capabilities.Commit`, ADR 26-11-03-868). A stopped sandbox with mounts is started with none and stopped; then its port tokens are revoked and the data disk is deleted. Nothing in the guest is changed, and nothing records the commit. |
 | `Destroy` | each sandbox labeled for the VM, the VM's own last: stop, revoke its port tokens, delete it; then the data disk. Archil refuses a sandbox with forks (`sandbox_has_forks`): `machine.ErrInUse`, and the data disk is kept. A VM with no sandbox left still has its data disk removed. |
-| `Upgrade` | checks everything that could refuse it, removes what an earlier upgrade or a create of the name left, then makes the new sandbox first, fresh from the base or a fork of `from`, named `dvm-<pool>--<name, cut to fit>--<hex>`, at the old size, fence, and ingress, labeled as a Create's and `ai.discobox.vm.replaces` the old sandbox, with systemd launched, and stops it; then revokes the old sandbox's port tokens and deletes it. A failure before that removes the new sandbox and leaves the VM as it was; one stopped in between leaves a sandbox nothing lists, removed by the next `upgrade` or `rm`. The data disk is mounted at each start as before. A `failed` sandbox is upgraded as a stopped one. |
+| `Upgrade` | refuses a VM with no data disk, `ErrUnsupported`, however `dataDisk` is set: its data is on the root an upgrade deletes (ADR 26-11-28-860 §3). Otherwise checks everything that could refuse it, removes what an earlier upgrade or a create of the name left, then makes the new sandbox first, fresh from the base or a fork of `from`, named `dvm-<pool>--<name, cut to fit>--<hex>`, at the old size, fence, and ingress, labeled as a Create's and `ai.discobox.vm.replaces` the old sandbox, with systemd launched, and stops it; then revokes the old sandbox's port tokens and deletes it. A failure before that removes the new sandbox and leaves the VM as it was; one stopped in between leaves a sandbox nothing lists, removed by the next `upgrade` or `rm`. The data disk is mounted at each start as before. A `failed` sandbox is upgraded as a stopped one. |
 | systemd | every VM's, with no option (ADR 26-11-20-447): while Create's sandbox runs, under its fence, systemd, systemd-sysv, dbus, and util-linux are installed with apt where the base lacks `/lib/systemd/systemd` (or `nsenter`, `unshare`, `setpriv`, `runuser`, `mount`), and `disco-vm-systemd` is registered with Archil's supervisor (`/opt/archil/archil-client services create`), which runs `unshare --pid --fork --mount-proc --propagation slave --kill-child /lib/systemd/systemd` at every boot, the root made shared first, and kills `unshare`, so systemd, at TERM, Archil's stop's signal (a VM registered before keeps the old script: only the driver's stops of it, which kill systemd first, are prompt). A base with no `apt-get`, or a VM that can't reach its mirror (`--egress none`), fails Create naming `/lib/systemd/systemd`; Create returns once systemd's process runs (launched, not settled: its boot may still be going). A fork carries both: Create registers only where `services get` says there is none (exit 1), and fails on any other answer. A fresh `Upgrade` of a base without systemd, fenced from its mirror, fails before the old sandbox is deleted, and leaves the VM as it was. |
 | `Boot`, `Start` | start the sandbox with its data disk mounted, or resume a paused one, then wait until a process runs and until systemd's process runs, for up to a minute, not for its boot to finish: a guest operation can enter its namespaces, and a unit may still be starting (a start installs and registers nothing; one whose systemd is not launched is stopped). Archil runs it, so `Start` is `Boot`. A committed VM is not refused: Archil can't tell it. `Boot` of a paused (or pausing) sandbox is `ErrPaused`. |
 | `State` | `running` is running; `paused` or `pausing` is paused, read without resuming it; anything else is stopped. |
@@ -70,7 +73,7 @@ nothing.
 | guest operations | a process each, entering systemd's namespaces (`nsenter --all` of the process whose PID in its namespace is 1, in the killed process's group, which Archil SIGKILLs whole, and under `setpriv --pdeathsig TERM`, again under `runuser -u` for another account), failing while systemd does not run: exec with the request's directory, variables, and terminal, `runuser -u` for another account; `cp` as tar, GNU's or BusyBox's, a copy out tarring to `/var/tmp` (so it needs that much free space in the guest, and streams nothing until tar is done) and writing `R` once that worked, then the tar in 512 KiB chunks the host asks for, read with `dd`, since Archil drops output that outruns its connection (an exec that loses output fails); `info` as `uname -m; hostname`. |
 | `Listen` | `tcp:0.0.0.0:7302`. |
 | `Service` | mints a port token for 7302 (`POST .../port-tokens`, a day's `ttl`) and gives `https://<the hostname Archil returns with it>` as the pool URL, and as the ingress URL unless asked off (`Capabilities.URLs`: ingress optional, pool always, `Credential`), with the token as `Credential` in `X-Archil-Token`. The hostname is the same across stop and start. A request without the token is refused with `401` before the guest, and leaves a stopped VM stopped; Archil speaks only HTTP/1.1 there. Each call mints a new token, which the driver does not keep. |
-| volumes | `data`: the disk `dvm-<pool>--<name>--data` at `/.discobox/data`, made at Create (one of the name already there is a removed VM's, deleted and made again; disks take no labels) and deleted at Commit and Destroy. No `cache` (ADR 26-11-02-180). |
+| volumes | none listed by default: a new VM keeps its data on its root, and Create refuses `Data`. With `dataDisk` (ADR 26-11-28-860), `data` is listed: the disk `dvm-<pool>--<name>--data` at `/.discobox/data`, made at Create (one of the name already there is a removed VM's, deleted and made again; disks take no labels) and deleted at Commit and Destroy. A VM that has one keeps it whatever `dataDisk` says now: listed with it, started with it mounted, upgraded with it, and destroyed with it. No `cache` (ADR 26-11-02-180). |
 | egress | `network.egress` `{default: deny, allow: [...]}`, with `deny: ["8.8.8.8", "1.1.1.1"]` where it closes DNS (`Egress.CloseDNS`, and `none`, an empty `allow`), set at create (fresh) or right after the fork (`From`), and read back. The policy also carries the ingress mark, a `deny` of `192.0.2.86`, on a VM whose ingress URL is asked off. Archil adds `mount.*.archil.com` and `data.*.archil.com` to a fenced sandbox's `allow` while it has a mount, from its create or its start, and drops them at a start with none: they are Archil's, read back as no part of the fence and kept by every policy set, and a fence may not name them. |
 | bare | always (`Capabilities.Bare`): the guest holds nothing of the account, and no data disk's mount token is visible in the namespaces it runs in: Archil's client mounts the disk from outside them (seen on client version 1006, 2026-11; another base or older image may differ). |
 | keys | none: an Archil token never expires and reaches the whole account (`ErrCannotIssue`). |
@@ -79,13 +82,15 @@ nothing.
 
 ```bash
 export ARCHIL_API_KEY=key-... ARCHIL_REGION=aws-us-east-1 DISCO_VM_DRIVER=archil DISCO_VM_POOL=scratch DISCO_VM_BASE=debian:sid
-disco-vm run dev --data 1GiB      # installs systemd: debian:sid has none
+disco-vm run dev                  # installs systemd: debian:sid has none
+ARCHIL_DATA_DISK=true disco-vm run data --data 1GiB   # a VM with a data disk, which upgrade keeps
 disco-vm exec dev systemctl is-system-running
 disco-vm exec dev sh -c 'apt-get update && apt-get install -y curl'
 disco-vm stop dev
 disco-vm commit dev
 disco-vm run dev2 --from dev
-disco-vm rm -f dev2 && disco-vm rm dev
+disco-vm stop data && disco-vm upgrade data --from dev
+disco-vm rm -f dev2 && disco-vm rm -f data && disco-vm rm dev
 ```
 
 ## Not done

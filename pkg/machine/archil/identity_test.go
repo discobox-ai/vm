@@ -33,7 +33,7 @@ func TestAFailedUpgradeLeavesTheVM(t *testing.T) {
 	}
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "p", "debian:sid")
+	d := f.driver(t, "p", "debian:sid", true)
 	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev", Data: &machine.DataVolume{}})
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestAFailedUpgradeLeavesTheVM(t *testing.T) {
 	if err != nil || disk == "" {
 		t.Fatalf("the data volume: %q, %v", disk, err)
 	}
-	if _, err := f.driver(t, "p", "alpine:3").Upgrade(ctx, inst, nil); err == nil {
+	if _, err := f.driver(t, "p", "alpine:3", true).Upgrade(ctx, inst, nil); err == nil {
 		t.Fatal("an upgrade to a base without systemd: nil error")
 	}
 	got, err := d.Instance(ctx, "dev")
@@ -68,8 +68,8 @@ func TestAnInterruptedUpgradeIsNoVM(t *testing.T) {
 	}
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "p", "debian:sid")
-	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev"})
+	d := f.driver(t, "p", "debian:sid", true)
+	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev", Data: &machine.DataVolume{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +118,30 @@ func TestAStaleDataDiskIsMadeAgain(t *testing.T) {
 	}
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "p", "debian:sid")
+	d := f.driver(t, "p", "debian:sid", true)
+	off := f.driver(t, "p", "debian:sid", false)
 	for _, start := range []*machine.BootOptions{nil, {}} {
+		// A VM with no data volume, of either setting, removes the disk
+		// left of its name rather than take it as its own.
+		for _, maker := range []*Driver{d, off} {
+			stale, made, err := d.api.createDisk(ctx, d.dataDiskName("dev"))
+			if err != nil || !made {
+				t.Fatalf("a disk: %q, made %t, %v", stale, made, err)
+			}
+			inst, err := maker.Create(ctx, machine.InstanceSpec{Name: "dev", Start: start})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := maker.Instance(ctx, "dev"); err != nil || got.Data != nil {
+				t.Fatalf("a VM with no data volume, whose name had a disk left: %+v, %v; want no data volume", got, err)
+			}
+			if disk, err := d.dataDisk(ctx, "dev"); err != nil || disk != "" {
+				t.Fatalf("a disk left of a VM's name, after a create with no data volume: %q, %v; want it removed", disk, err)
+			}
+			if err := maker.Destroy(ctx, inst); err != nil {
+				t.Fatal(err)
+			}
+		}
 		stale, made, err := d.api.createDisk(ctx, d.dataDiskName("dev"))
 		if err != nil || !made {
 			t.Fatalf("a disk: %q, made %t, %v", stale, made, err)
@@ -159,7 +181,7 @@ func TestACreateThatRacesGivesWay(t *testing.T) {
 	}
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "p", "debian:sid")
+	d := f.driver(t, "p", "debian:sid", false)
 	// The other create's sandbox lands first, under an upgrade's name, as
 	// a VM upgraded since holds it, once this create has checked.
 	f.beforeCreate = func(body createSandbox) {
@@ -190,7 +212,7 @@ func TestAnUpgradeWhoseDeleteWasTakenFinishes(t *testing.T) {
 	}
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "p", "debian:sid")
+	d := f.driver(t, "p", "debian:sid", true)
 	inst, err := d.Create(ctx, machine.InstanceSpec{Name: "dev", Data: &machine.DataVolume{}})
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +244,7 @@ func TestARacingStartedCreateLeavesTheOthersDisk(t *testing.T) {
 	}
 	f := newFakeAPI(t, t.TempDir())
 	ctx := context.Background()
-	d := f.driver(t, "p", "debian:sid")
+	d := f.driver(t, "p", "debian:sid", true)
 	spec := machine.InstanceSpec{Name: "dev", Data: &machine.DataVolume{}, Start: &machine.BootOptions{}}
 	first, err := d.Create(ctx, spec)
 	if err != nil {
