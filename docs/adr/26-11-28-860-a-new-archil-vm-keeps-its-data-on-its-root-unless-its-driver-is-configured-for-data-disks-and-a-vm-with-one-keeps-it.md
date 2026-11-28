@@ -1,10 +1,12 @@
 # 26-11-28-860 — A new archil VM keeps its data on its root unless its driver is configured for data disks, and a VM with one keeps it
 
-- **Status**: Proposed (would supersede in part 26-11-03-782 §2, its upgrade
+- **Status**: Accepted (supersedes in part 26-11-03-782 §2, its upgrade
   refused on any driver that does not list `VolumeData`, and its archil row
   in §5; and 26-11-24-905 §6, a VM created from a committed one being stopped
   and started with its data disk mounted)
 - **Date**: 2026-11-28
+
+Accepted by the owner by merging #241, 2026-11-28.
 
 ## Context
 

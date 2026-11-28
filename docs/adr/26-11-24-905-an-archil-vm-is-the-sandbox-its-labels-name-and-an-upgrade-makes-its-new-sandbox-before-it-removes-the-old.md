@@ -1,7 +1,9 @@
 # 26-11-24-905 — An archil VM is the sandbox its labels name, and an upgrade makes its new sandbox before it removes the old
 
 - **Status**: Proposed (supersedes in part 26-11-03-676, its VM as the
-  sandbox named for it)
+  sandbox named for it; §6's VM created from a committed one being stopped
+  and started with its data disk mounted, superseded by
+  [26-11-28-860](26-11-28-860-a-new-archil-vm-keeps-its-data-on-its-root-unless-its-driver-is-configured-for-data-disks-and-a-vm-with-one-keeps-it.md))
 - **Date**: 2026-11-24
 
 ## Context

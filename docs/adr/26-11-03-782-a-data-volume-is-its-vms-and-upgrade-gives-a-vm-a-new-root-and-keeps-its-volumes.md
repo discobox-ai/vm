@@ -1,6 +1,6 @@
 # 26-11-03-782 — A data volume is its VM's, and Upgrade gives a VM a new root and keeps its volumes
 
-- **Status**: Accepted (supersedes in part 26-11-02-180, its §5 docker row; §6 project paths superseded by [26-11-04-412](26-11-04-412-docker-runs-in-a-vm-owned-by-its-pool.md))
+- **Status**: Accepted (supersedes in part 26-11-02-180, its §5 docker row; §6 project paths superseded by [26-11-04-412](26-11-04-412-docker-runs-in-a-vm-owned-by-its-pool.md); §2's upgrade refused on any driver that does not list `VolumeData`, and §5's archil row, superseded by [26-11-28-860](26-11-28-860-a-new-archil-vm-keeps-its-data-on-its-root-unless-its-driver-is-configured-for-data-disks-and-a-vm-with-one-keeps-it.md))
 - **Date**: 2026-11-03
 
 Accepted by the owner by merging #39, 2026-11-03.
